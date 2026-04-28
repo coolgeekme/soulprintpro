@@ -1,7 +1,8 @@
 import React, { useState, useMemo, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Mail, ChevronLeft, ChevronRight } from 'lucide-react';
+import { Mail, ChevronLeft, ChevronRight, Eye, EyeOff, AlertCircle } from 'lucide-react';
 import { agents } from '../data/mock';
+import { useAuth } from '../context/AuthContext';
 
 // Matrix background
 const MatrixBg = () => {
@@ -69,11 +70,34 @@ const FacebookIcon = () => (
 
 const LandingPage = () => {
   const navigate = useNavigate();
-  const [showEmail, setShowEmail] = useState(false);
-  const [email, setEmail] = useState('');
+  const { login, register } = useAuth();
+
+  // Carousel state
   const [currentSlide, setCurrentSlide] = useState(0);
   const carouselRef = useRef(null);
   const cardRefs = useRef([]);
+
+  // Auth form state
+  const [showEmail, setShowEmail] = useState(false);
+  const [isRegister, setIsRegister] = useState(false);
+  const [name, setName] = useState('');
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
+  const [showPass, setShowPass] = useState(false);
+  const [error, setError] = useState('');
+  const [loading, setLoading] = useState(false);
+
+  const formatError = detail => {
+    if (!detail) return 'Something went wrong. Please try again.';
+    if (typeof detail === 'string') return detail;
+    if (Array.isArray(detail)) return detail.map(e => e.msg || JSON.stringify(e)).join(' ');
+    return String(detail);
+  };
+
+  const handleSocialClick = () => {
+    setShowEmail(true);
+    setError('Social login coming soon — use email below.');
+  };
 
   // Auto-advance carousel
   useEffect(() => {
@@ -98,9 +122,22 @@ const LandingPage = () => {
   const handlePrev = () => setCurrentSlide(p => (p - 1 + agents.length) % agents.length);
   const handleNext = () => setCurrentSlide(p => (p + 1) % agents.length);
 
-  const handleLogin = () => {
-    localStorage.setItem('wingman_user', 'true');
-    navigate('/dashboard');
+  const handleEmailAuth = async e => {
+    e.preventDefault();
+    setError('');
+    setLoading(true);
+    try {
+      if (isRegister) {
+        await register(name, email, password);
+      } else {
+        await login(email, password);
+      }
+      navigate('/dashboard');
+    } catch (err) {
+      setError(formatError(err.response?.data?.detail) || err.message);
+    } finally {
+      setLoading(false);
+    }
   };
 
   return (
@@ -134,7 +171,7 @@ const LandingPage = () => {
           <div className="w-full mt-8 space-y-3 max-w-xs">
             {/* Google */}
             <button
-              onClick={handleLogin}
+              onClick={handleSocialClick}
               className="w-full flex items-center justify-center gap-3 py-[11px] px-4 rounded-2xl text-white font-medium text-sm transition-all duration-150 hover:opacity-85 active:scale-[0.98]"
               style={{ backgroundColor: '#0D0D0D' }}
             >
@@ -151,7 +188,7 @@ const LandingPage = () => {
               ].map(({ icon, label }) => (
                 <button
                   key={label}
-                  onClick={handleLogin}
+                  onClick={handleSocialClick}
                   aria-label={`Continue with ${label}`}
                   className="flex-1 flex items-center justify-center py-[11px] rounded-2xl transition-all duration-150 hover:opacity-85 active:scale-[0.98]"
                   style={{ backgroundColor: '#0D0D0D' }}
@@ -171,23 +208,80 @@ const LandingPage = () => {
                 Continue with Email
               </button>
             ) : (
-              <div className="space-y-2">
+              <form onSubmit={handleEmailAuth} className="space-y-2.5">
+                {/* Error message */}
+                {error && (
+                  <div className="flex items-start gap-2 p-3 bg-red-50 border border-red-100 rounded-xl">
+                    <AlertCircle className="w-4 h-4 text-red-500 flex-shrink-0 mt-0.5" />
+                    <p className="text-[12px] text-red-600 leading-snug">{error}</p>
+                  </div>
+                )}
+
+                {/* Name (register only) */}
+                {isRegister && (
+                  <input
+                    type="text"
+                    placeholder="Your name"
+                    value={name}
+                    onChange={e => setName(e.target.value)}
+                    required
+                    autoFocus
+                    className="w-full px-4 py-[11px] rounded-2xl border border-gray-200 text-sm text-gray-900 placeholder-gray-400 outline-none focus:border-cyan-400 transition-colors"
+                  />
+                )}
+
+                {/* Email */}
                 <input
                   type="email"
-                  placeholder="Enter your email"
+                  placeholder="Email address"
                   value={email}
                   onChange={e => setEmail(e.target.value)}
-                  autoFocus
+                  required
+                  autoFocus={!isRegister}
                   className="w-full px-4 py-[11px] rounded-2xl border border-gray-200 text-sm text-gray-900 placeholder-gray-400 outline-none focus:border-cyan-400 transition-colors"
                 />
+
+                {/* Password */}
+                <div className="relative">
+                  <input
+                    type={showPass ? 'text' : 'password'}
+                    placeholder="Password"
+                    value={password}
+                    onChange={e => setPassword(e.target.value)}
+                    required
+                    className="w-full px-4 py-[11px] pr-11 rounded-2xl border border-gray-200 text-sm text-gray-900 placeholder-gray-400 outline-none focus:border-cyan-400 transition-colors"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowPass(p => !p)}
+                    className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600 transition-colors"
+                  >
+                    {showPass ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                  </button>
+                </div>
+
+                {/* Submit */}
                 <button
-                  onClick={handleLogin}
-                  className="w-full py-[11px] rounded-2xl text-white text-sm font-medium transition-all duration-150 hover:opacity-90 active:scale-[0.98]"
-                  style={{ backgroundColor: '#06B6D4' }}
+                  type="submit"
+                  disabled={loading}
+                  className="w-full py-[11px] rounded-2xl text-white text-sm font-medium transition-all duration-150 hover:opacity-90 active:scale-[0.98] disabled:opacity-60 disabled:cursor-not-allowed"
+                  style={{ backgroundColor: '#0D0D0D' }}
                 >
-                  Continue
+                  {loading ? 'Please wait…' : isRegister ? 'Create account' : 'Sign in'}
                 </button>
-              </div>
+
+                {/* Toggle */}
+                <p className="text-center text-[12px] text-gray-500">
+                  {isRegister ? 'Already have an account?' : "Don't have an account?"}{' '}
+                  <button
+                    type="button"
+                    onClick={() => { setIsRegister(p => !p); setError(''); }}
+                    className="text-gray-900 font-semibold hover:underline"
+                  >
+                    {isRegister ? 'Sign in' : 'Create account'}
+                  </button>
+                </p>
+              </form>
             )}
           </div>
 

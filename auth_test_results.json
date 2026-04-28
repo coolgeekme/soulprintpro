@@ -1,0 +1,56 @@
+{
+  "timestamp": "2026-04-28T04:38:05.650085",
+  "backend_url": "https://emergent-wing.preview.emergentagent.com/api",
+  "total_tests": 8,
+  "passed_tests": 8,
+  "results": [
+    {
+      "test": "Login with valid credentials",
+      "success": true,
+      "details": "User: admin@wingman.ai, Cookies: access_token=True, refresh_token=True",
+      "timestamp": "2026-04-28T04:38:04.775119"
+    },
+    {
+      "test": "Login with invalid credentials",
+      "success": true,
+      "details": "Correctly rejected with 401",
+      "timestamp": "2026-04-28T04:38:05.047922"
+    },
+    {
+      "test": "Get current user with cookie",
+      "success": true,
+      "details": "User: admin@wingman.ai",
+      "timestamp": "2026-04-28T04:38:05.098642"
+    },
+    {
+      "test": "Get current user without cookie",
+      "success": true,
+      "details": "Correctly rejected with 401",
+      "timestamp": "2026-04-28T04:38:05.243422"
+    },
+    {
+      "test": "Register new user",
+      "success": true,
+      "details": "User created: test_20260428_043805@example.com",
+      "timestamp": "2026-04-28T04:38:05.513748"
+    },
+    {
+      "test": "Register duplicate email",
+      "success": true,
+      "details": "Correctly rejected with 400",
+      "timestamp": "2026-04-28T04:38:05.561938"
+    },
+    {
+      "test": "Logout",
+      "success": true,
+      "details": "Successfully logged out",
+      "timestamp": "2026-04-28T04:38:05.606231"
+    },
+    {
+      "test": "Get current user after logout",
+      "success": true,
+      "details": "Correctly rejected with 401",
+      "timestamp": "2026-04-28T04:38:05.649953"
+    }
+  ]
+}

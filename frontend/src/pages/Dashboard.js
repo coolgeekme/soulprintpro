@@ -1,11 +1,12 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
-  Send, Plus, Settings, LogOut, Search,
-  Zap, Bell, ChevronRight, Check, CheckCheck,
-  MoreVertical, Paperclip, Smile, X
+  Send, Plus, LogOut, Search,
+  Zap, Bell, CheckCheck,
+  MoreVertical, X
 } from 'lucide-react';
 import { agents, agentResponses, integrationsList } from '../data/mock';
+import { useAuth } from '../context/AuthContext';
 
 // Small status dot
 const StatusDot = ({ active }) => (
@@ -70,6 +71,7 @@ const IntegrationsPanel = ({ onClose }) => (
 
 const Dashboard = () => {
   const navigate = useNavigate();
+  const { user, logout } = useAuth();
   const [selectedAgent, setSelectedAgent] = useState(agents[0]);
   const [allMessages, setAllMessages] = useState(
     Object.fromEntries(agents.map(a => [a.id, [...(a.messages || [])]]))  
@@ -122,8 +124,8 @@ const Dashboard = () => {
     if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleSend(); }
   };
 
-  const handleLogout = () => {
-    localStorage.removeItem('wingman_user');
+  const handleLogout = async () => {
+    await logout();
     navigate('/');
   };
 
@@ -225,11 +227,11 @@ const Dashboard = () => {
         {/* User footer */}
         <div className="px-4 py-3 border-t border-gray-100 flex items-center gap-3">
           <div className="w-9 h-9 rounded-full bg-gray-200 flex items-center justify-center text-gray-600 font-bold text-sm flex-shrink-0">
-            U
+            {user?.name ? user.name[0].toUpperCase() : 'U'}
           </div>
           <div className="flex-1 min-w-0">
-            <p className="text-[13px] font-semibold text-gray-900 truncate">You</p>
-            <p className="text-[11px] text-gray-400">Personal workspace</p>
+            <p className="text-[13px] font-semibold text-gray-900 truncate">{user?.name || 'You'}</p>
+            <p className="text-[11px] text-gray-400 truncate">{user?.email || 'Personal workspace'}</p>
           </div>
           <button onClick={handleLogout} title="Sign out" className="p-1.5 rounded-lg hover:bg-gray-100 transition-colors">
             <LogOut className="w-4 h-4 text-gray-400" />
