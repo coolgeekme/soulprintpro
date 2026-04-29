@@ -51,21 +51,26 @@ pattern. Users must be able to:
 
 ## Implemented (Apr 29, 2026)
 - ✅ Full schema rewrite — orgs, teams, members, invites, conversations, messages
-- ✅ JWT cookie auth with secure helpers
+- ✅ JWT cookie auth + Bearer fallback (localStorage)
 - ✅ **169 specialised agents** across **14 divisions**, seeded from
   [msitarzewski/agency-agents](https://github.com/msitarzewski/agency-agents)
-  via `/app/backend/build_agents_catalogue.py` → `agents_catalogue.json`
-- ✅ SoulPrint onboarding injected into every agent system prompt (on top of the agent's own personality)
+- ✅ SoulPrint onboarding injected into every agent system prompt
 - ✅ Direct chats (always respond) and group chats with `@mention` support for
   **id, short-slug, or slugified display name**, plus `auto_respond` toggle
+- ✅ **Smart auto-routing** — `POST /api/teams/{id}/start` routes a free-text prompt
+  to the best of 169 agents and posts the first message in one shot
+- ✅ **Switch agent** — `POST /api/conversations/{id}/switch-agent` swaps the
+  agent on a direct conversation with a bridging handoff message
+- ✅ **Smart-expand groups** — `smart_expand: true` lets the system auto-add a
+  new specialist when the topic shifts beyond the current agents' lanes
 - ✅ Invite system: code + shareable link (`/invite/:code`) + mailto helper
 - ✅ Access control at org + team + conversation membership level
-- ✅ Dark "liquid glass" UI (aurora halo, Instrument Serif, glass cards, typing indicator)
-- ✅ **Searchable crew browser** + **division filters** on Team page and in New Conversation dialog
-- ✅ Selected-agent chip strip + @mention picker with emoji, division, and short-slug insertion
-- ✅ Test suite: 34/34 pytest passing
-  (`/app/backend/tests/test_soulprint.py` + `/app/backend/tests/test_agents_catalogue.py`)
-- ✅ Fixed CRITICAL tz bug in `/api/invites/accept` (naive vs aware datetime)
+- ✅ Dark "liquid glass" UI; "Just start typing" composer is the primary CTA on
+  the team page; the manual agent picker stays available behind a small link
+- ✅ Searchable + division-filterable crew browser & dialogs
+- ✅ Test suite: **47/47 pytest passing** across `test_soulprint.py`,
+  `test_agents_catalogue.py`, and `test_smart_routing.py`
+- ✅ Auth bug fixes: tz-aware invite expiry; `Secure` cookie; Bearer fallback
 
 ## Roadmap
 - **P1** Invite revocation + pending invite list in UI
