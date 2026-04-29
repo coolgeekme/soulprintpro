@@ -1,0 +1,57 @@
+{
+  "summary": "Tested full SoulPrint Engine backend (15 pytest cases) + frontend critical path E2E. Found and fixed 1 CRITICAL backend bug (invite accept timezone comparison → 500). Frontend flow works end-to-end: landing → auth → org → invite → team → soulprint save → new conversation dialog → direct chat with agent → message send → LLM (Nova/gpt-4.1-mini) reply renders. Found 1 medium frontend bug (duplicate data-testid on AgentBadge) and 1 minor UI anomaly (some SoulPrint textareas appear cleared after rapid automated fills).",
+  "backend_issues": {
+    "critical": [
+      {
+        "endpoint": "POST /api/invites/accept",
+        "issue": "Returned 500 'can't compare offset-naive and offset-aware datetimes'. MongoDB returns naive UTC, code compared against timezone-aware datetime.now(timezone.utc). FIXED by normalizing expires_at to UTC-aware before comparison in server.py around line 376.",
+        "priority": "CRITICAL"
+      }
+    ],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [
+      {
+        "component": "TeamPage AgentBadge",
+        "issue": "The same data-testid='agent-badge-{id}' is rendered twice on the Team page — once inside the 'Your crew' read-only section (line ~178) and once inside the 'New conversation' dialog (line ~255). Strict-mode Playwright fails; non-strict picks the first (read-only) which does nothing and can close the modal via backdrop propagation. Make the crew-section testid distinct, e.g. 'agent-crew-{id}' vs 'agent-badge-{id}' for the pick-list in dialog.",
+        "selector": "[data-testid=\"agent-badge-strategist\"]",
+        "priority": "MEDIUM"
+      },
+      {
+        "component": "TeamPage SoulPrint editor",
+        "issue": "After saveSoulPrint, UI showed empty Mission/Audience/Tone textareas while Values/North star retained. Reproduced with Playwright fills. May be a React controlled-component artifact with rapid page.fill (hard to reproduce manually) but worth a visual check. Backend persistence is correct (verified).",
+        "selector": "[data-testid=\"sp-mission\"] / sp-tone / sp-audience",
+        "priority": "LOW"
+      }
+    ],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_soulprint.py",
+    "/app/test_reports/pytest/pytest_results.xml"
+  ],
+  "action_items": [
+    "Rename the 'Your crew' AgentBadge data-testid to something distinct (e.g. agent-crew-{id}) so that agent-badge-{id} refers only to the dialog picker.",
+    "Manually verify SoulPrint Mission/Audience/Tone retention after save; if reproducible in manual use, investigate setSp/setTeam interplay in TeamPage.js saveSoulPrint.",
+    "Consider also calling setSp(data.soulprint) inside saveSoulPrint so UI re-syncs with server truth."
+  ],
+  "critical_code_review_comments": [
+    "Datetime handling: MongoDB datetimes are naive by default with motor. Apply the same tz-normalization pattern used in the fix elsewhere if any future endpoint compares datetimes (currently only /invites/accept does).",
+    "Duplicate data-testid on same page reduces test reliability (AgentBadge).",
+    "server.py is ~690 lines — still manageable but starting to warrant a split (auth, orgs, teams, conversations) for maintainability.",
+    "detect_mentions uses case-insensitive regex but relies on agent ids & names not colliding with English words — fine for current catalogue."
+  ],
+  "updated_files": [
+    "/app/backend/server.py (fixed invite-accept tz comparison)",
+    "/app/backend/tests/test_soulprint.py (new)"
+  ],
+  "success_rate": {"backend": "100% (15/15 pytest after fix)", "frontend": "~90% (full happy path works; 2 UI quality issues)"},
+  "test_credentials": "No pre-seeded admin. Tests register new unique users per run (email test_<hex>@test.dev / password123).",
+  "seed_data_creation": "None — every test spins up its own users/orgs/teams with TEST_ prefix.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Backend test file at /app/backend/tests/test_soulprint.py covers auth, orgs, invites (including the now-fixed tz bug), teams/soulprint, agents catalogue, direct + group (@mention + auto_respond) conversations with real LLM calls, and access control. Run: `REACT_APP_BACKEND_URL=<url> pytest /app/backend/tests/test_soulprint.py -v`. LLM calls take ~1s each so full suite runs in ~15s. For frontend, when picking an agent inside the New Conversation dialog, scope the Playwright selector to the dialog (`page.locator('[data-testid=new-conv-dialog]').locator('[data-testid=agent-badge-strategist]')`) to avoid the duplicate-testid trap.",
+  "rca_of_the_issue": "Invite accept 500: motor returns BSON datetimes as naive UTC; server.py compared with tz-aware datetime.now(timezone.utc) → TypeError propagated as 500. Mitigation applied: coerce naive expires_at to UTC-aware before comparison."
+}

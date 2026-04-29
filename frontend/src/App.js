@@ -1,43 +1,54 @@
 import "./App.css";
 import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
-import LandingPage from "./pages/LandingPage";
-import Dashboard from "./pages/Dashboard";
 import { AuthProvider, useAuth } from "./context/AuthContext";
+import { Toaster } from "./components/ui/sonner";
 
-// Protected route: redirects to / if not authenticated
-const ProtectedRoute = ({ children }) => {
+import LandingPage from "./pages/LandingPage";
+import AuthPage from "./pages/AuthPage";
+import AppHome from "./pages/AppHome";
+import OrgPage from "./pages/OrgPage";
+import TeamPage from "./pages/TeamPage";
+import ConversationPage from "./pages/ConversationPage";
+import AcceptInvitePage from "./pages/AcceptInvitePage";
+
+const Loader = () => (
+  <div className="flex items-center justify-center h-screen">
+    <div className="flex flex-col items-center gap-3">
+      <div className="w-8 h-8 border-2 border-white/10 border-t-white/70 rounded-full animate-spin" />
+      <span className="text-xs tracking-widest uppercase sp-subtle">Loading</span>
+    </div>
+  </div>
+);
+
+const Protected = ({ children }) => {
   const { user, loading } = useAuth();
-  if (loading) {
-    return (
-      <div className="flex items-center justify-center h-screen bg-white">
-        <div className="flex flex-col items-center gap-3">
-          <div className="w-8 h-8 border-2 border-gray-200 border-t-gray-900 rounded-full animate-spin" />
-          <span className="text-sm text-gray-400">Loading...</span>
-        </div>
-      </div>
-    );
-  }
-  return user ? children : <Navigate to="/" replace />;
+  if (loading) return <Loader />;
+  return user ? children : <Navigate to="/auth" replace />;
 };
 
-// Public route: show page while loading, redirect to /dashboard if already authenticated
-const PublicRoute = ({ children }) => {
+const PublicOnly = ({ children }) => {
   const { user, loading } = useAuth();
-  if (loading) return children; // show landing page while auth is checked
-  return user ? <Navigate to="/dashboard" replace /> : children;
+  if (loading) return children;
+  return user ? <Navigate to="/app" replace /> : children;
 };
 
 function App() {
   return (
-    <div className="App">
+    <div className="App sp-grain min-h-screen">
       <AuthProvider>
         <BrowserRouter>
           <Routes>
-            <Route path="/" element={<PublicRoute><LandingPage /></PublicRoute>} />
-            <Route path="/dashboard" element={<ProtectedRoute><Dashboard /></ProtectedRoute>} />
+            <Route path="/" element={<PublicOnly><LandingPage /></PublicOnly>} />
+            <Route path="/auth" element={<PublicOnly><AuthPage /></PublicOnly>} />
+            <Route path="/invite/:code" element={<Protected><AcceptInvitePage /></Protected>} />
+            <Route path="/app" element={<Protected><AppHome /></Protected>} />
+            <Route path="/app/org/:orgId" element={<Protected><OrgPage /></Protected>} />
+            <Route path="/app/team/:teamId" element={<Protected><TeamPage /></Protected>} />
+            <Route path="/app/team/:teamId/c/:convId" element={<Protected><ConversationPage /></Protected>} />
             <Route path="*" element={<Navigate to="/" replace />} />
           </Routes>
         </BrowserRouter>
+        <Toaster theme="dark" />
       </AuthProvider>
     </div>
   );
