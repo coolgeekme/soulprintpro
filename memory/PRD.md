@@ -52,16 +52,20 @@ pattern. Users must be able to:
 ## Implemented (Apr 29, 2026)
 - ✅ Full schema rewrite — orgs, teams, members, invites, conversations, messages
 - ✅ JWT cookie auth with secure helpers
-- ✅ 5 agency agents with distinct tones + accent colors
-- ✅ SoulPrint onboarding injected into every agent system prompt
-- ✅ Direct chats (always respond) and group chats (`@mention` by id/name, or `auto_respond` ON)
+- ✅ **169 specialised agents** across **14 divisions**, seeded from
+  [msitarzewski/agency-agents](https://github.com/msitarzewski/agency-agents)
+  via `/app/backend/build_agents_catalogue.py` → `agents_catalogue.json`
+- ✅ SoulPrint onboarding injected into every agent system prompt (on top of the agent's own personality)
+- ✅ Direct chats (always respond) and group chats with `@mention` support for
+  **id, short-slug, or slugified display name**, plus `auto_respond` toggle
 - ✅ Invite system: code + shareable link (`/invite/:code`) + mailto helper
 - ✅ Access control at org + team + conversation membership level
 - ✅ Dark "liquid glass" UI (aurora halo, Instrument Serif, glass cards, typing indicator)
-- ✅ Test suite at `/app/backend/tests/test_soulprint.py` — 15/15 passing
+- ✅ **Searchable crew browser** + **division filters** on Team page and in New Conversation dialog
+- ✅ Selected-agent chip strip + @mention picker with emoji, division, and short-slug insertion
+- ✅ Test suite: 34/34 pytest passing
+  (`/app/backend/tests/test_soulprint.py` + `/app/backend/tests/test_agents_catalogue.py`)
 - ✅ Fixed CRITICAL tz bug in `/api/invites/accept` (naive vs aware datetime)
-- ✅ Fixed duplicate `data-testid` on AgentBadge (crew vs dialog)
-- ✅ Re-sync SoulPrint state after save
 
 ## Roadmap
 - **P1** Invite revocation + pending invite list in UI
