@@ -154,10 +154,14 @@ class TestTeams:
         r = owner_ctx["sess"].get(f"{API}/teams/{owner_ctx['team']['id']}/agents")
         assert r.status_code == 200
         items = r.json()
+        # Catalogue is now 169 agents — just sanity-check shape.
+        assert len(items) == 169
         ids = {a["id"] for a in items}
-        assert ids == {"strategist", "researcher", "copywriter", "engineer", "ops"}
-        for a in items:
-            assert {"id", "name", "role", "accent"}.issubset(a.keys())
+        for expected in ("engineering-frontend-developer", "design-brand-guardian",
+                         "marketing-content-creator", "engineering-senior-developer"):
+            assert expected in ids
+        for a in items[:5]:
+            assert {"id", "name", "accent"}.issubset(a.keys())
 
     def test_team_access_forbidden(self, owner_ctx):
         tid = owner_ctx["team"]["id"]
@@ -171,7 +175,7 @@ class TestConversations:
     def test_direct_conversation_single_reply(self, owner_ctx):
         s, tid = owner_ctx["sess"], owner_ctx["team"]["id"]
         r = s.post(f"{API}/teams/{tid}/conversations",
-                   json={"type": "direct", "agent_ids": ["strategist"], "title": "TEST_direct"})
+                   json={"type": "direct", "agent_ids": ["engineering-senior-developer"], "title": "TEST_direct"})
         assert r.status_code == 200, r.text
         cid = r.json()["id"]
         r = s.post(f"{API}/conversations/{cid}/messages",
@@ -180,7 +184,7 @@ class TestConversations:
         data = r.json()
         assert data["user_message"]["text"].startswith("Give me")
         assert len(data["agent_messages"]) == 1
-        assert data["agent_messages"][0]["agent_id"] == "strategist"
+        assert data["agent_messages"][0]["agent_id"] == "engineering-senior-developer"
         assert len(data["agent_messages"][0]["text"]) > 0
         # cleanup
         s.delete(f"{API}/conversations/{cid}")
@@ -188,7 +192,7 @@ class TestConversations:
     def test_direct_validation_errors(self, owner_ctx):
         s, tid = owner_ctx["sess"], owner_ctx["team"]["id"]
         r = s.post(f"{API}/teams/{tid}/conversations",
-                   json={"type": "direct", "agent_ids": ["strategist", "ops"]})
+                   json={"type": "direct", "agent_ids": ["engineering-senior-developer", "design-brand-guardian"]})
         assert r.status_code == 400
         r = s.post(f"{API}/teams/{tid}/conversations",
                    json={"type": "direct", "agent_ids": ["unknown_agent"]})
@@ -197,7 +201,7 @@ class TestConversations:
     def test_group_mention_only(self, owner_ctx):
         s, tid = owner_ctx["sess"], owner_ctx["team"]["id"]
         r = s.post(f"{API}/teams/{tid}/conversations",
-                   json={"type": "group", "agent_ids": ["copywriter", "strategist"],
+                   json={"type": "group", "agent_ids": ["marketing-content-creator", "engineering-senior-developer"],
                          "auto_respond": False, "title": "TEST_group_mention"})
         assert r.status_code == 200
         cid = r.json()["id"]
@@ -205,24 +209,24 @@ class TestConversations:
         r = s.post(f"{API}/conversations/{cid}/messages", json={"text": "hello team, plain message"})
         assert r.status_code == 200
         assert r.json()["agent_messages"] == []
-        # @Ember by name → only copywriter
+        # @content-creator (short slug) → only marketing-content-creator
         r = s.post(f"{API}/conversations/{cid}/messages",
-                   json={"text": "@Ember write me a one-liner for our onboarding email"})
+                   json={"text": "@content-creator write me a one-liner for our onboarding email"})
         assert r.status_code == 200
         replies = r.json()["agent_messages"]
-        assert len(replies) == 1 and replies[0]["agent_id"] == "copywriter"
-        # @strategist by id → only strategist
+        assert len(replies) == 1 and replies[0]["agent_id"] == "marketing-content-creator"
+        # @engineering-senior-developer by full id → only that agent
         r = s.post(f"{API}/conversations/{cid}/messages",
-                   json={"text": "@strategist what is our edge?"})
+                   json={"text": "@engineering-senior-developer what is our edge?"})
         assert r.status_code == 200
         replies = r.json()["agent_messages"]
-        assert len(replies) == 1 and replies[0]["agent_id"] == "strategist"
+        assert len(replies) == 1 and replies[0]["agent_id"] == "engineering-senior-developer"
         s.delete(f"{API}/conversations/{cid}")
 
     def test_group_auto_respond(self, owner_ctx):
         s, tid = owner_ctx["sess"], owner_ctx["team"]["id"]
         r = s.post(f"{API}/teams/{tid}/conversations",
-                   json={"type": "group", "agent_ids": ["copywriter", "ops"],
+                   json={"type": "group", "agent_ids": ["marketing-content-creator", "design-ui-designer"],
                          "auto_respond": True, "title": "TEST_group_auto"})
         assert r.status_code == 200
         cid = r.json()["id"]
@@ -231,13 +235,13 @@ class TestConversations:
         assert r.status_code == 200
         replies = r.json()["agent_messages"]
         agent_ids = {m["agent_id"] for m in replies}
-        assert agent_ids == {"copywriter", "ops"}, f"got {agent_ids}"
+        assert agent_ids == {"marketing-content-creator", "design-ui-designer"}, f"got {agent_ids}"
         s.delete(f"{API}/conversations/{cid}")
 
     def test_conversation_access_and_delete(self, owner_ctx):
         s, tid = owner_ctx["sess"], owner_ctx["team"]["id"]
         r = s.post(f"{API}/teams/{tid}/conversations",
-                   json={"type": "direct", "agent_ids": ["ops"]})
+                   json={"type": "direct", "agent_ids": ["engineering-senior-developer"]})
         cid = r.json()["id"]
         # stranger cannot read messages
         stranger = _new_session(); _register(stranger)
@@ -265,7 +269,7 @@ class TestConversations:
         # SoulPrint is already set in TestTeams.test_soulprint_persists (same module-scope fixture)
         s, tid = owner_ctx["sess"], owner_ctx["team"]["id"]
         r = s.post(f"{API}/teams/{tid}/conversations",
-                   json={"type": "direct", "agent_ids": ["copywriter"]})
+                   json={"type": "direct", "agent_ids": ["marketing-content-creator"]})
         cid = r.json()["id"]
         r = s.post(f"{API}/conversations/{cid}/messages",
                    json={"text": "Introduce yourself in one sentence."})

@@ -3,7 +3,7 @@ import { useParams, Link, useNavigate } from "react-router-dom";
 import api from "../lib/api";
 import TopBar from "../components/TopBar";
 import { toast } from "sonner";
-import { Sparkles, MessageCircle, Users, Plus, Radio } from "lucide-react";
+import { Sparkles, MessageCircle, Users, Plus, Radio, Search, X } from "lucide-react";
 
 const AgentBadge = ({ a, onClick, selected, testPrefix = "agent-badge" }) => (
   <button
@@ -12,13 +12,55 @@ const AgentBadge = ({ a, onClick, selected, testPrefix = "agent-badge" }) => (
     className={`sp-glass rounded-xl p-4 text-left transition hover:border-white/25 ${selected ? "border-white/40 sp-focus" : ""}`}
     data-testid={`${testPrefix}-${a.id}`}
   >
-    <div className="flex items-start justify-between">
-      <div className="w-8 h-8 rounded-lg mb-2" style={{ background: `linear-gradient(160deg, ${a.accent}, rgba(255,255,255,0.06))` }} />
-      <span className="sp-chip">{a.role}</span>
+    <div className="flex items-start justify-between gap-2">
+      <div
+        className="w-9 h-9 rounded-lg mb-2 flex items-center justify-center text-lg shrink-0"
+        style={{ background: `linear-gradient(160deg, ${a.accent}, rgba(255,255,255,0.06))` }}
+      >
+        <span>{a.emoji || ""}</span>
+      </div>
+      <span className="sp-chip text-[10px]">{a.division}</span>
     </div>
-    <div className="text-white text-sm font-medium">{a.name}</div>
+    <div className="text-white text-sm font-medium line-clamp-1">{a.name}</div>
     <div className="text-[11px] sp-subtle mt-1 line-clamp-2">{a.tagline}</div>
   </button>
+);
+
+const AgentFilter = ({ q, setQ, divisions, division, setDivision, total, testPrefix = "" }) => (
+  <div className="flex flex-col gap-3 mb-3">
+    <div className="flex items-center gap-2">
+      <div className="flex-1 flex items-center gap-2 sp-glass rounded-xl px-3 py-2">
+        <Search className="w-4 h-4 text-white/60" />
+        <input
+          value={q}
+          onChange={(e) => setQ(e.target.value)}
+          placeholder={`Search ${total} agents by name, role, or division…`}
+          className="flex-1 bg-transparent text-sm text-white placeholder:text-white/30 focus:outline-none"
+          data-testid={`${testPrefix}agent-search`}
+        />
+        {q && (
+          <button onClick={() => setQ("")} className="text-white/40 hover:text-white" data-testid={`${testPrefix}agent-search-clear`}>
+            <X className="w-3.5 h-3.5" />
+          </button>
+        )}
+      </div>
+    </div>
+    <div className="flex flex-wrap gap-2">
+      <button
+        onClick={() => setDivision("")}
+        className={`sp-chip ${division === "" ? "!bg-white/15 !text-white" : ""}`}
+        data-testid={`${testPrefix}div-all`}
+      >All ({total})</button>
+      {divisions.map((d) => (
+        <button
+          key={d.key}
+          onClick={() => setDivision(d.key === division ? "" : d.key)}
+          className={`sp-chip ${division === d.key ? "!bg-white/15 !text-white" : ""}`}
+          data-testid={`${testPrefix}div-${d.key}`}
+        >{d.label} · {d.count}</button>
+      ))}
+    </div>
+  </div>
 );
 
 export default function TeamPage() {
@@ -26,35 +68,44 @@ export default function TeamPage() {
   const nav = useNavigate();
   const [team, setTeam] = useState(null);
   const [agents, setAgents] = useState([]);
+  const [divisions, setDivisions] = useState([]);
   const [conversations, setConversations] = useState([]);
   const [members, setMembers] = useState([]);
   const [loading, setLoading] = useState(true);
   const [savingSP, setSavingSP] = useState(false);
   const [sp, setSp] = useState({ mission: "", tone: "", audience: "", values: "", north_star: "" });
 
+  // Crew browser filters
+  const [crewQ, setCrewQ] = useState("");
+  const [crewDiv, setCrewDiv] = useState("");
+
   // new conversation state
   const [showNew, setShowNew] = useState(false);
-  const [convType, setConvType] = useState("direct"); // direct | group
+  const [convType, setConvType] = useState("direct");
   const [convTitle, setConvTitle] = useState("");
   const [selAgents, setSelAgents] = useState([]);
   const [selMembers, setSelMembers] = useState([]);
   const [autoRespond, setAutoRespond] = useState(false);
   const [creatingConv, setCreatingConv] = useState(false);
+  const [dlgQ, setDlgQ] = useState("");
+  const [dlgDiv, setDlgDiv] = useState("");
 
   const load = async () => {
     setLoading(true);
     try {
       const teamRes = await api.get(`/teams/${teamId}`);
-      const [agentsRes, convsRes, membersRes] = await Promise.all([
+      const [agentsRes, convsRes, membersRes, divsRes] = await Promise.all([
         api.get(`/teams/${teamId}/agents`),
         api.get(`/teams/${teamId}/conversations`),
         api.get(`/orgs/${teamRes.data.org_id}/members`),
+        api.get(`/agents/divisions`),
       ]);
       setTeam(teamRes.data);
       setSp(teamRes.data.soulprint || sp);
       setAgents(agentsRes.data);
       setConversations(convsRes.data);
       setMembers(membersRes.data);
+      setDivisions(divsRes.data);
     } catch (err) {
       toast.error("Failed to load team");
       nav("/app");
@@ -70,9 +121,8 @@ export default function TeamPage() {
       setTeam(data);
       setSp(data.soulprint || sp);
       toast.success("SoulPrint saved");
-    } catch (err) {
-      toast.error("Failed to save");
-    } finally { setSavingSP(false); }
+    } catch (err) { toast.error("Failed to save"); }
+    finally { setSavingSP(false); }
   };
 
   const toggleAgent = (id) => {
@@ -87,6 +137,7 @@ export default function TeamPage() {
   const resetDialog = () => {
     setShowNew(false); setConvType("direct"); setConvTitle("");
     setSelAgents([]); setSelMembers([]); setAutoRespond(false);
+    setDlgQ(""); setDlgDiv("");
   };
 
   const createConv = async () => {
@@ -103,12 +154,34 @@ export default function TeamPage() {
       });
       toast.success("Conversation created");
       nav(`/app/team/${teamId}/c/${data.id}`);
-    } catch (err) {
-      toast.error(err?.response?.data?.detail || "Failed");
-    } finally { setCreatingConv(false); }
+    } catch (err) { toast.error(err?.response?.data?.detail || "Failed"); }
+    finally { setCreatingConv(false); }
   };
 
   const agentMap = useMemo(() => Object.fromEntries(agents.map(a => [a.id, a])), [agents]);
+
+  const filterAgents = (list, q, div) => {
+    let arr = list;
+    if (div) arr = arr.filter(a => a.division_key === div);
+    if (q && q.trim()) {
+      const n = q.trim().toLowerCase();
+      arr = arr.filter(a =>
+        a.id.includes(n) ||
+        (a.name || "").toLowerCase().includes(n) ||
+        (a.description || "").toLowerCase().includes(n) ||
+        (a.division || "").toLowerCase().includes(n)
+      );
+    }
+    return arr;
+  };
+
+  const crew = useMemo(() => filterAgents(agents, crewQ, crewDiv), [agents, crewQ, crewDiv]);
+  const dlgAgents = useMemo(() => filterAgents(agents, dlgQ, dlgDiv), [agents, dlgQ, dlgDiv]);
+
+  const CREW_LIMIT = 36;
+  const crewShown = crew.slice(0, CREW_LIMIT);
+  const DLG_LIMIT = 60;
+  const dlgShown = dlgAgents.slice(0, DLG_LIMIT);
 
   if (loading || !team) return <div className="min-h-screen"><TopBar>Loading…</TopBar></div>;
 
@@ -136,7 +209,6 @@ export default function TeamPage() {
         </div>
 
         <div className="grid lg:grid-cols-[1.4fr_1fr] gap-6">
-          {/* Left: Conversations & Agents */}
           <div className="flex flex-col gap-6">
             <section>
               <div className="flex items-center justify-between mb-3">
@@ -174,14 +246,33 @@ export default function TeamPage() {
             </section>
 
             <section>
-              <h2 className="text-sm uppercase tracking-widest sp-subtle flex items-center gap-2 mb-3"><Sparkles className="w-4 h-4" /> Your crew</h2>
+              <h2 className="text-sm uppercase tracking-widest sp-subtle flex items-center gap-2 mb-3">
+                <Sparkles className="w-4 h-4" /> Your crew
+                <span className="ml-auto text-white/60">{crew.length} of {agents.length}</span>
+              </h2>
+              <AgentFilter
+                q={crewQ} setQ={setCrewQ}
+                divisions={divisions}
+                division={crewDiv} setDivision={setCrewDiv}
+                total={agents.length}
+                testPrefix="crew-"
+              />
               <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-3">
-                {agents.map(a => <AgentBadge key={a.id} a={a} testPrefix="agent-crew" />)}
+                {crewShown.map(a => <AgentBadge key={a.id} a={a} testPrefix="agent-crew" />)}
               </div>
+              {crew.length > CREW_LIMIT && (
+                <div className="text-xs sp-subtle mt-3 text-center">
+                  Showing first {CREW_LIMIT} of {crew.length} — refine your search.
+                </div>
+              )}
+              {crew.length === 0 && (
+                <div className="sp-glass rounded-xl p-6 text-center text-sm sp-subtle">
+                  No agents match that filter.
+                </div>
+              )}
             </section>
           </div>
 
-          {/* Right: SoulPrint editor */}
           <aside className="sp-glass-strong rounded-2xl p-6 h-fit sticky top-6">
             <div className="flex items-center gap-2 mb-1">
               <Radio className="w-4 h-4 text-white/80" />
@@ -221,16 +312,15 @@ export default function TeamPage() {
         </div>
       </main>
 
-      {/* New conversation modal */}
       {showNew && (
         <div className="fixed inset-0 z-40 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm" onClick={resetDialog}>
-          <div className="sp-glass-strong rounded-2xl w-full max-w-2xl p-6 sp-fade-up" onClick={(e) => e.stopPropagation()} data-testid="new-conv-dialog">
+          <div className="sp-glass-strong rounded-2xl w-full max-w-3xl p-6 sp-fade-up max-h-[90vh] overflow-hidden flex flex-col" onClick={(e) => e.stopPropagation()} data-testid="new-conv-dialog">
             <h3 className="sp-display text-2xl mb-1">New conversation</h3>
-            <p className="text-xs sp-subtle mb-4">Chat 1:1 with an agent, or spin up a group with teammates.</p>
+            <p className="text-xs sp-subtle mb-4">Chat 1:1 with an agent, or spin up a group with teammates. You have {agents.length} specialists to pick from.</p>
 
             <div className="flex items-center gap-2 mb-4">
               <button
-                onClick={() => { setConvType("direct"); setSelAgents([]); }}
+                onClick={() => { setConvType("direct"); setSelAgents(selAgents.slice(0, 1)); }}
                 className={`sp-btn text-xs ${convType === "direct" ? "sp-btn-primary" : "sp-btn-ghost"}`}
                 data-testid="conv-type-direct"
               >Direct</button>
@@ -250,17 +340,50 @@ export default function TeamPage() {
               className="w-full mt-1 mb-4 bg-white/[0.03] border border-white/10 rounded-xl px-4 py-2.5 text-sm text-white placeholder:text-white/30 focus:border-white/30"
             />
 
-            <label className="text-[11px] sp-subtle uppercase tracking-widest">{convType === "direct" ? "Pick one agent" : "Pick agents"}</label>
-            <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-2 mt-2 mb-4">
-              {agents.map(a => (
+            {selAgents.length > 0 && (
+              <div className="flex flex-wrap gap-2 mb-3">
+                {selAgents.map(id => {
+                  const a = agentMap[id];
+                  if (!a) return null;
+                  return (
+                    <span key={id} className="sp-chip !bg-white/10 !text-white" data-testid={`selected-agent-${id}`}>
+                      <span className="sp-dot" style={{ background: a.accent }} /> {a.name}
+                      <button onClick={() => toggleAgent(id)} className="ml-1 text-white/60 hover:text-white"><X className="w-3 h-3" /></button>
+                    </span>
+                  );
+                })}
+              </div>
+            )}
+
+            <label className="text-[11px] sp-subtle uppercase tracking-widest mb-2">
+              {convType === "direct" ? "Pick one agent" : `Pick agents (${selAgents.length} selected)`}
+            </label>
+            <AgentFilter
+              q={dlgQ} setQ={setDlgQ}
+              divisions={divisions}
+              division={dlgDiv} setDivision={setDlgDiv}
+              total={agents.length}
+              testPrefix="dlg-"
+            />
+
+            <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-2 overflow-y-auto pr-1 flex-1 min-h-0 pb-1">
+              {dlgShown.map(a => (
                 <AgentBadge key={a.id} a={a} onClick={() => toggleAgent(a.id)} selected={selAgents.includes(a.id)} />
               ))}
+              {dlgShown.length === 0 && (
+                <div className="col-span-full sp-glass rounded-xl p-4 text-center text-xs sp-subtle">No agents match.</div>
+              )}
             </div>
+            {dlgAgents.length > DLG_LIMIT && (
+              <div className="text-[11px] sp-subtle text-center mt-2">
+                Showing first {DLG_LIMIT} of {dlgAgents.length} — refine your search to see more.
+              </div>
+            )}
 
             {convType === "group" && (
-              <>
+              <div className="mt-4 border-t border-white/5 pt-4">
                 <label className="text-[11px] sp-subtle uppercase tracking-widest">Invite teammates</label>
-                <div className="flex flex-wrap gap-2 mt-2 mb-4 max-h-40 overflow-y-auto">
+                <div className="flex flex-wrap gap-2 mt-2 mb-3 max-h-28 overflow-y-auto">
                   {members.map(m => (
                     <button
                       key={m.user_id}
@@ -274,7 +397,7 @@ export default function TeamPage() {
                   {members.length <= 1 && <span className="text-xs sp-subtle">Only you are in this org. Invite teammates from the org page.</span>}
                 </div>
 
-                <label className="flex items-center gap-3 mb-4 cursor-pointer">
+                <label className="flex items-center gap-3 cursor-pointer">
                   <input
                     type="checkbox"
                     checked={autoRespond}
@@ -283,12 +406,12 @@ export default function TeamPage() {
                     data-testid="auto-respond-toggle"
                   />
                   <span className="text-sm text-white">Agents auto-respond on every message</span>
-                  <span className="text-xs sp-subtle">(otherwise @mention the agent by name)</span>
+                  <span className="text-xs sp-subtle">(otherwise @mention the agent)</span>
                 </label>
-              </>
+              </div>
             )}
 
-            <div className="flex items-center justify-end gap-2 mt-2">
+            <div className="flex items-center justify-end gap-2 mt-4 border-t border-white/5 pt-4">
               <button onClick={resetDialog} className="sp-btn sp-btn-ghost text-sm" data-testid="cancel-new-conv">Cancel</button>
               <button
                 onClick={createConv}
@@ -296,7 +419,7 @@ export default function TeamPage() {
                 className="sp-btn sp-btn-primary text-sm disabled:opacity-50"
                 data-testid="submit-new-conv"
               >
-                {creatingConv ? "Creating…" : "Start conversation"}
+                {creatingConv ? "Creating…" : `Start ${convType} conversation`}
               </button>
             </div>
           </div>

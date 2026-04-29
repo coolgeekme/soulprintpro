@@ -86,8 +86,8 @@ export default function LandingPage() {
             body="Define your team's mission, tone, audience, and values once — every agent on the team is briefed automatically." />
           <FeatureCard icon={Users} title="Group + direct conversations"
             body="Work 1:1 with an agent or pull multiple humans and agents into a single thread. @mention to steer, or let the room respond." />
-          <FeatureCard icon={Radio} title="Specialised roles"
-            body="Strategy, research, copy, engineering, ops — each agent stays in its lane with a distinct voice and strengths." />
+          <FeatureCard icon={Radio} title="169 specialised agents"
+            body="Engineers, strategists, copywriters, researchers, ops, finance, legal, product, XR, game dev — the full agency roster, tuned to your team." />
           <FeatureCard icon={ShieldCheck} title="Org-first architecture"
             body="Invite your company by link, spin up teams per product, brand, or squad. Keep contexts clean and conversations private." />
           <FeatureCard icon={Sparkles} title="Tuned, not templated"
@@ -97,26 +97,38 @@ export default function LandingPage() {
         </div>
       </section>
 
-      {/* Agents section */}
       <section id="agents" className="relative z-10 max-w-6xl mx-auto px-6 md:px-10 py-24">
         <div className="flex flex-col items-start gap-4 mb-12">
           <Pill>The crew</Pill>
           <h2 className="sp-display text-4xl sm:text-5xl max-w-3xl">
-            Five roles. One voice. <em className="italic">Yours.</em>
+            169 specialists. 14 divisions. <em className="italic">One voice — yours.</em>
           </h2>
+          <p className="sp-subtle max-w-2xl">
+            Frontend wizards, brand guardians, deal coaches, privacy architects, narrative designers —
+            the full agency of <a className="underline hover:text-white" href="https://github.com/msitarzewski/agency-agents" target="_blank" rel="noreferrer">msitarzewski/agency-agents</a>, tuned by your team's SoulPrint.
+          </p>
         </div>
-        <div className="grid sm:grid-cols-2 lg:grid-cols-5 gap-3">
+        <div className="grid sm:grid-cols-2 lg:grid-cols-4 gap-3">
           {[
-            { name: "Nova", role: "Strategist", c: "#7c5cff" },
-            { name: "Atlas", role: "Researcher", c: "#22d3ee" },
-            { name: "Ember", role: "Copywriter", c: "#f97066" },
-            { name: "Vector", role: "Engineer", c: "#34d399" },
-            { name: "Sable", role: "Ops Manager", c: "#f5b04a" },
-          ].map((a) => (
-            <div key={a.name} className="sp-glass rounded-2xl p-5">
-              <div className="w-9 h-9 rounded-lg mb-4" style={{ background: `linear-gradient(160deg, ${a.c}, rgba(255,255,255,0.06))` }} />
-              <div className="text-white font-medium">{a.name}</div>
-              <div className="text-xs sp-subtle mt-1 uppercase tracking-widest">{a.role}</div>
+            { name: "Engineering", count: 29, c: "#22d3ee" },
+            { name: "Marketing", count: 30, c: "#f472b6" },
+            { name: "Specialized", count: 41, c: "#a78bfa" },
+            { name: "Sales", count: 8, c: "#34d399" },
+            { name: "Design", count: 8, c: "#f97066" },
+            { name: "Product", count: 5, c: "#38bdf8" },
+            { name: "Finance", count: 5, c: "#facc15" },
+            { name: "Testing", count: 8, c: "#fb923c" },
+            { name: "Paid Media", count: 7, c: "#c084fc" },
+            { name: "Project Mgmt", count: 6, c: "#60a5fa" },
+            { name: "Support", count: 6, c: "#2dd4bf" },
+            { name: "Spatial Computing", count: 6, c: "#e879f9" },
+            { name: "Academic", count: 5, c: "#a3e635" },
+            { name: "Game Development", count: 5, c: "#fb7185" },
+          ].map((d) => (
+            <div key={d.name} className="sp-glass rounded-2xl p-5">
+              <div className="w-9 h-9 rounded-lg mb-4" style={{ background: `linear-gradient(160deg, ${d.c}, rgba(255,255,255,0.06))` }} />
+              <div className="text-white font-medium">{d.name}</div>
+              <div className="text-xs sp-subtle mt-1 uppercase tracking-widest">{d.count} agents</div>
             </div>
           ))}
         </div>

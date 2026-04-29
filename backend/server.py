@@ -22,7 +22,7 @@ from pydantic import BaseModel, Field
 from typing import List, Optional, Literal
 from datetime import datetime, timezone, timedelta
 from bson import ObjectId
-import os, logging, uuid, secrets, re, bcrypt, jwt
+import os, logging, uuid, secrets, re, json, bcrypt, jwt
 
 from emergentintegrations.llm.chat import LlmChat, UserMessage
 
@@ -82,68 +82,42 @@ async def get_current_user(request: Request) -> dict:
         raise HTTPException(401, "User not found")
     return {"id": str(user["_id"]), "email": user["email"], "name": user["name"]}
 
-# ── Agent catalogue (5 agency roles) ─────────────────────────────────────────
-AGENTS = {
-    "strategist": {
-        "name": "Nova",
-        "role": "Strategist",
-        "tagline": "Positioning, GTM, and big-picture strategy.",
-        "accent": "#7c5cff",
-        "system": (
-            "You are Nova, a senior strategist. You help with market positioning, GTM, "
-            "competitive analysis, and strategic decisions. Lead with the sharpest insight, "
-            "then give 1-2 concrete moves. Keep responses tight — 3-5 sentences unless a "
-            "short list genuinely helps."
-        ),
-    },
-    "researcher": {
-        "name": "Atlas",
-        "role": "Researcher",
-        "tagline": "Deep research, synthesis, and data interpretation.",
-        "accent": "#22d3ee",
-        "system": (
-            "You are Atlas, a rigorous research analyst. You synthesize sources, stress-test "
-            "assumptions, and surface what's actually knowable. Be precise, cite reasoning "
-            "over authority, and flag uncertainty when it matters. 3-5 sentences."
-        ),
-    },
-    "copywriter": {
-        "name": "Ember",
-        "role": "Copywriter",
-        "tagline": "Brand voice, campaigns, and sharp copy.",
-        "accent": "#f97066",
-        "system": (
-            "You are Ember, a sharp copywriter who owns brand voice. When asked for copy, "
-            "deliver 2-3 short, distinct options — no filler, no apologies. Match the team's "
-            "tone exactly. When advising, be direct and specific."
-        ),
-    },
-    "engineer": {
-        "name": "Vector",
-        "role": "Engineer",
-        "tagline": "Architecture, code review, and shipping decisions.",
-        "accent": "#34d399",
-        "system": (
-            "You are Vector, a principal engineer and tech lead. You weigh in on architecture, "
-            "tradeoffs, code review, and what's worth shipping. Be concrete; reference actual "
-            "patterns. Short code snippets only when they clearly earn it. 3-5 sentences."
-        ),
-    },
-    "ops": {
-        "name": "Sable",
-        "role": "Ops Manager",
-        "tagline": "Process, delivery, and team flow.",
-        "accent": "#f5b04a",
-        "system": (
-            "You are Sable, an operations manager. You untangle delivery risk, clarify owners, "
-            "and turn fuzzy threads into next actions. Always end with the single clearest "
-            "next step. 2-4 sentences."
-        ),
-    },
-}
+# ── Agent catalogue — loaded from agents_catalogue.json on startup ──────────
+AGENTS_CATALOGUE_PATH = ROOT_DIR / "agents_catalogue.json"
+
+def _load_agents() -> dict:
+    try:
+        data = json.loads(AGENTS_CATALOGUE_PATH.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        logger.warning("agents_catalogue.json not found — empty roster.")
+        return {}
+    out: dict = {}
+    for a in data:
+        aid = a["id"]
+        # Expose `role` alongside `name` so the UI can render both consistently.
+        out[aid] = {
+            "id": aid,
+            "name": a.get("name") or aid,
+            "role": a.get("name") or aid,  # legacy alias used by ConversationPage "· role"
+            "division": a.get("division", "Specialized"),
+            "division_key": a.get("division_key", "specialized"),
+            "description": a.get("description", ""),
+            "tagline": a.get("tagline") or a.get("description", ""),
+            "emoji": a.get("emoji", ""),
+            "accent": a.get("accent", "#a78bfa"),
+            "system": a.get("system", ""),
+        }
+    return out
+
+AGENTS = _load_agents()
+logger.info("Loaded %d agents from catalogue.", len(AGENTS))
 
 def is_agent(aid: str) -> bool:
     return aid in AGENTS
+
+def public_agent(a: dict) -> dict:
+    # Strip the long system prompt before sending over the wire.
+    return {k: v for k, v in a.items() if k != "system"}
 
 # ── Models (API contracts) ───────────────────────────────────────────────────
 class RegisterBody(BaseModel):
@@ -434,12 +408,45 @@ async def update_soulprint(team_id: str, body: SoulPrintBody, u: dict = Depends(
     return serialize_team(team)
 
 @team_r.get("/teams/{team_id}/agents")
-async def team_agents(team_id: str, u: dict = Depends(get_current_user)):
+async def team_agents(
+    team_id: str,
+    q: Optional[str] = None,
+    division: Optional[str] = None,
+    limit: int = 500,
+    u: dict = Depends(get_current_user),
+):
     await require_team_member(team_id, u["id"])
-    return [
-        {"id": aid, **{k: v for k, v in meta.items() if k != "system"}}
-        for aid, meta in AGENTS.items()
+    agents = [public_agent(a) for a in AGENTS.values()]
+    if division:
+        d = division.strip().lower()
+        agents = [a for a in agents if a.get("division_key", "").lower() == d
+                  or a.get("division", "").lower() == d]
+    if q:
+        needle = q.strip().lower()
+        if needle:
+            agents = [
+                a for a in agents
+                if needle in a["id"]
+                or needle in a.get("name", "").lower()
+                or needle in a.get("description", "").lower()
+                or needle in a.get("division", "").lower()
+            ]
+    agents.sort(key=lambda a: (a.get("division", ""), a.get("name", "")))
+    return agents[: max(1, min(limit, 1000))]
+
+@team_r.get("/agents/divisions")
+async def list_divisions(u: dict = Depends(get_current_user)):
+    counts: dict = {}
+    labels: dict = {}
+    for a in AGENTS.values():
+        key = a.get("division_key", "specialized")
+        labels[key] = a.get("division", key.title())
+        counts[key] = counts.get(key, 0) + 1
+    out = [
+        {"key": k, "label": labels[k], "count": counts[k]}
+        for k in sorted(counts.keys(), key=lambda x: labels[x])
     ]
+    return out
 
 # ── Conversation + messaging ─────────────────────────────────────────────────
 conv_r = APIRouter(prefix="/api")
@@ -550,13 +557,35 @@ async def get_messages(conv_id: str, u: dict = Depends(get_current_user)):
     return msgs
 
 def detect_mentions(text: str, agent_ids: List[str]) -> List[str]:
-    """Return agent_ids that are @mentioned by id OR by display name."""
+    """Return agent_ids that are @mentioned.
+
+    Matches either:
+      - the full agent id:                    @engineering-frontend-developer
+      - its short slug (id minus division):   @frontend-developer
+      - the display name as a slug:           @frontend-developer  (e.g. "Frontend Developer")
+    Matching is case-insensitive. Order preserved, no duplicates.
+    """
+    def slugify(s: str) -> str:
+        return re.sub(r"[^a-z0-9]+", "-", s.lower()).strip("-")
+
     lower = text.lower()
-    hits = []
+    hits: List[str] = []
+    seen: set = set()
     for aid in agent_ids:
-        name = AGENTS[aid]["name"].lower()
-        if re.search(rf"@{re.escape(aid)}\b", lower) or re.search(rf"@{re.escape(name)}\b", lower):
-            hits.append(aid)
+        if aid in seen:
+            continue
+        a = AGENTS.get(aid) or {}
+        tokens = {aid, slugify(a.get("name", ""))}
+        div_key = a.get("division_key", "")
+        if div_key and aid.startswith(div_key + "-"):
+            tokens.add(aid[len(div_key) + 1 :])
+        for tok in tokens:
+            if not tok:
+                continue
+            if re.search(rf"@{re.escape(tok)}\b", lower):
+                hits.append(aid)
+                seen.add(aid)
+                break
     return hits
 
 async def build_transcript_tail(conv_id: str, limit: int = 12) -> List[dict]:

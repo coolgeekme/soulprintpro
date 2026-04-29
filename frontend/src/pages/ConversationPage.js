@@ -84,9 +84,18 @@ export default function ConversationPage() {
     } finally { setSending(false); }
   };
 
+  const slugForMention = (a) => {
+    if (!a) return "";
+    if (a.division_key && a.id.startsWith(a.division_key + "-")) {
+      return a.id.slice(a.division_key.length + 1);
+    }
+    return a.id;
+  };
+
   const insertMention = (a) => {
+    const slug = slugForMention(a);
     const at = text.endsWith(" ") || text.length === 0 ? "" : " ";
-    setText((prev) => `${prev}${at}@${a.name} `);
+    setText((prev) => `${prev}${at}@${slug} `);
     setShowMentions(false);
     inputRef.current?.focus();
   };
@@ -134,7 +143,8 @@ export default function ConversationPage() {
           {convAgents.map((a) => (
             <span key={a.id} className="sp-chip !bg-white/5">
               <span className="sp-dot" style={{ background: a.accent }} />
-              {a.name} · {a.role}
+              {a.emoji ? `${a.emoji} ` : ""}{a.name}
+              <span className="opacity-60">· {a.division}</span>
             </span>
           ))}
           {isGroup && (
@@ -175,7 +185,7 @@ export default function ConversationPage() {
                     <span className="text-xs font-medium text-white/90">
                       {isAgent ? (a?.name || "Agent") : (mine ? "You" : m.sender_name)}
                     </span>
-                    {isAgent && a && <span className="text-[10px] sp-subtle uppercase tracking-widest">{a.role}</span>}
+                    {isAgent && a && <span className="text-[10px] sp-subtle uppercase tracking-widest">{a.division}</span>}
                     <span className="text-[10px] sp-subtle ml-auto">{formatTime(m.timestamp)}</span>
                   </div>
                   <div className="whitespace-pre-wrap text-sm leading-relaxed">{m.text}</div>
@@ -206,7 +216,8 @@ export default function ConversationPage() {
                   className="sp-chip hover:!bg-white/15 hover:text-white"
                   data-testid={`mention-${a.id}`}
                 >
-                  <span className="sp-dot" style={{ background: a.accent }} /> {a.name}
+                  <span className="sp-dot" style={{ background: a.accent }} />
+                  {a.emoji ? `${a.emoji} ` : ""}{a.name}
                 </button>
               ))}
             </div>

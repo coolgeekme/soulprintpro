@@ -1,0 +1,46 @@
+{
+  "summary": "Tested expanded 169-agent catalogue + mention-by-short-slug. Backend: 34/34 pytest cases pass (19 new in test_agents_catalogue.py + 15 updated in test_soulprint.py). Frontend E2E walked: landing → register → org → team → crew browse + search + division filter → New Conversation dialog (search/filter/group/auto-respond/multi-select) → group conversation page → mention picker → short-slug insert. Every reviewed feature works correctly.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [
+      {
+        "component": "OrgPage / AppHome",
+        "issue": "Org cards and team cards do not expose data-testid='org-card-<id>' or 'team-card-<id>'. Playwright had to fall back to clicking the only visible card by other means. Crew/dialog/conversation testids are present and correct; just the org+team list cards are missing testids.",
+        "selector": "[data-testid^=\"org-card-\"], [data-testid^=\"team-card-\"]",
+        "priority": "LOW"
+      }
+    ],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_agents_catalogue.py",
+    "/app/backend/tests/test_soulprint.py",
+    "/app/test_reports/pytest/pytest_results.xml"
+  ],
+  "action_items": [
+    "(LOW) Add data-testid='org-card-<id>' on OrgPage org cards and 'team-card-<id>' on AppHome team cards for cleaner E2E selectors. Not blocking — UI works.",
+    "Old test_soulprint.py was updated to use new agent ids (engineering-senior-developer, marketing-content-creator, design-ui-designer, design-brand-guardian) — kept as a regression suite for auth/orgs/invites/teams/SoulPrint."
+  ],
+  "critical_code_review_comments": [
+    "server.py is now 729 lines — still readable but is starting to warrant a split (auth/orgs/teams/conversations/agents) for maintainability.",
+    "_load_agents() reads the catalogue once at import time; restart is needed if agents_catalogue.json changes. Acceptable for now.",
+    "detect_mentions() correctly handles full-id, short-slug (id minus division-key), and slugified display name. Note: review_request explicitly accepts that specialized agents whose id does NOT start with their division-key (e.g. accounts-payable-agent) won't get a 'short slug' — verified in code.",
+    "team_agents endpoint correctly strips 'system' before serializing (public_agent helper). Verified in tests.",
+    "Default limit of 500 is generous; clamped between 1 and 1000 via max(1, min(limit, 1000)). Good defensive coding."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_agents_catalogue.py (NEW — 19 tests covering divisions, search, filter, limit, direct, group/short-slug, auto-respond, access control)",
+    "/app/backend/tests/test_soulprint.py (updated agent ids: strategist→engineering-senior-developer, copywriter→marketing-content-creator, ops→design-ui-designer/etc.)"
+  ],
+  "success_rate": {"backend": "100% (34/34 pytest)", "frontend": "100% (all reviewed flows verified — landing copy, crew counter '169 of 169', search narrows, division chip filters to 29/8/41 etc., dialog with dlg- prefix testids, selected-agent chips, mention picker inserts '@brand-guardian ')"},
+  "test_credentials": "No pre-seeded admin. Tests register fresh users per run (TEST_user_<hex>@test.dev / password123).",
+  "seed_data_creation": "None — module-scoped fixture creates one TEST_ org + team per pytest run; conversations are deleted after each test.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Two backend test files exist: /app/backend/tests/test_agents_catalogue.py (focused on the 169-agent catalogue + @short-slug) and /app/backend/tests/test_soulprint.py (auth/orgs/invites/teams/SoulPrint regression). Run: `pytest /app/backend/tests/ -v`. Suite takes ~30s due to live LLM calls (Emergent key, gpt-4.1-mini). Frontend: scope picker selectors to '[data-testid=new-conv-dialog]' for dlg-* (dlg-agent-search, dlg-div-<key>, agent-badge-<id>) vs. crew-* on team page (crew-agent-search, crew-div-<key>, agent-crew-<id>). Mention picker is on the conversation page: data-testid='mention-picker-btn' opens a list of 'mention-<id>' chips that, when clicked, insert '@<short-slug> ' into the composer textarea.",
+  "rca_of_the_issue": "N/A — no bugs found in this iteration. Previous iteration's tz bug fix in /api/invites/accept remains intact (test_invite_flow_and_member_cannot_invite passes)."
+}
