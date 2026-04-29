@@ -243,8 +243,9 @@ async def register(body: RegisterBody, resp: Response):
     }
     res = await db.users.insert_one(doc)
     uid = str(res.inserted_id)
-    set_auth_cookies(resp, create_access_token(uid, email))
-    return {"id": uid, "name": doc["name"], "email": email}
+    token = create_access_token(uid, email)
+    set_auth_cookies(resp, token)
+    return {"id": uid, "name": doc["name"], "email": email, "access_token": token}
 
 @auth_r.post("/login")
 async def login(body: LoginBody, resp: Response):
@@ -253,8 +254,9 @@ async def login(body: LoginBody, resp: Response):
     if not user or not verify_password(body.password, user["password_hash"]):
         raise HTTPException(401, "Invalid email or password")
     uid = str(user["_id"])
-    set_auth_cookies(resp, create_access_token(uid, email))
-    return {"id": uid, "name": user["name"], "email": email}
+    token = create_access_token(uid, email)
+    set_auth_cookies(resp, token)
+    return {"id": uid, "name": user["name"], "email": email, "access_token": token}
 
 @auth_r.post("/logout")
 async def logout(resp: Response):

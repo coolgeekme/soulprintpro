@@ -1,5 +1,5 @@
 import React, { createContext, useContext, useState, useEffect, useCallback } from "react";
-import api from "../lib/api";
+import api, { setToken } from "../lib/api";
 
 const AuthContext = createContext(null);
 
@@ -24,17 +24,17 @@ export const AuthProvider = ({ children }) => {
   }, [refresh]);
 
   const login = async (email, password) => {
-    await api.post("/auth/login", { email, password });
-    // Verify the cookie was accepted by the browser before we let the app
-    // render protected routes. Without this, a silent Set-Cookie failure
-    // (Secure/SameSite/cross-domain quirks) presents later as "Not authenticated".
+    const { data } = await api.post("/auth/login", { email, password });
+    if (data?.access_token) setToken(data.access_token);
+    // Verify auth round-trips correctly via either cookie or bearer token.
     const me = await api.get("/auth/me");
     setUser(me.data);
     return me.data;
   };
 
   const register = async (name, email, password) => {
-    await api.post("/auth/register", { name, email, password });
+    const { data } = await api.post("/auth/register", { name, email, password });
+    if (data?.access_token) setToken(data.access_token);
     const me = await api.get("/auth/me");
     setUser(me.data);
     return me.data;
@@ -42,6 +42,7 @@ export const AuthProvider = ({ children }) => {
 
   const logout = async () => {
     try { await api.post("/auth/logout"); } catch (_) {}
+    setToken("");
     setUser(false);
   };
 
