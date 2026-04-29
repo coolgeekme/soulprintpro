@@ -12,10 +12,18 @@ from datetime import datetime, timezone, timedelta
 import bcrypt
 import jwt
 from bson import ObjectId
+from emergentintegrations.llm.chat import LlmChat, UserMessage
 
 
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
+
+# Configure logging early so seed_admin can use it
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
 
 # MongoDB connection
 mongo_url = os.environ['MONGO_URL']
@@ -152,10 +160,120 @@ async def seed_admin():
 @app.on_event("startup")
 async def startup():
     await db.users.create_index("email", unique=True)
+    await db.messages.create_index([("user_id", 1), ("agent_id", 1), ("timestamp", 1)])
     await seed_admin()
 
+# ── Agent personalities ──────────────────────────────────────────────────────
+AGENT_PROMPTS = {
+    "jarvis": (
+        "You are Jarvis, a senior software engineer and tech co-founder. "
+        "You help with code reviews, system architecture, debugging, DevOps, and technical strategy. "
+        "Be concise, technical, and action-oriented. Use short code snippets when genuinely helpful. "
+        "Keep responses brief — 2-4 sentences — unless a code block is truly needed."
+    ),
+    "judy": (
+        "You are Judy, a sharp sales lead and business development expert. "
+        "You help with pipeline management, prospect outreach, pitch prep, CRM updates, and closing strategies. "
+        "Be energetic, results-driven, and strategic. Keep responses punchy and actionable — 2-3 sentences."
+    ),
+    "alfred": (
+        "You are Alfred, a precise and professional executive assistant. "
+        "You help with scheduling, email drafting, calendar management, meeting prep, and task prioritization. "
+        "Be organized and proactive. Always confirm the action you've taken. Keep responses concise — 2-3 sentences."
+    ),
+    "vera": (
+        "You are Vera, a creative content creator and copywriter. "
+        "You help with social media posts, blog content, newsletters, brand messaging, and content strategy. "
+        "Be creative and brand-conscious. When generating content, offer 2-3 short options. Keep responses focused."
+    ),
+    "max": (
+        "You are Max, a rigorous research analyst and data specialist. "
+        "You help with market research, competitive analysis, data interpretation, and strategic reports. "
+        "Lead with the key insight. Be analytical and precise — 2-3 sentences unless a structured list adds real value."
+    ),
+}
 
-# Define Models
+# In-memory LLM session cache (persists while server is running)
+_llm_sessions: dict = {}
+
+def get_llm_session(user_id: str, agent_id: str) -> LlmChat:
+    key = f"{user_id}:{agent_id}"
+    if key not in _llm_sessions:
+        system_prompt = AGENT_PROMPTS.get(agent_id, "You are a helpful AI assistant.")
+        _llm_sessions[key] = LlmChat(
+            api_key=os.environ.get("EMERGENT_LLM_KEY", ""),
+            session_id=key,
+            system_message=system_prompt,
+        ).with_model("openai", "gpt-4.1-mini")
+    return _llm_sessions[key]
+
+# ── Chat models ──────────────────────────────────────────────────────────────
+class SendMessageBody(BaseModel):
+    text: str
+
+# ── Chat router ──────────────────────────────────────────────────────────────
+chat_router = APIRouter(prefix="/api/chat")
+
+@chat_router.get("/{agent_id}")
+async def get_messages(agent_id: str, current_user: dict = Depends(get_current_user)):
+    user_id = current_user["id"]
+    docs = await db.messages.find(
+        {"user_id": user_id, "agent_id": agent_id},
+        {"_id": 0, "user_id": 0},
+    ).sort("timestamp", 1).to_list(300)
+    return docs
+
+@chat_router.post("/{agent_id}")
+async def send_message(
+    agent_id: str,
+    body: SendMessageBody,
+    current_user: dict = Depends(get_current_user),
+):
+    if agent_id not in AGENT_PROMPTS:
+        raise HTTPException(status_code=404, detail="Agent not found")
+
+    user_id = current_user["id"]
+    now = datetime.now(timezone.utc)
+
+    user_msg = {
+        "id": str(uuid.uuid4()),
+        "user_id": user_id,
+        "agent_id": agent_id,
+        "sender": "user",
+        "text": body.text,
+        "timestamp": now,
+    }
+    await db.messages.insert_one({**user_msg})
+
+    # Call the LLM
+    try:
+        llm = get_llm_session(user_id, agent_id)
+        reply_text = await llm.send_message(UserMessage(text=body.text))
+    except Exception as exc:
+        logger.error(f"LLM error for {agent_id}: {exc}")
+        reply_text = "I'm having a bit of trouble right now — please try again in a moment."
+
+    agent_msg = {
+        "id": str(uuid.uuid4()),
+        "user_id": user_id,
+        "agent_id": agent_id,
+        "sender": "agent",
+        "text": reply_text,
+        "timestamp": datetime.now(timezone.utc),
+    }
+    await db.messages.insert_one({**agent_msg})
+
+    # Strip internal fields before returning
+    user_msg.pop("user_id", None)
+    agent_msg.pop("user_id", None)
+    return {"user_message": user_msg, "agent_message": agent_msg}
+
+@chat_router.delete("/{agent_id}")
+async def clear_messages(agent_id: str, current_user: dict = Depends(get_current_user)):
+    user_id = current_user["id"]
+    await db.messages.delete_many({"user_id": user_id, "agent_id": agent_id})
+    _llm_sessions.pop(f"{user_id}:{agent_id}", None)
+    return {"message": "Conversation cleared"}
 class StatusCheck(BaseModel):
     model_config = ConfigDict(extra="ignore")  # Ignore MongoDB's _id field
     
@@ -198,6 +316,7 @@ async def get_status_checks():
 # Include the routers in the main app
 app.include_router(api_router)
 app.include_router(auth_router)
+app.include_router(chat_router)
 
 frontend_url = os.environ.get("FRONTEND_URL", "http://localhost:3000")
 app.add_middleware(
@@ -207,13 +326,6 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
-# Configure logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-)
-logger = logging.getLogger(__name__)
 
 @app.on_event("shutdown")
 async def shutdown_db_client():

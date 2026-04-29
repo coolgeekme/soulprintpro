@@ -1,12 +1,15 @@
-import React, { useState, useRef, useEffect } from 'react';
+import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
+import axios from 'axios';
 import {
   Send, Plus, LogOut, Search,
   Zap, Bell, CheckCheck,
-  MoreVertical, X
+  MoreVertical, X, Trash2
 } from 'lucide-react';
-import { agents, agentResponses, integrationsList } from '../data/mock';
+import { agents, integrationsList } from '../data/mock';
 import { useAuth } from '../context/AuthContext';
+
+const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
 
 // Small status dot
 const StatusDot = ({ active }) => (
@@ -73,51 +76,113 @@ const Dashboard = () => {
   const navigate = useNavigate();
   const { user, logout } = useAuth();
   const [selectedAgent, setSelectedAgent] = useState(agents[0]);
-  const [allMessages, setAllMessages] = useState(
-    Object.fromEntries(agents.map(a => [a.id, [...(a.messages || [])]]))  
-  );
+  const [messages, setMessages] = useState([]);
+  const [lastMessages, setLastMessages] = useState({});
+  const [loadingMsgs, setLoadingMsgs] = useState(false);
   const [input, setInput] = useState('');
-  const [isTyping, setIsTyping] = useState(false);
+  const [sending, setSending] = useState(false);
   const [showIntegrations, setShowIntegrations] = useState(false);
   const [search, setSearch] = useState('');
   const messagesEndRef = useRef(null);
   const inputRef = useRef(null);
 
-  const messages = allMessages[selectedAgent.id] || [];
+  const fmtTime = ts => {
+    if (!ts) return '';
+    const d = new Date(ts);
+    return d.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' });
+  };
 
+  const loadMessages = useCallback(async (agentId) => {
+    setLoadingMsgs(true);
+    try {
+      const { data } = await axios.get(
+        `${BACKEND_URL}/api/chat/${agentId}`,
+        { withCredentials: true }
+      );
+      setMessages(data);
+      if (data.length > 0) {
+        setLastMessages(prev => ({ ...prev, [agentId]: data[data.length - 1] }));
+      }
+    } catch (err) {
+      console.error('Failed to load messages:', err);
+      setMessages([]);
+    } finally {
+      setLoadingMsgs(false);
+    }
+  }, []);
+
+  // Load messages when agent changes
+  useEffect(() => {
+    loadMessages(selectedAgent.id);
+  }, [selectedAgent.id, loadMessages]);
+
+  // Auto-scroll
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [messages, isTyping]);
+  }, [messages, sending]);
 
   const handleAgentSelect = agent => {
     setSelectedAgent(agent);
     setShowIntegrations(false);
+    setInput('');
   };
 
-  const handleSend = () => {
+  const handleSend = async () => {
     const text = input.trim();
-    if (!text) return;
-    const msg = {
-      id: Date.now(),
+    if (!text || sending) return;
+    setInput('');
+    if (inputRef.current) {
+      inputRef.current.style.height = 'auto';
+    }
+    setSending(true);
+
+    // Optimistically add user message
+    const optimisticUser = {
+      id: `tmp-${Date.now()}`,
       sender: 'user',
       text,
-      time: new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' }),
+      timestamp: new Date().toISOString(),
     };
-    setAllMessages(prev => ({ ...prev, [selectedAgent.id]: [...(prev[selectedAgent.id] || []), msg] }));
-    setInput('');
-    setIsTyping(true);
-    const pool = agentResponses[selectedAgent.id] || ["Got it! Working on that now."];
-    const reply = pool[Math.floor(Math.random() * pool.length)];
-    setTimeout(() => {
-      setIsTyping(false);
-      const agentMsg = {
-        id: Date.now() + 1,
-        sender: 'agent',
-        text: reply,
-        time: new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' }),
-      };
-      setAllMessages(prev => ({ ...prev, [selectedAgent.id]: [...(prev[selectedAgent.id] || []), agentMsg] }));
-    }, 1400 + Math.random() * 800);
+    setMessages(prev => [...prev, optimisticUser]);
+
+    try {
+      const { data } = await axios.post(
+        `${BACKEND_URL}/api/chat/${selectedAgent.id}`,
+        { text },
+        { withCredentials: true }
+      );
+      // Replace optimistic message + add real messages
+      setMessages(prev => [
+        ...prev.filter(m => m.id !== optimisticUser.id),
+        data.user_message,
+        data.agent_message,
+      ]);
+      setLastMessages(prev => ({
+        ...prev,
+        [selectedAgent.id]: data.agent_message,
+      }));
+    } catch (err) {
+      console.error('Send failed:', err);
+      // Remove optimistic message on error, restore input
+      setMessages(prev => prev.filter(m => m.id !== optimisticUser.id));
+      setInput(text);
+    } finally {
+      setSending(false);
+    }
+  };
+
+  const handleClearChat = async () => {
+    if (!window.confirm(`Clear all messages with ${selectedAgent.name}?`)) return;
+    try {
+      await axios.delete(
+        `${BACKEND_URL}/api/chat/${selectedAgent.id}`,
+        { withCredentials: true }
+      );
+      setMessages([]);
+      setLastMessages(prev => ({ ...prev, [selectedAgent.id]: null }));
+    } catch (err) {
+      console.error('Clear failed:', err);
+    }
   };
 
   const handleKey = e => {
@@ -133,15 +198,6 @@ const Dashboard = () => {
     a.name.toLowerCase().includes(search.toLowerCase()) ||
     a.role.toLowerCase().includes(search.toLowerCase())
   );
-
-  const lastMsg = agent => {
-    const msgs = allMessages[agent.id] || [];
-    return msgs[msgs.length - 1] || null;
-  };
-
-  const unreadCount = agent => {
-    return (allMessages[agent.id] || []).filter(m => m.sender === 'agent' && !m.read).length;
-  };
 
   return (
     <div className="flex h-screen bg-gray-50 overflow-hidden" style={{ fontFamily: "'Inter', sans-serif" }}>
@@ -179,8 +235,7 @@ const Dashboard = () => {
         <div className="flex-1 overflow-y-auto px-3 pt-2 space-y-0.5">
           <p className="text-[10px] font-bold text-gray-400 px-2 py-2 uppercase tracking-widest">Your Agents</p>
           {filteredAgents.map(agent => {
-            const last = lastMsg(agent);
-            const unread = unreadCount(agent);
+            const last = lastMessages[agent.id] || null;
             const active = selectedAgent.id === agent.id;
             return (
               <button
@@ -197,20 +252,15 @@ const Dashboard = () => {
                       {agent.name}
                     </span>
                     {last && (
-                      <span className={`text-[10px] flex-shrink-0 ${active ? 'text-gray-400' : 'text-gray-400'}`}>
-                        {last.time}
+                      <span className="text-[10px] text-gray-400 flex-shrink-0">
+                        {fmtTime(last.timestamp)}
                       </span>
                     )}
                   </div>
                   <p className={`text-[11px] truncate mt-0.5 ${active ? 'text-gray-400' : 'text-gray-500'}`}>
-                    {last ? last.text : 'No messages yet'}
+                    {last ? last.text : agent.description.slice(0, 48) + '…'}
                   </p>
                 </div>
-                {unread > 0 && (
-                  <span className="w-5 h-5 rounded-full flex-shrink-0 text-[10px] font-bold text-white flex items-center justify-center" style={{ backgroundColor: '#06B6D4' }}>
-                    {unread}
-                  </span>
-                )}
               </button>
             );
           })}
@@ -268,8 +318,12 @@ const Dashboard = () => {
             <button className="p-2 rounded-xl hover:bg-gray-100 transition-colors">
               <Bell className="w-[18px] h-[18px] text-gray-500" />
             </button>
-            <button className="p-2 rounded-xl hover:bg-gray-100 transition-colors">
-              <MoreVertical className="w-[18px] h-[18px] text-gray-500" />
+            <button
+              onClick={handleClearChat}
+              title="Clear conversation"
+              className="p-2 rounded-xl hover:bg-gray-100 transition-colors"
+            >
+              <Trash2 className="w-[18px] h-[18px] text-gray-500" />
             </button>
             <button
               onClick={() => setShowIntegrations(p => !p)}
@@ -284,36 +338,42 @@ const Dashboard = () => {
 
         {/* Messages */}
         <div className="flex-1 overflow-y-auto px-6 py-5 space-y-5">
-          {messages.length === 0 && (
+          {loadingMsgs ? (
+            <div className="flex flex-col items-center justify-center h-full gap-3">
+              <div className="w-7 h-7 border-2 border-gray-200 border-t-gray-400 rounded-full animate-spin" />
+              <span className="text-[13px] text-gray-400">Loading conversation…</span>
+            </div>
+          ) : messages.length === 0 ? (
             <div className="flex flex-col items-center justify-center h-full text-center">
               <AgentAvatar agent={selectedAgent} size="lg" />
               <p className="mt-4 text-[15px] font-semibold text-gray-900">Start a conversation with {selectedAgent.name}</p>
               <p className="mt-1 text-sm text-gray-400 max-w-xs">{selectedAgent.description}</p>
             </div>
-          )}
-          {messages.map(msg => (
-            <div key={msg.id} className={`flex ${msg.sender === 'user' ? 'justify-end' : 'justify-start'} items-end gap-2.5`}>
-              {msg.sender === 'agent' && <AgentAvatar agent={selectedAgent} size="sm" />}
-              <div className={`max-w-[68%]`}>
-                <div
-                  className={`px-4 py-2.5 text-[13.5px] leading-relaxed ${
-                    msg.sender === 'user'
-                      ? 'bg-gray-950 text-white rounded-2xl rounded-br-sm'
-                      : 'bg-white text-gray-900 rounded-2xl rounded-bl-sm shadow-sm border border-gray-100'
-                  }`}
-                >
-                  {msg.text}
-                </div>
-                <div className={`flex items-center gap-1 mt-1 ${msg.sender === 'user' ? 'justify-end' : 'justify-start'}`}>
-                  <span className="text-[10px] text-gray-400">{msg.time}</span>
-                  {msg.sender === 'user' && <CheckCheck className="w-3 h-3 text-gray-400" />}
+          ) : (
+            messages.map(msg => (
+              <div key={msg.id} className={`flex ${msg.sender === 'user' ? 'justify-end' : 'justify-start'} items-end gap-2.5`}>
+                {msg.sender === 'agent' && <AgentAvatar agent={selectedAgent} size="sm" />}
+                <div className="max-w-[68%]">
+                  <div
+                    className={`px-4 py-2.5 text-[13.5px] leading-relaxed whitespace-pre-wrap ${
+                      msg.sender === 'user'
+                        ? 'bg-gray-950 text-white rounded-2xl rounded-br-sm'
+                        : 'bg-white text-gray-900 rounded-2xl rounded-bl-sm shadow-sm border border-gray-100'
+                    }`}
+                  >
+                    {msg.text}
+                  </div>
+                  <div className={`flex items-center gap-1 mt-1 ${msg.sender === 'user' ? 'justify-end' : 'justify-start'}`}>
+                    <span className="text-[10px] text-gray-400">{fmtTime(msg.timestamp)}</span>
+                    {msg.sender === 'user' && <CheckCheck className="w-3 h-3 text-gray-400" />}
+                  </div>
                 </div>
               </div>
-            </div>
-          ))}
+            ))
+          )}
 
-          {/* Typing indicator */}
-          {isTyping && (
+          {/* Typing indicator — shown while waiting for AI response */}
+          {sending && (
             <div className="flex items-end gap-2.5">
               <AgentAvatar agent={selectedAgent} size="sm" />
               <div className="bg-white rounded-2xl rounded-bl-sm px-4 py-3 shadow-sm border border-gray-100">
@@ -351,9 +411,9 @@ const Dashboard = () => {
             />
             <button
               onClick={handleSend}
-              disabled={!input.trim()}
+              disabled={!input.trim() || sending}
               className="w-9 h-9 rounded-xl flex items-center justify-center flex-shrink-0 transition-all duration-150 disabled:opacity-30 disabled:cursor-not-allowed hover:opacity-80"
-              style={{ backgroundColor: input.trim() ? '#0D0D0D' : '#D1D5DB' }}
+              style={{ backgroundColor: input.trim() && !sending ? '#0D0D0D' : '#D1D5DB' }}
             >
               <Send className="w-[16px] h-[16px] text-white" />
             </button>
