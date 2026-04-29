@@ -60,25 +60,32 @@ pattern. Users must be able to:
 - ✅ **Smart auto-routing** — `POST /api/teams/{id}/start` routes a free-text prompt
   to the best of 169 agents and posts the first message in one shot
 - ✅ **Switch agent** — `POST /api/conversations/{id}/switch-agent` swaps the
-  agent on a direct conversation with a bridging handoff message
-- ✅ **Smart-expand groups** — `smart_expand: true` lets the system auto-add a
-  new specialist when the topic shifts beyond the current agents' lanes
+  agent on a direct conversation with a bridging handoff
+- ✅ **Smart-expand groups** — auto-add a new specialist when the topic shifts
+- ✅ **Image generation** — `POST /api/conversations/{id}/generate-image` via
+  Gemini Nano Banana (Emergent LLM key). Files served from
+  `/api/files/{filename}` with auth + conversation-membership checks
+- ✅ **Privacy** — conversations are scoped to `member_ids`. UI shows
+  "Private to you" or "Shared with N people" badges in the meta strip and
+  conversation cards
 - ✅ Invite system: code + shareable link (`/invite/:code`) + mailto helper
-- ✅ Access control at org + team + conversation membership level
-- ✅ Dark "liquid glass" UI; "Just start typing" composer is the primary CTA on
-  the team page; the manual agent picker stays available behind a small link
+- ✅ Access control at org + team + conversation + file level
+- ✅ Dark "liquid glass" UI; "Just start typing" composer + image-mode toggle
 - ✅ Searchable + division-filterable crew browser & dialogs
-- ✅ Test suite: **47/47 pytest passing** across `test_soulprint.py`,
-  `test_agents_catalogue.py`, and `test_smart_routing.py`
-- ✅ Auth bug fixes: tz-aware invite expiry; `Secure` cookie; Bearer fallback
+- ✅ Test suite: **60/60 pytest passing** across `test_soulprint.py`,
+  `test_agents_catalogue.py`, `test_smart_routing.py`,
+  `test_privacy_and_images.py`
 
 ## Roadmap
-- **P1** Invite revocation + pending invite list in UI
-- **P1** Email invite via Resend integration (currently falls back to `mailto:`)
-- **P1** Real-time updates for group chats (WebSocket or polling) so other members
-  see new messages without reload
-- **P2** Custom team agents (user-defined name + system prompt) on top of the 5 built-ins
-- **P2** Agent-to-agent collaboration in group rooms (a mentioned agent can @ping another)
-- **P2** Per-conversation memory/notes distinct from team SoulPrint
-- **P2** File attachments + image uploads
-- **P2** Google/GitHub OAuth in addition to email/password
+- **P0 (next)** Tool-calling framework — agents invoke tools via OpenAI function
+  calling. Initial tools: `web_search`, `generate_pdf`, `generate_docx`,
+  `generate_video` (Sora 2). Per-conversation permission toggles.
+- **P1** Telegram integration — outbound first (push generated assets to
+  Telegram chats), then two-way relay. Needs bot token from user.
+- **P1** Audio (TTS) for agent replies (OpenAI TTS via Emergent key)
+- **P1** Pending-invite management + revoke + Resend email delivery
+- **P1** Real-time updates for group chats (WebSocket or polling)
+- **P2** Custom user-authored team agents on top of the 169 built-ins
+- **P2** Agent-to-agent `@ping` so a specialist can pull in a peer
+- **P2** Google/GitHub OAuth
+- **P2** Scheduled / background autonomous runs (e.g. weekly research digest)
