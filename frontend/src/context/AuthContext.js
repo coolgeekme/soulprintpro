@@ -24,15 +24,20 @@ export const AuthProvider = ({ children }) => {
   }, [refresh]);
 
   const login = async (email, password) => {
-    const { data } = await api.post("/auth/login", { email, password });
-    setUser(data);
-    return data;
+    await api.post("/auth/login", { email, password });
+    // Verify the cookie was accepted by the browser before we let the app
+    // render protected routes. Without this, a silent Set-Cookie failure
+    // (Secure/SameSite/cross-domain quirks) presents later as "Not authenticated".
+    const me = await api.get("/auth/me");
+    setUser(me.data);
+    return me.data;
   };
 
   const register = async (name, email, password) => {
-    const { data } = await api.post("/auth/register", { name, email, password });
-    setUser(data);
-    return data;
+    await api.post("/auth/register", { name, email, password });
+    const me = await api.get("/auth/me");
+    setUser(me.data);
+    return me.data;
   };
 
   const logout = async () => {

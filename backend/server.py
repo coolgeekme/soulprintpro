@@ -60,8 +60,17 @@ def create_access_token(user_id: str, email: str) -> str:
     }, JWT_SECRET, algorithm=JWT_ALGO)
 
 def set_auth_cookies(resp: Response, access: str):
-    resp.set_cookie("access_token", access, httponly=True, secure=False,
-                    samesite="lax", max_age=86400, path="/")
+    # Cookies are issued over HTTPS in the preview / production. `secure=True` is
+    # required by Chrome's recent SameSite rules for cookies set over HTTPS, and
+    # avoids silent-drop scenarios where the cookie is set but never sent back.
+    resp.set_cookie(
+        "access_token", access,
+        httponly=True,
+        secure=True,
+        samesite="lax",
+        max_age=86400,
+        path="/",
+    )
 
 async def get_current_user(request: Request) -> dict:
     token = request.cookies.get("access_token")
