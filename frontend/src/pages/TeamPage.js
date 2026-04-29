@@ -282,12 +282,17 @@ export default function TeamPage() {
                     >
                       <div className="flex items-center justify-between mb-1">
                         <div className="text-white text-sm font-medium truncate">{c.title || "Untitled"}</div>
-                        <span className="sp-chip">{c.type}</span>
+                        {(c.member_ids?.length || 0) > 1 ? (
+                          <span className="sp-chip !bg-white/5">Shared · {c.member_ids.length}</span>
+                        ) : (
+                          <span className="sp-chip !bg-emerald-400/10 !text-emerald-200/90">Private</span>
+                        )}
                       </div>
                       <div className="text-xs sp-subtle truncate">{ag || "—"}</div>
                       {c.type === "group" && (
                         <div className="text-[10px] sp-subtle mt-1 uppercase tracking-widest">
                           {c.auto_respond ? "auto-respond" : "@mention to trigger"}
+                          {c.smart_expand ? " · smart-expand" : ""}
                         </div>
                       )}
                     </Link>

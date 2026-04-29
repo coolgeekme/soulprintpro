@@ -14,6 +14,7 @@ Architecture
   In group mode agent responds only when @mentioned unless auto_respond is ON.
 """
 from fastapi import FastAPI, APIRouter, HTTPException, Request, Response, Depends
+from fastapi.responses import FileResponse
 from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
@@ -22,11 +23,13 @@ from pydantic import BaseModel, Field
 from typing import List, Optional, Literal
 from datetime import datetime, timezone, timedelta
 from bson import ObjectId
-import os, logging, uuid, secrets, re, json, bcrypt, jwt
+import os, logging, uuid, secrets, re, json, base64, bcrypt, jwt
 
 from emergentintegrations.llm.chat import LlmChat, UserMessage
 
 ROOT_DIR = Path(__file__).parent
+UPLOAD_DIR = ROOT_DIR / "uploads"
+UPLOAD_DIR.mkdir(exist_ok=True)
 load_dotenv(ROOT_DIR / ".env")
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)s | %(message)s")
@@ -176,6 +179,10 @@ class SmartStartBody(BaseModel):
 class SwitchAgentBody(BaseModel):
     agent_id: str
     text: Optional[str] = ""  # optional intro message after the switch
+
+class GenerateImageBody(BaseModel):
+    prompt: str
+    agent_id: Optional[str] = None  # if omitted, use the conversation's current agent
 
 # ── Access control helpers ───────────────────────────────────────────────────
 async def require_org_member(org_id: str, user_id: str) -> dict:
@@ -975,6 +982,132 @@ async def switch_agent(conv_id: str, body: SwitchAgentBody, u: dict = Depends(ge
         "agent_message": {k: v for k, v in agent_msg.items() if k != "_id"},
     }
 
+# ── Image generation tool (Nano Banana via Emergent LLM key) ─────────────────
+NANO_BANANA_MODEL = "gemini-3.1-flash-image-preview"
+
+async def generate_image_via_nano_banana(prompt: str, system_message: str) -> tuple[str, str]:
+    """Generate an image and persist it to disk. Returns (filename, caption_text)."""
+    from emergentintegrations.llm.chat import LlmChat as _LlmChat, UserMessage as _UM
+    chat = _LlmChat(
+        api_key=EMERGENT_LLM_KEY,
+        session_id=f"img:{uuid.uuid4()}",
+        system_message=system_message,
+    ).with_model("gemini", NANO_BANANA_MODEL).with_params(modalities=["image", "text"])
+    text, images = await chat.send_message_multimodal_response(_UM(text=prompt))
+    if not images:
+        raise RuntimeError("No image returned by the model")
+    img = images[0]
+    img_bytes = base64.b64decode(img["data"])
+    mime = (img.get("mime_type") or "image/png").lower()
+    ext = "png" if "png" in mime else "jpg" if "jpeg" in mime or "jpg" in mime else "bin"
+    filename = f"{uuid.uuid4().hex}.{ext}"
+    (UPLOAD_DIR / filename).write_bytes(img_bytes)
+    return filename, (text or "").strip()
+
+@conv_r.post("/conversations/{conv_id}/generate-image")
+async def generate_image(conv_id: str, body: GenerateImageBody, u: dict = Depends(get_current_user)):
+    if not body.prompt.strip():
+        raise HTTPException(400, "Prompt cannot be empty")
+    conv = await load_conv_or_403(conv_id, u["id"])
+    team = await db.teams.find_one({"_id": ObjectId(conv["team_id"])})
+    if not team:
+        raise HTTPException(404, "Team not found")
+
+    agent_id = body.agent_id or (conv.get("agent_ids") or [None])[0]
+    if not agent_id or agent_id not in AGENTS:
+        raise HTTPException(400, "No valid agent for this conversation")
+    if conv["type"] == "group" and agent_id not in conv.get("agent_ids", []):
+        raise HTTPException(400, "Agent is not part of this group")
+
+    now = datetime.now(timezone.utc)
+    user_msg = {
+        "id": str(uuid.uuid4()),
+        "conversation_id": conv_id,
+        "sender_type": "user",
+        "sender_id": u["id"],
+        "sender_name": u["name"],
+        "agent_id": None,
+        "text": f"🎨 {body.prompt}",
+        "intent": "image_request",
+        "timestamp": now,
+    }
+    await db.messages.insert_one({**user_msg})
+
+    # Build a SoulPrint-aware system message so the image follows team aesthetics
+    sp = team.get("soulprint") or {}
+    sp_lines = []
+    for k in ("mission", "tone", "audience", "values"):
+        if sp.get(k):
+            sp_lines.append(f"{k.capitalize()}: {sp[k]}")
+    system_msg = (
+        f"You are {AGENTS[agent_id]['name']}, generating an image on behalf of the "
+        f"team \"{team['name']}\". Honor the team's voice and aesthetics."
+        + (("\n" + "\n".join(sp_lines)) if sp_lines else "")
+    )
+
+    try:
+        filename, caption = await generate_image_via_nano_banana(body.prompt, system_msg)
+    except Exception as exc:
+        logger.exception("Image generation failed: %s", exc)
+        # Save a polite agent error message so the user has feedback in-thread
+        err_msg = {
+            "id": str(uuid.uuid4()),
+            "conversation_id": conv_id,
+            "sender_type": "agent",
+            "sender_id": agent_id,
+            "sender_name": AGENTS[agent_id]["name"],
+            "agent_id": agent_id,
+            "text": "I couldn't generate that image — try again, or rephrase the prompt.",
+            "timestamp": datetime.now(timezone.utc),
+        }
+        await db.messages.insert_one({**err_msg})
+        return {
+            "user_message": {k: v for k, v in user_msg.items() if k != "_id"},
+            "agent_message": {k: v for k, v in err_msg.items() if k != "_id"},
+            "ok": False,
+        }
+
+    agent_msg = {
+        "id": str(uuid.uuid4()),
+        "conversation_id": conv_id,
+        "sender_type": "agent",
+        "sender_id": agent_id,
+        "sender_name": AGENTS[agent_id]["name"],
+        "agent_id": agent_id,
+        "text": caption or "Here's what I came up with.",
+        "media_type": "image",
+        "media_filename": filename,
+        "media_url": f"/api/files/{filename}",
+        "timestamp": datetime.now(timezone.utc),
+    }
+    await db.messages.insert_one({**agent_msg})
+    return {
+        "user_message": {k: v for k, v in user_msg.items() if k != "_id"},
+        "agent_message": {k: v for k, v in agent_msg.items() if k != "_id"},
+        "ok": True,
+    }
+
+# ── Auth-checked file streaming for generated media ──────────────────────────
+files_r = APIRouter(prefix="/api/files")
+
+ALLOWED_FILENAME_RE = re.compile(r"^[a-f0-9]{16,}\.(png|jpg|jpeg|webp|gif|pdf)$", re.IGNORECASE)
+
+@files_r.get("/{filename}")
+async def serve_file(filename: str, u: dict = Depends(get_current_user)):
+    if not ALLOWED_FILENAME_RE.match(filename):
+        raise HTTPException(400, "Invalid filename")
+    path = UPLOAD_DIR / filename
+    if not path.is_file():
+        raise HTTPException(404, "File not found")
+    # Verify the requesting user has access to a conversation that references this file
+    msg = await db.messages.find_one({"media_filename": filename})
+    if not msg:
+        raise HTTPException(404, "Not linked to any message")
+    conv = await db.conversations.find_one({"_id": ObjectId(msg["conversation_id"])})
+    if not conv or u["id"] not in conv.get("member_ids", []):
+        raise HTTPException(403, "No access to this file")
+    return FileResponse(path)
+
 # ── Register routers & CORS ──────────────────────────────────────────────────
 base_r = APIRouter(prefix="/api")
 
@@ -988,6 +1121,7 @@ app.include_router(org_r)
 app.include_router(invite_r)
 app.include_router(team_r)
 app.include_router(conv_r)
+app.include_router(files_r)
 
 frontend_url = os.environ.get("FRONTEND_URL", "http://localhost:3000")
 app.add_middleware(
@@ -1006,6 +1140,7 @@ async def startup():
     await db.teams.create_index("org_id")
     await db.conversations.create_index([("team_id", 1), ("created_at", -1)])
     await db.messages.create_index([("conversation_id", 1), ("timestamp", 1)])
+    await db.messages.create_index("media_filename", sparse=True)
     logger.info("SoulPrint API ready.")
 
 @app.on_event("shutdown")

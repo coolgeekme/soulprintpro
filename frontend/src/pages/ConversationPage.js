@@ -1,10 +1,10 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { useParams, Link, useNavigate } from "react-router-dom";
-import api from "../lib/api";
+import api, { BACKEND_URL } from "../lib/api";
 import TopBar from "../components/TopBar";
 import { toast } from "sonner";
 import { useAuth } from "../context/AuthContext";
-import { Send, Trash2, AtSign, Users, Repeat, Search, X } from "lucide-react";
+import { Send, Trash2, AtSign, Users, Repeat, Search, X, Lock, Image as ImageIcon } from "lucide-react";
 
 const formatTime = (ts) => {
   try { return new Date(ts).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }); }
@@ -55,6 +55,8 @@ export default function ConversationPage() {
     }
   }, [messages, sending]);
 
+  const [imageMode, setImageMode] = useState(false);
+
   const send = async (e) => {
     e.preventDefault();
     if (!text.trim() || sending) return;
@@ -65,24 +67,35 @@ export default function ConversationPage() {
       sender_type: "user",
       sender_id: user.id,
       sender_name: user.name,
-      text,
+      text: imageMode ? `🎨 ${text}` : text,
       timestamp: new Date().toISOString(),
     };
     setMessages((prev) => [...prev, optimistic]);
     const toSend = text;
+    const wasImage = imageMode;
     setText("");
+    setImageMode(false);
     try {
-      const { data } = await api.post(`/conversations/${convId}/messages`, { text: toSend });
-      setMessages((prev) => {
-        const withoutOptim = prev.filter(m => m.id !== optimistic.id);
-        return [...withoutOptim, data.user_message, ...data.agent_messages];
-      });
-      // server may have expanded agents (smart_expand) — mirror that here
-      if (data.conversation) setConv(data.conversation);
+      if (wasImage) {
+        const { data } = await api.post(`/conversations/${convId}/generate-image`, { prompt: toSend });
+        setMessages((prev) => {
+          const withoutOptim = prev.filter(m => m.id !== optimistic.id);
+          return [...withoutOptim, data.user_message, data.agent_message];
+        });
+        if (!data.ok) toast.error("Image generation failed");
+      } else {
+        const { data } = await api.post(`/conversations/${convId}/messages`, { text: toSend });
+        setMessages((prev) => {
+          const withoutOptim = prev.filter(m => m.id !== optimistic.id);
+          return [...withoutOptim, data.user_message, ...data.agent_messages];
+        });
+        if (data.conversation) setConv(data.conversation);
+      }
     } catch (err) {
-      toast.error("Message failed");
+      toast.error(wasImage ? "Image request failed" : "Message failed");
       setMessages((prev) => prev.filter(m => m.id !== optimistic.id));
       setText(toSend);
+      setImageMode(wasImage);
     } finally { setSending(false); }
   };
 
@@ -182,6 +195,18 @@ export default function ConversationPage() {
       <div className="border-b border-white/5 bg-black/20">
         <div className="max-w-5xl mx-auto px-6 py-4 flex items-center gap-3 flex-wrap">
           <span className="sp-chip">{conv.type}</span>
+          {(() => {
+            const others = (conv.member_ids || []).length - 1;
+            return others > 0 ? (
+              <span className="sp-chip !bg-white/5" data-testid="privacy-badge">
+                <Users className="w-3 h-3" /> Shared with {conv.member_ids.length} people
+              </span>
+            ) : (
+              <span className="sp-chip !bg-emerald-400/10 !text-emerald-200/90" data-testid="privacy-badge">
+                <Lock className="w-3 h-3" /> Private to you
+              </span>
+            );
+          })()}
           {convAgents.map((a) => (
             <span key={a.id} className="sp-chip !bg-white/5">
               <span className="sp-dot" style={{ background: a.accent }} />
@@ -244,6 +269,21 @@ export default function ConversationPage() {
                     <span className="text-[10px] sp-subtle ml-auto">{formatTime(m.timestamp)}</span>
                   </div>
                   <div className="whitespace-pre-wrap text-sm leading-relaxed">{m.text}</div>
+                  {m.media_type === "image" && m.media_url && (
+                    <a
+                      href={`${BACKEND_URL}${m.media_url}`}
+                      target="_blank" rel="noreferrer"
+                      className="block mt-3 rounded-xl overflow-hidden border border-white/10 hover:border-white/30 transition"
+                      data-testid={`message-image-${m.id}`}
+                    >
+                      <img
+                        src={`${BACKEND_URL}${m.media_url}`}
+                        alt="generated"
+                        className="w-full max-h-[420px] object-contain bg-black/30"
+                        loading="lazy"
+                      />
+                    </a>
+                  )}
                 </div>
               </div>
             );
@@ -289,6 +329,15 @@ export default function ConversationPage() {
                 <AtSign className="w-3.5 h-3.5" />
               </button>
             )}
+            <button
+              type="button"
+              onClick={() => setImageMode(v => !v)}
+              className={`sp-btn text-xs shrink-0 ${imageMode ? "sp-btn-primary" : "sp-btn-ghost"}`}
+              title={imageMode ? "Image mode ON — your next message becomes an image prompt" : "Generate an image instead of a text reply"}
+              data-testid="image-mode-toggle"
+            >
+              <ImageIcon className="w-3.5 h-3.5" />
+            </button>
             <textarea
               ref={inputRef}
               data-testid="message-input"
@@ -297,7 +346,9 @@ export default function ConversationPage() {
               onKeyDown={(e) => {
                 if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(e); }
               }}
-              placeholder={isGroup ? "Message the room… use @name to ping an agent" : `Message ${convAgents[0]?.name || "your agent"}`}
+              placeholder={imageMode
+                ? `Describe the image — ${convAgents[0]?.name || "your agent"} will generate it`
+                : (isGroup ? "Message the room… use @name to ping an agent" : `Message ${convAgents[0]?.name || "your agent"}`)}
               rows={1}
               className="flex-1 bg-white/[0.03] border border-white/10 rounded-2xl px-4 py-3 text-sm text-white placeholder:text-white/30 focus:border-white/30 focus:sp-focus resize-none max-h-40"
             />
@@ -307,7 +358,7 @@ export default function ConversationPage() {
               className="sp-btn sp-btn-primary text-sm disabled:opacity-50 shrink-0"
               data-testid="send-message-btn"
             >
-              <Send className="w-3.5 h-3.5" />
+              {imageMode ? <ImageIcon className="w-3.5 h-3.5" /> : <Send className="w-3.5 h-3.5" />}
             </button>
           </div>
         </form>
