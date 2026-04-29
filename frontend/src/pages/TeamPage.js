@@ -5,12 +5,12 @@ import TopBar from "../components/TopBar";
 import { toast } from "sonner";
 import { Sparkles, MessageCircle, Users, Plus, Radio } from "lucide-react";
 
-const AgentBadge = ({ a, onClick, selected }) => (
+const AgentBadge = ({ a, onClick, selected, testPrefix = "agent-badge" }) => (
   <button
     type="button"
     onClick={onClick}
     className={`sp-glass rounded-xl p-4 text-left transition hover:border-white/25 ${selected ? "border-white/40 sp-focus" : ""}`}
-    data-testid={`agent-badge-${a.id}`}
+    data-testid={`${testPrefix}-${a.id}`}
   >
     <div className="flex items-start justify-between">
       <div className="w-8 h-8 rounded-lg mb-2" style={{ background: `linear-gradient(160deg, ${a.accent}, rgba(255,255,255,0.06))` }} />
@@ -68,6 +68,7 @@ export default function TeamPage() {
     try {
       const { data } = await api.put(`/teams/${teamId}/soulprint`, sp);
       setTeam(data);
+      setSp(data.soulprint || sp);
       toast.success("SoulPrint saved");
     } catch (err) {
       toast.error("Failed to save");
@@ -175,7 +176,7 @@ export default function TeamPage() {
             <section>
               <h2 className="text-sm uppercase tracking-widest sp-subtle flex items-center gap-2 mb-3"><Sparkles className="w-4 h-4" /> Your crew</h2>
               <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-3">
-                {agents.map(a => <AgentBadge key={a.id} a={a} />)}
+                {agents.map(a => <AgentBadge key={a.id} a={a} testPrefix="agent-crew" />)}
               </div>
             </section>
           </div>
