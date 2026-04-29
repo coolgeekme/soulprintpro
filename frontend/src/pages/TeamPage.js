@@ -3,7 +3,7 @@ import { useParams, Link, useNavigate } from "react-router-dom";
 import api from "../lib/api";
 import TopBar from "../components/TopBar";
 import { toast } from "sonner";
-import { Sparkles, MessageCircle, Users, Plus, Radio, Search, X } from "lucide-react";
+import { Sparkles, MessageCircle, Users, Plus, Radio, Search, X, Wand2, ArrowRight } from "lucide-react";
 
 const AgentBadge = ({ a, onClick, selected, testPrefix = "agent-badge" }) => (
   <button
@@ -86,6 +86,7 @@ export default function TeamPage() {
   const [selAgents, setSelAgents] = useState([]);
   const [selMembers, setSelMembers] = useState([]);
   const [autoRespond, setAutoRespond] = useState(false);
+  const [smartExpand, setSmartExpand] = useState(true);
   const [creatingConv, setCreatingConv] = useState(false);
   const [dlgQ, setDlgQ] = useState("");
   const [dlgDiv, setDlgDiv] = useState("");
@@ -136,7 +137,7 @@ export default function TeamPage() {
 
   const resetDialog = () => {
     setShowNew(false); setConvType("direct"); setConvTitle("");
-    setSelAgents([]); setSelMembers([]); setAutoRespond(false);
+    setSelAgents([]); setSelMembers([]); setAutoRespond(false); setSmartExpand(true);
     setDlgQ(""); setDlgDiv("");
   };
 
@@ -151,6 +152,7 @@ export default function TeamPage() {
         agent_ids: selAgents,
         member_ids: convType === "group" ? selMembers : [],
         auto_respond: convType === "group" ? autoRespond : false,
+        smart_expand: convType === "group" ? smartExpand : false,
       });
       toast.success("Conversation created");
       nav(`/app/team/${teamId}/c/${data.id}`);
@@ -183,6 +185,22 @@ export default function TeamPage() {
   const DLG_LIMIT = 60;
   const dlgShown = dlgAgents.slice(0, DLG_LIMIT);
 
+  // Smart-start composer
+  const [smartText, setSmartText] = useState("");
+  const [smartBusy, setSmartBusy] = useState(false);
+  const onSmartStart = async (e) => {
+    e?.preventDefault?.();
+    if (!smartText.trim() || smartBusy) return;
+    setSmartBusy(true);
+    try {
+      const { data } = await api.post(`/teams/${teamId}/start`, { text: smartText.trim() });
+      toast.success(`Routed to ${agentMap[data.routed_agent_id]?.name || data.routed_agent_id}`);
+      nav(`/app/team/${teamId}/c/${data.conversation.id}`);
+    } catch (err) {
+      toast.error(err?.response?.data?.detail || "Couldn't route this — try again");
+    } finally { setSmartBusy(false); }
+  };
+
   if (loading || !team) return <div className="min-h-screen"><TopBar>Loading…</TopBar></div>;
 
   return (
@@ -210,6 +228,44 @@ export default function TeamPage() {
 
         <div className="grid lg:grid-cols-[1.4fr_1fr] gap-6">
           <div className="flex flex-col gap-6">
+            {/* Smart Start composer */}
+            <section className="sp-glass-strong rounded-2xl p-6">
+              <div className="flex items-center gap-2 mb-2">
+                <Wand2 className="w-4 h-4 text-white/80" />
+                <h2 className="text-sm uppercase tracking-widest sp-subtle">Just start typing</h2>
+                <span className="ml-auto text-xs sp-subtle">We'll pick the right specialist for you</span>
+              </div>
+              <form onSubmit={onSmartStart} className="flex flex-col gap-3">
+                <textarea
+                  data-testid="smart-start-input"
+                  value={smartText}
+                  onChange={(e) => setSmartText(e.target.value)}
+                  onKeyDown={(e) => { if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) onSmartStart(e); }}
+                  placeholder="What's on your mind? (e.g. 'Draft 3 LinkedIn hooks for our launch' or 'Why is our React dashboard slow?')"
+                  rows={3}
+                  className="w-full bg-white/[0.03] border border-white/10 rounded-xl px-4 py-3 text-sm text-white placeholder:text-white/30 focus:border-white/30 focus:sp-focus resize-none"
+                />
+                <div className="flex items-center justify-between gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setShowNew(true)}
+                    className="text-xs sp-subtle hover:text-white inline-flex items-center gap-1"
+                    data-testid="open-manual-picker"
+                  >
+                    Or pick the agent manually <ArrowRight className="w-3 h-3" />
+                  </button>
+                  <button
+                    type="submit"
+                    disabled={!smartText.trim() || smartBusy}
+                    className="sp-btn sp-btn-primary text-sm disabled:opacity-50"
+                    data-testid="smart-start-btn"
+                  >
+                    {smartBusy ? "Routing…" : <>Start conversation <ArrowRight className="w-3.5 h-3.5" /></>}
+                  </button>
+                </div>
+              </form>
+            </section>
+
             <section>
               <div className="flex items-center justify-between mb-3">
                 <h2 className="text-sm uppercase tracking-widest sp-subtle flex items-center gap-2"><MessageCircle className="w-4 h-4" /> Conversations</h2>
@@ -407,6 +463,17 @@ export default function TeamPage() {
                   />
                   <span className="text-sm text-white">Agents auto-respond on every message</span>
                   <span className="text-xs sp-subtle">(otherwise @mention the agent)</span>
+                </label>
+                <label className="flex items-center gap-3 cursor-pointer mt-2">
+                  <input
+                    type="checkbox"
+                    checked={smartExpand}
+                    onChange={(e) => setSmartExpand(e.target.checked)}
+                    className="accent-violet-500"
+                    data-testid="smart-expand-toggle"
+                  />
+                  <span className="text-sm text-white">Auto-add new specialists when the topic shifts</span>
+                  <span className="text-xs sp-subtle">(smart expansion)</span>
                 </label>
               </div>
             )}

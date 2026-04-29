@@ -164,9 +164,18 @@ class ConversationCreateBody(BaseModel):
     agent_ids: List[str] = []
     member_ids: List[str] = []  # human member ids (excluding creator)
     auto_respond: bool = False  # for group chats
+    smart_expand: bool = False  # group chats: auto-add the best new agent when topic shifts
 
 class SendMessageBody(BaseModel):
     text: str
+
+class SmartStartBody(BaseModel):
+    text: str
+    title: Optional[str] = ""
+
+class SwitchAgentBody(BaseModel):
+    agent_id: str
+    text: Optional[str] = ""  # optional intro message after the switch
 
 # ── Access control helpers ───────────────────────────────────────────────────
 async def require_org_member(org_id: str, user_id: str) -> dict:
@@ -221,6 +230,7 @@ def serialize_conv(c: dict) -> dict:
         "agent_ids": c.get("agent_ids", []),
         "member_ids": c.get("member_ids", []),
         "auto_respond": c.get("auto_respond", False),
+        "smart_expand": c.get("smart_expand", False),
         "created_by": c["created_by"],
         "created_at": c["created_at"].isoformat() if isinstance(c["created_at"], datetime) else c["created_at"],
     }
@@ -519,6 +529,7 @@ async def create_conversation(team_id: str, body: ConversationCreateBody, u: dic
         "agent_ids": body.agent_ids,
         "member_ids": [u["id"]] + member_ids,
         "auto_respond": body.auto_respond and body.type == "group",
+        "smart_expand": body.smart_expand and body.type == "group",
         "created_by": u["id"],
         "created_at": now,
     }
@@ -648,6 +659,127 @@ async def generate_agent_reply(conv: dict, team: dict, agent_id: str,
         logger.exception("LLM error: %s", exc)
         return "I'm having trouble thinking right now — try me again in a moment."
 
+# ── Smart agent router ──────────────────────────────────────────────────────
+ROUTER_FALLBACK = "specialized-chief-of-staff"
+
+def _agent_menu(exclude_ids: Optional[List[str]] = None) -> str:
+    """Compact menu sent to the routing LLM. ~30 tokens × 169 ≈ 5k tokens."""
+    excl = set(exclude_ids or [])
+    lines = []
+    for a in AGENTS.values():
+        if a["id"] in excl:
+            continue
+        tag = (a.get("tagline") or a.get("description") or "")[:90]
+        lines.append(f"- {a['id']} | {a['division']} | {a['name']}: {tag}")
+    return "\n".join(lines)
+
+def _soulprint_brief(team: dict) -> str:
+    sp = team.get("soulprint") or {}
+    parts = []
+    for k, label in [("mission", "Mission"), ("audience", "Audience"),
+                     ("tone", "Tone"), ("values", "Values"), ("north_star", "North star")]:
+        if sp.get(k):
+            parts.append(f"{label}: {sp[k]}")
+    return "\n".join(parts) if parts else "(no SoulPrint set)"
+
+async def route_best_agent(team: dict, message: str,
+                           exclude_ids: Optional[List[str]] = None,
+                           transcript: str = "") -> str:
+    """Pick the single best agent for `message` given team SoulPrint + recent transcript.
+
+    Falls back to ROUTER_FALLBACK if the LLM returns something unparseable.
+    """
+    menu = _agent_menu(exclude_ids)
+    sp_brief = _soulprint_brief(team)
+    system = (
+        "You are an AI router. Given a team's SoulPrint, the recent conversation "
+        "(if any), and the latest user message, pick the single best specialised "
+        "agent from the catalogue.\n"
+        "Reply with ONLY the agent id (e.g. `engineering-frontend-developer`). "
+        "No prose, no markdown, no quotes — just the id."
+    )
+    user_payload_parts = [f"Team SoulPrint:\n{sp_brief}"]
+    if transcript:
+        user_payload_parts.append(f"Recent conversation:\n{transcript}")
+    user_payload_parts.append(f"Latest user message: {message}")
+    user_payload_parts.append(f"Catalogue:\n{menu}")
+    user_payload = "\n\n".join(user_payload_parts)
+
+    chat = LlmChat(
+        api_key=EMERGENT_LLM_KEY,
+        session_id=f"router:{team['_id']}:{uuid.uuid4()}",
+        system_message=system,
+    ).with_model("openai", "gpt-4.1-mini")
+    try:
+        raw = await chat.send_message(UserMessage(text=user_payload))
+    except Exception as exc:
+        logger.warning("Router LLM error, falling back: %s", exc)
+        return ROUTER_FALLBACK if ROUTER_FALLBACK in AGENTS else next(iter(AGENTS))
+
+    # Pull the first valid id token from the response.
+    candidates = re.findall(r"[a-z0-9][a-z0-9\-]{2,80}", (raw or "").lower())
+    excl = set(exclude_ids or [])
+    for c in candidates:
+        if c in AGENTS and c not in excl:
+            return c
+    fb = ROUTER_FALLBACK if ROUTER_FALLBACK in AGENTS and ROUTER_FALLBACK not in excl else None
+    if fb:
+        return fb
+    for a in AGENTS:
+        if a not in excl:
+            return a
+    return next(iter(AGENTS))
+
+async def should_expand_group(conv: dict, team: dict, message: str) -> Optional[str]:
+    """For smart-expand groups: decide if a NEW agent (not already in the room)
+    should be brought in for this message. Returns agent_id or None."""
+    tail = await build_transcript_tail(str(conv["_id"]), limit=8)
+    transcript_lines = []
+    for m in tail:
+        speaker = m.get("sender_name") or ("Agent" if m["sender_type"] == "agent" else "User")
+        transcript_lines.append(f"{speaker}: {m['text']}")
+    transcript = "\n".join(transcript_lines)
+
+    current_names = ", ".join(AGENTS[a]["name"] for a in conv.get("agent_ids", []) if a in AGENTS) or "(none)"
+    sp_brief = _soulprint_brief(team)
+    menu = _agent_menu(exclude_ids=conv.get("agent_ids", []))
+
+    system = (
+        "You are an AI router for a GROUP conversation that already has these agents: "
+        f"{current_names}.\n"
+        "Decide whether the latest message would clearly benefit from bringing in ONE new "
+        "specialist who is not already in the room. Be conservative — only expand when the "
+        "topic genuinely shifts to a domain none of the current agents cover well.\n"
+        "Reply with ONLY one of:\n"
+        "  - the agent id of the new specialist to add\n"
+        "  - the literal word `none` (lowercase) if no expansion is needed."
+    )
+    payload = (
+        f"Team SoulPrint:\n{sp_brief}\n\n"
+        f"Recent conversation:\n{transcript}\n\n"
+        f"Latest user message: {message}\n\n"
+        f"Available specialists (you may pick one or say none):\n{menu}"
+    )
+    chat = LlmChat(
+        api_key=EMERGENT_LLM_KEY,
+        session_id=f"expand:{conv['_id']}:{uuid.uuid4()}",
+        system_message=system,
+    ).with_model("openai", "gpt-4.1-mini")
+    try:
+        raw = (await chat.send_message(UserMessage(text=payload))) or ""
+    except Exception as exc:
+        logger.warning("Expansion router error: %s", exc)
+        return None
+    lower = raw.strip().lower()
+    if "none" in lower.split()[:2]:
+        return None
+    candidates = re.findall(r"[a-z0-9][a-z0-9\-]{2,80}", lower)
+    already = set(conv.get("agent_ids", []))
+    for c in candidates:
+        if c in AGENTS and c not in already and c != "none":
+            return c
+    return None
+
 @conv_r.post("/conversations/{conv_id}/messages")
 async def send_message(conv_id: str, body: SendMessageBody, u: dict = Depends(get_current_user)):
     if not body.text.strip():
@@ -678,9 +810,25 @@ async def send_message(conv_id: str, body: SendMessageBody, u: dict = Depends(ge
         if mentioned:
             responders = mentioned
         elif conv.get("auto_respond"):
-            responders = conv["agent_ids"]
+            responders = list(conv["agent_ids"])
         else:
             responders = []
+
+        # Smart-expand: decide if a brand-new agent should join the room
+        if conv.get("smart_expand"):
+            try:
+                new_agent_id = await should_expand_group(conv, team, body.text)
+            except Exception as exc:
+                logger.warning("smart_expand error: %s", exc)
+                new_agent_id = None
+            if new_agent_id and new_agent_id in AGENTS and new_agent_id not in conv.get("agent_ids", []):
+                await db.conversations.update_one(
+                    {"_id": ObjectId(conv_id)},
+                    {"$addToSet": {"agent_ids": new_agent_id}},
+                )
+                conv["agent_ids"] = list(conv.get("agent_ids", [])) + [new_agent_id]
+                if new_agent_id not in responders:
+                    responders.append(new_agent_id)
 
     agent_messages = []
     for aid in responders:
@@ -699,7 +847,133 @@ async def send_message(conv_id: str, body: SendMessageBody, u: dict = Depends(ge
         agent_messages.append({k: v for k, v in msg.items() if k != "_id"})
 
     user_doc_resp = {k: v for k, v in user_doc.items() if k != "_id"}
-    return {"user_message": user_doc_resp, "agent_messages": agent_messages}
+    # Re-fetch fresh conv so frontend can mirror new agent_ids if expanded
+    fresh_conv = await db.conversations.find_one({"_id": ObjectId(conv_id)})
+    return {
+        "user_message": user_doc_resp,
+        "agent_messages": agent_messages,
+        "conversation": serialize_conv(fresh_conv) if fresh_conv else None,
+    }
+
+# ── Smart start: route → create direct conv → post first message ──────────
+@conv_r.post("/teams/{team_id}/start")
+async def smart_start(team_id: str, body: SmartStartBody, u: dict = Depends(get_current_user)):
+    if not body.text.strip():
+        raise HTTPException(400, "Message cannot be empty")
+    await require_team_member(team_id, u["id"])
+    team = await db.teams.find_one({"_id": ObjectId(team_id)})
+    if not team:
+        raise HTTPException(404, "Team not found")
+
+    chosen = await route_best_agent(team, body.text)
+    title = body.title.strip() if body.title else (body.text.strip()[:60] + ("…" if len(body.text.strip()) > 60 else ""))
+    now = datetime.now(timezone.utc)
+    conv_doc = {
+        "team_id": team_id,
+        "title": title,
+        "type": "direct",
+        "agent_ids": [chosen],
+        "member_ids": [u["id"]],
+        "auto_respond": False,
+        "smart_expand": False,
+        "created_by": u["id"],
+        "created_at": now,
+    }
+    res = await db.conversations.insert_one(conv_doc)
+    conv_doc["_id"] = res.inserted_id
+    conv_id = str(res.inserted_id)
+
+    user_doc = {
+        "id": str(uuid.uuid4()),
+        "conversation_id": conv_id,
+        "sender_type": "user",
+        "sender_id": u["id"],
+        "sender_name": u["name"],
+        "agent_id": None,
+        "text": body.text,
+        "timestamp": now,
+    }
+    await db.messages.insert_one({**user_doc})
+
+    reply = await generate_agent_reply(conv_doc, team, chosen, body.text, u["name"])
+    agent_msg = {
+        "id": str(uuid.uuid4()),
+        "conversation_id": conv_id,
+        "sender_type": "agent",
+        "sender_id": chosen,
+        "sender_name": AGENTS[chosen]["name"],
+        "agent_id": chosen,
+        "text": reply,
+        "timestamp": datetime.now(timezone.utc),
+    }
+    await db.messages.insert_one({**agent_msg})
+
+    return {
+        "conversation": serialize_conv(conv_doc),
+        "routed_agent_id": chosen,
+        "user_message": {k: v for k, v in user_doc.items() if k != "_id"},
+        "agent_message": {k: v for k, v in agent_msg.items() if k != "_id"},
+    }
+
+@conv_r.post("/conversations/{conv_id}/switch-agent")
+async def switch_agent(conv_id: str, body: SwitchAgentBody, u: dict = Depends(get_current_user)):
+    """Hand off a DIRECT conversation to a different agent.
+
+    Optional `text` lets the user write a short bridging note that the new agent will see.
+    """
+    conv = await load_conv_or_403(conv_id, u["id"])
+    if conv["type"] != "direct":
+        raise HTTPException(400, "Only direct conversations support a single-agent switch")
+    if not is_agent(body.agent_id):
+        raise HTTPException(400, f"Unknown agent: {body.agent_id}")
+    if body.agent_id == (conv.get("agent_ids") or [None])[0]:
+        raise HTTPException(400, "Already talking to that agent")
+
+    team = await db.teams.find_one({"_id": ObjectId(conv["team_id"])})
+    if not team:
+        raise HTTPException(404, "Team not found")
+
+    await db.conversations.update_one(
+        {"_id": ObjectId(conv_id)},
+        {"$set": {"agent_ids": [body.agent_id]}},
+    )
+    conv["agent_ids"] = [body.agent_id]
+
+    intro_msg = body.text.strip() or (
+        "Quick handoff — bringing in a new specialist. Please catch up on the conversation "
+        "above and pick up from where we are."
+    )
+    intro = {
+        "id": str(uuid.uuid4()),
+        "conversation_id": conv_id,
+        "sender_type": "user",
+        "sender_id": u["id"],
+        "sender_name": u["name"],
+        "agent_id": None,
+        "text": intro_msg,
+        "timestamp": datetime.now(timezone.utc),
+    }
+    await db.messages.insert_one({**intro})
+
+    reply = await generate_agent_reply(conv, team, body.agent_id, intro_msg, u["name"])
+    agent_msg = {
+        "id": str(uuid.uuid4()),
+        "conversation_id": conv_id,
+        "sender_type": "agent",
+        "sender_id": body.agent_id,
+        "sender_name": AGENTS[body.agent_id]["name"],
+        "agent_id": body.agent_id,
+        "text": reply,
+        "timestamp": datetime.now(timezone.utc),
+    }
+    await db.messages.insert_one({**agent_msg})
+
+    fresh = await db.conversations.find_one({"_id": ObjectId(conv_id)})
+    return {
+        "conversation": serialize_conv(fresh),
+        "user_message": {k: v for k, v in intro.items() if k != "_id"},
+        "agent_message": {k: v for k, v in agent_msg.items() if k != "_id"},
+    }
 
 # ── Register routers & CORS ──────────────────────────────────────────────────
 base_r = APIRouter(prefix="/api")

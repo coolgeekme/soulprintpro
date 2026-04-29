@@ -4,7 +4,7 @@ import api from "../lib/api";
 import TopBar from "../components/TopBar";
 import { toast } from "sonner";
 import { useAuth } from "../context/AuthContext";
-import { Send, Trash2, AtSign, Users } from "lucide-react";
+import { Send, Trash2, AtSign, Users, Repeat, Search, X } from "lucide-react";
 
 const formatTime = (ts) => {
   try { return new Date(ts).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }); }
@@ -77,6 +77,8 @@ export default function ConversationPage() {
         const withoutOptim = prev.filter(m => m.id !== optimistic.id);
         return [...withoutOptim, data.user_message, ...data.agent_messages];
       });
+      // server may have expanded agents (smart_expand) — mirror that here
+      if (data.conversation) setConv(data.conversation);
     } catch (err) {
       toast.error("Message failed");
       setMessages((prev) => prev.filter(m => m.id !== optimistic.id));
@@ -109,6 +111,46 @@ export default function ConversationPage() {
     } catch (err) {
       toast.error(err?.response?.data?.detail || "Failed");
     }
+  };
+
+  // Switch-agent dialog (direct chats only)
+  const [showSwitch, setShowSwitch] = useState(false);
+  const [switchQ, setSwitchQ] = useState("");
+  const [switchDiv, setSwitchDiv] = useState("");
+  const [switchBusy, setSwitchBusy] = useState(false);
+  const [divisions, setDivisions] = useState([]);
+  useEffect(() => {
+    if (!showSwitch || divisions.length) return;
+    api.get("/agents/divisions").then((r) => setDivisions(r.data)).catch(() => {});
+  }, [showSwitch, divisions.length]);
+
+  const filteredSwitchAgents = useMemo(() => {
+    let arr = agents.filter((a) => !conv?.agent_ids?.includes(a.id));
+    if (switchDiv) arr = arr.filter((a) => a.division_key === switchDiv);
+    if (switchQ.trim()) {
+      const n = switchQ.toLowerCase();
+      arr = arr.filter((a) =>
+        a.id.includes(n) ||
+        (a.name || "").toLowerCase().includes(n) ||
+        (a.description || "").toLowerCase().includes(n) ||
+        (a.division || "").toLowerCase().includes(n)
+      );
+    }
+    return arr.slice(0, 60);
+  }, [agents, switchQ, switchDiv, conv]);
+
+  const doSwitch = async (newAgentId) => {
+    if (switchBusy) return;
+    setSwitchBusy(true);
+    try {
+      const { data } = await api.post(`/conversations/${convId}/switch-agent`, { agent_id: newAgentId });
+      setConv(data.conversation);
+      setMessages((prev) => [...prev, data.user_message, data.agent_message]);
+      setShowSwitch(false); setSwitchQ(""); setSwitchDiv("");
+      toast.success(`Handed off to ${data.agent_message.sender_name}`);
+    } catch (err) {
+      toast.error(err?.response?.data?.detail || "Switch failed");
+    } finally { setSwitchBusy(false); }
   };
 
   if (loading || !conv || !team) return <div className="min-h-screen"><TopBar>Loading…</TopBar></div>;
@@ -156,6 +198,19 @@ export default function ConversationPage() {
             <span className="sp-chip !bg-white/5">
               {conv.auto_respond ? "Auto-respond ON" : "Respond on @mention"}
             </span>
+          )}
+          {isGroup && conv.smart_expand && (
+            <span className="sp-chip !bg-white/5">Smart expand</span>
+          )}
+          {!isGroup && (
+            <button
+              onClick={() => setShowSwitch(true)}
+              className="sp-chip hover:!bg-white/15 hover:text-white inline-flex items-center gap-1"
+              data-testid="switch-agent-btn"
+              title="Hand off to another specialist"
+            >
+              <Repeat className="w-3 h-3" /> Switch agent
+            </button>
           )}
         </div>
       </div>
@@ -257,6 +312,63 @@ export default function ConversationPage() {
           </div>
         </form>
       </div>
+
+      {/* Switch-agent dialog */}
+      {showSwitch && (
+        <div className="fixed inset-0 z-40 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm" onClick={() => setShowSwitch(false)}>
+          <div className="sp-glass-strong rounded-2xl w-full max-w-2xl p-6 sp-fade-up max-h-[85vh] overflow-hidden flex flex-col" onClick={(e) => e.stopPropagation()} data-testid="switch-agent-dialog">
+            <div className="flex items-center justify-between mb-1">
+              <h3 className="sp-display text-2xl">Switch agent</h3>
+              <button onClick={() => setShowSwitch(false)} className="text-white/60 hover:text-white"><X className="w-4 h-4" /></button>
+            </div>
+            <p className="text-xs sp-subtle mb-4">
+              Currently with <span className="text-white">{convAgents[0]?.name}</span>.
+              Pick a different specialist — they'll see the full transcript and pick up from where we are.
+            </p>
+            <div className="flex items-center gap-2 sp-glass rounded-xl px-3 py-2 mb-3">
+              <Search className="w-4 h-4 text-white/60" />
+              <input
+                value={switchQ}
+                onChange={(e) => setSwitchQ(e.target.value)}
+                placeholder={`Search ${agents.length} agents…`}
+                className="flex-1 bg-transparent text-sm text-white placeholder:text-white/30 focus:outline-none"
+                data-testid="switch-search"
+              />
+            </div>
+            <div className="flex flex-wrap gap-2 mb-3">
+              <button onClick={() => setSwitchDiv("")} className={`sp-chip ${switchDiv === "" ? "!bg-white/15 !text-white" : ""}`}>All</button>
+              {divisions.map(d => (
+                <button key={d.key} onClick={() => setSwitchDiv(d.key === switchDiv ? "" : d.key)} className={`sp-chip ${switchDiv === d.key ? "!bg-white/15 !text-white" : ""}`}>
+                  {d.label} · {d.count}
+                </button>
+              ))}
+            </div>
+            <div className="grid sm:grid-cols-2 gap-2 overflow-y-auto pr-1 flex-1 min-h-0">
+              {filteredSwitchAgents.map(a => (
+                <button
+                  key={a.id}
+                  onClick={() => doSwitch(a.id)}
+                  disabled={switchBusy}
+                  className="sp-glass rounded-xl p-3 text-left hover:border-white/25 disabled:opacity-50"
+                  data-testid={`switch-pick-${a.id}`}
+                >
+                  <div className="flex items-start justify-between gap-2">
+                    <div className="w-8 h-8 rounded-lg flex items-center justify-center text-base shrink-0" style={{ background: `linear-gradient(160deg, ${a.accent}, rgba(255,255,255,0.06))` }}>
+                      <span>{a.emoji || ""}</span>
+                    </div>
+                    <span className="sp-chip text-[10px]">{a.division}</span>
+                  </div>
+                  <div className="text-white text-sm font-medium line-clamp-1 mt-2">{a.name}</div>
+                  <div className="text-[11px] sp-subtle line-clamp-2">{a.tagline}</div>
+                </button>
+              ))}
+              {filteredSwitchAgents.length === 0 && (
+                <div className="col-span-full sp-glass rounded-xl p-4 text-center text-xs sp-subtle">No agents match.</div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

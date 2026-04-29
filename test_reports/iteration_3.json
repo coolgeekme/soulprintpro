@@ -1,0 +1,31 @@
+{
+  "summary": "Tested smart-routing (POST /teams/{id}/start), sticky direct chat with switch-agent, group smart_expand, and updated /messages response. Backend: 47/47 pytest pass (13 NEW in test_smart_routing.py + 19 agents catalogue + 15 soulprint). Frontend E2E: smart-start composer routed React perf question to Engineering · Frontend Developer (toast 'Routed to Frontend Developer'); switch-agent dialog handed off to marketing-content-creator with meta strip updating to 'CONTENT CREATOR · MARKETING'; new-conv dialog hides smart-expand-toggle on direct, shows it default-ON on group.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_smart_routing.py",
+    "/app/backend/tests/test_agents_catalogue.py",
+    "/app/backend/tests/test_soulprint.py",
+    "/app/test_reports/pytest/pytest_results.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "server.py is now 1014 lines — earlier suggestion to split (auth/orgs/teams/conversations/agents/router) is now more pressing. route_best_agent + should_expand_group + smart_start + switch_agent could live in a /app/backend/router.py module.",
+    "route_best_agent and should_expand_group both build a full _agent_menu (169 entries) on every call — fine functionally, but each routing call ships ~20KB of context to the LLM. Could be optimised by pre-trimming to one-line-per-agent (already done) or by clustering at the division level first, then refining within division.",
+    "switch_agent uses the user's own message slot for the bridging note. Pragmatic, but UX-wise the bridging text shows up as if the human typed it. Consider sender_type='system' for the bridging line to make the handoff visually distinct.",
+    "should_expand_group: parsing 'none' via .split()[:2] is robust against leading whitespace but will miss 'No expansion needed' phrasing. Tightening the system prompt to the literal `none` is fine; tested green.",
+    "Smart-start endpoint creates a conversation BEFORE the LLM reply succeeds; if generate_agent_reply fails, the conversation row exists but the agent_message DB row may not be created. Consider wrapping in a try/except that also writes a fallback agent message or rolls back the conversation."
+  ],
+  "updated_files": ["/app/backend/tests/test_smart_routing.py (NEW — 13 tests: 3 division-routes, empty/forbidden, 5 switch-agent, 3 smart-expand on/off + msg-response shape)"],
+  "success_rate": {"backend": "100% (47/47 pytest, 75s incl. live LLM calls)", "frontend": "100% — smart-start composer present + routes correctly + toast shown, switch-agent button + dialog + post-switch meta-strip update verified, smart-expand toggle hide/show + default-ON verified"},
+  "test_credentials": "No pre-seeded admin. Fresh users registered per test (TEST_<hex>@test.dev / password123).",
+  "seed_data_creation": "Module-scoped fixture creates one TEST_ org + team per test file. SoulPrint seeded inside test_smart_routing.py to give the router context. All conversations deleted in teardown.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Three pytest files now in /app/backend/tests/: test_smart_routing.py (smart-start router, switch-agent, smart_expand), test_agents_catalogue.py (169-agent catalogue + @short-slug), test_soulprint.py (auth/orgs/invites/teams regression). Run all: `pytest /app/backend/tests/ -v` (~75s due to live Emergent LLM calls — gpt-4.1-mini for router + each agent reply). Frontend selectors: in new-conv dialog, AgentFilter uses prefix `dlg-` (dlg-agent-search, dlg-div-<key>) but the AGENT CARDS themselves use default `agent-badge-<id>` (not `dlg-<id>`). Crew section on team page uses `crew-` prefix and `agent-crew-<id>` cards. Switch-agent dialog: `switch-search`, `switch-pick-<id>`, `switch-agent-dialog`. Smart-start: `smart-start-input`, `smart-start-btn`, `open-manual-picker`. Smart-expand toggle visible only when conv-type-group is selected, default checked.",
+  "rca_of_the_issue": "N/A — no bugs discovered. All 13 new test cases (smart-routing) plus all 34 regression tests pass green. UI flows verified visually via Playwright screenshots: routing accuracy (engineering for React perf), agent handoff (chip updates), and toggle visibility/default."
+}
