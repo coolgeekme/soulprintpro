@@ -31,7 +31,16 @@ export default function TopBar({ children, right = null }) {
     else toast.error("Location unavailable or denied");
   };
   return (
-    <header className="relative z-10 border-b" style={{ borderColor: "var(--border-soft)" }}>
+    <header
+      className="relative z-10 border-b"
+      style={{
+        borderColor: "var(--border-soft)",
+        // Pad for the iPhone notification bar when installed as a PWA. In a
+        // regular browser window env(safe-area-inset-top) resolves to 0, so
+        // this has no effect outside standalone mode.
+        paddingTop: "env(safe-area-inset-top)",
+      }}
+    >
       <div className="bg-black/0 backdrop-blur-xl">
         <div className="max-w-7xl mx-auto flex items-center justify-between px-4 sm:px-6 py-3 gap-2 sm:gap-4">
           <div className="flex items-center gap-3 min-w-0">
