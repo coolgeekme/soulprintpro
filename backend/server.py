@@ -929,15 +929,26 @@ async def accept_invite(body: InviteAcceptBody, u: dict = Depends(get_current_us
         if exp < datetime.now(timezone.utc):
             raise HTTPException(410, "Invite expired")
     existing = await db.org_members.find_one({"org_id": inv["org_id"], "user_id": u["id"]})
+    # Grab the General chat IDs so the caller can drop the new member straight
+    # into the org's main conversation without an extra round-trip.
+    org_doc = await db.organizations.find_one({"_id": ObjectId(inv["org_id"])})
+    gt = (org_doc or {}).get("general_team_id", "")
+    gc = (org_doc or {}).get("general_conversation_id", "")
     if existing:
         await db.invites.update_one({"_id": inv["_id"]}, {"$set": {"used_by": u["id"]}})
-        return {"org_id": inv["org_id"], "already_member": True}
+        return {
+            "org_id": inv["org_id"], "already_member": True,
+            "general_team_id": gt, "general_conversation_id": gc,
+        }
     await db.org_members.insert_one({
         "org_id": inv["org_id"], "user_id": u["id"], "role": inv["role"],
         "joined_at": datetime.now(timezone.utc),
     })
     await db.invites.update_one({"_id": inv["_id"]}, {"$set": {"used_by": u["id"]}})
-    return {"org_id": inv["org_id"], "already_member": False}
+    return {
+        "org_id": inv["org_id"], "already_member": False,
+        "general_team_id": gt, "general_conversation_id": gc,
+    }
 
 # ── Team routes ──────────────────────────────────────────────────────────────
 team_r = APIRouter(prefix="/api")

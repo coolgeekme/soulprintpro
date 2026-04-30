@@ -3,7 +3,7 @@ import { Link, useNavigate } from "react-router-dom";
 import api from "../lib/api";
 import TopBar from "../components/TopBar";
 import { toast } from "sonner";
-import { Plus, Building2, ArrowRight, Ticket } from "lucide-react";
+import { Plus, Building2, ArrowRight, Ticket, MessageCircle, Settings } from "lucide-react";
 
 export default function AppHome() {
   const [orgs, setOrgs] = useState([]);
@@ -61,7 +61,13 @@ export default function AppHome() {
     try {
       const { data } = await api.post("/invites/accept", { code: code.trim() });
       toast.success(data.already_member ? "Already a member" : "Joined organization");
-      nav(`/app/org/${data.org_id}`);
+      // Drop the user straight into General chat when we can. Falls back to
+      // the org page for legacy orgs that never auto-created a General team.
+      if (data.general_team_id && data.general_conversation_id) {
+        nav(`/app/team/${data.general_team_id}/c/${data.general_conversation_id}`);
+      } else {
+        nav(`/app/org/${data.org_id}`);
+      }
     } catch (err) {
       toast.error(err?.response?.data?.detail || "Invalid invite");
     } finally {
@@ -83,25 +89,44 @@ export default function AppHome() {
         <div className="grid md:grid-cols-3 gap-4 mb-10">
           {loading && [0,1,2].map((i) => <div key={i} className="sp-glass rounded-2xl p-6 h-36 animate-pulse" />)}
 
-          {!loading && orgs.map((o) => (
-            <Link
-              key={o.id}
-              to={`/app/org/${o.id}`}
-              className="sp-glass rounded-2xl p-6 hover:border-white/20 transition group"
-              data-testid={`org-card-${o.id}`}
-            >
-              <div className="flex items-center justify-between mb-4">
-                <div className="w-10 h-10 rounded-xl sp-glass-strong flex items-center justify-center">
-                  <Building2 className="w-5 h-5 text-white/90" />
+          {!loading && orgs.map((o) => {
+            // Primary action on every card is "jump into General chat" so the
+            // user is one click from talking to their agents. Org dashboard /
+            // teams / members stay reachable via the small "Manage" link.
+            const hasGeneral = Boolean(o.general_team_id && o.general_conversation_id);
+            const primaryHref = hasGeneral
+              ? `/app/team/${o.general_team_id}/c/${o.general_conversation_id}`
+              : `/app/org/${o.id}`;
+            return (
+              <div
+                key={o.id}
+                className="sp-glass rounded-2xl p-6 hover:border-white/20 transition group"
+                data-testid={`org-card-${o.id}`}
+              >
+                <div className="flex items-center justify-between mb-4">
+                  <div className="w-10 h-10 rounded-xl sp-glass-strong flex items-center justify-center">
+                    <Building2 className="w-5 h-5 text-white/90" />
+                  </div>
+                  <span className="sp-chip">{o.role}</span>
                 </div>
-                <span className="sp-chip">{o.role}</span>
+                <Link to={primaryHref} className="block" data-testid={`org-card-open-${o.id}`}>
+                  <div className="text-white font-medium text-lg truncate">{o.name}</div>
+                  <div className="flex items-center gap-2 mt-4 text-xs sp-subtle group-hover:text-white/80">
+                    <MessageCircle className="w-3.5 h-3.5" />
+                    {hasGeneral ? "Open General chat" : "Open organization"}
+                    <ArrowRight className="w-3.5 h-3.5" />
+                  </div>
+                </Link>
+                <Link
+                  to={`/app/org/${o.id}`}
+                  className="inline-flex items-center gap-1.5 mt-3 text-[11px] sp-subtle hover:text-white transition"
+                  data-testid={`org-card-manage-${o.id}`}
+                >
+                  <Settings className="w-3 h-3" /> Manage
+                </Link>
               </div>
-              <div className="text-white font-medium text-lg truncate">{o.name}</div>
-              <div className="flex items-center gap-2 mt-4 text-xs sp-subtle group-hover:text-white/80">
-                Open <ArrowRight className="w-3.5 h-3.5" />
-              </div>
-            </Link>
-          ))}
+            );
+          })}
 
           {!loading && orgs.length === 0 && (
             <div className="sp-glass rounded-2xl p-6 col-span-full text-center text-sm sp-subtle">
