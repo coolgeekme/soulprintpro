@@ -26,8 +26,8 @@ export default function LandingPage() {
       {/* Nav */}
       <header className="relative z-10 flex items-center justify-between px-6 md:px-10 py-6">
         <Link to="/" className="flex items-center gap-2" data-testid="brand-logo">
-          <div className="w-8 h-8 rounded-lg sp-glass-strong flex items-center justify-center">
-            <Logo className="w-4 h-4 text-white/90" />
+          <div className="w-9 h-9 rounded-lg sp-glass-strong flex items-center justify-center p-0.5">
+            <Logo className="w-full h-full" />
           </div>
           <span className="font-medium tracking-tight text-white/95">SoulPrint Engine</span>
         </Link>

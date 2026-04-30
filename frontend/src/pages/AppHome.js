@@ -73,7 +73,7 @@ export default function AppHome() {
     <div className="min-h-screen">
       <TopBar>Your organizations</TopBar>
 
-      <main className="max-w-5xl mx-auto px-6 py-12">
+      <main className="max-w-5xl mx-auto px-4 sm:px-6 py-8 sm:py-12">
         <div className="flex flex-col gap-3 mb-10">
           <span className="sp-chip">Workspaces</span>
           <h1 className="sp-display text-4xl md:text-5xl">Where do you want to work today?</h1>

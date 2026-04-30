@@ -50,40 +50,38 @@ pattern. Users must be able to:
 - `GET|POST /api/conversations/{id}/messages`
 
 ## Implemented (Apr 29-30, 2026)
-- ✅ Full schema rewrite — orgs, teams, members, invites, conversations, messages, **assets**
+- ✅ Full schema rewrite — orgs, teams, members, invites, conversations, messages, **assets**, **schedules**
 - ✅ JWT cookie auth + Bearer fallback (localStorage). CORS uses `allow_origin_regex=".*"` for any deploy domain.
-- ✅ **169 specialised agents** across **14 divisions** (sourced internally; no external attribution surfaced in the UI)
+- ✅ **169 specialised agents** across **14 divisions**
 - ✅ SoulPrint onboarding injected into every agent system prompt
-- ✅ **Org asset library** — upload images, PDFs, DOCX, text, audio, video (≤10 MB each).
-  Text files (PDF/DOCX/TXT) are extracted on upload and a compact list of asset
-  names + descriptions + excerpts is injected into every agent's system prompt
-  in that org so agents can cite the brand guide / handbook / etc.
-- ✅ Direct chats + group chats with `@mention` (id, short slug, or display name)
-- ✅ **Smart auto-routing** — `POST /api/teams/{id}/start` routes a free-text prompt to the best of 169 agents
-- ✅ **Auto image generation** — when the user clearly asks for an image
-  (Instagram post, logo, banner, etc.), the chosen agent generates it
-  automatically without any toggle. Aspect-ratio hints for all major social
-  formats (1:1, 9:16, 1.91:1, 16:9) baked into the system message.
-- ✅ Manual 🎨 image-mode toggle still available for explicit prompts
-- ✅ **Switch agent** with bridging handoff
-- ✅ **Smart-expand groups** — auto-add a new specialist when the topic shifts
-- ✅ **Real-time web search** via Brave (intent-classified per message; sources rendered as clickable links under the reply)
-- ✅ **Privacy** — conversations scoped to `member_ids`; UI shows "Private to you" / "Shared with N" badges
+- ✅ **Org asset library** — upload images, PDFs, DOCX, text, audio, video (≤10 MB each)
+- ✅ Direct + group chats with `@mention`
+- ✅ Smart auto-routing across 169 agents
+- ✅ **Auto image generation** (Nano Banana) — agents render images when asked
+- ✅ **Auto video generation** — Kie.ai Veo 3.1 (async submit + poll), inline `<video>` rendering
+- ✅ Switch agent + smart-expand groups
+- ✅ Real-time web search via Brave (intent-classified, source citations)
+- ✅ Privacy badges on each conversation
 - ✅ Invite system: code + shareable link + mailto helper
-- ✅ Dark "liquid glass" UI **+ light theme** with persisted toggle in TopBar
-- ✅ 16px chat font (matches modern AI platforms)
-- ✅ Removed "Made with Emergent" badge per user request
+- ✅ **Light + Dark theme** with persisted toggle
+- ✅ **Company "Soul" capture on org creation** — URL scrape + LLM synthesis (mission / audience / tone / values / north star / summary), injected into every agent prompt for the org
+- ✅ **Auto-created "General" team + conversation** on org creation — users can chat instantly
+- ✅ **Edit + Delete orgs and teams** (PATCH/DELETE, owner/admin only, full cascade, General team protected)
+- ✅ **Schedules / cron-style task automation** — APScheduler in-process; conversation-, team-, and org-scoped recurring + one-shot prompts; rehydrated on startup; `run-now`, pause/resume, delete
+- ✅ **Timezone + GPS-derived location** injected via `X-User-Timezone` / `X-User-Location` headers — agents quote "today" / "your local time" correctly and tailor regional advice
+- ✅ **soulprintengine.ai brand alignment** — orange (`#F64000`) accent + `#0a0a0a` black background; new orange swirl logo replaces Sparkles site-wide
+- ✅ **PWA support** — `manifest.json`, `sw.js` install service worker, Apple/Safari tags, theme-color, offline shell
+- ✅ **Public chat-image URLs** — `/api/files/{filename}` is now public-with-unguessable-URL so `<img>` tags render inline in chat
+- ✅ **Wider responsive chat layout** + scroll-to-top / scroll-to-bottom floating arrows
 
 ## Roadmap
-- **P0 (next)** Tool-calling framework — agents invoke tools via OpenAI function
-  calling. Initial tools: `web_search`, `generate_pdf`, `generate_docx`,
-  `generate_video` (Sora 2). Per-conversation permission toggles.
-- **P1** Telegram integration — outbound first (push generated assets to
-  Telegram chats), then two-way relay. Needs bot token from user.
-- **P1** Audio (TTS) for agent replies (OpenAI TTS via Emergent key)
+- **P1** Telegram integration (outbound + inbound)
+- **P1** Audio TTS replies (OpenAI TTS via Emergent key)
 - **P1** Pending-invite management + revoke + Resend email delivery
 - **P1** Real-time updates for group chats (WebSocket or polling)
 - **P2** Custom user-authored team agents on top of the 169 built-ins
-- **P2** Agent-to-agent `@ping` so a specialist can pull in a peer
-- **P2** Google/GitHub OAuth
-- **P2** Scheduled / background autonomous runs (e.g. weekly research digest)
+- **P2** Agent-to-agent `@ping`
+- **P2** Real Google / GitHub OAuth
+- **P2** `serialize_team` should emit `is_general` so the frontend stops relying on a name regex
+- **P2** Extract the schedules block (~370 LOC) and the orgs/teams routes from `server.py` into dedicated routers (the file is now ~2400 lines)
+- **P2** Live `next_run_at` in `_serialize_schedule` (read from APScheduler instead of stored doc)

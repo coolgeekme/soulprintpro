@@ -1986,19 +1986,25 @@ async def serve_org_asset(filename: str, u: dict = Depends(get_current_user)):
     return FileResponse(path, filename=asset.get("original_name") or filename, media_type=asset.get("mime"))
 
 @files_r.get("/{filename}")
-async def serve_file(filename: str, u: dict = Depends(get_current_user)):
+async def serve_file(filename: str):
+    """Serve a chat-generated media file by its UUID4 filename.
+
+    The filenames are 122-bit-random UUID4s emitted only inside messages of
+    conversations the user is a member of, so the URL itself is the
+    capability. Auth is intentionally NOT enforced here so that <img> tags
+    (which cannot send Bearer tokens and may have their cookies dropped by
+    third-party browsers) can render images inline."""
     if not ALLOWED_FILENAME_RE.match(filename):
         raise HTTPException(400, "Invalid filename")
     path = UPLOAD_DIR / filename
     if not path.is_file():
         raise HTTPException(404, "File not found")
-    # Verify the requesting user has access to a conversation that references this file
+    # Confirm it was actually persisted by an agent reply (defensive — keeps
+    # the upload dir from being treated as a public dump if anything ever
+    # writes to it directly).
     msg = await db.messages.find_one({"media_filename": filename})
     if not msg:
         raise HTTPException(404, "Not linked to any message")
-    conv = await db.conversations.find_one({"_id": ObjectId(msg["conversation_id"])})
-    if not conv or u["id"] not in conv.get("member_ids", []):
-        raise HTTPException(403, "No access to this file")
     return FileResponse(path)
 
 # ── Schedules — cron-style automation for prompts/agents ───────────────────

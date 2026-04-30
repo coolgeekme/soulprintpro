@@ -4,7 +4,7 @@ import api, { BACKEND_URL } from "../lib/api";
 import TopBar from "../components/TopBar";
 import { toast } from "sonner";
 import { useAuth } from "../context/AuthContext";
-import { Send, Trash2, AtSign, Users, Repeat, Search, X, Lock, Image as ImageIcon, Film, ExternalLink, Globe } from "lucide-react";
+import { Send, Trash2, AtSign, Users, Repeat, Search, X, Lock, Image as ImageIcon, Film, ExternalLink, Globe, ArrowUp, ArrowDown } from "lucide-react";
 
 const formatTime = (ts) => {
   try { return new Date(ts).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }); }
@@ -25,6 +25,24 @@ export default function ConversationPage() {
   const [showMentions, setShowMentions] = useState(false);
   const scrollerRef = useRef(null);
   const inputRef = useRef(null);
+  const [scrollState, setScrollState] = useState({ canUp: false, canDown: false });
+
+  const onScrollerScroll = () => {
+    const el = scrollerRef.current;
+    if (!el) return;
+    setScrollState({
+      canUp: el.scrollTop > 200,
+      canDown: el.scrollTop + el.clientHeight < el.scrollHeight - 200,
+    });
+  };
+  const scrollTo = (where) => {
+    const el = scrollerRef.current;
+    if (!el) return;
+    el.scrollTo({
+      top: where === "top" ? 0 : el.scrollHeight,
+      behavior: "smooth",
+    });
+  };
 
   const agentMap = useMemo(() => Object.fromEntries(agents.map(a => [a.id, a])), [agents]);
 
@@ -53,6 +71,7 @@ export default function ConversationPage() {
     if (scrollerRef.current) {
       scrollerRef.current.scrollTop = scrollerRef.current.scrollHeight;
     }
+    onScrollerScroll();
   }, [messages, sending]);
 
   const [imageMode, setImageMode] = useState(false);
@@ -228,7 +247,7 @@ export default function ConversationPage() {
 
       {/* Meta strip */}
       <div className="border-b border-white/5 bg-black/20">
-        <div className="max-w-5xl mx-auto px-6 py-4 flex items-center gap-3 flex-wrap">
+        <div className="max-w-5xl mx-auto px-4 sm:px-6 py-3 sm:py-4 flex items-center gap-3 flex-wrap">
           <span className="sp-chip">{conv.type}</span>
           {(() => {
             const others = (conv.member_ids || []).length - 1;
@@ -276,8 +295,31 @@ export default function ConversationPage() {
       </div>
 
       {/* Messages */}
-      <main ref={scrollerRef} className="flex-1 overflow-y-auto">
-        <div className="max-w-3xl mx-auto px-6 py-10 flex flex-col gap-4" data-testid="messages-container">
+      <main ref={scrollerRef} onScroll={onScrollerScroll} className="flex-1 overflow-y-auto relative">
+        {/* Floating scroll-to-top / scroll-to-bottom arrows */}
+        {scrollState.canUp && (
+          <button
+            type="button"
+            onClick={() => scrollTo("top")}
+            className="sp-glass-strong rounded-full p-2.5 fixed sm:absolute right-4 top-4 z-20 hover:scale-105 transition shadow-xl"
+            data-testid="scroll-top-btn"
+            title="Jump to top"
+          >
+            <ArrowUp className="w-4 h-4" />
+          </button>
+        )}
+        {scrollState.canDown && (
+          <button
+            type="button"
+            onClick={() => scrollTo("bottom")}
+            className="sp-glass-strong rounded-full p-2.5 fixed sm:absolute right-4 bottom-28 z-20 hover:scale-105 transition shadow-xl"
+            data-testid="scroll-bottom-btn"
+            title="Jump to latest"
+          >
+            <ArrowDown className="w-4 h-4" />
+          </button>
+        )}
+        <div className="max-w-5xl mx-auto px-3 sm:px-6 py-6 sm:py-10 flex flex-col gap-4" data-testid="messages-container">
           {messages.length === 0 && (
             <div className="sp-glass rounded-2xl p-8 text-center">
               <div className="mb-1 text-lg">You're in.</div>
@@ -294,7 +336,7 @@ export default function ConversationPage() {
             const a = isAgent ? agentMap[m.agent_id] : null;
             return (
               <div key={m.id} className={`flex ${mine ? "justify-end" : "justify-start"} sp-fade-up`}>
-                <div className={`max-w-[82%] rounded-2xl px-5 py-3.5 ${mine ? "sp-bubble-user" : "sp-bubble-agent"}`}>
+                <div className={`max-w-[92%] sm:max-w-[88%] rounded-2xl px-4 sm:px-5 py-3 sm:py-3.5 ${mine ? "sp-bubble-user" : "sp-bubble-agent"}`}>
                   <div className="flex items-center gap-2 mb-1.5">
                     {isAgent && a && <span className="sp-dot" style={{ background: a.accent }} />}
                     <span className="text-sm font-medium">
@@ -336,15 +378,16 @@ export default function ConversationPage() {
                   )}
                   {m.media_type === "image" && m.media_url && (
                     <a
-                      href={`${BACKEND_URL}${m.media_url}`}
+                      href={m.media_url.startsWith("http") ? m.media_url : `${BACKEND_URL}${m.media_url}`}
                       target="_blank" rel="noreferrer"
                       className="block mt-3 rounded-xl overflow-hidden border border-white/10 hover:border-white/30 transition"
                       data-testid={`message-image-${m.id}`}
                     >
                       <img
-                        src={`${BACKEND_URL}${m.media_url}`}
-                        alt="generated"
-                        className="w-full max-h-[420px] object-contain bg-black/30"
+                        src={m.media_url.startsWith("http") ? m.media_url : `${BACKEND_URL}${m.media_url}`}
+                        alt="Generated"
+                        referrerPolicy="no-referrer"
+                        className="block w-full max-h-[520px] object-contain bg-black/30"
                         loading="lazy"
                       />
                     </a>
@@ -387,7 +430,7 @@ export default function ConversationPage() {
 
       {/* Composer */}
       <div className="border-t border-white/5 bg-black/30 backdrop-blur-xl">
-        <form onSubmit={send} className="max-w-3xl mx-auto px-6 py-4">
+        <form onSubmit={send} className="max-w-5xl mx-auto px-3 sm:px-6 py-4">
           {showMentions && isGroup && (
             <div className="mb-2 sp-glass rounded-xl p-2 flex flex-wrap gap-2">
               {convAgents.map(a => (

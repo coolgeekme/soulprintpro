@@ -1,0 +1,25 @@
+{
+  "name": "SoulPrint Engine",
+  "short_name": "SoulPrint",
+  "description": "Your company's AI crew. Specialised agents that know your team's mission, voice, and people.",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#0a0a0a",
+  "theme_color": "#F64000",
+  "icons": [
+    {
+      "src": "/soulprint-logo.png",
+      "type": "image/png",
+      "sizes": "192x192",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "/soulprint-logo.png",
+      "type": "image/png",
+      "sizes": "512x512",
+      "purpose": "any maskable"
+    }
+  ]
+}

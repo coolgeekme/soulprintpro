@@ -33,11 +33,11 @@ export default function TopBar({ children, right = null }) {
   return (
     <header className="relative z-10 border-b" style={{ borderColor: "var(--border-soft)" }}>
       <div className="bg-black/0 backdrop-blur-xl">
-        <div className="max-w-7xl mx-auto flex items-center justify-between px-6 py-3 gap-4">
+        <div className="max-w-7xl mx-auto flex items-center justify-between px-4 sm:px-6 py-3 gap-2 sm:gap-4">
           <div className="flex items-center gap-3 min-w-0">
             <Link to="/app" className="flex items-center gap-2 shrink-0" data-testid="topbar-brand">
-              <div className="w-8 h-8 rounded-md sp-glass-strong flex items-center justify-center">
-                <Logo className="w-4 h-4" />
+              <div className="w-9 h-9 rounded-lg sp-glass-strong flex items-center justify-center p-0.5">
+                <Logo className="w-full h-full" />
               </div>
               <span className="text-base font-medium tracking-tight hidden sm:block">SoulPrint</span>
             </Link>
