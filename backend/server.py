@@ -27,6 +27,8 @@ import os, logging, uuid, secrets, re, json, base64, bcrypt, jwt
 
 from emergentintegrations.llm.chat import LlmChat, UserMessage
 
+from brave_search import brave_web_search, format_results_for_prompt
+
 ROOT_DIR = Path(__file__).parent
 UPLOAD_DIR = ROOT_DIR / "uploads"
 UPLOAD_DIR.mkdir(exist_ok=True)
@@ -623,12 +625,83 @@ async def build_transcript_tail(conv_id: str, limit: int = 12) -> List[dict]:
     ).sort("timestamp", -1).to_list(limit)
     return list(reversed(msgs))
 
+# ── Web-search intent classifier + injection ─────────────────────────────────
+WEB_SEARCH_AVAILABLE = bool(os.environ.get("BRAVE_API_KEY"))
+
+async def detect_search_intent(message: str, transcript: str = "") -> dict:
+    """Decide whether the agent should pull fresh web data before replying.
+
+    Returns {"search": bool, "query": str, "freshness": Optional[str]}.
+    Cheap one-shot LLM call (~150 tokens). Empty/safe defaults on error.
+    """
+    if not WEB_SEARCH_AVAILABLE or not message.strip():
+        return {"search": False, "query": "", "freshness": None}
+    system = (
+        "Decide if the user's latest message would clearly benefit from a fresh web search. "
+        "Lean YES for: news, current events, prices, scores, sports, weather, statistics, "
+        "company/product updates, releases, schedules, anyone or anything that may have "
+        "changed since training (mentions of 'latest', 'today', 'recent', 'this week', a "
+        "specific year, a specific person/company tied to a current event), facts likely "
+        "out of a model's memory, or 'who is X' for living people. "
+        "Lean NO for: code questions, generic advice, creative writing, opinions, internal "
+        "team logic, math, brainstorming, anything timeless. "
+        "Respond with ONLY a compact JSON object on one line: "
+        "{\"search\": true|false, \"query\": \"<concise search query, omit if false>\", "
+        "\"freshness\": \"pd\"|\"pw\"|\"pm\"|\"py\"|null} "
+        "where freshness is the time window: pd=24h, pw=7d, pm=30d, py=365d, null=any."
+    )
+    payload = (
+        (f"Recent conversation (most recent last):\n{transcript}\n\n" if transcript else "")
+        + f"Latest user message: {message}"
+    )
+    try:
+        chat = LlmChat(
+            api_key=EMERGENT_LLM_KEY,
+            session_id=f"search-intent:{uuid.uuid4()}",
+            system_message=system,
+        ).with_model("openai", "gpt-4.1-mini")
+        raw = await chat.send_message(UserMessage(text=payload))
+    except Exception as exc:
+        logger.warning("search-intent classifier error: %s", exc)
+        return {"search": False, "query": "", "freshness": None}
+
+    raw = (raw or "").strip()
+    # Pull the first JSON object out of the response, tolerating prose around it
+    m = re.search(r"\{.*\}", raw, re.DOTALL)
+    if not m:
+        return {"search": False, "query": "", "freshness": None}
+    try:
+        data = json.loads(m.group(0))
+    except json.JSONDecodeError:
+        return {"search": False, "query": "", "freshness": None}
+    out = {
+        "search": bool(data.get("search")),
+        "query": (data.get("query") or "").strip(),
+        "freshness": data.get("freshness") if data.get("freshness") in ("pd", "pw", "pm", "py") else None,
+    }
+    if not out["query"]:
+        out["search"] = False
+    return out
+
+async def maybe_fetch_web_context(message: str, transcript: str = "") -> tuple[str, list, dict]:
+    """If the message warrants it, search the web and return (formatted_block, sources, intent).
+
+    `sources` is a list of {title, url, snippet, age, source} dicts safe to persist.
+    `intent` is the raw classifier output for diagnostics.
+    """
+    intent = await detect_search_intent(message, transcript)
+    if not intent.get("search"):
+        return "", [], intent
+    results = await brave_web_search(intent["query"], count=5, freshness=intent.get("freshness"))
+    if not results:
+        return "", [], intent
+    return format_results_for_prompt(results), results, intent
+
 async def generate_agent_reply(conv: dict, team: dict, agent_id: str,
-                               latest_user_text: str, latest_user_name: str) -> str:
-    """Build a one-shot LLM call with a compact transcript for group context."""
+                               latest_user_text: str, latest_user_name: str) -> tuple[str, list]:
+    """One LLM turn for `agent_id`. Returns (reply_text, web_sources)."""
     tail = await build_transcript_tail(str(conv["_id"]), limit=12)
 
-    # Compose a compact conversation context for group mode
     transcript_lines = []
     for m in tail:
         if m["sender_type"] == "user":
@@ -639,6 +712,9 @@ async def generate_agent_reply(conv: dict, team: dict, agent_id: str,
             transcript_lines.append(f"{aname} (agent): {m['text']}")
     transcript = "\n".join(transcript_lines) if transcript_lines else ""
 
+    # Web-search augmentation (parallel to building the system prompt)
+    web_block, web_sources, _intent = await maybe_fetch_web_context(latest_user_text, transcript)
+
     system = build_system_prompt(agent_id, team, current_user_name=latest_user_name)
     if conv["type"] == "group":
         system += (
@@ -646,9 +722,14 @@ async def generate_agent_reply(conv: dict, team: dict, agent_id: str,
             "Other humans and other AI agents may also respond. Stay in your role — "
             "don't impersonate other agents or humans. Keep replies tight and additive."
         )
+    if web_block:
+        system += (
+            "\n\nFresh web search has been performed for this turn. Use the results below "
+            "as authoritative recent context. When you cite a fact pulled from them, end the "
+            "sentence with a markdown link `[source](url)` referencing the most relevant URL.\n\n"
+            f"{web_block}"
+        )
 
-    # Use a fresh one-shot chat per turn with the compact transcript as the user payload.
-    # session_id per conversation+agent keeps provider-side context across turns too.
     chat = LlmChat(
         api_key=EMERGENT_LLM_KEY,
         session_id=f"{conv['_id']}:{agent_id}",
@@ -661,10 +742,11 @@ async def generate_agent_reply(conv: dict, team: dict, agent_id: str,
         if transcript else latest_user_text
     )
     try:
-        return await chat.send_message(UserMessage(text=prompt))
+        text = await chat.send_message(UserMessage(text=prompt))
     except Exception as exc:
         logger.exception("LLM error: %s", exc)
-        return "I'm having trouble thinking right now — try me again in a moment."
+        return "I'm having trouble thinking right now — try me again in a moment.", []
+    return text, web_sources
 
 # ── Smart agent router ──────────────────────────────────────────────────────
 ROUTER_FALLBACK = "specialized-chief-of-staff"
@@ -839,7 +921,7 @@ async def send_message(conv_id: str, body: SendMessageBody, u: dict = Depends(ge
 
     agent_messages = []
     for aid in responders:
-        reply = await generate_agent_reply(conv, team, aid, body.text, u["name"])
+        reply, web_sources = await generate_agent_reply(conv, team, aid, body.text, u["name"])
         msg = {
             "id": str(uuid.uuid4()),
             "conversation_id": conv_id,
@@ -850,6 +932,8 @@ async def send_message(conv_id: str, body: SendMessageBody, u: dict = Depends(ge
             "text": reply,
             "timestamp": datetime.now(timezone.utc),
         }
+        if web_sources:
+            msg["web_sources"] = web_sources
         await db.messages.insert_one({**msg})
         agent_messages.append({k: v for k, v in msg.items() if k != "_id"})
 
@@ -902,7 +986,7 @@ async def smart_start(team_id: str, body: SmartStartBody, u: dict = Depends(get_
     }
     await db.messages.insert_one({**user_doc})
 
-    reply = await generate_agent_reply(conv_doc, team, chosen, body.text, u["name"])
+    reply, web_sources = await generate_agent_reply(conv_doc, team, chosen, body.text, u["name"])
     agent_msg = {
         "id": str(uuid.uuid4()),
         "conversation_id": conv_id,
@@ -913,6 +997,8 @@ async def smart_start(team_id: str, body: SmartStartBody, u: dict = Depends(get_
         "text": reply,
         "timestamp": datetime.now(timezone.utc),
     }
+    if web_sources:
+        agent_msg["web_sources"] = web_sources
     await db.messages.insert_one({**agent_msg})
 
     return {
@@ -962,7 +1048,7 @@ async def switch_agent(conv_id: str, body: SwitchAgentBody, u: dict = Depends(ge
     }
     await db.messages.insert_one({**intro})
 
-    reply = await generate_agent_reply(conv, team, body.agent_id, intro_msg, u["name"])
+    reply, web_sources = await generate_agent_reply(conv, team, body.agent_id, intro_msg, u["name"])
     agent_msg = {
         "id": str(uuid.uuid4()),
         "conversation_id": conv_id,
@@ -973,6 +1059,8 @@ async def switch_agent(conv_id: str, body: SwitchAgentBody, u: dict = Depends(ge
         "text": reply,
         "timestamp": datetime.now(timezone.utc),
     }
+    if web_sources:
+        agent_msg["web_sources"] = web_sources
     await db.messages.insert_one({**agent_msg})
 
     fresh = await db.conversations.find_one({"_id": ObjectId(conv_id)})

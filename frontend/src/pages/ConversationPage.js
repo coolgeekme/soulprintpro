@@ -4,7 +4,7 @@ import api, { BACKEND_URL } from "../lib/api";
 import TopBar from "../components/TopBar";
 import { toast } from "sonner";
 import { useAuth } from "../context/AuthContext";
-import { Send, Trash2, AtSign, Users, Repeat, Search, X, Lock, Image as ImageIcon } from "lucide-react";
+import { Send, Trash2, AtSign, Users, Repeat, Search, X, Lock, Image as ImageIcon, Globe, ExternalLink } from "lucide-react";
 
 const formatTime = (ts) => {
   try { return new Date(ts).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }); }
@@ -227,6 +227,9 @@ export default function ConversationPage() {
           {isGroup && conv.smart_expand && (
             <span className="sp-chip !bg-white/5">Smart expand</span>
           )}
+          <span className="sp-chip !bg-sky-400/10 !text-sky-200/90" data-testid="web-enabled-badge">
+            <Globe className="w-3 h-3" /> Web access
+          </span>
           {!isGroup && (
             <button
               onClick={() => setShowSwitch(true)}
@@ -269,6 +272,36 @@ export default function ConversationPage() {
                     <span className="text-[10px] sp-subtle ml-auto">{formatTime(m.timestamp)}</span>
                   </div>
                   <div className="whitespace-pre-wrap text-sm leading-relaxed">{m.text}</div>
+                  {Array.isArray(m.web_sources) && m.web_sources.length > 0 && (
+                    <div className="mt-3 pt-3 border-t border-white/10" data-testid={`web-sources-${m.id}`}>
+                      <div className="flex items-center gap-2 mb-2">
+                        <Globe className="w-3 h-3 text-white/70" />
+                        <span className="text-[10px] uppercase tracking-widest sp-subtle">Web sources · {m.web_sources.length}</span>
+                      </div>
+                      <ol className="flex flex-col gap-1.5">
+                        {m.web_sources.slice(0, 5).map((s, i) => (
+                          <li key={`${m.id}-src-${i}`} className="text-[12px] leading-snug">
+                            <a
+                              href={s.url}
+                              target="_blank"
+                              rel="noreferrer"
+                              className="inline-flex items-start gap-1.5 text-white/85 hover:text-white"
+                            >
+                              <ExternalLink className="w-3 h-3 mt-0.5 shrink-0 text-white/50" />
+                              <span>
+                                <span className="font-medium">{s.title || s.url}</span>
+                                {(s.source || s.age) && (
+                                  <span className="ml-1 text-white/50">
+                                    · {[s.source, s.age].filter(Boolean).join(" · ")}
+                                  </span>
+                                )}
+                              </span>
+                            </a>
+                          </li>
+                        ))}
+                      </ol>
+                    </div>
+                  )}
                   {m.media_type === "image" && m.media_url && (
                     <a
                       href={`${BACKEND_URL}${m.media_url}`}
