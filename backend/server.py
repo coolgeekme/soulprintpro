@@ -1967,6 +1967,111 @@ async def delete_asset(org_id: str, asset_id: str, u: dict = Depends(get_current
 # ── Auth-checked file streaming for generated media ──────────────────────────
 files_r = APIRouter(prefix="/api/files")
 
+# ── Unfurl (rich link previews) ─────────────────────────────────────────────
+unfurl_r = APIRouter(prefix="/api")
+
+_OG_PATTERNS = {
+    "title": [
+        r'<meta[^>]+property=["\']og:title["\'][^>]+content=["\']([^"\']+)["\']',
+        r'<meta[^>]+name=["\']twitter:title["\'][^>]+content=["\']([^"\']+)["\']',
+        r'<title[^>]*>([^<]+)</title>',
+    ],
+    "description": [
+        r'<meta[^>]+property=["\']og:description["\'][^>]+content=["\']([^"\']+)["\']',
+        r'<meta[^>]+name=["\']twitter:description["\'][^>]+content=["\']([^"\']+)["\']',
+        r'<meta[^>]+name=["\']description["\'][^>]+content=["\']([^"\']+)["\']',
+    ],
+    "image": [
+        r'<meta[^>]+property=["\']og:image["\'][^>]+content=["\']([^"\']+)["\']',
+        r'<meta[^>]+name=["\']twitter:image["\'][^>]+content=["\']([^"\']+)["\']',
+    ],
+    "site_name": [
+        r'<meta[^>]+property=["\']og:site_name["\'][^>]+content=["\']([^"\']+)["\']',
+    ],
+}
+
+def _first_match(patterns: List[str], html: str) -> str:
+    for p in patterns:
+        m = re.search(p, html, re.IGNORECASE | re.DOTALL)
+        if m:
+            return _html_unescape(m.group(1).strip())[:500]
+    return ""
+
+def _html_unescape(s: str) -> str:
+    import html as _html
+    return _html.unescape(s)
+
+def _absolute_url(maybe_relative: str, base: str) -> str:
+    if not maybe_relative:
+        return ""
+    if maybe_relative.startswith(("http://", "https://", "data:")):
+        return maybe_relative
+    try:
+        from urllib.parse import urljoin
+        return urljoin(base, maybe_relative)
+    except Exception:
+        return maybe_relative
+
+@unfurl_r.get("/unfurl")
+async def unfurl(url: str, u: dict = Depends(get_current_user)):
+    """Fetch a URL and return a rich preview (title/description/image/favicon).
+
+    Results are cached in `unfurl_cache` for 24h to avoid hammering origins
+    when the same source is rendered across many messages."""
+    target = (url or "").strip()
+    if not target:
+        raise HTTPException(400, "url required")
+    if not target.startswith(("http://", "https://")):
+        target = "https://" + target
+
+    cached = await db.unfurl_cache.find_one({"url": target})
+    now = datetime.now(timezone.utc)
+    if cached and cached.get("fetched_at") and (now - cached["fetched_at"]).total_seconds() < 86400:
+        return {k: v for k, v in cached.items() if k != "_id" and k != "fetched_at"}
+
+    preview = {"url": target, "title": "", "description": "", "image": "", "site_name": "", "favicon": "", "host": ""}
+    try:
+        from urllib.parse import urlparse
+        host = urlparse(target).netloc
+        preview["host"] = host
+        async with httpx.AsyncClient(timeout=8.0, follow_redirects=True,
+                                    headers={
+                                        "User-Agent": "Mozilla/5.0 (compatible; SoulPrintEngineBot/1.0; +https://soulprintengine.ai/bot)",
+                                        "Accept": "text/html,application/xhtml+xml",
+                                        "Accept-Language": "en-US,en;q=0.9",
+                                    }) as client:
+            resp = await client.get(target)
+        if resp.status_code < 400:
+            html = resp.text or ""
+            # Truncate to head only — meta tags live there and we don't need 5MB pages
+            head_match = re.search(r"<head[^>]*>(.*?)</head>", html, re.IGNORECASE | re.DOTALL)
+            head = head_match.group(1) if head_match else html[:50000]
+            for key, patterns in _OG_PATTERNS.items():
+                preview[key] = _first_match(patterns, head)
+            if preview["image"]:
+                preview["image"] = _absolute_url(preview["image"], target)
+            # Favicon: link rel="icon" or fallback /favicon.ico
+            fav = re.search(
+                r'<link[^>]+rel=["\'](?:icon|shortcut icon|apple-touch-icon)["\'][^>]+href=["\']([^"\']+)["\']',
+                head, re.IGNORECASE,
+            )
+            if fav:
+                preview["favicon"] = _absolute_url(fav.group(1).strip(), target)
+            else:
+                preview["favicon"] = f"https://{host}/favicon.ico" if host else ""
+        else:
+            logger.info("unfurl %s -> %s", target, resp.status_code)
+    except (httpx.HTTPError, ValueError) as exc:
+        logger.warning("unfurl error %s: %s", target, exc)
+
+    # Persist (upsert) so we don't refetch for 24h
+    await db.unfurl_cache.update_one(
+        {"url": target},
+        {"$set": {**preview, "fetched_at": now}},
+        upsert=True,
+    )
+    return preview
+
 ALLOWED_FILENAME_RE = re.compile(r"^[a-f0-9]{16,}\.(png|jpg|jpeg|webp|gif|pdf)$", re.IGNORECASE)
 
 @files_r.get("/assets/{filename}")
@@ -2352,6 +2457,7 @@ app.include_router(team_r)
 app.include_router(conv_r)
 app.include_router(assets_r)
 app.include_router(files_r)
+app.include_router(unfurl_r)
 app.include_router(schedules_r)
 
 app.add_middleware(
@@ -2373,6 +2479,7 @@ async def startup():
     await db.messages.create_index("media_filename", sparse=True)
     await db.schedules.create_index([("org_id", 1), ("created_at", -1)])
     await db.schedules.create_index("created_by")
+    await db.unfurl_cache.create_index("url", unique=True)
     # Boot the in-process scheduler and rehydrate persisted jobs
     if not scheduler.running:
         scheduler.start()

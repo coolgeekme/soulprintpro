@@ -4,7 +4,8 @@ import api, { BACKEND_URL } from "../lib/api";
 import TopBar from "../components/TopBar";
 import { toast } from "sonner";
 import { useAuth } from "../context/AuthContext";
-import { Send, Trash2, AtSign, Users, Repeat, Search, X, Lock, Image as ImageIcon, Film, ExternalLink, Globe, ArrowUp, ArrowDown } from "lucide-react";
+import { Send, Trash2, AtSign, Users, Repeat, Search, X, Lock, Image as ImageIcon, Film, Globe, ArrowUp, ArrowDown } from "lucide-react";
+import LinkPreviewCard from "../components/LinkPreviewCard";
 
 const formatTime = (ts) => {
   try { return new Date(ts).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }); }
@@ -352,28 +353,11 @@ export default function ConversationPage() {
                         <Globe className="w-3 h-3 text-white/70" />
                         <span className="text-[10px] uppercase tracking-widest sp-subtle">Web sources · {m.web_sources.length}</span>
                       </div>
-                      <ol className="flex flex-col gap-1.5">
+                      <div className="flex flex-col gap-2">
                         {m.web_sources.slice(0, 5).map((s, i) => (
-                          <li key={`${m.id}-src-${i}`} className="text-[12px] leading-snug">
-                            <a
-                              href={s.url}
-                              target="_blank"
-                              rel="noreferrer"
-                              className="inline-flex items-start gap-1.5 text-white/85 hover:text-white"
-                            >
-                              <ExternalLink className="w-3 h-3 mt-0.5 shrink-0 text-white/50" />
-                              <span>
-                                <span className="font-medium">{s.title || s.url}</span>
-                                {(s.source || s.age) && (
-                                  <span className="ml-1 text-white/50">
-                                    · {[s.source, s.age].filter(Boolean).join(" · ")}
-                                  </span>
-                                )}
-                              </span>
-                            </a>
-                          </li>
+                          <LinkPreviewCard key={`${m.id}-src-${i}`} source={s} />
                         ))}
-                      </ol>
+                      </div>
                     </div>
                   )}
                   {m.media_type === "image" && m.media_url && (

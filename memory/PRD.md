@@ -73,6 +73,7 @@ pattern. Users must be able to:
 - ✅ **PWA support** — `manifest.json`, `sw.js` install service worker, Apple/Safari tags, theme-color, offline shell
 - ✅ **Public chat-image URLs** — `/api/files/{filename}` is now public-with-unguessable-URL so `<img>` tags render inline in chat
 - ✅ **Wider responsive chat layout** + scroll-to-top / scroll-to-bottom floating arrows
+- ✅ **Rich link previews** for cited web sources — `/api/unfurl?url=…` extracts OG/Twitter meta + favicon, cached 24h in MongoDB. Frontend `LinkPreviewCard` renders Slack/Discord-style cards with title / description / thumbnail / favicon / site name.
 
 ## Roadmap
 - **P1** Telegram integration (outbound + inbound)
