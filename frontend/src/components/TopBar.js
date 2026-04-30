@@ -39,11 +39,13 @@ export default function TopBar({ children, right = null }) {
         // regular browser window env(safe-area-inset-top) resolves to 0, so
         // this has no effect outside standalone mode.
         paddingTop: "env(safe-area-inset-top)",
-        // Translucent background with backdrop-blur so messages scrolling
-        // under the sticky bar stay readable without being distracting.
-        background: "color-mix(in srgb, var(--bg) 88%, transparent)",
-        backdropFilter: "blur(24px) saturate(140%)",
-        WebkitBackdropFilter: "blur(24px) saturate(140%)",
+        // Mostly-opaque background with a strong blur so content scrolling
+        // under the frozen bar is clearly separated without vanishing behind
+        // it — the old 88% translucency made the bar feel unanchored.
+        background: "color-mix(in srgb, var(--bg) 96%, transparent)",
+        backdropFilter: "blur(28px) saturate(160%)",
+        WebkitBackdropFilter: "blur(28px) saturate(160%)",
+        boxShadow: "0 1px 0 0 rgba(0,0,0,0.04), 0 8px 24px -16px rgba(0,0,0,0.25)",
       }}
     >
       <div>

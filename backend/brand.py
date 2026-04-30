@@ -38,6 +38,7 @@ _HEX_RE = re.compile(r"^#?([0-9a-fA-F]{3}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})$")
 class BrandUpdateBody(BaseModel):
     brand_colors: Optional[list[str]] = Field(default=None, max_length=8)
     tagline: Optional[str] = None
+    visual_style: Optional[str] = None  # free-form aesthetic direction for the image generator
 
 
 def normalise_colors(colors: list[str]) -> list[str]:
@@ -65,6 +66,7 @@ def serialize_brand(org: dict) -> dict:
         "alt_logo":     ba.get("alt_logo") or None,
         "brand_colors": ba.get("brand_colors") or [],
         "tagline":      ba.get("tagline") or "",
+        "visual_style": ba.get("visual_style") or "",
     }
 
 

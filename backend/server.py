@@ -947,6 +947,8 @@ async def update_brand_meta(
         update["brand_assets.brand_colors"] = _normalise_colors(body.brand_colors)
     if body.tagline is not None:
         update["brand_assets.tagline"] = body.tagline.strip()[:240]
+    if body.visual_style is not None:
+        update["brand_assets.visual_style"] = body.visual_style.strip()[:600]
     if update:
         await db.organizations.update_one({"_id": ObjectId(org_id)}, {"$set": update})
     fresh = await db.organizations.find_one({"_id": ObjectId(org_id)})

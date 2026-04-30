@@ -12,8 +12,9 @@ import { Sparkles, UploadCloud, Trash2, Save, Image as ImageIcon, X as XIcon } f
 // All edits are owner/admin-only on the backend; this component just calls
 // the endpoints and displays gracefully when the user lacks permission.
 export default function BrandAssetsPanel({ orgId, initial, onChange }) {
-  const [brand, setBrand] = useState(initial || { primary_logo: null, alt_logo: null, brand_colors: [], tagline: "" });
+  const [brand, setBrand] = useState(initial || { primary_logo: null, alt_logo: null, brand_colors: [], tagline: "", visual_style: "" });
   const [tagline, setTagline] = useState((initial?.tagline) || "");
+  const [visualStyle, setVisualStyle] = useState((initial?.visual_style) || "");
   const [colorsText, setColorsText] = useState(((initial?.brand_colors) || []).join(", "));
   const [savingMeta, setSavingMeta] = useState(false);
   const [uploadingKind, setUploadingKind] = useState("");
@@ -24,6 +25,7 @@ export default function BrandAssetsPanel({ orgId, initial, onChange }) {
     if (initial) {
       setBrand(initial);
       setTagline(initial.tagline || "");
+      setVisualStyle(initial.visual_style || "");
       setColorsText((initial.brand_colors || []).join(", "));
     }
   }, [initial]);
@@ -61,7 +63,11 @@ export default function BrandAssetsPanel({ orgId, initial, onChange }) {
     setSavingMeta(true);
     const colors = colorsText.split(/[\s,]+/).map((c) => c.trim()).filter(Boolean);
     try {
-      const { data } = await api.patch(`/orgs/${orgId}/brand`, { tagline: tagline.trim(), brand_colors: colors });
+      const { data } = await api.patch(`/orgs/${orgId}/brand`, {
+        tagline: tagline.trim(),
+        brand_colors: colors,
+        visual_style: visualStyle.trim(),
+      });
       setBrand(data);
       // Backend strips invalid hex codes — sync the field back so the user
       // sees what was kept.
@@ -162,6 +168,54 @@ export default function BrandAssetsPanel({ orgId, initial, onChange }) {
             data-testid="brand-tagline-input"
           />
         </div>
+      </div>
+
+      {/* Visual style — feeds directly into the social-image generator prompt
+          so every cover image shares a consistent aesthetic. Presets give
+          users a friendly starting point without having to know prompt-craft. */}
+      <div className="mt-3 space-y-2">
+        <label className="text-[11px] sp-subtle uppercase tracking-widest flex items-center justify-between">
+          <span>Visual style / aesthetic</span>
+          <span className="opacity-60 normal-case tracking-normal text-[10px]">drives every social image</span>
+        </label>
+        <div className="flex flex-wrap gap-1.5" data-testid="brand-style-presets">
+          {[
+            ["Editorial photography",   "Rich editorial photography. Natural daylight, shallow depth of field, subtle film grain, warm tones. Real human moments, unposed, documentary feel."],
+            ["Minimalist vector",       "Clean flat vector illustration. Thick strokes, rounded geometric shapes, generous negative space, limited 3-color palette. Modern and restrained."],
+            ["Bold 3D isometric",       "Bold 3D isometric illustration. Playful shapes, soft shadows, gradient highlights, pastel accents. Friendly, vibrant, tech-forward."],
+            ["Cinematic moody",         "Cinematic moody rendering. Deep shadows, volumetric lighting, teal-and-orange grading, slight anamorphic lens flare. Dramatic and premium."],
+            ["Hand-sketched",           "Loose hand-drawn sketch. Paper texture, ink bleeds, watercolor washes. Imperfect and human."],
+            ["Retro Bauhaus",           "Retro Bauhaus-inspired composition. Bold primary shapes, limited palette, grid alignment, mid-century typography accents."],
+          ].map(([label, prompt]) => (
+            <button
+              key={label}
+              type="button"
+              onClick={() => setVisualStyle(prompt)}
+              className={`sp-chip text-[11px] ${visualStyle === prompt ? "!bg-orange-500/20 !text-white !border-orange-400" : ""}`}
+              data-testid={`style-preset-${label.toLowerCase().replace(/[^a-z0-9]+/g, '-')}`}
+              title={prompt}
+            >
+              {label}
+            </button>
+          ))}
+          {visualStyle && (
+            <button type="button" onClick={() => setVisualStyle("")}
+                    className="sp-chip text-[11px] hover:!text-red-400"
+                    data-testid="clear-visual-style">
+              Clear
+            </button>
+          )}
+        </div>
+        <textarea
+          value={visualStyle}
+          onChange={(e) => setVisualStyle(e.target.value)}
+          placeholder="Describe the look & feel of images for this brand. Pick a preset above or write your own. Examples: 'rich editorial photography, natural light, warm tones' / 'bold flat vectors, black + orange, generous whitespace'."
+          rows={3}
+          className="w-full rounded-lg px-3 py-2 text-sm resize-none focus:sp-focus"
+          style={{ background: "var(--input-bg)", border: "1px solid var(--input-border)", color: "var(--fg)" }}
+          maxLength={600}
+          data-testid="brand-visual-style-input"
+        />
       </div>
 
       <div className="flex items-center justify-end pt-3">

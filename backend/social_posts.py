@@ -262,6 +262,12 @@ def make_social_router(*, db, AGENTS, EMERGENT_LLM_KEY, LlmChat, UserMessage,
         colors = ba.get("brand_colors") or []
         if colors:
             soul_bits.append(f"Brand palette: {', '.join(colors[:4])}")
+        visual_style = (ba.get("visual_style") or "").strip()
+        if visual_style:
+            # User-authored visual direction — this overrides the model's
+            # default tendency toward generic stock imagery and keeps a
+            # consistent look across every post the org ever drafts.
+            soul_bits.append(f"Visual style: {visual_style[:400]}")
         sys_msg = (
             "You generate a single 1:1 social post cover image. The image must "
             "feel on-brand for the company described below. Avoid text inside "
