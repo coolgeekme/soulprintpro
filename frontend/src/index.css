@@ -10,8 +10,8 @@
 :root,
 :root[data-theme="dark"] {
   color-scheme: dark;
-  --bg: #05060a;
-  --bg-aurora-1: rgba(124, 92, 255, 0.18);
+  --bg: #0a0a0a;
+  --bg-aurora-1: rgba(246, 64, 0, 0.18);
   --bg-aurora-2: rgba(34, 211, 238, 0.12);
   --bg-aurora-3: rgba(249, 112, 102, 0.20);
   --fg: #e9ecf1;
@@ -27,8 +27,8 @@
   --chip-bg: rgba(255, 255, 255, 0.04);
   --chip-fg: rgba(235, 237, 245, 0.75);
   --chip-strong-bg: rgba(255, 255, 255, 0.10);
-  --bubble-user-bg: linear-gradient(180deg, rgba(124,92,255,0.22), rgba(124,92,255,0.10));
-  --bubble-user-border: rgba(124,92,255,0.35);
+  --bubble-user-bg: linear-gradient(180deg, rgba(246,64,0,0.22), rgba(246,64,0,0.10));
+  --bubble-user-border: rgba(246,64,0,0.35);
   --bubble-user-fg: #f4f5fb;
   --bubble-agent-bg: rgba(255, 255, 255, 0.035);
   --bubble-agent-border: rgba(255, 255, 255, 0.08);
@@ -36,16 +36,16 @@
   --input-bg: rgba(255,255,255,0.03);
   --input-border: rgba(255,255,255,0.10);
   --input-border-focus: rgba(255,255,255,0.30);
-  --primary-bg: linear-gradient(180deg, #f5f6fa 0%, #d7dae4 100%);
-  --primary-fg: #0a0a12;
-  --primary-border: rgba(255,255,255,0.25);
+  --primary-bg: linear-gradient(180deg, #ff5a1f 0%, #d83a00 100%);
+  --primary-fg: #ffffff;
+  --primary-border: rgba(255, 109, 36, 0.55);
   --gradient-text: linear-gradient(180deg, #ffffff 0%, #b6bac9 100%);
 }
 
 :root[data-theme="light"] {
   color-scheme: light;
   --bg: #f6f5f1;
-  --bg-aurora-1: rgba(124, 92, 255, 0.14);
+  --bg-aurora-1: rgba(246, 64, 0, 0.14);
   --bg-aurora-2: rgba(45, 200, 230, 0.10);
   --bg-aurora-3: rgba(249, 145, 102, 0.10);
   --fg: #1a1a22;
@@ -61,18 +61,18 @@
   --chip-bg: rgba(20, 20, 28, 0.05);
   --chip-fg: rgba(26, 26, 34, 0.78);
   --chip-strong-bg: rgba(20, 20, 28, 0.10);
-  --bubble-user-bg: linear-gradient(180deg, rgba(124,92,255,0.18), rgba(124,92,255,0.08));
-  --bubble-user-border: rgba(124,92,255,0.30);
+  --bubble-user-bg: linear-gradient(180deg, rgba(246,64,0,0.18), rgba(246,64,0,0.08));
+  --bubble-user-border: rgba(246,64,0,0.30);
   --bubble-user-fg: #1a1a22;
   --bubble-agent-bg: rgba(255,255,255,0.70);
   --bubble-agent-border: rgba(20,20,28,0.10);
   --bubble-agent-fg: #1a1a22;
   --input-bg: rgba(255,255,255,0.85);
   --input-border: rgba(20,20,28,0.12);
-  --input-border-focus: rgba(124,92,255,0.50);
-  --primary-bg: linear-gradient(180deg, #1a1a22 0%, #303040 100%);
-  --primary-fg: #f6f5f1;
-  --primary-border: rgba(20,20,28,0.20);
+  --input-border-focus: rgba(246,64,0,0.50);
+  --primary-bg: linear-gradient(180deg, #ff6a2e 0%, #e84a10 100%);
+  --primary-fg: #ffffff;
+  --primary-border: rgba(216, 58, 0, 0.45);
   --gradient-text: linear-gradient(180deg, #1a1a22 0%, #5a5a72 100%);
 }
 
@@ -117,8 +117,8 @@ code, pre {
     --secondary-foreground: 220 15% 92%;
     --muted: 232 14% 14%;
     --muted-foreground: 220 10% 62%;
-    --accent: 252 80% 68%;
-    --accent-foreground: 232 25% 6%;
+    --accent: 15 100% 48%;
+    --accent-foreground: 0 0% 100%;
     --destructive: 0 72% 55%;
     --destructive-foreground: 0 0% 98%;
     --border: 232 14% 16%;
@@ -257,7 +257,7 @@ code, pre {
 
 /* focus ring */
 input:focus, textarea:focus, button:focus { outline: none; }
-.sp-focus { box-shadow: 0 0 0 2px rgba(124, 92, 255, 0.35); }
+.sp-focus { box-shadow: 0 0 0 2px rgba(246, 64, 0, 0.35); }
 
 /* chat bubbles */
 .sp-bubble-user {

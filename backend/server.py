@@ -106,7 +106,45 @@ async def get_current_user(request: Request) -> dict:
     user = await db.users.find_one({"_id": ObjectId(payload["sub"])})
     if not user:
         raise HTTPException(401, "User not found")
+    # Capture user-context headers (timezone + optional location) so deeper
+    # helpers can pick them up via _USER_CTX without threading a request param.
+    tz = (request.headers.get("X-User-Timezone") or "").strip()[:80]
+    loc = (request.headers.get("X-User-Location") or "").strip()[:200]
+    _USER_CTX.set({"timezone": tz, "location": loc})
     return {"id": str(user["_id"]), "email": user["email"], "name": user["name"]}
+
+# ── Per-request user context (timezone + approximate location) ──────────────
+# Set in `get_current_user` from the X-User-Timezone / X-User-Location headers
+# the frontend injects on every request, then read inside `generate_agent_reply`
+# so agents know "your local time is …" without polluting every signature.
+import contextvars  # noqa: E402  (small import block, kept near use site)
+_USER_CTX: contextvars.ContextVar[dict] = contextvars.ContextVar("user_ctx", default={})
+
+def _user_context_block() -> str:
+    """Render the current user's timezone + approximate location as a system-prompt
+    snippet. Returns "" if nothing is set."""
+    ctx = _USER_CTX.get() or {}
+    tz = ctx.get("timezone") or ""
+    loc = ctx.get("location") or ""
+    if not tz and not loc:
+        return ""
+    parts = []
+    if tz:
+        try:
+            from zoneinfo import ZoneInfo
+            now_local = datetime.now(ZoneInfo(tz))
+            stamp = now_local.strftime("%A, %B %d %Y at %H:%M %Z")
+            parts.append(f"Current local date/time for the user: {stamp} ({tz}).")
+        except Exception:
+            parts.append(f"User timezone: {tz}.")
+    if loc:
+        parts.append(f"Approximate user location: {loc}.")
+    parts.append(
+        "Use this to interpret 'today', 'tomorrow', 'this week' etc., quote times "
+        "in the user's local zone unless they ask otherwise, and tailor any "
+        "regional advice (weather, events, currency) to that location."
+    )
+    return "\n".join(parts)
 
 # ── Agent catalogue — loaded from agents_catalogue.json on startup ──────────
 AGENTS_CATALOGUE_PATH = ROOT_DIR / "agents_catalogue.json"
@@ -160,9 +198,37 @@ class OrgCreateBody(BaseModel):
     website_url: Optional[str] = ""
     soul_description: Optional[str] = ""  # manual override; if empty, generated from website_url
 
+class OrgUpdateBody(BaseModel):
+    name: Optional[str] = None
+    website_url: Optional[str] = None
+    soul_description: Optional[str] = None
+    regenerate_soul: bool = False  # if True, re-run the soul generator with current url+desc
+
 class TeamCreateBody(BaseModel):
     name: str
     description: Optional[str] = ""
+
+class TeamUpdateBody(BaseModel):
+    name: Optional[str] = None
+    description: Optional[str] = None
+
+class ScheduleCreateBody(BaseModel):
+    title: str
+    prompt: str
+    scope: Literal["conversation", "team", "org"] = "conversation"
+    target_id: str  # conversation_id, team_id, or org_id depending on scope
+    cron: Optional[str] = None  # 5-field cron expression for recurring jobs
+    run_at: Optional[str] = None  # ISO-8601 for one-shot
+    timezone: Optional[str] = "UTC"
+    active: bool = True
+
+class ScheduleUpdateBody(BaseModel):
+    title: Optional[str] = None
+    prompt: Optional[str] = None
+    cron: Optional[str] = None
+    run_at: Optional[str] = None
+    timezone: Optional[str] = None
+    active: Optional[bool] = None
 
 class SoulPrintBody(BaseModel):
     mission: str = ""
@@ -484,6 +550,60 @@ async def get_org(org_id: str, u: dict = Depends(get_current_user)):
     data["role"] = ctx["member"]["role"]
     return data
 
+@org_r.patch("/{org_id}")
+async def update_org(org_id: str, body: OrgUpdateBody, u: dict = Depends(get_current_user)):
+    ctx = await require_org_member(org_id, u["id"])
+    if ctx["member"]["role"] not in ("owner", "admin"):
+        raise HTTPException(403, "Only owners/admins can edit the org")
+    update: dict = {}
+    if body.name is not None:
+        n = body.name.strip()
+        if not n:
+            raise HTTPException(400, "Name cannot be empty")
+        update["name"] = n
+    if body.website_url is not None:
+        update["website_url"] = body.website_url.strip()
+    if body.soul_description is not None:
+        update["soul_description"] = body.soul_description.strip()
+    if body.regenerate_soul:
+        url = update.get("website_url", ctx["org"].get("website_url", ""))
+        manual = update.get("soul_description", ctx["org"].get("soul_description", ""))
+        name = update.get("name", ctx["org"].get("name", ""))
+        text = await _fetch_url_text(url) if url else ""
+        update["soul"] = await _generate_company_soul(name, text, manual)
+    if update:
+        await db.organizations.update_one({"_id": ObjectId(org_id)}, {"$set": update})
+    fresh = await db.organizations.find_one({"_id": ObjectId(org_id)})
+    out = serialize_org(fresh)
+    out["role"] = ctx["member"]["role"]
+    return out
+
+@org_r.delete("/{org_id}")
+async def delete_org(org_id: str, u: dict = Depends(get_current_user)):
+    ctx = await require_org_member(org_id, u["id"])
+    if ctx["member"]["role"] != "owner":
+        raise HTTPException(403, "Only the org owner can delete this organization")
+    # Cascade: gather all teams, conversations, messages, invites, members, assets, schedules
+    teams = await db.teams.find({"org_id": org_id}, {"_id": 1}).to_list(1000)
+    team_ids = [str(t["_id"]) for t in teams]
+    convs = await db.conversations.find({"team_id": {"$in": team_ids}}, {"_id": 1}).to_list(5000) if team_ids else []
+    conv_ids = [str(c["_id"]) for c in convs]
+    if conv_ids:
+        await db.messages.delete_many({"conversation_id": {"$in": conv_ids}})
+        await db.conversations.delete_many({"_id": {"$in": [ObjectId(c) for c in conv_ids]}})
+    if team_ids:
+        await db.teams.delete_many({"_id": {"$in": [ObjectId(t) for t in team_ids]}})
+    await db.invites.delete_many({"org_id": org_id})
+    await db.org_members.delete_many({"org_id": org_id})
+    await db.assets.delete_many({"org_id": org_id})
+    # Schedules cascade via the in-process scheduler unregister
+    schedules = await db.schedules.find({"org_id": org_id}).to_list(1000)
+    for s in schedules:
+        _scheduler_unregister(str(s["_id"]))
+    await db.schedules.delete_many({"org_id": org_id})
+    await db.organizations.delete_one({"_id": ObjectId(org_id)})
+    return {"ok": True}
+
 @org_r.get("/{org_id}/members")
 async def list_org_members(org_id: str, u: dict = Depends(get_current_user)):
     await require_org_member(org_id, u["id"])
@@ -596,6 +716,54 @@ async def update_soulprint(team_id: str, body: SoulPrintBody, u: dict = Depends(
     team = await db.teams.find_one({"_id": ObjectId(team_id)})
     return serialize_team(team)
 
+@team_r.patch("/teams/{team_id}")
+async def update_team(team_id: str, body: TeamUpdateBody, u: dict = Depends(get_current_user)):
+    ctx = await require_team_member(team_id, u["id"])
+    if ctx["org_role"] not in ("owner", "admin"):
+        raise HTTPException(403, "Only owners/admins can edit a team")
+    update: dict = {}
+    if body.name is not None:
+        n = body.name.strip()
+        if not n:
+            raise HTTPException(400, "Team name cannot be empty")
+        update["name"] = n
+    if body.description is not None:
+        update["description"] = body.description.strip()[:500]
+    if update:
+        await db.teams.update_one({"_id": ObjectId(team_id)}, {"$set": update})
+    fresh = await db.teams.find_one({"_id": ObjectId(team_id)})
+    return serialize_team(fresh)
+
+@team_r.delete("/teams/{team_id}")
+async def delete_team(team_id: str, u: dict = Depends(get_current_user)):
+    ctx = await require_team_member(team_id, u["id"])
+    if ctx["org_role"] not in ("owner", "admin"):
+        raise HTTPException(403, "Only owners/admins can delete a team")
+    if ctx["team"].get("is_general"):
+        raise HTTPException(400, "The General team cannot be deleted")
+    convs = await db.conversations.find({"team_id": team_id}, {"_id": 1}).to_list(2000)
+    conv_ids = [str(c["_id"]) for c in convs]
+    if conv_ids:
+        await db.messages.delete_many({"conversation_id": {"$in": conv_ids}})
+        await db.conversations.delete_many({"_id": {"$in": [ObjectId(c) for c in conv_ids]}})
+        # Tear down any scheduled jobs that targeted those conversations / this team
+        sched = await db.schedules.find(
+            {"$or": [
+                {"target_id": {"$in": conv_ids}, "scope": "conversation"},
+                {"target_id": team_id, "scope": "team"},
+            ]}
+        ).to_list(500)
+        for s in sched:
+            _scheduler_unregister(str(s["_id"]))
+        await db.schedules.delete_many({
+            "$or": [
+                {"target_id": {"$in": conv_ids}, "scope": "conversation"},
+                {"target_id": team_id, "scope": "team"},
+            ]
+        })
+    await db.teams.delete_one({"_id": ObjectId(team_id)})
+    return {"ok": True}
+
 @team_r.get("/teams/{team_id}/agents")
 async def team_agents(
     team_id: str,
@@ -681,6 +849,9 @@ def build_system_prompt(agent_id: str, team: dict, current_user_name: Optional[s
             lines.append("\n" + block)
     if current_user_name:
         lines.append(f"\nThe person you're talking to is {current_user_name}.")
+    user_ctx_block = _user_context_block()
+    if user_ctx_block:
+        lines.append("\n" + user_ctx_block)
     return "\n".join(lines)
 
 async def load_assets_brief(org_id: str, max_items: int = 30) -> List[dict]:
@@ -1830,6 +2001,336 @@ async def serve_file(filename: str, u: dict = Depends(get_current_user)):
         raise HTTPException(403, "No access to this file")
     return FileResponse(path)
 
+# ── Schedules — cron-style automation for prompts/agents ───────────────────
+from apscheduler.schedulers.asyncio import AsyncIOScheduler  # noqa: E402
+from apscheduler.triggers.cron import CronTrigger  # noqa: E402
+from apscheduler.triggers.date import DateTrigger  # noqa: E402
+try:
+    from zoneinfo import ZoneInfo
+except ImportError:
+    ZoneInfo = None  # type: ignore
+
+scheduler = AsyncIOScheduler(timezone="UTC")
+schedules_r = APIRouter(prefix="/api")
+
+def _serialize_schedule(s: dict) -> dict:
+    def _iso(v):
+        if isinstance(v, datetime):
+            return v.isoformat()
+        return v
+    return {
+        "id": str(s["_id"]),
+        "title": s.get("title", ""),
+        "prompt": s.get("prompt", ""),
+        "scope": s.get("scope", "conversation"),
+        "target_id": s.get("target_id", ""),
+        "org_id": s.get("org_id", ""),
+        "cron": s.get("cron"),
+        "run_at": _iso(s.get("run_at")),
+        "timezone": s.get("timezone", "UTC"),
+        "active": bool(s.get("active", True)),
+        "created_by": s.get("created_by", ""),
+        "created_at": _iso(s.get("created_at")),
+        "last_run_at": _iso(s.get("last_run_at")),
+        "last_status": s.get("last_status", ""),
+        "next_run_at": _iso(s.get("next_run_at")),
+    }
+
+def _schedule_job_id(sched_id: str) -> str:
+    return f"sp:{sched_id}"
+
+def _build_trigger(s: dict):
+    """Return an APScheduler trigger for the schedule doc, or None if invalid."""
+    tz = s.get("timezone") or "UTC"
+    if s.get("cron"):
+        try:
+            return CronTrigger.from_crontab(s["cron"], timezone=tz)
+        except Exception as exc:
+            logger.warning("Bad cron %s: %s", s.get("cron"), exc)
+            return None
+    run_at = s.get("run_at")
+    if run_at:
+        try:
+            if isinstance(run_at, str):
+                # Accept "YYYY-MM-DDTHH:MM" plus TZ-aware ISO strings
+                run_at = datetime.fromisoformat(run_at.replace("Z", "+00:00"))
+            if run_at.tzinfo is None and ZoneInfo:
+                run_at = run_at.replace(tzinfo=ZoneInfo(tz))
+            return DateTrigger(run_date=run_at)
+        except Exception as exc:
+            logger.warning("Bad run_at %s: %s", s.get("run_at"), exc)
+            return None
+    return None
+
+async def _run_schedule(sched_id: str) -> None:
+    """Worker: fetch the schedule, resolve the target conversation, post the
+    prompt as a synthetic user message and let the existing send_message flow
+    generate the agent reply."""
+    try:
+        s = await db.schedules.find_one({"_id": ObjectId(sched_id)})
+    except Exception:
+        return
+    if not s or not s.get("active"):
+        return
+    conv_id = await _resolve_target_conv(s)
+    if not conv_id:
+        await db.schedules.update_one(
+            {"_id": ObjectId(sched_id)},
+            {"$set": {"last_run_at": datetime.now(timezone.utc), "last_status": "skipped: no target conversation"}},
+        )
+        return
+    try:
+        conv = await db.conversations.find_one({"_id": ObjectId(conv_id)})
+        if not conv:
+            return
+        team = await db.teams.find_one({"_id": ObjectId(conv["team_id"])})
+        if not team:
+            return
+        creator = await db.users.find_one({"_id": ObjectId(s["created_by"])})
+        creator_name = (creator or {}).get("name") or "Scheduler"
+        now = datetime.now(timezone.utc)
+        user_doc = {
+            "id": str(uuid.uuid4()),
+            "conversation_id": conv_id,
+            "sender_type": "user",
+            "sender_id": s["created_by"],
+            "sender_name": creator_name,
+            "agent_id": None,
+            "text": f"⏰ {s.get('title') or 'Scheduled task'}\n\n{s['prompt']}",
+            "intent": "scheduled",
+            "schedule_id": sched_id,
+            "timestamp": now,
+        }
+        await db.messages.insert_one({**user_doc})
+
+        # Pick a responder. Direct → the agent; group → first agent (auto-respond).
+        responders = list(conv.get("agent_ids") or [])[:1]
+        for aid in responders:
+            if aid not in AGENTS:
+                continue
+            reply, web_sources = await generate_agent_reply(
+                conv, team, aid, user_doc["text"], creator_name,
+            )
+            msg = {
+                "id": str(uuid.uuid4()),
+                "conversation_id": conv_id,
+                "sender_type": "agent",
+                "sender_id": aid,
+                "sender_name": AGENTS[aid]["name"],
+                "agent_id": aid,
+                "text": reply,
+                "schedule_id": sched_id,
+                "timestamp": datetime.now(timezone.utc),
+            }
+            if web_sources:
+                msg["web_sources"] = web_sources
+            await db.messages.insert_one({**msg})
+
+        # Compute next run for UI
+        next_run = None
+        job = scheduler.get_job(_schedule_job_id(sched_id))
+        if job and job.next_run_time:
+            next_run = job.next_run_time
+        await db.schedules.update_one(
+            {"_id": ObjectId(sched_id)},
+            {"$set": {
+                "last_run_at": datetime.now(timezone.utc),
+                "last_status": "ok",
+                "next_run_at": next_run,
+            }},
+        )
+    except Exception as exc:
+        logger.exception("Schedule %s failed: %s", sched_id, exc)
+        await db.schedules.update_one(
+            {"_id": ObjectId(sched_id)},
+            {"$set": {"last_run_at": datetime.now(timezone.utc), "last_status": f"error: {exc}"[:200]}},
+        )
+
+async def _resolve_target_conv(s: dict) -> Optional[str]:
+    """Resolve the conversation a schedule should post into, based on scope."""
+    scope = s.get("scope", "conversation")
+    target = s.get("target_id")
+    if not target:
+        return None
+    if scope == "conversation":
+        return target
+    if scope == "team":
+        # Use the first conversation in the team that the creator is in
+        c = await db.conversations.find_one(
+            {"team_id": target, "member_ids": s["created_by"]},
+            sort=[("created_at", 1)],
+        )
+        return str(c["_id"]) if c else None
+    if scope == "org":
+        # Use the org's General conversation
+        try:
+            org = await db.organizations.find_one({"_id": ObjectId(target)})
+        except Exception:
+            return None
+        if org and org.get("general_conversation_id"):
+            return org["general_conversation_id"]
+    return None
+
+def _scheduler_register(s: dict) -> None:
+    """Register/refresh the APScheduler job for a schedule doc."""
+    sched_id = str(s["_id"])
+    job_id = _schedule_job_id(sched_id)
+    try:
+        scheduler.remove_job(job_id)
+    except Exception:
+        pass
+    if not s.get("active"):
+        return
+    trigger = _build_trigger(s)
+    if not trigger:
+        return
+    scheduler.add_job(_run_schedule, trigger=trigger, id=job_id, args=[sched_id], replace_existing=True)
+
+def _scheduler_unregister(sched_id: str) -> None:
+    try:
+        scheduler.remove_job(_schedule_job_id(sched_id))
+    except Exception:
+        pass
+
+async def _require_target_access(scope: str, target_id: str, user_id: str) -> str:
+    """Permission gate: confirm the user can target this object, return its org_id."""
+    if scope == "conversation":
+        try:
+            c = await db.conversations.find_one({"_id": ObjectId(target_id)})
+        except Exception:
+            raise HTTPException(400, "Invalid conversation id")
+        if not c:
+            raise HTTPException(404, "Conversation not found")
+        if user_id not in (c.get("member_ids") or []):
+            raise HTTPException(403, "Not a participant in this conversation")
+        team = await db.teams.find_one({"_id": ObjectId(c["team_id"])})
+        return team["org_id"] if team else ""
+    if scope == "team":
+        ctx = await require_team_member(target_id, user_id)
+        return ctx["team"]["org_id"]
+    if scope == "org":
+        await require_org_member(target_id, user_id)
+        return target_id
+    raise HTTPException(400, "Unknown scope")
+
+@schedules_r.post("/schedules")
+async def create_schedule(body: ScheduleCreateBody, u: dict = Depends(get_current_user)):
+    if not body.title.strip() or not body.prompt.strip():
+        raise HTTPException(400, "Title and prompt are required")
+    if not body.cron and not body.run_at:
+        raise HTTPException(400, "Provide either cron or run_at")
+    if body.cron and body.run_at:
+        raise HTTPException(400, "Provide cron OR run_at, not both")
+    org_id = await _require_target_access(body.scope, body.target_id, u["id"])
+    doc = {
+        "title": body.title.strip()[:120],
+        "prompt": body.prompt.strip()[:4000],
+        "scope": body.scope,
+        "target_id": body.target_id,
+        "org_id": org_id,
+        "cron": body.cron.strip() if body.cron else None,
+        "run_at": body.run_at,
+        "timezone": (body.timezone or "UTC").strip()[:80] or "UTC",
+        "active": body.active,
+        "created_by": u["id"],
+        "created_at": datetime.now(timezone.utc),
+        "last_run_at": None,
+        "last_status": "",
+    }
+    res = await db.schedules.insert_one(doc)
+    doc["_id"] = res.inserted_id
+    _scheduler_register(doc)
+    job = scheduler.get_job(_schedule_job_id(str(res.inserted_id)))
+    if job and job.next_run_time:
+        await db.schedules.update_one({"_id": res.inserted_id}, {"$set": {"next_run_at": job.next_run_time}})
+        doc["next_run_at"] = job.next_run_time
+    return _serialize_schedule(doc)
+
+@schedules_r.get("/schedules")
+async def list_schedules(
+    scope: Optional[str] = None,
+    target_id: Optional[str] = None,
+    org_id: Optional[str] = None,
+    u: dict = Depends(get_current_user),
+):
+    """List the caller's schedules. If `org_id` given (and caller is a member),
+    return all schedules in that org. If `target_id` + `scope`, scope to that.
+    Otherwise return schedules created by the caller."""
+    q: dict = {}
+    if org_id:
+        await require_org_member(org_id, u["id"])
+        q["org_id"] = org_id
+    elif scope and target_id:
+        await _require_target_access(scope, target_id, u["id"])
+        q.update({"scope": scope, "target_id": target_id})
+    else:
+        q["created_by"] = u["id"]
+    cur = db.schedules.find(q).sort("created_at", -1)
+    out = [_serialize_schedule(s) async for s in cur]
+    return out
+
+@schedules_r.patch("/schedules/{sched_id}")
+async def update_schedule(sched_id: str, body: ScheduleUpdateBody, u: dict = Depends(get_current_user)):
+    try:
+        s = await db.schedules.find_one({"_id": ObjectId(sched_id)})
+    except Exception:
+        raise HTTPException(400, "Invalid id")
+    if not s:
+        raise HTTPException(404, "Schedule not found")
+    if s["created_by"] != u["id"]:
+        raise HTTPException(403, "Only the creator can edit a schedule")
+    update: dict = {}
+    if body.title is not None:
+        update["title"] = body.title.strip()[:120]
+    if body.prompt is not None:
+        update["prompt"] = body.prompt.strip()[:4000]
+    if body.cron is not None:
+        update["cron"] = body.cron.strip() or None
+        update["run_at"] = None
+    if body.run_at is not None:
+        update["run_at"] = body.run_at
+        update["cron"] = None
+    if body.timezone is not None:
+        update["timezone"] = body.timezone.strip()[:80] or "UTC"
+    if body.active is not None:
+        update["active"] = bool(body.active)
+    if update:
+        await db.schedules.update_one({"_id": ObjectId(sched_id)}, {"$set": update})
+    fresh = await db.schedules.find_one({"_id": ObjectId(sched_id)})
+    _scheduler_register(fresh)
+    job = scheduler.get_job(_schedule_job_id(sched_id))
+    if job and job.next_run_time:
+        await db.schedules.update_one({"_id": ObjectId(sched_id)}, {"$set": {"next_run_at": job.next_run_time}})
+        fresh = await db.schedules.find_one({"_id": ObjectId(sched_id)})
+    return _serialize_schedule(fresh)
+
+@schedules_r.delete("/schedules/{sched_id}")
+async def delete_schedule(sched_id: str, u: dict = Depends(get_current_user)):
+    try:
+        s = await db.schedules.find_one({"_id": ObjectId(sched_id)})
+    except Exception:
+        raise HTTPException(400, "Invalid id")
+    if not s:
+        raise HTTPException(404, "Schedule not found")
+    if s["created_by"] != u["id"]:
+        raise HTTPException(403, "Only the creator can delete this schedule")
+    _scheduler_unregister(sched_id)
+    await db.schedules.delete_one({"_id": ObjectId(sched_id)})
+    return {"ok": True}
+
+@schedules_r.post("/schedules/{sched_id}/run-now")
+async def run_schedule_now(sched_id: str, u: dict = Depends(get_current_user)):
+    try:
+        s = await db.schedules.find_one({"_id": ObjectId(sched_id)})
+    except Exception:
+        raise HTTPException(400, "Invalid id")
+    if not s:
+        raise HTTPException(404, "Schedule not found")
+    if s["created_by"] != u["id"]:
+        raise HTTPException(403, "Only the creator can trigger this schedule")
+    asyncio.create_task(_run_schedule(sched_id))
+    return {"ok": True}
+
 # ── Register routers & CORS ──────────────────────────────────────────────────
 base_r = APIRouter(prefix="/api")
 
@@ -1845,6 +2346,7 @@ app.include_router(team_r)
 app.include_router(conv_r)
 app.include_router(assets_r)
 app.include_router(files_r)
+app.include_router(schedules_r)
 
 app.add_middleware(
     CORSMiddleware,
@@ -1863,8 +2365,23 @@ async def startup():
     await db.conversations.create_index([("team_id", 1), ("created_at", -1)])
     await db.messages.create_index([("conversation_id", 1), ("timestamp", 1)])
     await db.messages.create_index("media_filename", sparse=True)
+    await db.schedules.create_index([("org_id", 1), ("created_at", -1)])
+    await db.schedules.create_index("created_by")
+    # Boot the in-process scheduler and rehydrate persisted jobs
+    if not scheduler.running:
+        scheduler.start()
+    async for s in db.schedules.find({"active": True}):
+        try:
+            _scheduler_register(s)
+        except Exception as exc:
+            logger.warning("Could not rehydrate schedule %s: %s", s.get("_id"), exc)
     logger.info("SoulPrint API ready.")
 
 @app.on_event("shutdown")
 async def shutdown():
+    try:
+        if scheduler.running:
+            scheduler.shutdown(wait=False)
+    except Exception:
+        pass
     client.close()

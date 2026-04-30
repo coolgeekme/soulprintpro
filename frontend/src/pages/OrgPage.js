@@ -3,7 +3,9 @@ import { useParams, Link, useNavigate } from "react-router-dom";
 import api, { BACKEND_URL } from "../lib/api";
 import TopBar from "../components/TopBar";
 import { toast } from "sonner";
-import { Plus, Users, ArrowRight, Copy, UserPlus, FileText, Image as ImageIcon, FileBox, Trash2, UploadCloud, Download, File as FileIcon, Sparkles, MessageCircle } from "lucide-react";
+import { Plus, Users, ArrowRight, Copy, UserPlus, FileText, Image as ImageIcon, FileBox, Trash2, UploadCloud, Download, File as FileIcon, MessageCircle, Pencil, Save, X as XIcon, RefreshCw } from "lucide-react";
+import Logo from "../components/Logo";
+import SchedulesPanel from "../components/SchedulesPanel";
 
 const formatBytes = (n) => {
   if (!n) return "0 B";
@@ -30,6 +32,62 @@ export default function OrgPage() {
   const [uploadDesc, setUploadDesc] = useState("");
   const [dragActive, setDragActive] = useState(false);
   const fileRef = useRef(null);
+
+  // Edit-org state (owner/admin only)
+  const [editOpen, setEditOpen] = useState(false);
+  const [editName, setEditName] = useState("");
+  const [editUrl, setEditUrl] = useState("");
+  const [editSoul, setEditSoul] = useState("");
+  const [savingOrg, setSavingOrg] = useState(false);
+  const [regenSoul, setRegenSoul] = useState(false);
+  const canEdit = org && (org.role === "owner" || org.role === "admin");
+  const canDelete = org && org.role === "owner";
+
+  const openEdit = () => {
+    setEditName(org.name);
+    setEditUrl(org.website_url || "");
+    setEditSoul(org.soul_description || "");
+    setRegenSoul(false);
+    setEditOpen(true);
+  };
+  const saveOrg = async (e) => {
+    e.preventDefault();
+    setSavingOrg(true);
+    try {
+      const { data } = await api.patch(`/orgs/${orgId}`, {
+        name: editName.trim(),
+        website_url: editUrl.trim(),
+        soul_description: editSoul.trim(),
+        regenerate_soul: regenSoul,
+      });
+      setOrg(data);
+      setEditOpen(false);
+      toast.success(regenSoul ? "Saved — Soul re-synthesised" : "Saved");
+    } catch (err) {
+      toast.error(err?.response?.data?.detail || "Save failed");
+    } finally { setSavingOrg(false); }
+  };
+  const removeOrg = async () => {
+    if (!window.confirm(`Permanently delete "${org.name}" and EVERYTHING in it (teams, conversations, assets, schedules)? This cannot be undone.`)) return;
+    try {
+      await api.delete(`/orgs/${orgId}`);
+      toast.success("Organization deleted");
+      nav("/app");
+    } catch (err) {
+      toast.error(err?.response?.data?.detail || "Delete failed");
+    }
+  };
+
+  const removeTeam = async (t) => {
+    if (!window.confirm(`Delete team "${t.name}" and all its conversations? This cannot be undone.`)) return;
+    try {
+      await api.delete(`/teams/${t.id}`);
+      setTeams((prev) => prev.filter((x) => x.id !== t.id));
+      toast.success("Team deleted");
+    } catch (err) {
+      toast.error(err?.response?.data?.detail || "Delete failed");
+    }
+  };
 
   const canInvite = org && (org.role === "owner" || org.role === "admin");
   const origin = typeof window !== "undefined" ? window.location.origin : "";
@@ -168,9 +226,67 @@ export default function OrgPage() {
       <main className="max-w-6xl mx-auto px-6 py-10">
         <div className="flex flex-col gap-2 mb-8">
           <span className="sp-chip">{org.role}</span>
-          <h1 className="sp-display text-4xl md:text-5xl">{org.name}</h1>
+          <div className="flex items-center justify-between gap-3 flex-wrap">
+            <h1 className="sp-display text-4xl md:text-5xl">{org.name}</h1>
+            {canEdit && !editOpen && (
+              <div className="flex items-center gap-2">
+                <button onClick={openEdit} className="sp-btn sp-btn-ghost text-xs" data-testid="edit-org-btn">
+                  <Pencil className="w-3.5 h-3.5" /> Edit
+                </button>
+                {canDelete && (
+                  <button onClick={removeOrg} className="sp-btn sp-btn-ghost text-xs hover:!text-red-300" data-testid="delete-org-btn">
+                    <Trash2 className="w-3.5 h-3.5" /> Delete
+                  </button>
+                )}
+              </div>
+            )}
+          </div>
           <p className="sp-subtle">Spin up a team for each squad, brand, or project. Each team has its own SoulPrint.</p>
         </div>
+
+        {editOpen && (
+          <form onSubmit={saveOrg} className="sp-glass-strong rounded-2xl p-6 mb-8 space-y-3" data-testid="edit-org-panel">
+            <div className="flex items-center justify-between">
+              <h3 className="text-sm uppercase tracking-widest sp-subtle">Edit organization</h3>
+              <button type="button" onClick={() => setEditOpen(false)} className="text-white/60 hover:text-white"><XIcon className="w-4 h-4" /></button>
+            </div>
+            <input
+              data-testid="edit-org-name"
+              value={editName}
+              onChange={(e) => setEditName(e.target.value)}
+              placeholder="Organization name"
+              className="w-full rounded-xl px-4 py-3 text-sm focus:sp-focus"
+              style={{ background: "var(--input-bg)", border: "1px solid var(--input-border)", color: "var(--fg)" }}
+            />
+            <input
+              data-testid="edit-org-url"
+              value={editUrl}
+              onChange={(e) => setEditUrl(e.target.value)}
+              placeholder="Company website (optional)"
+              className="w-full rounded-xl px-4 py-3 text-sm focus:sp-focus"
+              style={{ background: "var(--input-bg)", border: "1px solid var(--input-border)", color: "var(--fg)" }}
+            />
+            <textarea
+              data-testid="edit-org-soul"
+              value={editSoul}
+              onChange={(e) => setEditSoul(e.target.value)}
+              placeholder="Soul description / founder hint (optional)"
+              rows={3}
+              className="w-full rounded-xl px-4 py-3 text-sm resize-none focus:sp-focus"
+              style={{ background: "var(--input-bg)", border: "1px solid var(--input-border)", color: "var(--fg)" }}
+            />
+            <label className="flex items-center gap-2 text-xs sp-subtle cursor-pointer">
+              <input type="checkbox" checked={regenSoul} onChange={(e) => setRegenSoul(e.target.checked)} className="accent-orange-500" data-testid="edit-org-regen" />
+              <RefreshCw className="w-3 h-3" /> Re-synthesise the company Soul from these inputs
+            </label>
+            <div className="flex items-center justify-end gap-2 pt-1">
+              <button type="button" onClick={() => setEditOpen(false)} className="sp-btn sp-btn-ghost text-xs">Cancel</button>
+              <button type="submit" disabled={savingOrg || !editName.trim()} className="sp-btn sp-btn-primary text-xs disabled:opacity-50" data-testid="save-org-btn">
+                <Save className="w-3.5 h-3.5" /> {savingOrg ? "Saving…" : "Save"}
+              </button>
+            </div>
+          </form>
+        )}
 
         {/* General chat — auto-created on org creation. Always-on entry point. */}
         {org.general_team_id && org.general_conversation_id && (
@@ -180,7 +296,7 @@ export default function OrgPage() {
             data-testid="open-general-chat"
           >
             <div className="w-12 h-12 rounded-xl flex items-center justify-center"
-                 style={{ background: "linear-gradient(160deg, rgba(124,92,255,0.7), rgba(124,92,255,0.15))" }}>
+                 style={{ background: "linear-gradient(160deg, rgba(246,64,0,0.7), rgba(246,64,0,0.15))" }}>
               <MessageCircle className="w-5 h-5 text-white" />
             </div>
             <div className="flex-1 min-w-0">
@@ -195,7 +311,7 @@ export default function OrgPage() {
         {(org.soul && (org.soul.mission || org.soul.summary)) && (
           <div className="sp-glass rounded-2xl p-6 mb-8" data-testid="org-soul">
             <div className="flex items-center gap-2 mb-3">
-              <Sparkles className="w-4 h-4 text-white/80" />
+              <Logo className="w-4 h-4 text-white/80" />
               <h3 className="text-sm uppercase tracking-widest sp-subtle">Company Soul</h3>
               {org.website_url && (
                 <a href={org.website_url.startsWith("http") ? org.website_url : `https://${org.website_url}`}
@@ -259,21 +375,28 @@ export default function OrgPage() {
 
         <div className="grid md:grid-cols-3 gap-4 mb-10">
           {teams.filter((t) => t.id !== org.general_team_id).map((t) => (
-            <Link
-              key={t.id}
-              to={`/app/team/${t.id}`}
-              className="sp-glass rounded-2xl p-6 hover:border-white/20 transition group"
-              data-testid={`team-card-${t.id}`}
-            >
-              <div className="w-10 h-10 rounded-xl sp-glass-strong flex items-center justify-center mb-4">
-                <Users className="w-5 h-5 text-white/90" />
-              </div>
-              <div className="text-white font-medium text-lg truncate">{t.name}</div>
-              {t.description && <div className="text-xs sp-subtle mt-1 line-clamp-2">{t.description}</div>}
-              <div className="flex items-center gap-2 mt-4 text-xs sp-subtle group-hover:text-white/80">
-                Open workspace <ArrowRight className="w-3.5 h-3.5" />
-              </div>
-            </Link>
+            <div key={t.id} className="sp-glass rounded-2xl p-6 hover:border-white/20 transition group relative" data-testid={`team-card-${t.id}`}>
+              {canEdit && (
+                <button
+                  onClick={(e) => { e.preventDefault(); e.stopPropagation(); removeTeam(t); }}
+                  className="absolute top-3 right-3 sp-btn sp-btn-ghost !p-1.5 opacity-0 group-hover:opacity-100 transition hover:!text-red-300"
+                  data-testid={`delete-team-${t.id}`}
+                  title="Delete team"
+                >
+                  <Trash2 className="w-3.5 h-3.5" />
+                </button>
+              )}
+              <Link to={`/app/team/${t.id}`} className="block">
+                <div className="w-10 h-10 rounded-xl sp-glass-strong flex items-center justify-center mb-4">
+                  <Users className="w-5 h-5 text-white/90" />
+                </div>
+                <div className="text-white font-medium text-lg truncate">{t.name}</div>
+                {t.description && <div className="text-xs sp-subtle mt-1 line-clamp-2">{t.description}</div>}
+                <div className="flex items-center gap-2 mt-4 text-xs sp-subtle group-hover:text-white/80">
+                  Open workspace <ArrowRight className="w-3.5 h-3.5" />
+                </div>
+              </Link>
+            </div>
           ))}
           {teams.filter((t) => t.id !== org.general_team_id).length === 0 && (
             <div className="sp-glass rounded-2xl p-6 col-span-full text-center text-sm sp-subtle">
@@ -283,6 +406,8 @@ export default function OrgPage() {
         </div>
 
         {/* Asset library */}
+        <SchedulesPanel scope="org" targetId={orgId} orgId={orgId} />
+        <div className="h-6" />
         <section className="sp-glass-strong rounded-2xl p-6 mb-10" data-testid="assets-section">
           <div className="flex items-center justify-between mb-4 flex-wrap gap-3">
             <div className="flex items-center gap-2">
@@ -299,7 +424,7 @@ export default function OrgPage() {
             onDragOver={(e) => { e.preventDefault(); setDragActive(true); }}
             onDragLeave={() => setDragActive(false)}
             onDrop={onDrop}
-            className={`sp-glass rounded-xl p-6 border-2 border-dashed flex flex-col items-center text-center gap-3 transition ${dragActive ? "border-violet-400/60" : ""}`}
+            className={`sp-glass rounded-xl p-6 border-2 border-dashed flex flex-col items-center text-center gap-3 transition ${dragActive ? "border-orange-400/60" : ""}`}
             style={{ borderColor: dragActive ? "rgba(124,92,255,0.6)" : "var(--border-soft)" }}
             data-testid="assets-dropzone"
           >

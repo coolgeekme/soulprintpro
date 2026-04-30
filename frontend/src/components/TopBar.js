@@ -1,13 +1,35 @@
-import React from "react";
+import React, { useState, useEffect } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { useAuth } from "../context/AuthContext";
 import { useTheme } from "../context/ThemeContext";
-import { Sparkles, LogOut, Sun, Moon } from "lucide-react";
+import { LogOut, Sun, Moon, MapPin } from "lucide-react";
+import Logo from "./Logo";
+import { captureUserLocation, getCachedLocation, setCachedLocation } from "../lib/api";
+import { toast } from "sonner";
 
 export default function TopBar({ children, right = null }) {
   const { user, logout } = useAuth();
   const { mode, toggle } = useTheme();
   const nav = useNavigate();
+  const [loc, setLoc] = useState(getCachedLocation());
+
+  useEffect(() => {
+    // Re-read on mount in case another tab updated localStorage
+    setLoc(getCachedLocation());
+  }, []);
+
+  const askLocation = async () => {
+    if (loc) {
+      // Already on — clicking again clears the consent
+      setCachedLocation("");
+      setLoc("");
+      toast.success("Location turned off");
+      return;
+    }
+    const result = await captureUserLocation();
+    if (result) { setLoc(result); toast.success(`Location: ${result}`); }
+    else toast.error("Location unavailable or denied");
+  };
   return (
     <header className="relative z-10 border-b" style={{ borderColor: "var(--border-soft)" }}>
       <div className="bg-black/0 backdrop-blur-xl">
@@ -15,7 +37,7 @@ export default function TopBar({ children, right = null }) {
           <div className="flex items-center gap-3 min-w-0">
             <Link to="/app" className="flex items-center gap-2 shrink-0" data-testid="topbar-brand">
               <div className="w-8 h-8 rounded-md sp-glass-strong flex items-center justify-center">
-                <Sparkles className="w-4 h-4" />
+                <Logo className="w-4 h-4" />
               </div>
               <span className="text-base font-medium tracking-tight hidden sm:block">SoulPrint</span>
             </Link>
@@ -24,6 +46,15 @@ export default function TopBar({ children, right = null }) {
           </div>
           <div className="flex items-center gap-2">
             {right}
+            <button
+              onClick={askLocation}
+              className={`sp-btn text-xs ${loc ? "sp-btn-primary" : "sp-btn-ghost"}`}
+              data-testid="location-toggle"
+              title={loc ? `Sharing ${loc} with agents — click to stop` : "Share my location with agents (for accurate local time / regional answers)"}
+            >
+              <MapPin className="w-4 h-4" />
+              <span className="hidden md:inline truncate max-w-[120px]">{loc || "Use my location"}</span>
+            </button>
             <button
               onClick={toggle}
               className="sp-btn sp-btn-ghost text-xs"

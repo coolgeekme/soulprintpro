@@ -3,7 +3,9 @@ import { useParams, Link, useNavigate } from "react-router-dom";
 import api from "../lib/api";
 import TopBar from "../components/TopBar";
 import { toast } from "sonner";
-import { Sparkles, MessageCircle, Users, Plus, Radio, Search, X, Wand2, ArrowRight } from "lucide-react";
+import { MessageCircle, Users, Plus, Radio, Search, X, Wand2, ArrowRight, Pencil, Save, Trash2, X as XIcon } from "lucide-react";
+import Logo from "../components/Logo";
+import SchedulesPanel from "../components/SchedulesPanel";
 
 const AgentBadge = ({ a, onClick, selected, testPrefix = "agent-badge" }) => (
   <button
@@ -75,6 +77,45 @@ export default function TeamPage() {
   const [savingSP, setSavingSP] = useState(false);
   const [sp, setSp] = useState({ mission: "", tone: "", audience: "", values: "", north_star: "" });
 
+  const [orgRole, setOrgRole] = useState("");
+  const [editTeamOpen, setEditTeamOpen] = useState(false);
+  const [editTeamName, setEditTeamName] = useState("");
+  const [editTeamDesc, setEditTeamDesc] = useState("");
+  const [savingTeam, setSavingTeam] = useState(false);
+  const canEditTeam = orgRole === "owner" || orgRole === "admin";
+  const canDeleteTeam = canEditTeam && team && !team.is_general && !(/^general$/i).test(team.name || "");
+
+  const openEditTeam = () => {
+    setEditTeamName(team.name);
+    setEditTeamDesc(team.description || "");
+    setEditTeamOpen(true);
+  };
+  const saveTeam = async (e) => {
+    e?.preventDefault?.();
+    setSavingTeam(true);
+    try {
+      const { data } = await api.patch(`/teams/${teamId}`, {
+        name: editTeamName.trim(),
+        description: editTeamDesc.trim(),
+      });
+      setTeam(data);
+      setEditTeamOpen(false);
+      toast.success("Team saved");
+    } catch (err) {
+      toast.error(err?.response?.data?.detail || "Save failed");
+    } finally { setSavingTeam(false); }
+  };
+  const removeTeam = async () => {
+    if (!window.confirm(`Delete team "${team.name}" and all its conversations? This cannot be undone.`)) return;
+    try {
+      await api.delete(`/teams/${teamId}`);
+      toast.success("Team deleted");
+      nav(`/app/org/${team.org_id}`);
+    } catch (err) {
+      toast.error(err?.response?.data?.detail || "Delete failed");
+    }
+  };
+
   // Crew browser filters
   const [crewQ, setCrewQ] = useState("");
   const [crewDiv, setCrewDiv] = useState("");
@@ -107,6 +148,11 @@ export default function TeamPage() {
       setConversations(convsRes.data);
       setMembers(membersRes.data);
       setDivisions(divsRes.data);
+      // Org role drives edit/delete permissions on the team
+      try {
+        const orgRes = await api.get(`/orgs/${teamRes.data.org_id}`);
+        setOrgRole(orgRes.data.role || "");
+      } catch (_) { setOrgRole(""); }
     } catch (err) {
       toast.error("Failed to load team");
       nav("/app");
@@ -222,9 +268,54 @@ export default function TeamPage() {
       <main className="max-w-7xl mx-auto px-6 py-10">
         <div className="flex flex-col gap-2 mb-8">
           <span className="sp-chip">Team workspace</span>
-          <h1 className="sp-display text-4xl md:text-5xl">{team.name}</h1>
+          <div className="flex items-center justify-between gap-3 flex-wrap">
+            <h1 className="sp-display text-4xl md:text-5xl">{team.name}</h1>
+            {canEditTeam && !editTeamOpen && (
+              <div className="flex items-center gap-2">
+                <button onClick={openEditTeam} className="sp-btn sp-btn-ghost text-xs" data-testid="edit-team-btn">
+                  <Pencil className="w-3.5 h-3.5" /> Edit
+                </button>
+                {canDeleteTeam && (
+                  <button onClick={removeTeam} className="sp-btn sp-btn-ghost text-xs hover:!text-red-300" data-testid="delete-team-btn">
+                    <Trash2 className="w-3.5 h-3.5" /> Delete
+                  </button>
+                )}
+              </div>
+            )}
+          </div>
           {team.description && <p className="sp-subtle">{team.description}</p>}
         </div>
+
+        {editTeamOpen && (
+          <form onSubmit={saveTeam} className="sp-glass-strong rounded-2xl p-6 mb-8 space-y-3" data-testid="edit-team-panel">
+            <div className="flex items-center justify-between">
+              <h3 className="text-sm uppercase tracking-widest sp-subtle">Edit team</h3>
+              <button type="button" onClick={() => setEditTeamOpen(false)} className="text-white/60 hover:text-white"><XIcon className="w-4 h-4" /></button>
+            </div>
+            <input
+              data-testid="edit-team-name"
+              value={editTeamName}
+              onChange={(e) => setEditTeamName(e.target.value)}
+              placeholder="Team name"
+              className="w-full rounded-xl px-4 py-3 text-sm focus:sp-focus"
+              style={{ background: "var(--input-bg)", border: "1px solid var(--input-border)", color: "var(--fg)" }}
+            />
+            <input
+              data-testid="edit-team-desc"
+              value={editTeamDesc}
+              onChange={(e) => setEditTeamDesc(e.target.value)}
+              placeholder="One-line description (optional)"
+              className="w-full rounded-xl px-4 py-3 text-sm focus:sp-focus"
+              style={{ background: "var(--input-bg)", border: "1px solid var(--input-border)", color: "var(--fg)" }}
+            />
+            <div className="flex items-center justify-end gap-2 pt-1">
+              <button type="button" onClick={() => setEditTeamOpen(false)} className="sp-btn sp-btn-ghost text-xs">Cancel</button>
+              <button type="submit" disabled={savingTeam || !editTeamName.trim()} className="sp-btn sp-btn-primary text-xs disabled:opacity-50" data-testid="save-team-btn">
+                <Save className="w-3.5 h-3.5" /> {savingTeam ? "Saving…" : "Save"}
+              </button>
+            </div>
+          </form>
+        )}
 
         <div className="grid lg:grid-cols-[1.4fr_1fr] gap-6">
           <div className="flex flex-col gap-6">
@@ -306,9 +397,11 @@ export default function TeamPage() {
               </div>
             </section>
 
+            <SchedulesPanel scope="team" targetId={teamId} />
+
             <section>
               <h2 className="text-sm uppercase tracking-widest sp-subtle flex items-center gap-2 mb-3">
-                <Sparkles className="w-4 h-4" /> Your crew
+                <Logo className="w-4 h-4" /> Your crew
                 <span className="ml-auto text-white/60">{crew.length} of {agents.length}</span>
               </h2>
               <AgentFilter
@@ -463,7 +556,7 @@ export default function TeamPage() {
                     type="checkbox"
                     checked={autoRespond}
                     onChange={(e) => setAutoRespond(e.target.checked)}
-                    className="accent-violet-500"
+                    className="accent-orange-500"
                     data-testid="auto-respond-toggle"
                   />
                   <span className="text-sm text-white">Agents auto-respond on every message</span>
@@ -474,7 +567,7 @@ export default function TeamPage() {
                     type="checkbox"
                     checked={smartExpand}
                     onChange={(e) => setSmartExpand(e.target.checked)}
-                    className="accent-violet-500"
+                    className="accent-orange-500"
                     data-testid="smart-expand-toggle"
                   />
                   <span className="text-sm text-white">Auto-add new specialists when the topic shifts</span>

@@ -1,0 +1,41 @@
+{
+  "summary": "Iteration 7 review — orgs/teams PATCH+DELETE, schedules CRUD + run-now, timezone-injection, full UI regression for the Sparkles→SoulPrint logo + violet→orange (#F64000) repaint. Backend: 30/30 pytest pass (20 NEW in test_iteration7_edits_and_schedules.py + 10 iteration_6 regression in test_video_and_soul.py). Frontend E2E: TopBar shows new soulprint-logo.png + orange 'Use my location' button (location-toggle); register→AppHome→create org→OrgPage all clean of Sparkles. OrgPage edit-org-btn→edit-org-panel→edit-org-name+url+soul→save-org-btn→rename persists; schedules-panel + new-schedule-btn → new-schedule-form with title/prompt/cron/tz/mode-cron/mode-once/save-schedule-btn → run-now-<id>/toggle-<id>/delete-<id> all wired. delete-org-btn rendered. General team correctly hides delete-team-btn (canDeleteTeam name fallback works).",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_iteration7_edits_and_schedules.py",
+    "/app/test_reports/pytest/iter7_edits_schedules.xml",
+    "/app/test_reports/pytest/iter7_video_soul_regress.xml"
+  ],
+  "action_items": [
+    "Minor: serialize_team() does not emit `is_general` to the frontend, so TeamPage's canDeleteTeam falls back to a name-regex check `/^general$/i.test(team.name)`. A user-renamed team named 'General' would also be undeletable. Either add `is_general: bool(team.get('is_general'))` to serialize_team, or rely solely on `team.id !== org.general_team_id` (already used on OrgPage).",
+    "Minor: On AppHome, after `create-org-btn` succeeds the app hard-redirects into the General team's conversation page (good UX) — but anyone hitting `/app/team/{teamId}/c/{convId}` directly does NOT see the team-level edit/schedules controls (those live on `/app/team/{teamId}` only). Consider exposing edit-team / schedules-panel triggers on the conversation header too, OR document that team-level UI lives behind the breadcrumb back-arrow.",
+    "Code-review (carry-over): server.py is now 2387 lines. Extract the schedules block (router + helpers) into /app/backend/scheduler.py — it is self-contained except for `generate_agent_reply`, `db`, `AGENTS`."
+  ],
+  "critical_code_review_comments": [
+    "server.py is at 2387 lines — splitting is overdue. Schedules (~370 LOC) is the most self-contained slice.",
+    "_run_schedule reaches into AGENTS / generate_agent_reply / db globals — once extracted to a module, pass these in via __init__ instead of from-imports to make it unit-testable.",
+    "delete_org cascade order is fine but does NOT close any pending background tasks (e.g. _poll_and_save_video) or in-flight scheduled jobs whose schedule_id was just unregistered. Mostly cosmetic — the messages collection is gone before the task can write — but worth surrounding with a try/except in _poll_and_save_video so it doesn't log scary tracebacks after an org delete.",
+    "_serialize_schedule emits `next_run_at` from the doc field, NOT directly from APScheduler.get_job(). After server restart we rehydrate jobs but only update next_run_at on create/patch/run-now — recurring schedules will show a stale next_run_at in the UI until the next fire. Consider refreshing it in list_schedules() at read time.",
+    "serialize_team is missing `is_general` (see action item) — frontend logic relies on a name-regex fallback.",
+    "ScheduleCreateBody.run_at is typed `Optional[str]` and parsed manually with datetime.fromisoformat; consider Pydantic `datetime` for free validation + 422 instead of 400 swallowed in _build_trigger.",
+    "_require_target_access for scope=conversation does NOT verify the conversation actually lives under an org the caller can access — it only checks member_ids. That's fine for the privacy model (members are the source of truth), just be aware org-level admins of an org cannot create schedules on conversations they aren't a member of."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_iteration7_edits_and_schedules.py (NEW — 20 tests)"
+  ],
+  "success_rate": {
+    "backend": "100% (30/30 pytest, ~110s incl. live LLM soul regen + scheduled-run-now agent reply + video gen regression)",
+    "frontend": "100% on Org/AppHome/TopBar/Auth/Landing flows tested. TeamPage edit-team-btn/delete-team-btn/schedules-panel testids exist in source (TeamPage.js L86, L313, etc.) but were not directly clicked on the live URL because the General-team card auto-routes to its conversation page; team-edit UI is only reachable via the team breadcrumb."
+  },
+  "test_credentials": "Fresh users registered per test (TEST_<hex>@test.dev / password123). No pre-seeded admin.",
+  "seed_data_creation": "Module-scoped fixtures: owner+member users, one TEST_Org (renamed mid-test), Crew Alpha team, one direct conv with marketing-content-creator. Disposable orgs/teams created+deleted per cascade test.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "5 backend test files now: test_iteration7_edits_and_schedules.py (NEW — orgs PATCH/DELETE, teams PATCH/DELETE, schedules CRUD + run-now + tz headers), test_video_and_soul.py, test_privacy_and_images.py, test_smart_routing.py, test_agents_catalogue.py, test_soulprint.py, test_web_search.py. Run all: `pytest /app/backend/tests/ -v`. Key new endpoints: PATCH /api/orgs/{id} (regenerate_soul=true triggers _generate_company_soul), DELETE /api/orgs/{id} (owner only, cascades teams+convs+messages+invites+members+assets+schedules), PATCH/DELETE /api/teams/{id} (owner/admin, General blocked by `is_general` field — note: NOT exposed in serialize_team). POST /api/schedules requires {title, prompt, scope, target_id, cron OR run_at}; cron=`* * * * *` runs every-minute via APScheduler in-process. POST /api/schedules/{id}/run-now triggers immediate _run_schedule which posts a synthetic ⏰ user message + agent reply both tagged with schedule_id field. Frontend selectors confirmed: location-toggle (TopBar), edit-org-btn / delete-org-btn / edit-org-panel / edit-org-{name,url,soul} / save-org-btn (OrgPage), schedules-panel / new-schedule-btn / new-schedule-form / schedule-{title,prompt,cron,tz} / mode-{cron,once} / save-schedule-btn / run-now-<id> / toggle-<id> / delete-<id> (SchedulesPanel). On TeamPage the testids edit-team-btn/save-team-btn/delete-team-btn exist in source but were verified by code-grep, not click — main agent should just self-verify by visiting /app/team/<teamId> directly.",
+  "rca_of_the_issue": "N/A — no bugs discovered. One minor oversight flagged: `serialize_team` does not propagate `is_general`, so the frontend's General-team-undeletable check relies on a `/^general$/i` regex fallback (works today because the auto-team is literally named 'General', but a user-renamed team called 'General' would inherit the undeletable property)."
+}

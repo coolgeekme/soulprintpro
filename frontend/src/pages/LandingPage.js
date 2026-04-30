@@ -1,6 +1,7 @@
 import React from "react";
 import { Link } from "react-router-dom";
-import { ArrowRight, Sparkles, Users, Network, ShieldCheck, Radio } from "lucide-react";
+import { ArrowRight, Users, Network, ShieldCheck, Radio } from "lucide-react";
+import Logo from "../components/Logo";
 
 const Pill = ({ children }) => <span className="sp-chip">{children}</span>;
 
@@ -26,7 +27,7 @@ export default function LandingPage() {
       <header className="relative z-10 flex items-center justify-between px-6 md:px-10 py-6">
         <Link to="/" className="flex items-center gap-2" data-testid="brand-logo">
           <div className="w-8 h-8 rounded-lg sp-glass-strong flex items-center justify-center">
-            <Sparkles className="w-4 h-4 text-white/90" />
+            <Logo className="w-4 h-4 text-white/90" />
           </div>
           <span className="font-medium tracking-tight text-white/95">SoulPrint Engine</span>
         </Link>
@@ -90,7 +91,7 @@ export default function LandingPage() {
             body="Engineers, strategists, copywriters, researchers, ops, finance, legal, product, XR, game dev — the full agency roster, tuned to your team." />
           <FeatureCard icon={ShieldCheck} title="Org-first architecture"
             body="Invite your company by link, spin up teams per product, brand, or squad. Keep contexts clean and conversations private." />
-          <FeatureCard icon={Sparkles} title="Tuned, not templated"
+          <FeatureCard icon={Logo} title="Tuned, not templated"
             body="Your brief is woven into every system prompt, so answers feel like they came from someone who actually works at your company." />
           <FeatureCard icon={ArrowRight} title="Ship in minutes"
             body="No configuration theatre. Create an org, draft your SoulPrint, and you're in a working thread in under three minutes." />
@@ -113,7 +114,7 @@ export default function LandingPage() {
           {[
             { name: "Engineering", count: 29, c: "#22d3ee" },
             { name: "Marketing", count: 30, c: "#f472b6" },
-            { name: "Specialized", count: 41, c: "#a78bfa" },
+            { name: "Specialized", count: 41, c: "#F64000" },
             { name: "Sales", count: 8, c: "#34d399" },
             { name: "Design", count: 8, c: "#f97066" },
             { name: "Product", count: 5, c: "#38bdf8" },

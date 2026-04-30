@@ -2,7 +2,8 @@ import React, { useState, useMemo } from "react";
 import { useNavigate, useSearchParams, Link } from "react-router-dom";
 import { useAuth } from "../context/AuthContext";
 import { toast } from "sonner";
-import { ArrowLeft, Sparkles } from "lucide-react";
+import { ArrowLeft } from "lucide-react";
+import Logo from "../components/Logo";
 
 export default function AuthPage() {
   const [params] = useSearchParams();
@@ -40,7 +41,7 @@ export default function AuthPage() {
       <div className="w-full max-w-md sp-glass-strong rounded-3xl p-8 sp-fade-up">
         <div className="flex items-center gap-2 mb-8">
           <div className="w-8 h-8 rounded-lg sp-glass-strong flex items-center justify-center">
-            <Sparkles className="w-4 h-4 text-white/90" />
+            <Logo className="w-4 h-4 text-white/90" />
           </div>
           <span className="font-medium tracking-tight text-white">SoulPrint Engine</span>
         </div>
