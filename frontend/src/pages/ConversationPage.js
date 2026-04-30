@@ -80,12 +80,46 @@ export default function ConversationPage() {
 
   useEffect(() => { load(); /* eslint-disable-next-line */ }, [convId]);
 
+  // Track whether we've snapped to the bottom for *this* conversation yet.
+  // Reset whenever the route's convId changes so opening a different chat
+  // re-triggers the initial snap. Without this gate, a user who scrolled up
+  // would get yanked back down on every poll/render — annoying UX.
+  const initialSnapDoneRef = useRef(false);
   useEffect(() => {
-    if (scrollerRef.current) {
-      scrollerRef.current.scrollTop = scrollerRef.current.scrollHeight;
+    initialSnapDoneRef.current = false;
+  }, [convId]);
+
+  useEffect(() => {
+    const el = scrollerRef.current;
+    if (!el) return;
+    const snap = () => {
+      const node = scrollerRef.current;
+      if (!node) return;
+      node.scrollTop = node.scrollHeight;
+      onScrollerScroll();
+    };
+    // On the *first* settle for this conversation (loading just finished and
+    // we have messages), pin to the latest message. Use rAF + a couple of
+    // staggered timeouts so lazy-loaded images, link previews, and any other
+    // late-layout content can't leave us stranded above the bottom.
+    if (!initialSnapDoneRef.current && !loading && messages.length > 0) {
+      snap();
+      const r = requestAnimationFrame(snap);
+      const t1 = setTimeout(snap, 120);
+      const t2 = setTimeout(snap, 400);
+      initialSnapDoneRef.current = true;
+      return () => { cancelAnimationFrame(r); clearTimeout(t1); clearTimeout(t2); };
     }
-    onScrollerScroll();
-  }, [messages, sending]);
+    // After the initial snap, keep snapping when the user is sending or new
+    // messages arrive *and* the user is already near the bottom — don't yank
+    // them back if they've scrolled up to read history.
+    const nearBottom = el.scrollHeight - (el.scrollTop + el.clientHeight) < 160;
+    if (nearBottom || sending) {
+      snap();
+    } else {
+      onScrollerScroll();
+    }
+  }, [messages, sending, loading]);
 
   // Pure "just type" composer: no manual image/video toggles. Backend
   // auto-detects intent (keyword fast-path + LLM fallback) and either
