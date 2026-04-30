@@ -27,6 +27,9 @@ import os, logging, uuid, secrets, re, json, base64, bcrypt, jwt
 
 from emergentintegrations.llm.chat import LlmChat, UserMessage
 
+from llm_fallback import install_fallback as _install_llm_fallback
+_install_llm_fallback()  # patches LlmChat.send_message to use OPENAI_API_KEY on budget errors
+
 from brave_search import brave_web_search, format_results_for_prompt
 from kie_client import generate_video as kie_generate_video, submit_video as kie_submit_video, wait_for_video as kie_wait_for_video
 import asyncio
