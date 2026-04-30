@@ -109,22 +109,27 @@ export default function ConversationPage() {
     return () => { cancelled = true; clearTimeout(t); };
   }, [messages, convId]);
 
-  // The paperclip button now STAGES files instead of uploading immediately.
-  // The user can pick multiple at once (or click again to add more), then
-  // type a prompt and hit send — all files go up together in one request.
-  const onFilesPicked = (e) => {
-    const picked = Array.from(e.target.files || []);
-    e.target.value = "";  // reset so the same file can be re-picked
-    if (!picked.length) return;
+  // Shared staging logic — used by the paperclip picker, paste handler, and
+  // drag-and-drop. Validates size + count, builds previews, and appends to
+  // the staging tray. Returns true when at least one file was staged so the
+  // paste handler knows whether to swallow the event.
+  const stageFiles = (incoming) => {
+    const picked = Array.from(incoming || []).filter(Boolean);
+    if (!picked.length) return false;
     const tooBig = picked.find((f) => f.size > 25 * 1024 * 1024);
-    if (tooBig) { toast.error(`${tooBig.name} is too large (max 25 MB)`); return; }
+    if (tooBig) { toast.error(`${tooBig.name} is too large (max 25 MB)`); return false; }
     if (staged.length + picked.length > 6) {
       toast.error("You can attach at most 6 files per message");
-      return;
+      return false;
     }
     const additions = picked.map((f) => ({
+      // Paste-from-clipboard images sometimes come through with a generic
+      // `image.png` filename — give them a unique-ish name so the user can
+      // tell them apart in the staging tray.
       id: `stg-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-      file: f,
+      file: f.name && f.name !== "image.png"
+        ? f
+        : new File([f], `pasted-${new Date().toISOString().replace(/[:.]/g, "-")}.${(f.type.split("/")[1] || "png")}`, { type: f.type }),
       previewUrl: f.type.startsWith("image/") ? URL.createObjectURL(f) : "",
       kind: f.type.startsWith("image/") ? "image"
             : f.type.startsWith("video/") ? "video"
@@ -132,7 +137,48 @@ export default function ConversationPage() {
             : "file",
     }));
     setStaged((prev) => [...prev, ...additions]);
+    return true;
   };
+
+  // The paperclip button now STAGES files instead of uploading immediately.
+  // The user can pick multiple at once (or click again to add more), then
+  // type a prompt and hit send — all files go up together in one request.
+  const onFilesPicked = (e) => {
+    const picked = Array.from(e.target.files || []);
+    e.target.value = "";  // reset so the same file can be re-picked
+    stageFiles(picked);
+  };
+
+  // Pasting files (e.g. ⌘V a screenshot, copied PDF, attached image from
+  // another app) — `clipboardData.files` is non-empty whenever the OS has
+  // actual file blobs on the clipboard. We swallow the event so the textarea
+  // doesn't get a stray "[image]" placeholder and instead drop the file(s)
+  // into the staging tray, ready to send with the next prompt.
+  const onComposerPaste = (e) => {
+    const files = Array.from(e.clipboardData?.files || []);
+    if (!files.length) return;  // plain-text paste — let the browser handle it
+    if (stageFiles(files)) {
+      e.preventDefault();
+      toast.success(`Pasted ${files.length} file${files.length > 1 ? "s" : ""}`);
+    }
+  };
+
+  // Drag-and-drop onto the composer — same staging path as paste.
+  const [isDragging, setIsDragging] = useState(false);
+  const onComposerDragOver = (e) => {
+    if (e.dataTransfer?.types?.includes("Files")) {
+      e.preventDefault();
+      if (!isDragging) setIsDragging(true);
+    }
+  };
+  const onComposerDragLeave = () => setIsDragging(false);
+  const onComposerDrop = (e) => {
+    if (!e.dataTransfer?.files?.length) return;
+    e.preventDefault();
+    setIsDragging(false);
+    stageFiles(Array.from(e.dataTransfer.files));
+  };
+
   const removeStaged = (id) => {
     setStaged((prev) => {
       const tgt = prev.find((s) => s.id === id);
@@ -824,7 +870,29 @@ export default function ConversationPage() {
             <ArrowDown className="w-4 h-4" />
           </button>
         )}
-        <form onSubmit={send} className="max-w-5xl mx-auto px-3 sm:px-6 py-4">
+        <form
+          onSubmit={send}
+          onDragOver={onComposerDragOver}
+          onDragLeave={onComposerDragLeave}
+          onDrop={onComposerDrop}
+          className="relative max-w-5xl mx-auto px-3 sm:px-6 py-4"
+        >
+          {isDragging && (
+            <div
+              className="absolute inset-0 z-30 rounded-xl border-2 border-dashed flex items-center justify-center pointer-events-none"
+              style={{
+                borderColor: "rgba(246,64,0,0.7)",
+                background: "color-mix(in srgb, var(--bg) 80%, transparent)",
+                backdropFilter: "blur(8px)",
+                WebkitBackdropFilter: "blur(8px)",
+              }}
+              data-testid="drop-overlay"
+            >
+              <div className="flex items-center gap-2 text-sm font-medium" style={{ color: "var(--fg)" }}>
+                <Paperclip className="w-4 h-4" /> Drop to attach
+              </div>
+            </div>
+          )}
           {staged.length > 0 && (
             <div
               className="flex flex-wrap items-stretch gap-2 mb-3 px-1"
@@ -918,6 +986,7 @@ export default function ConversationPage() {
               data-testid="message-input"
               value={text}
               onChange={(e) => setText(e.target.value)}
+              onPaste={onComposerPaste}
               onKeyDown={(e) => {
                 if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(e); }
               }}
