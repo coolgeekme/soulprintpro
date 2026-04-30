@@ -388,31 +388,141 @@ GENERAL_DEFAULT_AGENT = "specialized-chief-of-staff"
 async def _fetch_url_text(url: str, max_chars: int = 8000) -> str:
     """Fetch a URL and return a compact plain-text excerpt of its body.
 
-    Strips scripts/styles + collapses whitespace so it's ready to feed to an LLM.
-    Returns "" on any failure — caller should fall back gracefully.
+    Hardened for the modern web — especially `.app` / SPA-style sites:
+    - Uses a real browser User-Agent (many hosts 403 obvious bot UAs)
+    - Auto-prepends `https://` (covers HSTS-only TLDs like `.app`, `.dev`)
+    - Tries `https://www.<host>` if the bare host returns 4xx
+    - Follows `<meta http-equiv="refresh">` AND inline JS
+      (`window.location.href = "/x"`) one hop, which `.app` lander pages rely on
+    - Strips scripts/styles, then if the visible text is too short
+      (typical SPA shell — `<div id="root"></div>` + bundles), falls back to
+      stitching together `<title>`, `<meta name="description">` and OG tags so
+      the LLM still gets something to chew on.
+
+    Returns "" on any failure — caller decides whether to surface an error.
     """
     if not url or not url.strip():
         return ""
     target = url.strip()
     if not target.startswith(("http://", "https://")):
         target = "https://" + target
-    try:
-        async with httpx.AsyncClient(timeout=10.0, follow_redirects=True,
-                                    headers={"User-Agent": "SoulPrintEngineBot/1.0"}) as client:
-            resp = await client.get(target)
+
+    browser_headers = {
+        "User-Agent": (
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/124.0.0.0 Safari/537.36"
+        ),
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Accept-Language": "en-US,en;q=0.9",
+    }
+
+    async def _get(client: "httpx.AsyncClient", u: str) -> Optional[str]:
+        try:
+            resp = await client.get(u)
+        except (httpx.HTTPError, ValueError) as exc:
+            logger.warning("scrape error %s: %s", u, exc)
+            return None
         if resp.status_code >= 400:
-            logger.warning("scrape %s -> %s", target, resp.status_code)
-            return ""
-        html = resp.text or ""
-    except (httpx.HTTPError, ValueError) as exc:
-        logger.warning("scrape error %s: %s", target, exc)
-        return ""
-    # Strip head/script/style/svg blocks before pulling text
-    cleaned = re.sub(r"<(script|style|svg|noscript|head)[^>]*>.*?</\1>", " ",
-                     html, flags=re.IGNORECASE | re.DOTALL)
-    text = re.sub(r"<[^>]+>", " ", cleaned)
-    text = re.sub(r"\s+", " ", text).strip()
-    return text[:max_chars]
+            logger.warning("scrape %s -> %s", u, resp.status_code)
+            return None
+        return resp.text or ""
+
+    def _next_hop(html: str, base: str) -> Optional[str]:
+        # `<meta http-equiv="refresh" content="0; url=/lander">`
+        m = re.search(
+            r'<meta[^>]+http-equiv=["\']?refresh["\']?[^>]+content=["\'][^"\']*url=([^"\'>\s]+)',
+            html, flags=re.IGNORECASE,
+        )
+        if not m:
+            # Inline JS redirect — common on `.app` lander pages
+            m = re.search(
+                r'(?:window\.)?location(?:\.href)?\s*=\s*["\']([^"\']+)["\']',
+                html, flags=re.IGNORECASE,
+            )
+        if not m:
+            return None
+        nxt = m.group(1).strip()
+        if nxt.startswith(("http://", "https://")):
+            return nxt
+        if nxt.startswith("//"):
+            scheme = base.split("://", 1)[0]
+            return f"{scheme}:{nxt}"
+        # path-relative
+        try:
+            from urllib.parse import urljoin
+            return urljoin(base, nxt)
+        except Exception:
+            return None
+
+    def _meta_fallback(html: str) -> str:
+        """Glue together title + description + OG tags as last-resort context."""
+        bits: list[str] = []
+        title = re.search(r"<title[^>]*>([^<]+)</title>", html, flags=re.IGNORECASE)
+        if title:
+            bits.append(title.group(1).strip())
+        for prop in (
+            'name=["\']description["\']',
+            'property=["\']og:title["\']',
+            'property=["\']og:description["\']',
+            'property=["\']og:site_name["\']',
+            'name=["\']twitter:description["\']',
+        ):
+            m = re.search(
+                rf'<meta[^>]+{prop}[^>]+content=["\']([^"\']+)["\']',
+                html, flags=re.IGNORECASE,
+            )
+            if m:
+                bits.append(m.group(1).strip())
+        return " — ".join(b for b in bits if b)
+
+    def _visible_text(html: str) -> str:
+        cleaned = re.sub(
+            r"<(script|style|svg|noscript|head|template)[^>]*>.*?</\1>",
+            " ",
+            html,
+            flags=re.IGNORECASE | re.DOTALL,
+        )
+        text = re.sub(r"<[^>]+>", " ", cleaned)
+        return re.sub(r"\s+", " ", text).strip()
+
+    # Build the candidate URL list (apex + www variant)
+    candidates = [target]
+    try:
+        from urllib.parse import urlparse, urlunparse
+        parsed = urlparse(target)
+        if parsed.netloc and not parsed.netloc.startswith("www."):
+            candidates.append(urlunparse(parsed._replace(netloc=f"www.{parsed.netloc}")))
+    except Exception:
+        pass
+
+    async with httpx.AsyncClient(
+        timeout=10.0, follow_redirects=True, headers=browser_headers
+    ) as client:
+        for cand in candidates:
+            html = await _get(client, cand)
+            if html is None:
+                continue
+
+            # Follow ONE meta-refresh / JS redirect if visible text is thin
+            visible = _visible_text(html)
+            if len(visible) < 200:
+                hop = _next_hop(html, cand)
+                if hop and hop != cand:
+                    hopped = await _get(client, hop)
+                    if hopped:
+                        html = hopped
+                        visible = _visible_text(html)
+
+            if len(visible) >= 200:
+                return visible[:max_chars]
+
+            # Last resort: meta-tag stitch (title + description + OG)
+            meta = _meta_fallback(html)
+            if len(meta) >= 40:
+                return meta[:max_chars]
+
+    return ""
 
 SOUL_KEYS = ("mission", "audience", "tone", "values", "north_star", "summary")
 EMPTY_SOUL = {k: "" for k in SOUL_KEYS}
