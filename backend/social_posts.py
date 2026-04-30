@@ -93,6 +93,8 @@ def serialize_social_post(p: dict) -> dict:
         "hashtags": p.get("hashtags", []),
         "link_url": p.get("link_url", ""),
         "media": p.get("media", []),
+        "image": p.get("image") or None,  # auto-generated cover image (with logo overlay)
+        "logo_position": p.get("logo_position") or "bottom-right",
         "scheduled_for": _iso(p.get("scheduled_for")),
         "published_at": _iso(p.get("published_at")),
         "created_at": _iso(p.get("created_at")),
@@ -227,9 +229,83 @@ async def _draft_via_agent(
 # ── Router factory ──────────────────────────────────────────────────────────
 def make_social_router(*, db, AGENTS, EMERGENT_LLM_KEY, LlmChat, UserMessage,
                        require_org_member, get_current_user, route_best_agent,
-                       load_conv_or_403):
+                       load_conv_or_403,
+                       generate_image_via_nano_banana=None,
+                       compose_logo_on_image=None,
+                       upload_dir=None):
     """Build the /api/social router with closure-bound dependencies from server.py."""
+    from bson import ObjectId as _OID
+    from pathlib import Path as _Path
     r = APIRouter(prefix="/api")
+
+    async def _generate_post_image(post: dict, org_doc: dict) -> Optional[dict]:
+        """Generate a cover image for a single post using Nano Banana, then
+        composite the org's primary logo on top at the chosen anchor.
+        Returns ``{filename, url, with_logo}`` or None on failure.
+
+        Image prompt = org Soul (mission/tone/audience/values) + post text →
+        keeps every social image visually on-brand.
+        """
+        if not generate_image_via_nano_banana or not upload_dir:
+            return None
+        soul = (org_doc or {}).get("soul") or {}
+        ba = (org_doc or {}).get("brand_assets") or {}
+        # Compose the soul context. We deliberately keep it short — Nano Banana
+        # follows its own composition heuristics best with concise direction.
+        soul_bits: list[str] = []
+        if soul.get("tone"):
+            soul_bits.append(f"Tone: {soul['tone']}")
+        if soul.get("audience"):
+            soul_bits.append(f"Audience: {soul['audience']}")
+        if soul.get("mission"):
+            soul_bits.append(f"Mission: {soul['mission']}")
+        colors = ba.get("brand_colors") or []
+        if colors:
+            soul_bits.append(f"Brand palette: {', '.join(colors[:4])}")
+        sys_msg = (
+            "You generate a single 1:1 social post cover image. The image must "
+            "feel on-brand for the company described below. Avoid text inside "
+            "the image — typography is added separately. Output only the image."
+        )
+        prompt_parts = [
+            "Create a striking, on-brand 1:1 cover image illustrating the "
+            "social post copy below. Vivid, bold, professional.",
+            "\n--- Company brand ---",
+            *soul_bits,
+            "\n--- Post copy ---",
+            (post.get("text") or "").strip()[:600],
+        ]
+        prompt = "\n".join(p for p in prompt_parts if p)
+        try:
+            fname, _caption = await generate_image_via_nano_banana(prompt, sys_msg)
+        except Exception as exc:
+            logger.warning("Social image generation failed: %s", exc)
+            return None
+        # Composite the primary logo onto the freshly-generated image.
+        primary = (ba.get("primary_logo") or {}) if ba else {}
+        logo_filename = (primary or {}).get("filename") or ""
+        with_logo = False
+        final_filename = fname
+        if logo_filename and compose_logo_on_image:
+            try:
+                base_path = _Path(upload_dir) / fname
+                logo_path = _Path(upload_dir) / logo_filename
+                if base_path.is_file() and logo_path.is_file():
+                    composed = compose_logo_on_image(
+                        base_path, logo_path,
+                        position=post.get("logo_position") or "bottom-right",
+                        out_dir=_Path(upload_dir),
+                    )
+                    final_filename = composed.name
+                    with_logo = True
+            except Exception as exc:
+                logger.warning("Logo composite failed (using raw image): %s", exc)
+        return {
+            "filename": final_filename,
+            "url": f"/api/files/{final_filename}",
+            "with_logo": with_logo,
+            "raw_filename": fname,  # un-composited base, kept so we can re-anchor logo cheaply
+        }
 
     @r.post("/orgs/{org_id}/social/draft")
     async def draft_social_posts(
@@ -279,7 +355,11 @@ def make_social_router(*, db, AGENTS, EMERGENT_LLM_KEY, LlmChat, UserMessage,
         now = datetime.now(timezone.utc)
         docs: list[dict] = []
         agent_meta = AGENTS[agent_id]
-        for p in posts:
+        # Hybrid image strategy: generate ONE on-brand cover image for the
+        # first post in the batch (so users have something visual to react
+        # to immediately) and let them hit "Generate image" on the rest.
+        # Saves on Nano Banana cost (~$0.04 each) for big multi-post drafts.
+        for idx, p in enumerate(posts):
             doc = {
                 "org_id": org_id,
                 "team_id": "",
@@ -293,11 +373,17 @@ def make_social_router(*, db, AGENTS, EMERGENT_LLM_KEY, LlmChat, UserMessage,
                 "hashtags": p.get("hashtags", []),
                 "link_url": "",
                 "media": [],
+                "image": None,
+                "logo_position": "bottom-right",
                 "scheduled_for": None,
                 "published_at": None,
                 "created_at": now,
                 "created_by": u["id"],
             }
+            if idx == 0:
+                img = await _generate_post_image(doc, ctx["org"])
+                if img:
+                    doc["image"] = img
             res = await db.social_posts.insert_one(doc)
             doc["_id"] = res.inserted_id
             docs.append(doc)
@@ -442,6 +528,76 @@ def make_social_router(*, db, AGENTS, EMERGENT_LLM_KEY, LlmChat, UserMessage,
         res = await db.social_posts.insert_one(doc)
         doc["_id"] = res.inserted_id
         return serialize_social_post(doc)
+
+    @r.post("/social/posts/{post_id}/generate-image")
+    async def generate_post_image(post_id: str, u: dict = Depends(get_current_user)):
+        """On-demand cover image generation for posts that didn't get one
+        during the initial batch (hybrid strategy — only the first draft in
+        a batch auto-generates). Same Soul + post text → Nano Banana → logo
+        composite at the post's current `logo_position`.
+        """
+        try:
+            post = await db.social_posts.find_one({"_id": _OID(post_id)})
+        except Exception as exc:
+            raise HTTPException(400, "Invalid post id") from exc
+        if not post:
+            raise HTTPException(404, "Post not found")
+        await require_org_member(post["org_id"], u["id"])
+        org = await db.organizations.find_one({"_id": _OID(post["org_id"])})
+        img = await _generate_post_image(post, org or {})
+        if not img:
+            raise HTTPException(502, "Could not generate image. Try again in a moment.")
+        await db.social_posts.update_one(
+            {"_id": _OID(post_id)}, {"$set": {"image": img}},
+        )
+        fresh = await db.social_posts.find_one({"_id": _OID(post_id)})
+        return serialize_social_post(fresh)
+
+    @r.patch("/social/posts/{post_id}/logo-position")
+    async def reposition_logo(
+        post_id: str, position: str, u: dict = Depends(get_current_user),
+    ):
+        """Reposition the logo overlay without re-generating the base image.
+
+        We always keep `image.raw_filename` (un-composited) on disk so this
+        is a cheap PIL paste — no LLM call.
+        """
+        if position not in ("top-left", "top-right", "bottom-left", "bottom-right", "center"):
+            raise HTTPException(422, "Invalid position")
+        try:
+            post = await db.social_posts.find_one({"_id": _OID(post_id)})
+        except Exception as exc:
+            raise HTTPException(400, "Invalid post id") from exc
+        if not post:
+            raise HTTPException(404, "Post not found")
+        await require_org_member(post["org_id"], u["id"])
+        update: dict = {"logo_position": position}
+        org = await db.organizations.find_one({"_id": _OID(post["org_id"])})
+        ba = (org or {}).get("brand_assets") or {}
+        primary = (ba.get("primary_logo") or {}) if ba else {}
+        logo_filename = (primary or {}).get("filename") or ""
+        existing_img = post.get("image") or {}
+        raw_filename = existing_img.get("raw_filename") or ""
+        if logo_filename and raw_filename and compose_logo_on_image and upload_dir:
+            try:
+                base_path = _Path(upload_dir) / raw_filename
+                logo_path = _Path(upload_dir) / logo_filename
+                if base_path.is_file() and logo_path.is_file():
+                    composed = compose_logo_on_image(
+                        base_path, logo_path, position=position,
+                        out_dir=_Path(upload_dir),
+                    )
+                    update["image"] = {
+                        "filename": composed.name,
+                        "url": f"/api/files/{composed.name}",
+                        "with_logo": True,
+                        "raw_filename": raw_filename,
+                    }
+            except Exception as exc:
+                logger.warning("Reposition logo failed: %s", exc)
+        await db.social_posts.update_one({"_id": _OID(post_id)}, {"$set": update})
+        fresh = await db.social_posts.find_one({"_id": _OID(post_id)})
+        return serialize_social_post(fresh)
 
     return r
 

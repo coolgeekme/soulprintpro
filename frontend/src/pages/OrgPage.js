@@ -4,6 +4,8 @@ import api, { BACKEND_URL } from "../lib/api";
 import TopBar from "../components/TopBar";
 import { toast } from "sonner";
 import { Plus, Users, ArrowRight, Copy, UserPlus, FileText, Image as ImageIcon, FileBox, Trash2, UploadCloud, Download, File as FileIcon, MessageCircle, Pencil, Save, X as XIcon, RefreshCw, Megaphone, Paperclip, Send, Loader2 } from "lucide-react";
+import BrandAssetsPanel from "../components/BrandAssetsPanel";
+import ActivityOverview from "../components/ActivityOverview";
 import Logo from "../components/Logo";
 import SchedulesPanel from "../components/SchedulesPanel";
 
@@ -299,6 +301,14 @@ export default function OrgPage() {
             convId={org.general_conversation_id}
           />
         )}
+
+        {/* Brand Assets — primary/alt logo + brand colors + tagline. Used by
+            the social-image generator to keep every cover image on-brand. */}
+        <BrandAssetsPanel orgId={orgId} initial={org.brand_assets} onChange={(ba) => setOrg((prev) => prev ? { ...prev, brand_assets: ba } : prev)} />
+
+        {/* Activity overview — KPI tiles + unified feed across social,
+            schedules, conversations, and assets. */}
+        <ActivityOverview orgId={orgId} />
 
         {/* Social Queue — generate, schedule, and one-click publish posts. */}
         <Link

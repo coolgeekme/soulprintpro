@@ -309,6 +309,7 @@ async def require_team_member(team_id: str, user_id: str) -> dict:
     return {"team": team, "org_role": m["role"]}
 
 def serialize_org(org: dict) -> dict:
+    from brand import serialize_brand as _serialize_brand
     return {
         "id": str(org["_id"]),
         "name": org["name"],
@@ -316,6 +317,7 @@ def serialize_org(org: dict) -> dict:
         "website_url": org.get("website_url", ""),
         "soul_description": org.get("soul_description", ""),
         "soul": org.get("soul") or {},
+        "brand_assets": _serialize_brand(org),
         "general_team_id": org.get("general_team_id", ""),
         "general_conversation_id": org.get("general_conversation_id", ""),
         "created_at": org["created_at"].isoformat() if isinstance(org["created_at"], datetime) else org["created_at"],
@@ -868,6 +870,87 @@ async def delete_org(org_id: str, u: dict = Depends(get_current_user)):
     await db.schedules.delete_many({"org_id": org_id})
     await db.organizations.delete_one({"_id": ObjectId(org_id)})
     return {"ok": True}
+
+
+# ── Brand assets ───────────────────────────────────────────────────────────
+from brand import (
+    BrandUpdateBody as _BrandUpdateBody,
+    DEFAULT_LOGO_POSITION as _DEFAULT_LOGO_POS,
+    LOGO_POSITION as _LOGO_POSITION_TYPE,  # noqa: F401 (used for typing only)
+    save_logo_bytes as _save_logo_bytes,
+    serialize_brand as _serialize_brand,
+    normalise_colors as _normalise_colors,
+)
+
+@org_r.post("/{org_id}/brand/logo")
+async def upload_brand_logo(
+    org_id: str,
+    kind: str = "primary",
+    file: UploadFile = File(...),
+    u: dict = Depends(get_current_user),
+):
+    """Upload a logo as either ``kind=primary`` or ``kind=alt`` (alt is for
+    light-on-dark or dark-on-light variants). Re-encodes to PNG-RGBA so
+    transparency carries through to the social-image overlay step.
+    """
+    if kind not in ("primary", "alt"):
+        raise HTTPException(422, "kind must be 'primary' or 'alt'")
+    ctx = await require_org_member(org_id, u["id"])
+    if ctx["member"]["role"] not in ("owner", "admin"):
+        raise HTTPException(403, "Only owners/admins can upload brand assets")
+    content = await file.read()
+    if len(content) > 8 * 1024 * 1024:
+        raise HTTPException(413, "Logo must be 8 MB or smaller")
+    try:
+        doc = _save_logo_bytes(UPLOAD_DIR, file.filename or "logo", content)
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    field = "primary_logo" if kind == "primary" else "alt_logo"
+    await db.organizations.update_one(
+        {"_id": ObjectId(org_id)},
+        {"$set": {f"brand_assets.{field}": doc}},
+    )
+    fresh = await db.organizations.find_one({"_id": ObjectId(org_id)})
+    return _serialize_brand(fresh)
+
+
+@org_r.delete("/{org_id}/brand/logo/{kind}")
+async def delete_brand_logo(
+    org_id: str, kind: str, u: dict = Depends(get_current_user),
+):
+    if kind not in ("primary", "alt"):
+        raise HTTPException(422, "kind must be 'primary' or 'alt'")
+    ctx = await require_org_member(org_id, u["id"])
+    if ctx["member"]["role"] not in ("owner", "admin"):
+        raise HTTPException(403, "Only owners/admins can edit brand assets")
+    field = "primary_logo" if kind == "primary" else "alt_logo"
+    await db.organizations.update_one(
+        {"_id": ObjectId(org_id)},
+        {"$set": {f"brand_assets.{field}": None}},
+    )
+    fresh = await db.organizations.find_one({"_id": ObjectId(org_id)})
+    return _serialize_brand(fresh)
+
+
+@org_r.patch("/{org_id}/brand")
+async def update_brand_meta(
+    org_id: str, body: _BrandUpdateBody, u: dict = Depends(get_current_user),
+):
+    """Update brand colors and/or tagline. Logos are uploaded via the
+    multipart endpoint above so they don't get split across two calls.
+    """
+    ctx = await require_org_member(org_id, u["id"])
+    if ctx["member"]["role"] not in ("owner", "admin"):
+        raise HTTPException(403, "Only owners/admins can edit brand assets")
+    update: dict = {}
+    if body.brand_colors is not None:
+        update["brand_assets.brand_colors"] = _normalise_colors(body.brand_colors)
+    if body.tagline is not None:
+        update["brand_assets.tagline"] = body.tagline.strip()[:240]
+    if update:
+        await db.organizations.update_one({"_id": ObjectId(org_id)}, {"$set": update})
+    fresh = await db.organizations.find_one({"_id": ObjectId(org_id)})
+    return _serialize_brand(fresh)
 
 @org_r.get("/{org_id}/members")
 async def list_org_members(org_id: str, u: dict = Depends(get_current_user)):
@@ -3128,7 +3211,7 @@ async def unfurl(url: str, u: dict = Depends(get_current_user)):
     )
     return preview
 
-ALLOWED_FILENAME_RE = re.compile(r"^[a-f0-9]{16,}\.(png|jpg|jpeg|webp|gif|pdf)$", re.IGNORECASE)
+ALLOWED_FILENAME_RE = re.compile(r"^([a-z]+-)?[a-f0-9]{16,}\.(png|jpg|jpeg|webp|gif|pdf)$", re.IGNORECASE)
 
 @files_r.get("/assets/{filename}")
 async def serve_org_asset(filename: str):
@@ -3186,13 +3269,31 @@ async def serve_file(filename: str):
     path = UPLOAD_DIR / filename
     if not path.is_file():
         raise HTTPException(404, "File not found")
-    # Confirm it was actually persisted by an agent reply (defensive — keeps
-    # the upload dir from being treated as a public dump if anything ever
-    # writes to it directly).
+    # Confirm it was actually persisted by an agent reply OR a brand/social
+    # asset (defensive — keeps the upload dir from being treated as a public
+    # dump if anything ever writes to it directly).
     msg = await db.messages.find_one({"media_filename": filename})
-    if not msg:
-        raise HTTPException(404, "Not linked to any message")
-    return FileResponse(path)
+    if msg:
+        return FileResponse(path)
+    # Brand logos
+    org = await db.organizations.find_one({
+        "$or": [
+            {"brand_assets.primary_logo.filename": filename},
+            {"brand_assets.alt_logo.filename": filename},
+        ]
+    })
+    if org:
+        return FileResponse(path)
+    # Social-post cover images (composited or raw)
+    sp = await db.social_posts.find_one({
+        "$or": [
+            {"image.filename": filename},
+            {"image.raw_filename": filename},
+        ]
+    })
+    if sp:
+        return FileResponse(path)
+    raise HTTPException(404, "Not linked to any message")
 
 # ── Schedules — cron-style automation for prompts/agents ───────────────────
 from apscheduler.schedulers.asyncio import AsyncIOScheduler  # noqa: E402
@@ -3543,6 +3644,7 @@ app.include_router(unfurl_r)
 app.include_router(schedules_r)
 
 from social_posts import make_social_router  # noqa: E402
+from brand import compose_logo_on_image as _compose_logo  # noqa: E402
 social_r = make_social_router(
     db=db, AGENTS=AGENTS, EMERGENT_LLM_KEY=EMERGENT_LLM_KEY,
     LlmChat=LlmChat, UserMessage=UserMessage,
@@ -3550,8 +3652,19 @@ social_r = make_social_router(
     get_current_user=get_current_user,
     route_best_agent=route_best_agent,
     load_conv_or_403=load_conv_or_403,
+    generate_image_via_nano_banana=generate_image_via_nano_banana,
+    compose_logo_on_image=_compose_logo,
+    upload_dir=UPLOAD_DIR,
 )
 app.include_router(social_r)
+
+from activity import make_activity_router  # noqa: E402
+activity_r = make_activity_router(
+    db=db, AGENTS=AGENTS,
+    require_org_member=require_org_member,
+    get_current_user=get_current_user,
+)
+app.include_router(activity_r)
 
 app.add_middleware(
     CORSMiddleware,

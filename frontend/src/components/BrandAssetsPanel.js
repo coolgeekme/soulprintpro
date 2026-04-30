@@ -1,0 +1,180 @@
+import React, { useEffect, useRef, useState } from "react";
+import api, { BACKEND_URL } from "../lib/api";
+import { toast } from "sonner";
+import { Sparkles, UploadCloud, Trash2, Save, Image as ImageIcon, X as XIcon } from "lucide-react";
+
+// One self-contained component for the org's brand kit:
+// - primary logo (used for social-image overlay)
+// - alt logo (light/dark variant — currently informational, queued for v2)
+// - brand colors (palette injected into image generation prompt)
+// - tagline (bakes the org's voice into draft prompts)
+//
+// All edits are owner/admin-only on the backend; this component just calls
+// the endpoints and displays gracefully when the user lacks permission.
+export default function BrandAssetsPanel({ orgId, initial, onChange }) {
+  const [brand, setBrand] = useState(initial || { primary_logo: null, alt_logo: null, brand_colors: [], tagline: "" });
+  const [tagline, setTagline] = useState((initial?.tagline) || "");
+  const [colorsText, setColorsText] = useState(((initial?.brand_colors) || []).join(", "));
+  const [savingMeta, setSavingMeta] = useState(false);
+  const [uploadingKind, setUploadingKind] = useState("");
+  const primaryRef = useRef(null);
+  const altRef = useRef(null);
+
+  useEffect(() => {
+    if (initial) {
+      setBrand(initial);
+      setTagline(initial.tagline || "");
+      setColorsText((initial.brand_colors || []).join(", "));
+    }
+  }, [initial]);
+
+  const uploadLogo = async (kind, file) => {
+    if (!file) return;
+    if (file.size > 8 * 1024 * 1024) { toast.error("Logo must be 8 MB or smaller"); return; }
+    setUploadingKind(kind);
+    try {
+      const fd = new FormData();
+      fd.append("file", file);
+      const { data } = await api.post(`/orgs/${orgId}/brand/logo?kind=${kind}`, fd, {
+        headers: { "Content-Type": "multipart/form-data" },
+      });
+      setBrand(data);
+      onChange?.(data);
+      toast.success(`${kind === "primary" ? "Primary" : "Alt"} logo updated`);
+    } catch (err) {
+      toast.error(err?.response?.data?.detail || "Upload failed");
+    } finally { setUploadingKind(""); }
+  };
+
+  const removeLogo = async (kind) => {
+    if (!window.confirm(`Remove the ${kind} logo?`)) return;
+    try {
+      const { data } = await api.delete(`/orgs/${orgId}/brand/logo/${kind}`);
+      setBrand(data);
+      onChange?.(data);
+    } catch (err) {
+      toast.error(err?.response?.data?.detail || "Failed");
+    }
+  };
+
+  const saveMeta = async () => {
+    setSavingMeta(true);
+    const colors = colorsText.split(/[\s,]+/).map((c) => c.trim()).filter(Boolean);
+    try {
+      const { data } = await api.patch(`/orgs/${orgId}/brand`, { tagline: tagline.trim(), brand_colors: colors });
+      setBrand(data);
+      // Backend strips invalid hex codes — sync the field back so the user
+      // sees what was kept.
+      setColorsText((data.brand_colors || []).join(", "));
+      onChange?.(data);
+      toast.success("Brand details saved");
+    } catch (err) {
+      toast.error(err?.response?.data?.detail || "Save failed");
+    } finally { setSavingMeta(false); }
+  };
+
+  const renderLogoSlot = (kind, ref, doc, label, helper) => (
+    <div className="sp-glass rounded-xl p-4 flex flex-col items-stretch gap-3" data-testid={`brand-${kind}-slot`}>
+      <div className="flex items-center justify-between">
+        <span className="text-xs uppercase tracking-widest sp-subtle">{label}</span>
+        {doc && (
+          <button type="button" onClick={() => removeLogo(kind)} className="sp-subtle hover:text-red-400 text-[11px]" data-testid={`brand-remove-${kind}`}>
+            <Trash2 className="w-3 h-3 inline-block mr-1" /> Remove
+          </button>
+        )}
+      </div>
+      <div className="flex items-center justify-center h-32 rounded-lg" style={{ background: "color-mix(in srgb, var(--bg-soft) 80%, transparent)" }}>
+        {doc ? (
+          <img src={`${BACKEND_URL}${doc.url}`} alt={`${kind} logo`} className="max-h-28 max-w-full object-contain" data-testid={`brand-${kind}-img`} />
+        ) : (
+          <ImageIcon className="w-7 h-7 sp-subtle opacity-50" />
+        )}
+      </div>
+      <input
+        type="file"
+        accept="image/png,image/jpeg,image/webp,image/svg+xml,image/gif"
+        ref={ref}
+        className="hidden"
+        onChange={(e) => uploadLogo(kind, e.target.files?.[0])}
+        data-testid={`brand-${kind}-input`}
+      />
+      <button
+        type="button"
+        onClick={() => ref.current?.click()}
+        disabled={uploadingKind === kind}
+        className="sp-btn sp-btn-ghost text-xs justify-center"
+        data-testid={`brand-${kind}-upload`}
+      >
+        <UploadCloud className="w-3.5 h-3.5" />
+        {uploadingKind === kind ? "Uploading…" : (doc ? "Replace" : "Upload")}
+      </button>
+      <div className="text-[11px] sp-subtle">{helper}</div>
+    </div>
+  );
+
+  return (
+    <section className="sp-glass-strong rounded-2xl p-5 sm:p-6 mb-6" data-testid="brand-assets-panel">
+      <div className="flex items-center gap-2 mb-4">
+        <Sparkles className="w-4 h-4 text-orange-400" />
+        <h3 className="text-sm uppercase tracking-widest sp-subtle">Brand assets</h3>
+        <span className="text-[11px] sp-subtle ml-2">Used by the social-image generator</span>
+      </div>
+
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mb-4">
+        {renderLogoSlot("primary", primaryRef, brand.primary_logo, "Primary logo",
+          "Auto-overlaid on every social post image (default lower-right corner; pick any of 5 corners per post).")}
+        {renderLogoSlot("alt", altRef, brand.alt_logo, "Alt logo (light/dark variant)",
+          "Optional — for now this is just stored; future versions will pick the best variant per image background.")}
+      </div>
+
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+        <div className="space-y-1">
+          <label className="text-[11px] sp-subtle uppercase tracking-widest">Brand colors</label>
+          <input
+            value={colorsText}
+            onChange={(e) => setColorsText(e.target.value)}
+            placeholder="#F64000, #1B1B1B, #FFFFFF"
+            className="w-full rounded-lg px-3 py-2 text-sm focus:sp-focus"
+            style={{ background: "var(--input-bg)", border: "1px solid var(--input-border)", color: "var(--fg)" }}
+            data-testid="brand-colors-input"
+          />
+          {brand.brand_colors?.length > 0 && (
+            <div className="flex flex-wrap gap-2 pt-1">
+              {brand.brand_colors.map((c) => (
+                <span key={c} className="inline-flex items-center gap-1.5 text-[11px] sp-subtle" data-testid={`brand-color-chip-${c.replace("#","")}`}>
+                  <span className="inline-block w-4 h-4 rounded-md border border-white/15" style={{ background: c }} />
+                  <code>{c}</code>
+                </span>
+              ))}
+            </div>
+          )}
+        </div>
+
+        <div className="space-y-1">
+          <label className="text-[11px] sp-subtle uppercase tracking-widest">Tagline</label>
+          <input
+            value={tagline}
+            onChange={(e) => setTagline(e.target.value)}
+            placeholder="Distil the Soul of every business."
+            className="w-full rounded-lg px-3 py-2 text-sm focus:sp-focus"
+            style={{ background: "var(--input-bg)", border: "1px solid var(--input-border)", color: "var(--fg)" }}
+            maxLength={240}
+            data-testid="brand-tagline-input"
+          />
+        </div>
+      </div>
+
+      <div className="flex items-center justify-end pt-3">
+        <button
+          type="button"
+          onClick={saveMeta}
+          disabled={savingMeta}
+          className="sp-btn sp-btn-primary text-xs disabled:opacity-50"
+          data-testid="save-brand-btn"
+        >
+          <Save className="w-3.5 h-3.5" /> {savingMeta ? "Saving…" : "Save brand details"}
+        </button>
+      </div>
+    </section>
+  );
+}

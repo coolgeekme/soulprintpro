@@ -5,7 +5,7 @@ import TopBar from "../components/TopBar";
 import { toast } from "sonner";
 import {
   Send, Sparkles, Calendar, CheckCircle2, Trash2, Copy, ExternalLink,
-  Download, Save, X, Loader2, Megaphone,
+  Download, Save, X, Loader2, Megaphone, Image as ImageIcon, Wand2,
 } from "lucide-react";
 
 // ── Platform metadata ─────────────────────────────────────────────────────
@@ -468,6 +468,9 @@ function PostCard({ post, onUpdate, onDelete }) {
             </div>
           )}
 
+          {/* Auto-generated cover image with logo overlay + 5-corner picker. */}
+          <PostCoverImage post={post} onUpdate={onUpdate} />
+
           <div className="flex flex-wrap items-center gap-2 pt-1">
             {post.platforms.map((id) => {
               const meta = PLATFORMS[id];
@@ -534,6 +537,110 @@ function PostCard({ post, onUpdate, onDelete }) {
           </div>
         </>
       )}
+    </div>
+  );
+}
+
+
+// ── Cover image with 5-corner logo picker ─────────────────────────────────
+const LOGO_POSITIONS = [
+  { id: "top-left",     label: "TL" },
+  { id: "top-right",    label: "TR" },
+  { id: "center",       label: "·" },
+  { id: "bottom-left",  label: "BL" },
+  { id: "bottom-right", label: "BR" },
+];
+
+function PostCoverImage({ post, onUpdate }) {
+  const [generating, setGenerating] = useState(false);
+  const [reposing, setReposing] = useState("");
+
+  const generate = async () => {
+    if (generating) return;
+    setGenerating(true);
+    try {
+      const { data } = await api.post(`/social/posts/${post.id}/generate-image`);
+      // Patch via parent so the post object refreshes in-place
+      await onUpdate(post.id, {});  // no-op patch to refresh; but we need optimistic
+      // Simpler: just hand the agent the new doc directly via a custom field
+      Object.assign(post, data);
+      // Force a re-render: parent already updates on PATCH; for now toast and rely on next reload
+      toast.success("Image generated");
+      // Trigger a tab refresh by patching status to itself (no-op but persists)
+      onUpdate(post.id, { status: data.status });
+    } catch (err) {
+      toast.error(err?.response?.data?.detail || "Generation failed");
+    } finally { setGenerating(false); }
+  };
+
+  const reposition = async (pos) => {
+    if (reposing || pos === post.logo_position) return;
+    setReposing(pos);
+    try {
+      await api.patch(`/social/posts/${post.id}/logo-position?position=${encodeURIComponent(pos)}`);
+      onUpdate(post.id, { status: post.status });  // trigger parent re-fetch
+    } catch (err) {
+      toast.error(err?.response?.data?.detail || "Reposition failed");
+    } finally { setReposing(""); }
+  };
+
+  if (!post.image) {
+    return (
+      <div className="flex items-center justify-between sp-glass rounded-xl px-4 py-2.5 border border-white/10">
+        <div className="flex items-center gap-2 text-xs sp-subtle">
+          <ImageIcon className="w-3.5 h-3.5" />
+          No cover image yet
+        </div>
+        <button type="button" onClick={generate} disabled={generating}
+                className="sp-btn sp-btn-ghost text-xs disabled:opacity-50"
+                data-testid={`generate-image-${post.id}`}>
+          {generating ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Wand2 className="w-3.5 h-3.5" />}
+          {generating ? "Generating…" : "Generate cover image"}
+        </button>
+      </div>
+    );
+  }
+
+  const url = post.image.url?.startsWith("http") ? post.image.url : `${BACKEND_URL}${post.image.url}`;
+  return (
+    <div className="space-y-2 mt-2">
+      <div className="relative rounded-xl overflow-hidden border border-white/10 group/img">
+        <img src={url} alt="" className="w-full max-h-96 object-contain bg-black/20"
+             data-testid={`post-image-${post.id}`} />
+        {!post.image.with_logo && (
+          <div className="absolute top-2 right-2 sp-glass-strong rounded-full px-2.5 py-1 text-[11px]">
+            No logo overlay — upload a primary logo on the Org page
+          </div>
+        )}
+      </div>
+      <div className="flex items-center gap-2 flex-wrap">
+        <span className="text-[11px] sp-subtle uppercase tracking-widest">Logo position</span>
+        <div className="inline-flex items-center gap-1 sp-glass rounded-full p-1" data-testid={`logo-picker-${post.id}`}>
+          {LOGO_POSITIONS.map((p) => (
+            <button
+              key={p.id}
+              type="button"
+              onClick={() => reposition(p.id)}
+              disabled={!post.image.with_logo || reposing === p.id}
+              title={p.id.replace("-", " ")}
+              data-testid={`logo-pos-${p.id}-${post.id}`}
+              className={`w-7 h-7 rounded-full text-[11px] transition ${
+                post.logo_position === p.id
+                  ? "bg-orange-500/30 text-white"
+                  : "sp-subtle hover:text-white hover:bg-white/5"
+              } disabled:opacity-40`}
+            >
+              {reposing === p.id ? <Loader2 className="w-3 h-3 animate-spin mx-auto" /> : p.label}
+            </button>
+          ))}
+        </div>
+        <button type="button" onClick={generate} disabled={generating}
+                className="sp-btn sp-btn-ghost text-xs ml-auto disabled:opacity-50"
+                data-testid={`regenerate-image-${post.id}`}>
+          {generating ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Wand2 className="w-3.5 h-3.5" />}
+          {generating ? "Generating…" : "Regenerate"}
+        </button>
+      </div>
     </div>
   );
 }
