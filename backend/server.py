@@ -1768,10 +1768,23 @@ async def generate_image_via_nano_banana(prompt: str, system_message: str) -> tu
     img = images[0]
     img_bytes = base64.b64decode(img["data"])
     mime = (img.get("mime_type") or "image/png").lower()
-    ext = "png" if "png" in mime else "jpg" if "jpeg" in mime or "jpg" in mime else "bin"
+    # Pick a file extension that ALLOWED_FILENAME_RE accepts so the served
+    # URL doesn't 400. Default to png for unknown bytes (browsers sniff content).
+    if "webp" in mime:
+        ext = "webp"
+    elif "gif" in mime:
+        ext = "gif"
+    elif "jpeg" in mime or "jpg" in mime:
+        ext = "jpg"
+    else:
+        ext = "png"
     filename = f"{uuid.uuid4().hex}.{ext}"
     (UPLOAD_DIR / filename).write_bytes(img_bytes)
-    return filename, (text or "").strip()
+    # Strip any markdown image references (`![...](...)`) the model snuck into
+    # the caption — we render the image inline ourselves, so leaving them in
+    # the text would make the same image look like it appeared multiple times.
+    caption = re.sub(r"!\[[^\]]*\]\([^)]*\)", "", text or "").strip()
+    return filename, caption
 
 @conv_r.post("/conversations/{conv_id}/generate-image")
 async def generate_image(conv_id: str, body: GenerateImageBody, u: dict = Depends(get_current_user)):
