@@ -2404,8 +2404,14 @@ async def unfurl(url: str, u: dict = Depends(get_current_user)):
 
     cached = await db.unfurl_cache.find_one({"url": target})
     now = datetime.now(timezone.utc)
-    if cached and cached.get("fetched_at") and (now - cached["fetched_at"]).total_seconds() < 86400:
-        return {k: v for k, v in cached.items() if k != "_id" and k != "fetched_at"}
+    if cached and cached.get("fetched_at"):
+        fa = cached["fetched_at"]
+        # MongoDB occasionally hands us a tz-naive datetime depending on
+        # driver settings — coerce both sides to UTC-aware before diffing.
+        if fa.tzinfo is None:
+            fa = fa.replace(tzinfo=timezone.utc)
+        if (now - fa).total_seconds() < 86400:
+            return {k: v for k, v in cached.items() if k != "_id" and k != "fetched_at"}
 
     preview = {"url": target, "title": "", "description": "", "image": "", "site_name": "", "favicon": "", "host": ""}
     try:

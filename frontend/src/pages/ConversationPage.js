@@ -179,7 +179,22 @@ export default function ConversationPage() {
       });
       if (data.conversation) setConv(data.conversation);
     } catch (err) {
-      toast.error("Message failed");
+      // Surface the actual reason instead of a generic toast so the user
+      // can act on it (top up budget, retry, etc.). Special-case the
+      // Emergent LLM "Budget has been exceeded" error since the fix is a
+      // one-click top-up in the user's profile.
+      const detail = err?.response?.data?.detail || err?.message || "";
+      const txt = String(detail);
+      if (/budget/i.test(txt)) {
+        toast.error(
+          "Your Emergent LLM key budget is empty. Profile → Universal Key → Add Balance, then try again.",
+          { duration: 8000 },
+        );
+      } else if (txt) {
+        toast.error(`Message failed: ${txt}`.slice(0, 220));
+      } else {
+        toast.error("Message failed — check your connection and try again.");
+      }
       setMessages((prev) => prev.filter(m => m.id !== optimistic.id));
       setText(toSend);
     } finally { setSending(false); }
