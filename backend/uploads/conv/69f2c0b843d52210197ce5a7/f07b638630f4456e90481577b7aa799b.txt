@@ -1,0 +1,4 @@
+Q1 revenue: 1.2M
+Q2 revenue: 1.8M
+Q3 revenue: 2.1M
+Top channel: organic search

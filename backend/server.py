@@ -1950,6 +1950,244 @@ async def generate_video_endpoint(conv_id: str, body: GenerateVideoBody, u: dict
         "ok": True,
     }
 
+# ── Conversation file uploads (in-chat attachments) ─────────────────────────
+CONV_UPLOAD_DIR = ROOT_DIR / "uploads" / "conv"
+CONV_UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+MAX_CONV_UPLOAD_SIZE = 25 * 1024 * 1024  # 25MB
+
+# Map raw extensions → kind label used for icon + handling. We share the
+# extension sets imported from `assets` so the rules stay consistent with org
+# uploads (images, pdfs, docs, text-like, audio, video).
+def _attachment_kind(ext: str) -> str:
+    e = ext.lower().lstrip(".")
+    if e in IMAGE_EXTS:
+        return "image"
+    if e in PDF_EXTS:
+        return "pdf"
+    if e in DOCX_EXTS:
+        return "doc"
+    if e in TEXT_LIKE_EXTS:
+        return "text"
+    if e in {"mp3", "wav", "m4a", "ogg", "flac", "aac"}:
+        return "audio"
+    if e in {"mp4", "mov", "webm", "avi", "mkv"}:
+        return "video"
+    return "file"
+
+# Allowlist for chat attachments — superset of org-asset list, but no .zip
+# (we don't want to dump a binary archive into a vision model).
+ALLOWED_ATTACH_EXTS = (
+    IMAGE_EXTS | PDF_EXTS | DOCX_EXTS | TEXT_LIKE_EXTS |
+    {"mp3", "wav", "m4a", "ogg", "flac", "aac"} |
+    {"mp4", "mov", "webm", "avi", "mkv"} |
+    {"xlsx", "pptx", "rtf"}  # accepted but not parsed for text
+)
+
+async def _agent_review_attachment(
+    conv: dict, team: dict, agent_id: str, user_text: str,
+    attachment: dict, file_path: Path, current_user_name: str,
+) -> tuple[str, list]:
+    """One LLM turn that reviews an uploaded file.
+
+    For images: sends the file as multimodal vision input. For text-bearing
+    files: injects the extracted text. For everything else: just acknowledges
+    the file by name + size and answers the user's question if any.
+    """
+    org_assets_brief: List[dict] = []
+    org_doc: Optional[dict] = None
+    try:
+        org_assets_brief = await load_assets_brief(team["org_id"])
+    except Exception:
+        pass
+    try:
+        org_doc = await db.organizations.find_one({"_id": ObjectId(team["org_id"])})
+    except Exception:
+        pass
+
+    system = build_system_prompt(agent_id, team, current_user_name=current_user_name,
+                                 org_assets=org_assets_brief, org=org_doc)
+    system += (
+        "\n\nThe user has just attached a file for you to review. Open with a "
+        "one-line confirmation of what you received, then deliver the analysis "
+        "they asked for (or, if no specific question was asked, a concise but "
+        "useful breakdown of the file). Keep it tight."
+    )
+
+    kind = attachment["kind"]
+    file_label = attachment["original_name"]
+    extracted = attachment.get("attachment_text") or ""
+    ask = (user_text or "").strip() or "Take a look and tell me what stands out."
+
+    if kind == "image":
+        # Multimodal vision call
+        try:
+            from emergentintegrations.llm.chat import LlmChat as _LlmChat, UserMessage as _UM, ImageContent as _IC
+            mime = attachment.get("attachment_mime") or "image/png"
+            img_b64 = base64.b64encode(file_path.read_bytes()).decode("ascii")
+            chat = _LlmChat(
+                api_key=EMERGENT_LLM_KEY,
+                session_id=f"vision:{conv['_id']}:{agent_id}",
+                system_message=system,
+            ).with_model("openai", "gpt-4.1-mini")
+            msg = _UM(
+                text=f"User uploaded `{file_label}`. {ask}",
+                file_contents=[_IC(image_base64=img_b64, mime_type=mime)],
+            )
+            text = await chat.send_message(msg)
+            return text or "", []
+        except Exception as exc:
+            logger.warning("vision review failed, falling back: %s", exc)
+            # Fall through to a text-only acknowledgement below
+
+    prompt_parts = [f"User uploaded `{file_label}` ({kind})."]
+    if extracted:
+        snippet = extracted[:8000]
+        prompt_parts.append(f"\nExtracted text:\n---\n{snippet}\n---")
+        if len(extracted) > 8000:
+            prompt_parts.append("(text truncated)")
+    elif kind in ("audio", "video"):
+        prompt_parts.append(
+            "(This is a media file — no transcription available in this turn. "
+            "Acknowledge it and offer to dig deeper if the user shares context.)"
+        )
+    elif kind not in ("image",):
+        prompt_parts.append("(No text extractable. Acknowledge by name and ask for context.)")
+    prompt_parts.append(f"\nUser's question: {ask}")
+    prompt = "\n".join(prompt_parts)
+
+    chat = LlmChat(
+        api_key=EMERGENT_LLM_KEY,
+        session_id=f"upload:{conv['_id']}:{agent_id}",
+        system_message=system,
+    ).with_model("openai", "gpt-4.1-mini")
+    try:
+        text = await chat.send_message(UserMessage(text=prompt))
+    except Exception as exc:
+        logger.exception("upload-review LLM error: %s", exc)
+        return "I got the file but couldn't process it just now — try again in a moment.", []
+    return text or "", []
+
+@conv_r.post("/conversations/{conv_id}/upload")
+async def upload_to_conversation(
+    conv_id: str,
+    text: str = Form(""),
+    file: UploadFile = File(...),
+    u: dict = Depends(get_current_user),
+):
+    """Attach a file to a conversation. Persists the file, posts a user
+    message with attachment metadata, and triggers an agent reply that
+    actually reads / sees the file (vision for images, extracted text for
+    PDFs / docs / text)."""
+    conv = await load_conv_or_403(conv_id, u["id"])
+    team = await db.teams.find_one({"_id": ObjectId(conv["team_id"])})
+    if not team:
+        raise HTTPException(404, "Team not found")
+
+    original = (file.filename or "file").strip().replace("/", "_").replace("\\", "_")
+    ext = original.rsplit(".", 1)[-1].lower() if "." in original else ""
+    if ext not in ALLOWED_ATTACH_EXTS:
+        raise HTTPException(400, f"Unsupported file type: .{ext or '?'}")
+    blob = await file.read()
+    if not blob:
+        raise HTTPException(400, "Empty file")
+    if len(blob) > MAX_CONV_UPLOAD_SIZE:
+        raise HTTPException(400, f"File too large (max {MAX_CONV_UPLOAD_SIZE // (1024 * 1024)} MB)")
+
+    fname = f"{uuid.uuid4().hex}.{ext}"
+    folder = CONV_UPLOAD_DIR / conv_id
+    folder.mkdir(parents=True, exist_ok=True)
+    fpath = folder / fname
+    fpath.write_bytes(blob)
+
+    kind = _attachment_kind(ext)
+    extracted = ""
+    if is_text_extractable(ext):
+        try:
+            extracted = trim_text(extract_asset_text(fpath, ext), limit=8000)
+        except Exception as exc:
+            logger.warning("attachment text extract failed: %s", exc)
+
+    attach = {
+        "attachment_filename": fname,
+        "attachment_url": f"/api/files/conv/{conv_id}/{fname}",
+        "attachment_mime": file.content_type or "",
+        "attachment_kind": kind,
+        "attachment_size": len(blob),
+        "attachment_original_name": original,
+        "attachment_text": extracted,
+    }
+
+    now = datetime.now(timezone.utc)
+    user_doc = {
+        "id": str(uuid.uuid4()),
+        "conversation_id": conv_id,
+        "sender_type": "user",
+        "sender_id": u["id"],
+        "sender_name": u["name"],
+        "agent_id": None,
+        "text": (text or "").strip() or f"📎 {original}",
+        "intent": "attachment",
+        "timestamp": now,
+        **{k: v for k, v in attach.items() if k != "attachment_text"},
+    }
+    await db.messages.insert_one({**user_doc})
+
+    # Pick a responder. For groups → smart-route to the best specialist for
+    # this kind of file. For direct → the conversation's agent.
+    if conv["type"] == "group":
+        # Use existing first agent unless smart-routing is on, in which case
+        # let route_best_agent pick. Either way, fall back to first.
+        try:
+            chosen = await route_best_agent(
+                team,
+                f"Review this {kind} file: {original}\n{(text or '').strip()}\n{extracted[:600]}",
+                exclude_ids=None, transcript="",
+            )
+        except Exception:
+            chosen = (conv.get("agent_ids") or [None])[0]
+        if chosen and chosen not in (conv.get("agent_ids") or []):
+            await db.conversations.update_one(
+                {"_id": ObjectId(conv_id)},
+                {"$addToSet": {"agent_ids": chosen}},
+            )
+            conv["agent_ids"] = list(conv.get("agent_ids", [])) + [chosen]
+        responder = chosen or (conv.get("agent_ids") or [None])[0]
+    else:
+        responder = (conv.get("agent_ids") or [None])[0]
+
+    if not responder or responder not in AGENTS:
+        return {
+            "user_message": {k: v for k, v in user_doc.items() if k != "_id"},
+            "agent_messages": [],
+            "ok": True,
+        }
+
+    reply, _sources = await _agent_review_attachment(
+        conv, team, responder, text or "",
+        {"kind": kind, "original_name": original, "attachment_mime": attach["attachment_mime"], "attachment_text": extracted},
+        fpath, u["name"],
+    )
+    agent_msg = {
+        "id": str(uuid.uuid4()),
+        "conversation_id": conv_id,
+        "sender_type": "agent",
+        "sender_id": responder,
+        "sender_name": AGENTS[responder]["name"],
+        "agent_id": responder,
+        "text": reply or "Got the file — let me know what to dig into.",
+        "intent": "attachment_reply",
+        "timestamp": datetime.now(timezone.utc),
+    }
+    await db.messages.insert_one({**agent_msg})
+
+    fresh = await db.conversations.find_one({"_id": ObjectId(conv_id)})
+    return {
+        "user_message": {k: v for k, v in user_doc.items() if k != "_id"},
+        "agent_messages": [{k: v for k, v in agent_msg.items() if k != "_id"}],
+        "conversation": serialize_conv(fresh) if fresh else None,
+        "ok": True,
+    }
+
 # ── Org assets — uploads, listing, deletion, serving ────────────────────────
 assets_r = APIRouter(prefix="/api")
 
@@ -2218,6 +2456,30 @@ async def serve_org_asset(filename: str):
     if not path.is_file():
         raise HTTPException(404, "File missing on disk")
     return FileResponse(path, filename=asset.get("original_name") or filename, media_type=asset.get("mime"))
+
+CONV_ATTACH_FILENAME_RE = re.compile(r"^[a-f0-9]{16,}\.[a-z0-9]{1,8}$", re.IGNORECASE)
+
+@files_r.get("/conv/{conv_id}/{filename}")
+async def serve_conv_attachment(conv_id: str, filename: str):
+    """Serve an in-conversation file upload.
+
+    Capability-URL pattern (random uuid filename inside a random conv id),
+    no auth so `<img>` / `<video>` can render inline. Defensive lookup
+    confirms the message exists before serving."""
+    if not CONV_ATTACH_FILENAME_RE.match(filename):
+        raise HTTPException(400, "Invalid filename")
+    msg = await db.messages.find_one({
+        "conversation_id": conv_id,
+        "attachment_filename": filename,
+    })
+    if not msg:
+        raise HTTPException(404, "Not linked to any message")
+    path = CONV_UPLOAD_DIR / conv_id / filename
+    if not path.is_file():
+        raise HTTPException(404, "File missing on disk")
+    return FileResponse(path,
+                        filename=msg.get("attachment_original_name") or filename,
+                        media_type=msg.get("attachment_mime") or None)
 
 @files_r.get("/{filename}")
 async def serve_file(filename: str):

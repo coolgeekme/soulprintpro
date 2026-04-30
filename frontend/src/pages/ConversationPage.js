@@ -4,7 +4,7 @@ import api, { BACKEND_URL } from "../lib/api";
 import TopBar from "../components/TopBar";
 import { toast } from "sonner";
 import { useAuth } from "../context/AuthContext";
-import { Send, Trash2, AtSign, Users, Repeat, Search, X, Lock, Film, Globe, ArrowUp, ArrowDown, UserPlus } from "lucide-react";
+import { Send, Trash2, AtSign, Users, Repeat, Search, X, Lock, Film, Globe, ArrowUp, ArrowDown, UserPlus, Paperclip, FileText, File as FileIcon } from "lucide-react";
 import LinkPreviewCard from "../components/LinkPreviewCard";
 
 const formatTime = (ts) => {
@@ -26,6 +26,8 @@ export default function ConversationPage() {
   const [showMentions, setShowMentions] = useState(false);
   const scrollerRef = useRef(null);
   const inputRef = useRef(null);
+  const fileInputRef = useRef(null);
+  const [uploading, setUploading] = useState(false);
   const [scrollState, setScrollState] = useState({ canUp: false, canDown: false });
 
   const onScrollerScroll = () => {
@@ -101,6 +103,57 @@ export default function ConversationPage() {
     const t = setTimeout(tick, 5000);
     return () => { cancelled = true; clearTimeout(t); };
   }, [messages, convId]);
+
+  // Upload a file picked from the OS and send it to the conversation.
+  // The composer textarea's current text is sent as the user prompt so
+  // they can ask "what stands out in this report?" while attaching the PDF.
+  const onFilePicked = async (e) => {
+    const f = e.target.files?.[0];
+    e.target.value = "";  // reset so the same file can be picked again
+    if (!f || uploading) return;
+    if (f.size > 25 * 1024 * 1024) {
+      toast.error("File too large (max 25MB)");
+      return;
+    }
+    setUploading(true);
+    const fd = new FormData();
+    fd.append("file", f);
+    fd.append("text", text || "");
+    const optimistic = {
+      id: `tmp-up-${Date.now()}`,
+      conversation_id: convId,
+      sender_type: "user",
+      sender_id: user.id,
+      sender_name: user.name,
+      text: (text || `📎 ${f.name}`).trim(),
+      attachment_original_name: f.name,
+      attachment_kind: f.type.startsWith("image/") ? "image"
+                      : f.type.startsWith("video/") ? "video"
+                      : f.type.startsWith("audio/") ? "audio"
+                      : f.name.endsWith(".pdf") ? "pdf"
+                      : f.name.match(/\.(docx?|odt|rtf)$/i) ? "doc"
+                      : "file",
+      attachment_size: f.size,
+      attachment_pending: true,
+      timestamp: new Date().toISOString(),
+    };
+    setMessages((prev) => [...prev, optimistic]);
+    setText("");
+    try {
+      const { data } = await api.post(`/conversations/${convId}/upload`, fd, {
+        headers: { "Content-Type": "multipart/form-data" },
+      });
+      setMessages((prev) => {
+        const without = prev.filter((m) => m.id !== optimistic.id);
+        return [...without, data.user_message, ...(data.agent_messages || [])];
+      });
+      if (data.conversation) setConv(data.conversation);
+      toast.success(`${f.name} delivered to your agent`);
+    } catch (err) {
+      toast.error(err?.response?.data?.detail || "Upload failed");
+      setMessages((prev) => prev.filter((m) => m.id !== optimistic.id));
+    } finally { setUploading(false); }
+  };
 
   const send = async (e) => {
     e.preventDefault();
@@ -369,6 +422,62 @@ export default function ConversationPage() {
                     <span className="text-[11px] sp-subtle ml-auto">{formatTime(m.timestamp)}</span>
                   </div>
                   <div className="whitespace-pre-wrap text-[16px] leading-[1.6]">{m.text}</div>
+                  {m.attachment_filename && m.attachment_kind === "image" && (
+                    <a
+                      href={`${BACKEND_URL}${m.attachment_url}`}
+                      target="_blank" rel="noreferrer"
+                      className="block mt-3 rounded-xl overflow-hidden border border-white/10 hover:border-white/30 transition"
+                      data-testid={`attachment-image-${m.id}`}
+                    >
+                      <img
+                        src={`${BACKEND_URL}${m.attachment_url}`}
+                        alt={m.attachment_original_name || "attachment"}
+                        referrerPolicy="no-referrer"
+                        className="block w-full max-h-[480px] object-contain bg-black/30"
+                        loading="lazy"
+                      />
+                    </a>
+                  )}
+                  {m.attachment_filename && m.attachment_kind === "video" && (
+                    <video
+                      src={`${BACKEND_URL}${m.attachment_url}`}
+                      controls
+                      preload="metadata"
+                      className="block mt-3 rounded-xl overflow-hidden border border-white/10 w-full max-h-[480px] bg-black/30"
+                      data-testid={`attachment-video-${m.id}`}
+                    />
+                  )}
+                  {m.attachment_filename && m.attachment_kind === "audio" && (
+                    <audio
+                      src={`${BACKEND_URL}${m.attachment_url}`}
+                      controls
+                      preload="metadata"
+                      className="mt-3 w-full"
+                      data-testid={`attachment-audio-${m.id}`}
+                    />
+                  )}
+                  {m.attachment_filename && !["image", "video", "audio"].includes(m.attachment_kind) && (
+                    <a
+                      href={`${BACKEND_URL}${m.attachment_url}`}
+                      target="_blank" rel="noreferrer"
+                      className="mt-3 flex items-center gap-3 rounded-xl border border-white/10 hover:border-white/30 px-3 py-2.5 transition"
+                      data-testid={`attachment-file-${m.id}`}
+                    >
+                      <div className="w-9 h-9 rounded-lg flex items-center justify-center sp-glass-strong shrink-0">
+                        {m.attachment_kind === "pdf" || m.attachment_kind === "doc" || m.attachment_kind === "text"
+                          ? <FileText className="w-4 h-4" />
+                          : <FileIcon className="w-4 h-4" />}
+                      </div>
+                      <div className="min-w-0 flex-1">
+                        <div className="text-sm font-medium truncate">{m.attachment_original_name || "Attachment"}</div>
+                        <div className="text-[11px] sp-subtle">
+                          {m.attachment_kind?.toUpperCase() || "FILE"}
+                          {m.attachment_size ? ` · ${(m.attachment_size / 1024).toFixed(0)} KB` : ""}
+                          {m.attachment_pending ? " · uploading…" : ""}
+                        </div>
+                      </div>
+                    </a>
+                  )}
                   {Array.isArray(m.web_sources) && m.web_sources.length > 0 && (
                     <div className="mt-3 pt-3 border-t border-white/10" data-testid={`web-sources-${m.id}`}>
                       <div className="flex items-center gap-2 mb-2">
@@ -481,6 +590,24 @@ export default function ConversationPage() {
             </div>
           )}
           <div className="flex items-end gap-2">
+            <input
+              ref={fileInputRef}
+              type="file"
+              accept="image/*,video/*,audio/*,.pdf,.doc,.docx,.txt,.md,.csv,.json,.log,.xlsx,.pptx,.rtf"
+              className="hidden"
+              onChange={onFilePicked}
+              data-testid="file-input"
+            />
+            <button
+              type="button"
+              onClick={() => fileInputRef.current?.click()}
+              disabled={uploading}
+              className="sp-btn sp-btn-ghost text-xs shrink-0 disabled:opacity-50"
+              title={uploading ? "Uploading…" : "Attach a file (image, PDF, doc, audio, video — up to 25 MB)"}
+              data-testid="attach-file-btn"
+            >
+              <Paperclip className="w-3.5 h-3.5" />
+            </button>
             {isGroup && (
               <button
                 type="button"
