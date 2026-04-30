@@ -1,0 +1,14 @@
+BEGIN:VCALENDAR
+VERSION:2.0
+PRODID:-//Project Shepherd//Scheduling//EN
+BEGIN:VEVENT
+UID:soulprint-kickoff-20240611T170000Z@projectshepherd.local
+DTSTAMP:20240604T000000Z
+DTSTART;TZID=America/Los_Angeles:20240611T100000
+DTEND;TZID=America/Los_Angeles:20240611T104500
+SUMMARY:SoulPrint Rollout Kickoff Meeting
+DESCRIPTION:Initial kickoff to discuss rollout plans and next steps for SoulPrint.
+ORGANIZER;CN=Artifact Tester:mailto:artifact.tester@yourdomain.com
+ATTENDEE;CN=John Doe;RSVP=TRUE:mailto:john@acme.com
+END:VEVENT
+END:VCALENDAR

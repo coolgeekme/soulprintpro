@@ -46,12 +46,20 @@ from assets import (
     format_assets_for_prompt,
     IMAGE_EXTS, PDF_EXTS, DOCX_EXTS, TEXT_LIKE_EXTS,
 )
+from artifacts import (
+    RESOURCEFULNESS_DIRECTIVE,
+    extract_artifact_blocks,
+    save_artifacts as _save_artifacts,
+    make_documents_router,
+)
 
 ROOT_DIR = Path(__file__).parent
 UPLOAD_DIR = ROOT_DIR / "uploads"
 UPLOAD_DIR.mkdir(exist_ok=True)
 ASSETS_DIR = ROOT_DIR / "uploads" / "assets"
 ASSETS_DIR.mkdir(parents=True, exist_ok=True)
+DOCS_DIR = ROOT_DIR / "uploads" / "docs"
+DOCS_DIR.mkdir(parents=True, exist_ok=True)
 load_dotenv(ROOT_DIR / ".env")
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)s | %(message)s")
@@ -1215,6 +1223,9 @@ def build_system_prompt(agent_id: str, team: dict, current_user_name: Optional[s
     user_ctx_block = _user_context_block()
     if user_ctx_block:
         lines.append("\n" + user_ctx_block)
+    # Resourcefulness protocol — teaches every agent how to fall back to
+    # downloadable artifacts when a native integration is missing.
+    lines.append(RESOURCEFULNESS_DIRECTIVE)
     return "\n".join(lines)
 
 async def load_assets_brief(org_id: str, max_items: int = 30) -> List[dict]:
@@ -1753,6 +1764,47 @@ async def generate_agent_reply(conv: dict, team: dict, agent_id: str,
         return "I'm having trouble thinking right now — try me again in a moment.", []
     return text, web_sources
 
+async def process_agent_artifacts(reply_text: str, *, conv: dict, agent_id: str,
+                                  message_id: str, created_by: str) -> tuple[str, list]:
+    """Pull [[ARTIFACT]] blocks out of an agent reply, persist them as files
+    + Documents records, and return (cleaned_text, attachments_list).
+
+    `conv` must include `team_id` so we can resolve the org. If artifact
+    extraction fails for any reason we swallow the error and return the
+    original reply unchanged — never block a chat reply on a side-effect.
+    """
+    try:
+        cleaned, blocks = extract_artifact_blocks(reply_text or "")
+        if not blocks:
+            return reply_text or "", []
+        # Resolve org_id from the conversation's team
+        team_id = conv.get("team_id")
+        team_doc = await db.teams.find_one({"_id": ObjectId(team_id)}) if team_id else None
+        if not team_doc:
+            return reply_text or "", []
+        org_id = team_doc.get("org_id") or ""
+        if not org_id:
+            return reply_text or "", []
+        attachments = await _save_artifacts(
+            db, blocks,
+            docs_root=DOCS_DIR,
+            org_id=org_id,
+            conversation_id=str(conv.get("_id") or ""),
+            message_id=message_id,
+            agent_id=agent_id,
+            agent_name=AGENTS[agent_id]["name"] if agent_id in AGENTS else "Agent",
+            created_by=created_by,
+        )
+        # If parsing left an empty cleaned reply, give the user a tiny
+        # placeholder so the bubble isn't blank.
+        if not cleaned.strip():
+            n = len(attachments)
+            cleaned = f"📎 Attached {n} file{'s' if n != 1 else ''} for you."
+        return cleaned, attachments
+    except Exception as exc:
+        logger.warning("artifact extraction failed: %s", exc)
+        return reply_text or "", []
+
 # ── Smart agent router ──────────────────────────────────────────────────────
 ROUTER_FALLBACK = "specialized-chief-of-staff"
 
@@ -2085,18 +2137,24 @@ async def send_message(conv_id: str, body: SendMessageBody, u: dict = Depends(ge
     agent_messages = []
     for aid in responders:
         reply, web_sources = await generate_agent_reply(conv, team, aid, body.text, u["name"])
+        msg_id = str(uuid.uuid4())
+        clean_reply, artifacts = await process_agent_artifacts(
+            reply, conv=conv, agent_id=aid, message_id=msg_id, created_by=u["id"],
+        )
         msg = {
-            "id": str(uuid.uuid4()),
+            "id": msg_id,
             "conversation_id": conv_id,
             "sender_type": "agent",
             "sender_id": aid,
             "sender_name": AGENTS[aid]["name"],
             "agent_id": aid,
-            "text": reply,
+            "text": clean_reply,
             "timestamp": datetime.now(timezone.utc),
         }
         if web_sources:
             msg["web_sources"] = web_sources
+        if artifacts:
+            msg["attachments"] = artifacts
         await db.messages.insert_one({**msg})
         agent_messages.append({k: v for k, v in msg.items() if k != "_id"})
 
@@ -2211,18 +2269,24 @@ async def smart_start(team_id: str, body: SmartStartBody, u: dict = Depends(get_
             logger.warning("smart_start image generation failed, falling back to text: %s", exc)
 
     reply, web_sources = await generate_agent_reply(conv_doc, team, chosen, body.text, u["name"])
+    msg_id = str(uuid.uuid4())
+    clean_reply, artifacts = await process_agent_artifacts(
+        reply, conv=conv_doc, agent_id=chosen, message_id=msg_id, created_by=u["id"],
+    )
     agent_msg = {
-        "id": str(uuid.uuid4()),
+        "id": msg_id,
         "conversation_id": conv_id,
         "sender_type": "agent",
         "sender_id": chosen,
         "sender_name": AGENTS[chosen]["name"],
         "agent_id": chosen,
-        "text": reply,
+        "text": clean_reply,
         "timestamp": datetime.now(timezone.utc),
     }
     if web_sources:
         agent_msg["web_sources"] = web_sources
+    if artifacts:
+        agent_msg["attachments"] = artifacts
     await db.messages.insert_one({**agent_msg})
 
     return {
@@ -2273,18 +2337,24 @@ async def switch_agent(conv_id: str, body: SwitchAgentBody, u: dict = Depends(ge
     await db.messages.insert_one({**intro})
 
     reply, web_sources = await generate_agent_reply(conv, team, body.agent_id, intro_msg, u["name"])
+    msg_id = str(uuid.uuid4())
+    clean_reply, artifacts = await process_agent_artifacts(
+        reply, conv=conv, agent_id=body.agent_id, message_id=msg_id, created_by=u["id"],
+    )
     agent_msg = {
-        "id": str(uuid.uuid4()),
+        "id": msg_id,
         "conversation_id": conv_id,
         "sender_type": "agent",
         "sender_id": body.agent_id,
         "sender_name": AGENTS[body.agent_id]["name"],
         "agent_id": body.agent_id,
-        "text": reply,
+        "text": clean_reply,
         "timestamp": datetime.now(timezone.utc),
     }
     if web_sources:
         agent_msg["web_sources"] = web_sources
+    if artifacts:
+        agent_msg["attachments"] = artifacts
     await db.messages.insert_one({**agent_msg})
 
     fresh = await db.conversations.find_one({"_id": ObjectId(conv_id)})
@@ -2937,17 +3007,24 @@ async def upload_to_conversation(
         },
         file_paths[0], u["name"],
     )
+    msg_id = str(uuid.uuid4())
+    clean_reply, art_attach = await process_agent_artifacts(
+        reply or "Got the file — let me know what to dig into.",
+        conv=conv, agent_id=responder, message_id=msg_id, created_by=u["id"],
+    )
     agent_msg = {
-        "id": str(uuid.uuid4()),
+        "id": msg_id,
         "conversation_id": conv_id,
         "sender_type": "agent",
         "sender_id": responder,
         "sender_name": AGENTS[responder]["name"],
         "agent_id": responder,
-        "text": reply or "Got the file — let me know what to dig into.",
+        "text": clean_reply,
         "intent": "attachment_reply",
         "timestamp": datetime.now(timezone.utc),
     }
+    if art_attach:
+        agent_msg["attachments"] = art_attach
     await db.messages.insert_one({**agent_msg})
 
     fresh = await db.conversations.find_one({"_id": ObjectId(conv_id)})
@@ -3407,19 +3484,25 @@ async def _run_schedule(sched_id: str) -> None:
             reply, web_sources = await generate_agent_reply(
                 conv, team, aid, user_doc["text"], creator_name,
             )
+            msg_id = str(uuid.uuid4())
+            clean_reply, artifacts = await process_agent_artifacts(
+                reply, conv=conv, agent_id=aid, message_id=msg_id, created_by=s["created_by"],
+            )
             msg = {
-                "id": str(uuid.uuid4()),
+                "id": msg_id,
                 "conversation_id": conv_id,
                 "sender_type": "agent",
                 "sender_id": aid,
                 "sender_name": AGENTS[aid]["name"],
                 "agent_id": aid,
-                "text": reply,
+                "text": clean_reply,
                 "schedule_id": sched_id,
                 "timestamp": datetime.now(timezone.utc),
             }
             if web_sources:
                 msg["web_sources"] = web_sources
+            if artifacts:
+                msg["attachments"] = artifacts
             await db.messages.insert_one({**msg})
 
         # Compute next run for UI
@@ -3668,6 +3751,15 @@ activity_r = make_activity_router(
 )
 app.include_router(activity_r)
 
+# Org Documents library — populated automatically when agents emit
+# [[ARTIFACT]] blocks in their replies. See artifacts.py.
+docs_r = make_documents_router(
+    db=db, docs_root=DOCS_DIR,
+    require_org_member=require_org_member,
+    get_current_user=get_current_user,
+)
+app.include_router(docs_r)
+
 app.add_middleware(
     CORSMiddleware,
     allow_credentials=True,
@@ -3691,6 +3783,9 @@ async def startup():
     await db.social_posts.create_index([("org_id", 1), ("created_at", -1)])
     await db.social_posts.create_index([("org_id", 1), ("status", 1)])
     await db.social_posts.create_index("scheduled_for", sparse=True)
+    await db.documents.create_index([("org_id", 1), ("created_at", -1)])
+    await db.documents.create_index([("org_id", 1), ("filename", 1)], unique=True)
+    await db.documents.create_index("conversation_id")
     # Boot the in-process scheduler and rehydrate persisted jobs
     if not scheduler.running:
         scheduler.start()

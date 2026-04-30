@@ -6,6 +6,7 @@ import { toast } from "sonner";
 import { Plus, Users, ArrowRight, Copy, UserPlus, FileText, Image as ImageIcon, FileBox, Trash2, UploadCloud, Download, File as FileIcon, MessageCircle, Pencil, Save, X as XIcon, RefreshCw, Megaphone, Paperclip, Send, Loader2 } from "lucide-react";
 import BrandAssetsPanel from "../components/BrandAssetsPanel";
 import ActivityOverview from "../components/ActivityOverview";
+import DocumentsPanel from "../components/DocumentsPanel";
 import Logo from "../components/Logo";
 import SchedulesPanel from "../components/SchedulesPanel";
 
@@ -309,6 +310,11 @@ export default function OrgPage() {
         {/* Activity overview — KPI tiles + unified feed across social,
             schedules, conversations, and assets. */}
         <ActivityOverview orgId={orgId} />
+
+        {/* Documents library — every artifact agents have generated
+            (calendar invites, briefs, CSVs, scripts, emails). Searchable,
+            previewable, downloadable, deletable. */}
+        <DocumentsPanel orgId={orgId} />
 
         {/* Social Queue — generate, schedule, and one-click publish posts. */}
         <Link
