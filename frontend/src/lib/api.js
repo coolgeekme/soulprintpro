@@ -62,7 +62,15 @@ const userTimezone = () => {
 
 const api = axios.create({
   baseURL: `${BACKEND_URL}/api`,
-  withCredentials: true,
+  // No `withCredentials` — we authenticate with a Bearer token from
+  // localStorage (set in the request interceptor below). Enabling cookie
+  // credentials forces the browser to require *credentialed* CORS headers
+  // (`Allow-Origin` echoing the exact origin + `Allow-Credentials: true`),
+  // which the preview ingress rewrites to `Allow-Origin: *` on preflights —
+  // causing intermittent "Network Error" toasts on the first request after
+  // a preflight cache miss. Dropping it makes preflights non-credentialed
+  // so the wildcard origin is accepted, and the Bearer header is enough
+  // for auth (the backend `get_current_user` accepts either header or cookie).
 });
 
 // Always also send the JWT as a Bearer token. The backend accepts either
