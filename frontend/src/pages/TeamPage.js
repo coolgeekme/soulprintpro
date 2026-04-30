@@ -494,6 +494,10 @@ export default function TeamPage() {
               className="w-full mt-1 mb-4 bg-white/[0.03] border border-white/10 rounded-xl px-4 py-2.5 text-sm text-white placeholder:text-white/30 focus:border-white/30"
             />
 
+            {/* Scrollable middle — agent picker + group invite. The action
+                buttons below stay pinned to the bottom of the dialog so they
+                are always reachable, even on short viewports. */}
+            <div className="flex-1 min-h-0 overflow-y-auto pr-1 -mr-2 flex flex-col">
             {selAgents.length > 0 && (
               <div className="flex flex-wrap gap-2 mb-3">
                 {selAgents.map(id => {
@@ -520,7 +524,7 @@ export default function TeamPage() {
               testPrefix="dlg-"
             />
 
-            <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-2 overflow-y-auto pr-1 flex-1 min-h-0 pb-1">
+            <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-2 pb-1">
               {dlgShown.map(a => (
                 <AgentBadge key={a.id} a={a} onClick={() => toggleAgent(a.id)} selected={selAgents.includes(a.id)} />
               ))}
@@ -537,7 +541,7 @@ export default function TeamPage() {
             {convType === "group" && (
               <div className="mt-4 border-t border-white/5 pt-4">
                 <label className="text-[11px] sp-subtle uppercase tracking-widest">Invite teammates</label>
-                <div className="flex flex-wrap gap-2 mt-2 mb-3 max-h-28 overflow-y-auto">
+                <div className="flex flex-wrap gap-2 mt-2 mb-3">
                   {members.map(m => (
                     <button
                       key={m.user_id}
@@ -575,8 +579,9 @@ export default function TeamPage() {
                 </label>
               </div>
             )}
+            </div>
 
-            <div className="flex items-center justify-end gap-2 mt-4 border-t border-white/5 pt-4">
+            <div className="flex items-center justify-end gap-2 mt-4 border-t border-white/5 pt-4 shrink-0">
               <button onClick={resetDialog} className="sp-btn sp-btn-ghost text-sm" data-testid="cancel-new-conv">Cancel</button>
               <button
                 onClick={createConv}
