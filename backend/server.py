@@ -1048,6 +1048,27 @@ def _quick_video_intent(text: str) -> Optional[bool]:
         return True
     return None
 
+_EDIT_VERBS_RE = re.compile(
+    r"\b(add|put|insert|place|attach|stamp|overlay|"
+    r"remove|erase|delete|strip|drop|"
+    r"change|swap|replace|switch|modify|alter|adjust|tweak|edit|update|"
+    r"make\s+(it|this)|turn\s+(it|this)\s+into|"
+    r"recolor|re-?color|colorize|tint|"
+    r"crop|zoom|rotate|flip|mirror|resize|enlarge|shrink|"
+    r"clean\s*up|fix|retouch|enhance|sharpen|blur|brighten|darken|"
+    r"give\s+(it|this|him|her)\s+a)\b",
+    re.IGNORECASE,
+)
+
+def _quick_image_edit_intent(text: str, has_image: bool) -> bool:
+    """Treat as edit intent when (a) the user has just attached an image
+    AND (b) the prompt contains a clear edit/transformation verb. Returns
+    False if no image is in play — fall through to the normal vision/desc
+    path."""
+    if not has_image or not text:
+        return False
+    return bool(_EDIT_VERBS_RE.search(text))
+
 async def detect_image_intent(message: str) -> bool:
     """Quick LLM classifier: does this message want an image generated?
 
@@ -1757,15 +1778,41 @@ async def remove_conv_agent(conv_id: str, agent_id: str, u: dict = Depends(get_c
 # ── Image generation tool (Nano Banana via Emergent LLM key) ─────────────────
 NANO_BANANA_MODEL = "gemini-3.1-flash-image-preview"
 
-async def generate_image_via_nano_banana(prompt: str, system_message: str) -> tuple[str, str]:
-    """Generate an image and persist it to disk. Returns (filename, caption_text)."""
-    from emergentintegrations.llm.chat import LlmChat as _LlmChat, UserMessage as _UM
+async def generate_image_via_nano_banana(
+    prompt: str,
+    system_message: str,
+    input_image_path: Optional[Path] = None,
+) -> tuple[str, str]:
+    """Generate (or EDIT) an image and persist it to disk.
+
+    If `input_image_path` is given, the model receives the source image and
+    is told to apply the requested edit (add a letter, change colors, swap
+    backgrounds, etc.) — Nano Banana / Gemini 3.1 Flash Image supports image-
+    to-image. Otherwise we do a fresh text-to-image generation as before.
+
+    Returns (filename, caption_text).
+    """
+    from emergentintegrations.llm.chat import (
+        LlmChat as _LlmChat,
+        UserMessage as _UM,
+        ImageContent as _IC,
+    )
     chat = _LlmChat(
         api_key=EMERGENT_LLM_KEY,
         session_id=f"img:{uuid.uuid4()}",
         system_message=system_message,
     ).with_model("gemini", NANO_BANANA_MODEL).with_params(modalities=["image", "text"])
-    text, images = await chat.send_message_multimodal_response(_UM(text=prompt))
+
+    file_contents = None
+    if input_image_path and input_image_path.is_file():
+        try:
+            b64 = base64.b64encode(input_image_path.read_bytes()).decode("ascii")
+            file_contents = [_IC(image_base64=b64)]
+        except Exception as exc:
+            logger.warning("Could not load source image for edit, doing fresh gen: %s", exc)
+
+    user_msg = _UM(text=prompt, file_contents=file_contents) if file_contents else _UM(text=prompt)
+    text, images = await chat.send_message_multimodal_response(user_msg)
     if not images:
         raise RuntimeError("No image returned by the model")
     img = images[0]
@@ -2038,7 +2085,6 @@ async def _agent_review_attachment(
         # Multimodal vision call
         try:
             from emergentintegrations.llm.chat import LlmChat as _LlmChat, UserMessage as _UM, ImageContent as _IC
-            mime = attachment.get("attachment_mime") or "image/png"
             img_b64 = base64.b64encode(file_path.read_bytes()).decode("ascii")
             chat = _LlmChat(
                 api_key=EMERGENT_LLM_KEY,
@@ -2047,7 +2093,7 @@ async def _agent_review_attachment(
             ).with_model("openai", "gpt-4.1-mini")
             msg = _UM(
                 text=f"User uploaded `{file_label}`. {ask}",
-                file_contents=[_IC(image_base64=img_b64, mime_type=mime)],
+                file_contents=[_IC(image_base64=img_b64)],
             )
             text = await chat.send_message(msg)
             return text or "", []
@@ -2177,6 +2223,51 @@ async def upload_to_conversation(
             "agent_messages": [],
             "ok": True,
         }
+
+    # ── Edit-image fast path ──────────────────────────────────────────────
+    # If the user uploaded an image AND their prompt contains a clear edit
+    # verb ("add", "change", "remove", "make it black & white", etc.), feed
+    # the file to Nano Banana as the source image and return a freshly
+    # edited variant — exactly what the user expected ("add a letter to my
+    # logo"). On any failure, fall through to the normal review path.
+    edit_intent = (kind == "image" and _quick_image_edit_intent(text or "", True))
+    if edit_intent:
+        try:
+            sp = team.get("soulprint") or {}
+            sp_lines = [f"{k.capitalize()}: {sp[k]}" for k in ("mission", "tone", "audience", "values") if sp.get(k)]
+            sys_msg = (
+                f"You are {AGENTS[responder]['name']}, editing an image the user uploaded. "
+                f"Apply the requested change precisely while preserving the rest of the image, "
+                f"its composition, and its visual style. Render any requested text crisply.\n"
+                + "\n".join(sp_lines)
+            )
+            new_fname, caption = await generate_image_via_nano_banana(
+                f"Source image is attached. Apply this edit: {text}", sys_msg, input_image_path=fpath,
+            )
+            edited_msg = {
+                "id": str(uuid.uuid4()),
+                "conversation_id": conv_id,
+                "sender_type": "agent",
+                "sender_id": responder,
+                "sender_name": AGENTS[responder]["name"],
+                "agent_id": responder,
+                "text": (caption or "Here's the edit. Want any tweaks?").strip(),
+                "media_type": "image",
+                "media_filename": new_fname,
+                "media_url": f"/api/files/{new_fname}",
+                "intent": "image_edit_reply",
+                "timestamp": datetime.now(timezone.utc),
+            }
+            await db.messages.insert_one({**edited_msg})
+            fresh = await db.conversations.find_one({"_id": ObjectId(conv_id)})
+            return {
+                "user_message": {k: v for k, v in user_doc.items() if k != "_id"},
+                "agent_messages": [{k: v for k, v in edited_msg.items() if k != "_id"}],
+                "conversation": serialize_conv(fresh) if fresh else None,
+                "ok": True,
+            }
+        except Exception as exc:
+            logger.warning("image edit fast-path failed, falling back to review: %s", exc)
 
     reply, _sources = await _agent_review_attachment(
         conv, team, responder, text or "",
