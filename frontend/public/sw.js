@@ -5,8 +5,8 @@
  * normally and only intercept navigation requests with a tiny offline
  * fallback so the app still resolves an installable shell.
  */
-const VERSION = "soulprint-v1";
-const CORE = ["/", "/index.html", "/soulprint-logo.png", "/manifest.json"];
+const VERSION = "soulprint-v2";
+const CORE = ["/", "/index.html", "/favicon-32.png", "/favicon-192.png", "/favicon-512.png", "/soulprint-logo.png", "/manifest.json"];
 
 self.addEventListener("install", (event) => {
   event.waitUntil(
