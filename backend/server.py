@@ -414,15 +414,33 @@ async def _fetch_url_text(url: str, max_chars: int = 8000) -> str:
     text = re.sub(r"\s+", " ", text).strip()
     return text[:max_chars]
 
+SOUL_KEYS = ("mission", "audience", "tone", "values", "north_star", "summary")
+EMPTY_SOUL = {k: "" for k in SOUL_KEYS}
+
+class SoulGenError(Exception):
+    """Raised when we cannot synthesise a company Soul.
+
+    `code` is a short slug ("no_input", "fetch_failed", "llm_failed",
+    "bad_json", "empty_output") so callers can map to a friendly message.
+    """
+    def __init__(self, code: str, message: str):
+        super().__init__(message)
+        self.code = code
+        self.message = message
+
+
 async def _generate_company_soul(name: str, website_text: str, manual_hint: str = "") -> dict:
     """Distil a company "Soul" — mission, audience, tone, values, north star, summary.
 
-    Returns a dict with those keys (empty strings on failure). Uses the
-    Emergent LLM key (gpt-4.1-mini) — should be cheap (<1k tokens out).
+    Raises ``SoulGenError`` when generation cannot produce a meaningful result,
+    so callers can decide whether to keep the previous Soul or surface an error.
+    Uses the Emergent LLM key (gpt-4.1-mini) — should be cheap (<1k tokens out).
     """
-    base = {"mission": "", "audience": "", "tone": "", "values": "", "north_star": "", "summary": ""}
     if not website_text and not manual_hint:
-        return base
+        raise SoulGenError(
+            "no_input",
+            "Cannot synthesise a Soul without either a website URL or a description.",
+        )
     system = (
         "You distil a company's essence (its 'Soul') from public-facing copy.\n"
         "Output ONLY a single JSON object on one line, no markdown, with these keys:\n"
@@ -447,15 +465,18 @@ async def _generate_company_soul(name: str, website_text: str, manual_hint: str 
         raw = (await chat.send_message(UserMessage(text=user_payload))) or ""
     except Exception as exc:
         logger.warning("Soul generator LLM error: %s", exc)
-        return base
+        raise SoulGenError("llm_failed", "Soul generator is temporarily unavailable. Try again in a moment.") from exc
     m = re.search(r"\{.*\}", raw, re.DOTALL)
     if not m:
-        return base
+        raise SoulGenError("bad_json", "Soul generator returned an unexpected response.")
     try:
         data = json.loads(m.group(0))
-    except json.JSONDecodeError:
-        return base
-    return {k: (data.get(k) or "").strip()[:600] for k in base.keys()}
+    except json.JSONDecodeError as exc:
+        raise SoulGenError("bad_json", "Soul generator returned malformed JSON.") from exc
+    soul = {k: (data.get(k) or "").strip()[:600] for k in SOUL_KEYS}
+    if not any(soul.values()):
+        raise SoulGenError("empty_output", "Soul generator returned an empty result.")
+    return soul
 
 @org_r.post("")
 async def create_org(body: OrgCreateBody, u: dict = Depends(get_current_user)):
@@ -463,11 +484,18 @@ async def create_org(body: OrgCreateBody, u: dict = Depends(get_current_user)):
         raise HTTPException(400, "Name required")
     now = datetime.now(timezone.utc)
 
-    # Step 1 — capture the company "Soul" (URL scrape → LLM, with optional manual hint)
+    # Step 1 — capture the company "Soul" (URL scrape → LLM, with optional manual hint).
+    # Org creation is forgiving: if scrape/LLM fails we still create the org with
+    # an empty Soul so the user isn't blocked. They can re-synthesise from the
+    # org page later.
     website_url = (body.website_url or "").strip()
     manual = (body.soul_description or "").strip()
     website_text = await _fetch_url_text(website_url) if website_url else ""
-    soul = await _generate_company_soul(body.name.strip(), website_text, manual)
+    try:
+        soul = await _generate_company_soul(body.name.strip(), website_text, manual)
+    except SoulGenError as exc:
+        logger.info("Org create: soul gen skipped (%s): %s", exc.code, exc.message)
+        soul = dict(EMPTY_SOUL)
 
     doc = {
         "name": body.name.strip(),
@@ -568,14 +596,56 @@ async def update_org(org_id: str, body: OrgUpdateBody, u: dict = Depends(get_cur
         update["website_url"] = body.website_url.strip()
     if body.soul_description is not None:
         update["soul_description"] = body.soul_description.strip()
+
+    new_soul: Optional[dict] = None
     if body.regenerate_soul:
-        url = update.get("website_url", ctx["org"].get("website_url", ""))
-        manual = update.get("soul_description", ctx["org"].get("soul_description", ""))
+        url = update.get("website_url", ctx["org"].get("website_url", "")) or ""
+        manual = update.get("soul_description", ctx["org"].get("soul_description", "")) or ""
         name = update.get("name", ctx["org"].get("name", ""))
-        text = await _fetch_url_text(url) if url else ""
-        update["soul"] = await _generate_company_soul(name, text, manual)
+        if not url and not manual:
+            raise HTTPException(
+                422,
+                "Add a website URL or a description before re-synthesising the Soul.",
+            )
+        website_text = await _fetch_url_text(url) if url else ""
+        if url and not website_text and not manual:
+            raise HTTPException(
+                422,
+                f"Couldn't read content from {url}. Add a description, or try a different URL "
+                "(some sites block automated requests).",
+            )
+        try:
+            new_soul = await _generate_company_soul(name, website_text, manual)
+        except SoulGenError as exc:
+            # 422 for caller-fixable issues, 502 for upstream LLM hiccups.
+            status = 502 if exc.code in ("llm_failed", "bad_json", "empty_output") else 422
+            raise HTTPException(status, exc.message) from exc
+        update["soul"] = new_soul
+
     if update:
         await db.organizations.update_one({"_id": ObjectId(org_id)}, {"$set": update})
+
+        # Cascade fresh Soul into the auto-created "General" team's soulprint
+        # snapshot so its agents pick up the new mission/tone/etc immediately.
+        if new_soul is not None:
+            general_team_id = ctx["org"].get("general_team_id")
+            if general_team_id:
+                try:
+                    await db.teams.update_one(
+                        {"_id": ObjectId(general_team_id)},
+                        {"$set": {
+                            "soulprint": {
+                                "mission": new_soul.get("mission", ""),
+                                "tone": new_soul.get("tone", ""),
+                                "audience": new_soul.get("audience", ""),
+                                "values": new_soul.get("values", ""),
+                                "north_star": new_soul.get("north_star", ""),
+                            }
+                        }},
+                    )
+                except Exception as exc:
+                    logger.warning("Cascade soul to General team failed: %s", exc)
+
     fresh = await db.organizations.find_one({"_id": ObjectId(org_id)})
     out = serialize_org(fresh)
     out["role"] = ctx["member"]["role"]
