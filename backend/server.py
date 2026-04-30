@@ -1392,6 +1392,36 @@ async def should_expand_group(conv: dict, team: dict, message: str) -> Optional[
             return c
     return None
 
+async def _find_last_image_in_conv(conv_id: str) -> Optional[Path]:
+    """Locate the on-disk path of the most recent image in this conversation.
+
+    Looks at both agent-generated images (`media_filename` on disk in
+    `UPLOAD_DIR`) and user-uploaded images (`attachment_filename` in
+    `CONV_UPLOAD_DIR/<conv_id>/`). Returns the first existing file found,
+    walking newest-first. Returns None if nothing usable is found.
+    """
+    cur = db.messages.find(
+        {
+            "conversation_id": conv_id,
+            "$or": [
+                {"media_type": "image", "media_filename": {"$exists": True}},
+                {"attachment_kind": "image", "attachment_filename": {"$exists": True}},
+            ],
+        },
+        sort=[("timestamp", -1)],
+        limit=8,
+    )
+    async for msg in cur:
+        if msg.get("media_type") == "image" and msg.get("media_filename"):
+            p = UPLOAD_DIR / msg["media_filename"]
+            if p.is_file():
+                return p
+        if msg.get("attachment_kind") == "image" and msg.get("attachment_filename"):
+            p = CONV_UPLOAD_DIR / conv_id / msg["attachment_filename"]
+            if p.is_file():
+                return p
+    return None
+
 @conv_r.post("/conversations/{conv_id}/messages")
 async def send_message(conv_id: str, body: SendMessageBody, u: dict = Depends(get_current_user)):
     if not body.text.strip():
@@ -1447,6 +1477,56 @@ async def send_message(conv_id: str, body: SendMessageBody, u: dict = Depends(ge
     # skip any text reply. If not, fall through to the image classifier.
     image_msg = None
     video_msg = None
+    if responders:
+        # ── Inline edit-iteration ─────────────────────────────────────────
+        # If the user's latest message is clearly asking for an edit AND we
+        # have a recent image in this conversation (agent-generated OR user-
+        # uploaded), pipe that image into Nano Banana as the source. This
+        # lets users iterate on their last image without re-uploading
+        # anything. e.g. "darker letter B, more curved".
+        edit_src: Optional[Path] = None
+        if _quick_image_edit_intent(body.text or "", True):
+            try:
+                edit_src = await _find_last_image_in_conv(conv_id)
+            except Exception as exc:
+                logger.warning("could not look up last image: %s", exc)
+                edit_src = None
+        if edit_src is not None:
+            primary = responders[0]
+            sp = team.get("soulprint") or {}
+            sp_lines = [f"{k.capitalize()}: {sp[k]}" for k in ("mission", "tone", "audience", "values") if sp.get(k)]
+            sys_msg = (
+                f"You are {AGENTS[primary]['name']}, editing the previous image in this "
+                f"conversation. Apply the user's requested change precisely while "
+                f"preserving the rest of the image, its composition, and visual style. "
+                f"Render any requested text crisply.\n" + "\n".join(sp_lines)
+            )
+            try:
+                fname, caption = await generate_image_via_nano_banana(
+                    f"Source image is attached (the previous image in this chat). "
+                    f"Apply this edit: {body.text}",
+                    sys_msg,
+                    input_image_path=edit_src,
+                )
+                image_msg = {
+                    "id": str(uuid.uuid4()),
+                    "conversation_id": conv_id,
+                    "sender_type": "agent",
+                    "sender_id": primary,
+                    "sender_name": AGENTS[primary]["name"],
+                    "agent_id": primary,
+                    "text": (caption or "Here's the edit. Want any tweaks?").strip(),
+                    "media_type": "image",
+                    "media_filename": fname,
+                    "media_url": f"/api/files/{fname}",
+                    "intent": "image_edit_reply",
+                    "timestamp": datetime.now(timezone.utc),
+                }
+                await db.messages.insert_one({**image_msg})
+                responders = []  # edited image alone is enough
+            except Exception as exc:
+                logger.warning("inline image edit failed, falling back: %s", exc)
+
     if responders:
         try:
             wants_video = bool(os.environ.get("KIE_API_KEY")) and await detect_video_intent(body.text)
