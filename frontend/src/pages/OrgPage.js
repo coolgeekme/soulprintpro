@@ -3,7 +3,7 @@ import { useParams, Link, useNavigate } from "react-router-dom";
 import api, { BACKEND_URL } from "../lib/api";
 import TopBar from "../components/TopBar";
 import { toast } from "sonner";
-import { Plus, Users, ArrowRight, Copy, UserPlus, FileText, Image as ImageIcon, FileBox, Trash2, UploadCloud, Download, File as FileIcon, MessageCircle, Pencil, Save, X as XIcon, RefreshCw } from "lucide-react";
+import { Plus, Users, ArrowRight, Copy, UserPlus, FileText, Image as ImageIcon, FileBox, Trash2, UploadCloud, Download, File as FileIcon, MessageCircle, Pencil, Save, X as XIcon, RefreshCw, Megaphone } from "lucide-react";
 import Logo from "../components/Logo";
 import SchedulesPanel from "../components/SchedulesPanel";
 
@@ -306,6 +306,23 @@ export default function OrgPage() {
             <ArrowRight className="w-5 h-5 text-white/60 group-hover:text-white transition" />
           </Link>
         )}
+
+        {/* Social Queue — generate, schedule, and one-click publish posts. */}
+        <Link
+          to={`/app/org/${orgId}/social`}
+          className="sp-glass rounded-2xl p-5 mb-8 flex items-center gap-4 hover:border-white/25 transition group"
+          data-testid="open-social-queue"
+        >
+          <div className="w-10 h-10 rounded-xl flex items-center justify-center"
+               style={{ background: "linear-gradient(160deg, rgba(246,64,0,0.5), rgba(246,64,0,0.1))" }}>
+            <Megaphone className="w-4 h-4 text-white" />
+          </div>
+          <div className="flex-1 min-w-0">
+            <div className="text-white font-medium">Social Queue</div>
+            <div className="text-xs sp-subtle">Generate posts with your agents, schedule them, then one-click open in any platform's web composer.</div>
+          </div>
+          <ArrowRight className="w-4 h-4 text-white/60 group-hover:text-white transition" />
+        </Link>
 
         {/* Company Soul — populated from URL scrape + LLM on creation */}
         {(org.soul && (org.soul.mission || org.soul.summary)) && (

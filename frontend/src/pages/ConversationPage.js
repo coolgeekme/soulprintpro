@@ -4,7 +4,7 @@ import api, { BACKEND_URL } from "../lib/api";
 import TopBar from "../components/TopBar";
 import { toast } from "sonner";
 import { useAuth } from "../context/AuthContext";
-import { Send, Trash2, AtSign, Users, Repeat, Search, X, Lock, Film, Globe, ArrowUp, ArrowDown, UserPlus, Paperclip, FileText, File as FileIcon, Download, CornerDownRight } from "lucide-react";
+import { Send, Trash2, AtSign, Users, Repeat, Search, X, Lock, Film, Globe, ArrowUp, ArrowDown, UserPlus, Paperclip, FileText, File as FileIcon, Download, CornerDownRight, Megaphone } from "lucide-react";
 import LinkPreviewCard from "../components/LinkPreviewCard";
 
 const formatTime = (ts) => {
@@ -287,6 +287,27 @@ export default function ConversationPage() {
     } finally { setForkingId(""); }
   };
 
+  // ── Queue agent reply for social ─────────────────────────────────────────
+  // Sibling of the fork button — drops the agent's reply into the org's
+  // Social Queue as a draft post for the user to schedule + publish.
+  const [queueingSocialId, setQueueingSocialId] = useState("");
+  const queueForSocial = async (m) => {
+    if (queueingSocialId) return;
+    setQueueingSocialId(m.id);
+    try {
+      await api.post(`/conversations/${convId}/messages/${m.id}/queue-social`);
+      const orgIdFromTeam = team?.org_id;
+      toast.success("Added to Social Queue", {
+        action: orgIdFromTeam ? {
+          label: "Open queue",
+          onClick: () => nav(`/app/org/${orgIdFromTeam}/social`),
+        } : undefined,
+      });
+    } catch (err) {
+      toast.error(err?.response?.data?.detail || "Couldn't queue for social");
+    } finally { setQueueingSocialId(""); }
+  };
+
   // Switch-agent dialog (direct chats only)
   const [showSwitch, setShowSwitch] = useState(false);
   const [switchQ, setSwitchQ] = useState("");
@@ -489,6 +510,9 @@ export default function ConversationPage() {
             // chats. We also need the agent to still exist (a?.id) and a
             // persisted message (no `tmp-` optimistic id).
             const canFork = isAgent && a && conv?.type !== "direct" && !String(m.id).startsWith("tmp-");
+            // "Queue for social" works on any agent reply (incl. direct chats)
+            // — anywhere there's content worth posting.
+            const canSocial = isAgent && a && !String(m.id).startsWith("tmp-");
             return (
               <div key={m.id} className={`flex ${mine ? "justify-end" : "justify-start"} sp-fade-up group/msg`}>
                 <div className="relative max-w-[92%] sm:max-w-[88%]">
@@ -714,20 +738,39 @@ export default function ConversationPage() {
                     </div>
                   )}
                 </div>
-                {canFork && (
-                  <button
-                    type="button"
-                    onClick={() => forkFromMessage(m)}
-                    disabled={forkingId === m.id}
-                    title={`Continue privately with ${a.name}`}
-                    aria-label={`Continue privately with ${a.name}`}
-                    data-testid={`fork-msg-${m.id}`}
-                    className="absolute -bottom-2 right-3 inline-flex items-center gap-1 sp-glass-strong rounded-full px-2.5 py-1 text-[11px] font-medium opacity-0 group-hover/msg:opacity-100 focus:opacity-100 transition shadow-lg hover:scale-105 disabled:opacity-60"
-                    style={{ color: "var(--fg)" }}
-                  >
-                    <CornerDownRight className="w-3 h-3" />
-                    {forkingId === m.id ? "Forking…" : "Continue privately"}
-                  </button>
+                {(canFork || canSocial) && (
+                  <div className="absolute -bottom-2 right-3 flex items-center gap-1.5 opacity-0 group-hover/msg:opacity-100 focus-within:opacity-100 transition">
+                    {canSocial && (
+                      <button
+                        type="button"
+                        onClick={() => queueForSocial(m)}
+                        disabled={queueingSocialId === m.id}
+                        title="Queue for social"
+                        aria-label="Queue this reply for social"
+                        data-testid={`social-msg-${m.id}`}
+                        className="inline-flex items-center gap-1 sp-glass-strong rounded-full px-2.5 py-1 text-[11px] font-medium shadow-lg hover:scale-105 transition disabled:opacity-60"
+                        style={{ color: "var(--fg)" }}
+                      >
+                        <Megaphone className="w-3 h-3" />
+                        {queueingSocialId === m.id ? "Queuing…" : "Queue for social"}
+                      </button>
+                    )}
+                    {canFork && (
+                      <button
+                        type="button"
+                        onClick={() => forkFromMessage(m)}
+                        disabled={forkingId === m.id}
+                        title={`Continue privately with ${a.name}`}
+                        aria-label={`Continue privately with ${a.name}`}
+                        data-testid={`fork-msg-${m.id}`}
+                        className="inline-flex items-center gap-1 sp-glass-strong rounded-full px-2.5 py-1 text-[11px] font-medium shadow-lg hover:scale-105 transition disabled:opacity-60"
+                        style={{ color: "var(--fg)" }}
+                      >
+                        <CornerDownRight className="w-3 h-3" />
+                        {forkingId === m.id ? "Forking…" : "Continue privately"}
+                      </button>
+                    )}
+                  </div>
                 )}
                 </div>
               </div>

@@ -3531,6 +3531,17 @@ app.include_router(files_r)
 app.include_router(unfurl_r)
 app.include_router(schedules_r)
 
+from social_posts import make_social_router  # noqa: E402
+social_r = make_social_router(
+    db=db, AGENTS=AGENTS, EMERGENT_LLM_KEY=EMERGENT_LLM_KEY,
+    LlmChat=LlmChat, UserMessage=UserMessage,
+    require_org_member=require_org_member,
+    get_current_user=get_current_user,
+    route_best_agent=route_best_agent,
+    load_conv_or_403=load_conv_or_403,
+)
+app.include_router(social_r)
+
 app.add_middleware(
     CORSMiddleware,
     allow_credentials=True,
@@ -3551,6 +3562,9 @@ async def startup():
     await db.schedules.create_index([("org_id", 1), ("created_at", -1)])
     await db.schedules.create_index("created_by")
     await db.unfurl_cache.create_index("url", unique=True)
+    await db.social_posts.create_index([("org_id", 1), ("created_at", -1)])
+    await db.social_posts.create_index([("org_id", 1), ("status", 1)])
+    await db.social_posts.create_index("scheduled_for", sparse=True)
     # Boot the in-process scheduler and rehydrate persisted jobs
     if not scheduler.running:
         scheduler.start()
