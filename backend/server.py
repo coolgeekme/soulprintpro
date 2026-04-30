@@ -1506,7 +1506,7 @@ async def send_message(conv_id: str, body: SendMessageBody, u: dict = Depends(ge
                     f"Source image is attached (the previous image in this chat). "
                     f"Apply this edit: {body.text}",
                     sys_msg,
-                    input_image_path=edit_src,
+                    input_image_paths=[edit_src],
                 )
                 image_msg = {
                     "id": str(uuid.uuid4()),
@@ -1861,14 +1861,14 @@ NANO_BANANA_MODEL = "gemini-3.1-flash-image-preview"
 async def generate_image_via_nano_banana(
     prompt: str,
     system_message: str,
-    input_image_path: Optional[Path] = None,
+    input_image_paths: Optional[List[Path]] = None,
 ) -> tuple[str, str]:
     """Generate (or EDIT) an image and persist it to disk.
 
-    If `input_image_path` is given, the model receives the source image and
-    is told to apply the requested edit (add a letter, change colors, swap
-    backgrounds, etc.) — Nano Banana / Gemini 3.1 Flash Image supports image-
-    to-image. Otherwise we do a fresh text-to-image generation as before.
+    `input_image_paths` may contain one OR multiple source images. Multi-image
+    inputs let the model compose ("add the logo from image 2 onto the
+    background in image 1"). When none are passed we fall back to plain
+    text-to-image generation.
 
     Returns (filename, caption_text).
     """
@@ -1884,12 +1884,17 @@ async def generate_image_via_nano_banana(
     ).with_model("gemini", NANO_BANANA_MODEL).with_params(modalities=["image", "text"])
 
     file_contents = None
-    if input_image_path and input_image_path.is_file():
-        try:
-            b64 = base64.b64encode(input_image_path.read_bytes()).decode("ascii")
-            file_contents = [_IC(image_base64=b64)]
-        except Exception as exc:
-            logger.warning("Could not load source image for edit, doing fresh gen: %s", exc)
+    if input_image_paths:
+        loaded: List = []
+        for p in input_image_paths:
+            try:
+                if p and p.is_file():
+                    b64 = base64.b64encode(p.read_bytes()).decode("ascii")
+                    loaded.append(_IC(image_base64=b64))
+            except Exception as exc:
+                logger.warning("Could not load source image %s: %s", p, exc)
+        if loaded:
+            file_contents = loaded
 
     user_msg = _UM(text=prompt, file_contents=file_contents) if file_contents else _UM(text=prompt)
     text, images = await chat.send_message_multimodal_response(user_msg)
@@ -2213,51 +2218,79 @@ async def _agent_review_attachment(
 async def upload_to_conversation(
     conv_id: str,
     text: str = Form(""),
-    file: UploadFile = File(...),
+    files: List[UploadFile] = File(...),
     u: dict = Depends(get_current_user),
 ):
-    """Attach a file to a conversation. Persists the file, posts a user
-    message with attachment metadata, and triggers an agent reply that
-    actually reads / sees the file (vision for images, extracted text for
-    PDFs / docs / text)."""
+    """Attach one or more files to a conversation. Persists each file,
+    posts a single user message with the full `attachments` list, and
+    triggers an agent reply that:
+
+    - For multiple images with an edit verb → composes them (image-1 as the
+      base canvas, image-2/3/... layered/incorporated) via Nano Banana.
+    - For a single image with an edit verb → edits it (existing behaviour).
+    - For images without an edit verb → vision-describes the first one.
+    - For text-bearing files (PDF/DOCX/TXT/MD/CSV/JSON) → extracts text from
+      ALL of them and lets the agent answer questions across them.
+    - For other binaries → acknowledges them by name.
+    """
+    if not files:
+        raise HTTPException(400, "At least one file is required")
+    if len(files) > 6:
+        raise HTTPException(400, "Up to 6 files per message")
+
     conv = await load_conv_or_403(conv_id, u["id"])
     team = await db.teams.find_one({"_id": ObjectId(conv["team_id"])})
     if not team:
         raise HTTPException(404, "Team not found")
 
-    original = (file.filename or "file").strip().replace("/", "_").replace("\\", "_")
-    ext = original.rsplit(".", 1)[-1].lower() if "." in original else ""
-    if ext not in ALLOWED_ATTACH_EXTS:
-        raise HTTPException(400, f"Unsupported file type: .{ext or '?'}")
-    blob = await file.read()
-    if not blob:
-        raise HTTPException(400, "Empty file")
-    if len(blob) > MAX_CONV_UPLOAD_SIZE:
-        raise HTTPException(400, f"File too large (max {MAX_CONV_UPLOAD_SIZE // (1024 * 1024)} MB)")
-
-    fname = f"{uuid.uuid4().hex}.{ext}"
     folder = CONV_UPLOAD_DIR / conv_id
     folder.mkdir(parents=True, exist_ok=True)
-    fpath = folder / fname
-    fpath.write_bytes(blob)
+    attachments: List[dict] = []   # serialised attachment metadata for the response
+    file_paths: List[Path] = []    # on-disk paths in upload order
+    extracted_blocks: List[str] = []  # text extracts from text-bearing files
+    total_size = 0
 
-    kind = _attachment_kind(ext)
-    extracted = ""
-    if is_text_extractable(ext):
-        try:
-            extracted = trim_text(extract_asset_text(fpath, ext), limit=8000)
-        except Exception as exc:
-            logger.warning("attachment text extract failed: %s", exc)
+    for upload in files:
+        original = (upload.filename or "file").strip().replace("/", "_").replace("\\", "_")
+        ext = original.rsplit(".", 1)[-1].lower() if "." in original else ""
+        if ext not in ALLOWED_ATTACH_EXTS:
+            raise HTTPException(400, f"Unsupported file type: .{ext or '?'}")
+        blob = await upload.read()
+        if not blob:
+            raise HTTPException(400, f"Empty file: {original}")
+        total_size += len(blob)
+        if len(blob) > MAX_CONV_UPLOAD_SIZE or total_size > MAX_CONV_UPLOAD_SIZE * 2:
+            raise HTTPException(400, f"File(s) too large (max {MAX_CONV_UPLOAD_SIZE // (1024 * 1024)} MB each)")
 
-    attach = {
-        "attachment_filename": fname,
-        "attachment_url": f"/api/files/conv/{conv_id}/{fname}",
-        "attachment_mime": file.content_type or "",
-        "attachment_kind": kind,
-        "attachment_size": len(blob),
-        "attachment_original_name": original,
-        "attachment_text": extracted,
-    }
+        fname = f"{uuid.uuid4().hex}.{ext}"
+        fpath = folder / fname
+        fpath.write_bytes(blob)
+        file_paths.append(fpath)
+
+        kind = _attachment_kind(ext)
+        if is_text_extractable(ext):
+            try:
+                snippet = trim_text(extract_asset_text(fpath, ext), limit=4000)
+                if snippet:
+                    extracted_blocks.append(f"--- {original} ---\n{snippet}")
+            except Exception as exc:
+                logger.warning("attachment text extract failed for %s: %s", original, exc)
+
+        attachments.append({
+            "filename": fname,
+            "url": f"/api/files/conv/{conv_id}/{fname}",
+            "mime": upload.content_type or "",
+            "kind": kind,
+            "size": len(blob),
+            "original_name": original,
+        })
+
+    # Aggregate file kind for routing & rendering — "all images" lights up the
+    # composition path; mixed kinds fall through to the regular review path.
+    image_paths = [p for p, a in zip(file_paths, attachments) if a["kind"] == "image"]
+    is_all_images = len(image_paths) == len(file_paths) and len(image_paths) >= 1
+    primary = attachments[0]
+    extracted_text = "\n\n".join(extracted_blocks)
 
     now = datetime.now(timezone.utc)
     user_doc = {
@@ -2267,22 +2300,31 @@ async def upload_to_conversation(
         "sender_id": u["id"],
         "sender_name": u["name"],
         "agent_id": None,
-        "text": (text or "").strip() or f"📎 {original}",
+        "text": (text or "").strip() or (
+            f"📎 {primary['original_name']}" + (f" + {len(attachments) - 1} more" if len(attachments) > 1 else "")
+        ),
         "intent": "attachment",
         "timestamp": now,
-        **{k: v for k, v in attach.items() if k != "attachment_text"},
+        "attachments": attachments,
+        # Legacy single-file mirror for older renderers — points at the first file
+        "attachment_filename": primary["filename"],
+        "attachment_url": primary["url"],
+        "attachment_mime": primary["mime"],
+        "attachment_kind": primary["kind"],
+        "attachment_size": primary["size"],
+        "attachment_original_name": primary["original_name"],
     }
     await db.messages.insert_one({**user_doc})
 
     # Pick a responder. For groups → smart-route to the best specialist for
     # this kind of file. For direct → the conversation's agent.
     if conv["type"] == "group":
-        # Use existing first agent unless smart-routing is on, in which case
-        # let route_best_agent pick. Either way, fall back to first.
         try:
             chosen = await route_best_agent(
                 team,
-                f"Review this {kind} file: {original}\n{(text or '').strip()}\n{extracted[:600]}",
+                f"Review {len(attachments)} {primary['kind']} file(s): "
+                f"{', '.join(a['original_name'] for a in attachments)}\n"
+                f"{(text or '').strip()}\n{extracted_text[:600]}",
                 exclude_ids=None, transcript="",
             )
         except Exception:
@@ -2304,25 +2346,45 @@ async def upload_to_conversation(
             "ok": True,
         }
 
-    # ── Edit-image fast path ──────────────────────────────────────────────
-    # If the user uploaded an image AND their prompt contains a clear edit
-    # verb ("add", "change", "remove", "make it black & white", etc.), feed
-    # the file to Nano Banana as the source image and return a freshly
-    # edited variant — exactly what the user expected ("add a letter to my
-    # logo"). On any failure, fall through to the normal review path.
-    edit_intent = (kind == "image" and _quick_image_edit_intent(text or "", True))
+    # ── Edit / compose-image fast path ────────────────────────────────────
+    # If the user attached image(s) AND the prompt contains a clear edit /
+    # composition verb, feed ALL images to Nano Banana and return a freshly
+    # composed result (intent=image_edit_reply). With multiple images this
+    # is the "add my logo to this background" composition use case.
+    edit_intent = (
+        is_all_images
+        and (_quick_image_edit_intent(text or "", True) or len(image_paths) >= 2)
+    )
     if edit_intent:
         try:
             sp = team.get("soulprint") or {}
-            sp_lines = [f"{k.capitalize()}: {sp[k]}" for k in ("mission", "tone", "audience", "values") if sp.get(k)]
-            sys_msg = (
-                f"You are {AGENTS[responder]['name']}, editing an image the user uploaded. "
-                f"Apply the requested change precisely while preserving the rest of the image, "
-                f"its composition, and its visual style. Render any requested text crisply.\n"
-                + "\n".join(sp_lines)
-            )
+            sp_lines = [f"{k.capitalize()}: {sp[k]}"
+                        for k in ("mission", "tone", "audience", "values") if sp.get(k)]
+            n = len(image_paths)
+            if n >= 2:
+                sys_msg = (
+                    f"You are {AGENTS[responder]['name']}, composing a single new image "
+                    f"from {n} reference images the user uploaded. Treat IMAGE 1 as the "
+                    f"base canvas and incorporate the elements from IMAGE 2"
+                    + (f" through {n}" if n > 2 else "")
+                    + " into it precisely. Preserve the base composition + style; "
+                    "place the additional elements naturally; render any text crisply.\n"
+                    + "\n".join(sp_lines)
+                )
+                prompt_intro = (
+                    f"{n} images are attached in order. Apply this composition / edit: "
+                    f"{text or 'Combine them into a single coherent image.'}"
+                )
+            else:
+                sys_msg = (
+                    f"You are {AGENTS[responder]['name']}, editing an image the user uploaded. "
+                    f"Apply the requested change precisely while preserving the rest of the image, "
+                    f"its composition, and its visual style. Render any requested text crisply.\n"
+                    + "\n".join(sp_lines)
+                )
+                prompt_intro = f"Source image is attached. Apply this edit: {text}"
             new_fname, caption = await generate_image_via_nano_banana(
-                f"Source image is attached. Apply this edit: {text}", sys_msg, input_image_path=fpath,
+                prompt_intro, sys_msg, input_image_paths=image_paths,
             )
             edited_msg = {
                 "id": str(uuid.uuid4()),
@@ -2331,7 +2393,7 @@ async def upload_to_conversation(
                 "sender_id": responder,
                 "sender_name": AGENTS[responder]["name"],
                 "agent_id": responder,
-                "text": (caption or "Here's the edit. Want any tweaks?").strip(),
+                "text": (caption or "Here's the result. Want any tweaks?").strip(),
                 "media_type": "image",
                 "media_filename": new_fname,
                 "media_url": f"/api/files/{new_fname}",
@@ -2347,12 +2409,19 @@ async def upload_to_conversation(
                 "ok": True,
             }
         except Exception as exc:
-            logger.warning("image edit fast-path failed, falling back to review: %s", exc)
+            logger.warning("image edit/compose fast-path failed, falling back to review: %s", exc)
 
+    # ── Vision / text review path ─────────────────────────────────────────
     reply, _sources = await _agent_review_attachment(
         conv, team, responder, text or "",
-        {"kind": kind, "original_name": original, "attachment_mime": attach["attachment_mime"], "attachment_text": extracted},
-        fpath, u["name"],
+        {
+            "kind": primary["kind"],
+            "original_name": primary["original_name"]
+                             + (f" (+{len(attachments)-1} more)" if len(attachments) > 1 else ""),
+            "attachment_mime": primary["mime"],
+            "attachment_text": extracted_text,
+        },
+        file_paths[0], u["name"],
     )
     agent_msg = {
         "id": str(uuid.uuid4()),

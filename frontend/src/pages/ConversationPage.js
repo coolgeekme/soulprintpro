@@ -28,6 +28,11 @@ export default function ConversationPage() {
   const inputRef = useRef(null);
   const fileInputRef = useRef(null);
   const [uploading, setUploading] = useState(false);
+  // Multi-file staging tray. Files picked via the paperclip button accumulate
+  // here as { file: File, previewUrl: string, kind: 'image'|'video'|'file', id }
+  // until the user hits send. This way you can upload a logo + a background
+  // and ask "place the logo on the background" in one shot.
+  const [staged, setStaged] = useState([]);
   const [scrollState, setScrollState] = useState({ canUp: false, canDown: false });
 
   const onScrollerScroll = () => {
@@ -104,60 +109,97 @@ export default function ConversationPage() {
     return () => { cancelled = true; clearTimeout(t); };
   }, [messages, convId]);
 
-  // Upload a file picked from the OS and send it to the conversation.
-  // The composer textarea's current text is sent as the user prompt so
-  // they can ask "what stands out in this report?" while attaching the PDF.
-  const onFilePicked = async (e) => {
-    const f = e.target.files?.[0];
-    e.target.value = "";  // reset so the same file can be picked again
-    if (!f || uploading) return;
-    if (f.size > 25 * 1024 * 1024) {
-      toast.error("File too large (max 25MB)");
+  // The paperclip button now STAGES files instead of uploading immediately.
+  // The user can pick multiple at once (or click again to add more), then
+  // type a prompt and hit send — all files go up together in one request.
+  const onFilesPicked = (e) => {
+    const picked = Array.from(e.target.files || []);
+    e.target.value = "";  // reset so the same file can be re-picked
+    if (!picked.length) return;
+    const tooBig = picked.find((f) => f.size > 25 * 1024 * 1024);
+    if (tooBig) { toast.error(`${tooBig.name} is too large (max 25 MB)`); return; }
+    if (staged.length + picked.length > 6) {
+      toast.error("You can attach at most 6 files per message");
       return;
     }
-    setUploading(true);
-    const fd = new FormData();
-    fd.append("file", f);
-    fd.append("text", text || "");
-    const optimistic = {
-      id: `tmp-up-${Date.now()}`,
-      conversation_id: convId,
-      sender_type: "user",
-      sender_id: user.id,
-      sender_name: user.name,
-      text: (text || `📎 ${f.name}`).trim(),
-      attachment_original_name: f.name,
-      attachment_kind: f.type.startsWith("image/") ? "image"
-                      : f.type.startsWith("video/") ? "video"
-                      : f.type.startsWith("audio/") ? "audio"
-                      : f.name.endsWith(".pdf") ? "pdf"
-                      : f.name.match(/\.(docx?|odt|rtf)$/i) ? "doc"
-                      : "file",
-      attachment_size: f.size,
-      attachment_pending: true,
-      timestamp: new Date().toISOString(),
-    };
-    setMessages((prev) => [...prev, optimistic]);
-    setText("");
-    try {
-      const { data } = await api.post(`/conversations/${convId}/upload`, fd, {
-        headers: { "Content-Type": "multipart/form-data" },
-      });
-      setMessages((prev) => {
-        const without = prev.filter((m) => m.id !== optimistic.id);
-        return [...without, data.user_message, ...(data.agent_messages || [])];
-      });
-      if (data.conversation) setConv(data.conversation);
-      toast.success(`${f.name} delivered to your agent`);
-    } catch (err) {
-      toast.error(err?.response?.data?.detail || "Upload failed");
-      setMessages((prev) => prev.filter((m) => m.id !== optimistic.id));
-    } finally { setUploading(false); }
+    const additions = picked.map((f) => ({
+      id: `stg-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+      file: f,
+      previewUrl: f.type.startsWith("image/") ? URL.createObjectURL(f) : "",
+      kind: f.type.startsWith("image/") ? "image"
+            : f.type.startsWith("video/") ? "video"
+            : f.type.startsWith("audio/") ? "audio"
+            : "file",
+    }));
+    setStaged((prev) => [...prev, ...additions]);
   };
+  const removeStaged = (id) => {
+    setStaged((prev) => {
+      const tgt = prev.find((s) => s.id === id);
+      if (tgt?.previewUrl) URL.revokeObjectURL(tgt.previewUrl);
+      return prev.filter((s) => s.id !== id);
+    });
+  };
+  // Free preview URLs when the conversation unmounts to avoid leaking blobs
+  useEffect(() => {
+    return () => { staged.forEach((s) => s.previewUrl && URL.revokeObjectURL(s.previewUrl)); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const send = async (e) => {
     e.preventDefault();
-    if (!text.trim() || sending) return;
+    if (sending || uploading) return;
+    if (!text.trim() && staged.length === 0) return;
+
+    // ── Multi-file upload path ────────────────────────────────────────────
+    if (staged.length > 0) {
+      setUploading(true);
+      const fd = new FormData();
+      fd.append("text", text || "");
+      staged.forEach((s) => fd.append("files", s.file));
+      const optimistic = {
+        id: `tmp-up-${Date.now()}`,
+        conversation_id: convId,
+        sender_type: "user",
+        sender_id: user.id,
+        sender_name: user.name,
+        text: (text || `📎 ${staged.length} file${staged.length > 1 ? "s" : ""}`).trim(),
+        attachments: staged.map((s) => ({
+          filename: s.file.name,
+          url: s.previewUrl,    // local blob URL for instant preview
+          kind: s.kind,
+          size: s.file.size,
+          original_name: s.file.name,
+        })),
+        attachment_pending: true,
+        timestamp: new Date().toISOString(),
+      };
+      setMessages((prev) => [...prev, optimistic]);
+      const wasText = text;
+      const wasStaged = staged;
+      setText("");
+      setStaged([]);
+      try {
+        const { data } = await api.post(`/conversations/${convId}/upload`, fd, {
+          headers: { "Content-Type": "multipart/form-data" },
+        });
+        setMessages((prev) => {
+          const without = prev.filter((m) => m.id !== optimistic.id);
+          return [...without, data.user_message, ...(data.agent_messages || [])];
+        });
+        if (data.conversation) setConv(data.conversation);
+        // Free local blob URLs now that the server-served URLs are in play
+        wasStaged.forEach((s) => s.previewUrl && URL.revokeObjectURL(s.previewUrl));
+      } catch (err) {
+        toast.error(err?.response?.data?.detail || "Upload failed");
+        setMessages((prev) => prev.filter((m) => m.id !== optimistic.id));
+        setText(wasText);
+        setStaged(wasStaged);
+      } finally { setUploading(false); }
+      return;
+    }
+
+    // ── Text-only path (existing behaviour) ───────────────────────────────
     setSending(true);
     const optimistic = {
       id: `tmp-${Date.now()}`,
@@ -437,62 +479,105 @@ export default function ConversationPage() {
                     <span className="text-[11px] sp-subtle ml-auto">{formatTime(m.timestamp)}</span>
                   </div>
                   <div className="whitespace-pre-wrap text-[16px] leading-[1.6]">{m.text}</div>
-                  {m.attachment_filename && m.attachment_kind === "image" && (
-                    <a
-                      href={`${BACKEND_URL}${m.attachment_url}`}
-                      target="_blank" rel="noreferrer"
-                      className="block mt-3 rounded-xl overflow-hidden border border-white/10 hover:border-white/30 transition"
-                      data-testid={`attachment-image-${m.id}`}
-                    >
-                      <img
-                        src={`${BACKEND_URL}${m.attachment_url}`}
-                        alt={m.attachment_original_name || "attachment"}
-                        referrerPolicy="no-referrer"
-                        className="block w-full max-h-[480px] object-contain bg-black/30"
-                        loading="lazy"
-                      />
-                    </a>
-                  )}
-                  {m.attachment_filename && m.attachment_kind === "video" && (
-                    <video
-                      src={`${BACKEND_URL}${m.attachment_url}`}
-                      controls
-                      preload="metadata"
-                      className="block mt-3 rounded-xl overflow-hidden border border-white/10 w-full max-h-[480px] bg-black/30"
-                      data-testid={`attachment-video-${m.id}`}
-                    />
-                  )}
-                  {m.attachment_filename && m.attachment_kind === "audio" && (
-                    <audio
-                      src={`${BACKEND_URL}${m.attachment_url}`}
-                      controls
-                      preload="metadata"
-                      className="mt-3 w-full"
-                      data-testid={`attachment-audio-${m.id}`}
-                    />
-                  )}
-                  {m.attachment_filename && !["image", "video", "audio"].includes(m.attachment_kind) && (
-                    <a
-                      href={`${BACKEND_URL}${m.attachment_url}`}
-                      target="_blank" rel="noreferrer"
-                      className="mt-3 flex items-center gap-3 rounded-xl border border-white/10 hover:border-white/30 px-3 py-2.5 transition"
-                      data-testid={`attachment-file-${m.id}`}
-                    >
-                      <div className="w-9 h-9 rounded-lg flex items-center justify-center sp-glass-strong shrink-0">
-                        {m.attachment_kind === "pdf" || m.attachment_kind === "doc" || m.attachment_kind === "text"
-                          ? <FileText className="w-4 h-4" />
-                          : <FileIcon className="w-4 h-4" />}
+                  {/* Multi-attachment renderer — handles both the new
+                      `attachments` array and the legacy `attachment_*`
+                      mirror fields (kept on the message for back-compat). */}
+                  {(() => {
+                    const list = Array.isArray(m.attachments) && m.attachments.length
+                      ? m.attachments
+                      : (m.attachment_filename
+                          ? [{
+                              filename: m.attachment_filename,
+                              url: m.attachment_url,
+                              kind: m.attachment_kind,
+                              size: m.attachment_size,
+                              original_name: m.attachment_original_name,
+                            }]
+                          : []);
+                    if (!list.length) return null;
+                    const imgs = list.filter((a) => a.kind === "image");
+                    const others = list.filter((a) => a.kind !== "image");
+                    const resolveUrl = (a) => {
+                      if (!a.url) return "";
+                      // local blob (optimistic) → use as-is; server URL → prefix backend
+                      return a.url.startsWith("blob:") || a.url.startsWith("http")
+                        ? a.url : `${BACKEND_URL}${a.url}`;
+                    };
+                    return (
+                      <div className="mt-3 flex flex-col gap-2" data-testid={`attachments-${m.id}`}>
+                        {imgs.length > 0 && (
+                          <div className={imgs.length === 1
+                            ? "rounded-xl overflow-hidden border border-white/10"
+                            : "grid grid-cols-2 sm:grid-cols-3 gap-2"}>
+                            {imgs.map((a, i) => (
+                              <a
+                                key={`${m.id}-img-${i}`}
+                                href={resolveUrl(a)}
+                                target="_blank" rel="noreferrer"
+                                className={imgs.length === 1
+                                  ? "block hover:border-white/30 transition"
+                                  : "block rounded-xl overflow-hidden border border-white/10 hover:border-white/30 transition aspect-square bg-black/30"}
+                                data-testid={`attachment-image-${m.id}-${i}`}
+                              >
+                                <img
+                                  src={resolveUrl(a)}
+                                  alt={a.original_name || "attachment"}
+                                  referrerPolicy="no-referrer"
+                                  loading="lazy"
+                                  className={imgs.length === 1
+                                    ? "block w-full max-h-[480px] object-contain bg-black/30"
+                                    : "w-full h-full object-cover"}
+                                />
+                              </a>
+                            ))}
+                          </div>
+                        )}
+                        {others.map((a, i) => {
+                          if (a.kind === "video") return (
+                            <video
+                              key={`${m.id}-v-${i}`}
+                              src={resolveUrl(a)}
+                              controls preload="metadata"
+                              className="block rounded-xl overflow-hidden border border-white/10 w-full max-h-[480px] bg-black/30"
+                              data-testid={`attachment-video-${m.id}-${i}`}
+                            />
+                          );
+                          if (a.kind === "audio") return (
+                            <audio
+                              key={`${m.id}-a-${i}`}
+                              src={resolveUrl(a)}
+                              controls preload="metadata"
+                              className="w-full"
+                              data-testid={`attachment-audio-${m.id}-${i}`}
+                            />
+                          );
+                          return (
+                            <a
+                              key={`${m.id}-f-${i}`}
+                              href={resolveUrl(a)}
+                              target="_blank" rel="noreferrer"
+                              className="flex items-center gap-3 rounded-xl border border-white/10 hover:border-white/30 px-3 py-2.5 transition"
+                              data-testid={`attachment-file-${m.id}-${i}`}
+                            >
+                              <div className="w-9 h-9 rounded-lg flex items-center justify-center sp-glass-strong shrink-0">
+                                {a.kind === "pdf" || a.kind === "doc" || a.kind === "text"
+                                  ? <FileText className="w-4 h-4" />
+                                  : <FileIcon className="w-4 h-4" />}
+                              </div>
+                              <div className="min-w-0 flex-1">
+                                <div className="text-sm font-medium truncate">{a.original_name || "Attachment"}</div>
+                                <div className="text-[11px] sp-subtle">
+                                  {(a.kind || "FILE").toUpperCase()}
+                                  {a.size ? ` · ${(a.size / 1024).toFixed(0)} KB` : ""}
+                                  {m.attachment_pending ? " · uploading…" : ""}
+                                </div>
+                              </div>
+                            </a>
+                          );
+                        })}
                       </div>
-                      <div className="min-w-0 flex-1">
-                        <div className="text-sm font-medium truncate">{m.attachment_original_name || "Attachment"}</div>
-                        <div className="text-[11px] sp-subtle">
-                          {m.attachment_kind?.toUpperCase() || "FILE"}
-                          {m.attachment_size ? ` · ${(m.attachment_size / 1024).toFixed(0)} KB` : ""}
-                          {m.attachment_pending ? " · uploading…" : ""}
-                        </div>
-                      </div>
-                    </a>
-                  )}
+                    );
+                  })()}
                   {Array.isArray(m.web_sources) && m.web_sources.length > 0 && (
                     <div className="mt-3 pt-3 border-t border-white/10" data-testid={`web-sources-${m.id}`}>
                       <div className="flex items-center gap-2 mb-1.5">
@@ -590,6 +675,47 @@ export default function ConversationPage() {
           </button>
         )}
         <form onSubmit={send} className="max-w-5xl mx-auto px-3 sm:px-6 py-4">
+          {staged.length > 0 && (
+            <div
+              className="flex flex-wrap items-stretch gap-2 mb-3 px-1"
+              data-testid="staged-tray"
+            >
+              {staged.map((s) => (
+                <div
+                  key={s.id}
+                  className="relative sp-glass rounded-xl overflow-hidden flex items-center gap-2 pr-2 group"
+                  data-testid={`staged-${s.id}`}
+                >
+                  {s.kind === "image" && s.previewUrl ? (
+                    <img src={s.previewUrl} alt={s.file.name}
+                         className="w-14 h-14 object-cover" />
+                  ) : (
+                    <div className="w-14 h-14 flex items-center justify-center sp-glass-strong">
+                      {s.kind === "video" ? <Film className="w-4 h-4" /> :
+                        s.kind === "audio" ? <Paperclip className="w-4 h-4" /> :
+                        <FileText className="w-4 h-4" />}
+                    </div>
+                  )}
+                  <div className="text-[11px] leading-tight max-w-[140px]">
+                    <div className="truncate" title={s.file.name}>{s.file.name}</div>
+                    <div className="sp-subtle">{(s.file.size / 1024).toFixed(0)} KB</div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => removeStaged(s.id)}
+                    className="ml-1 p-1 rounded hover:bg-white/10 hover:text-red-300 shrink-0"
+                    data-testid={`remove-staged-${s.id}`}
+                    title="Remove from upload"
+                  >
+                    <X className="w-3.5 h-3.5" />
+                  </button>
+                </div>
+              ))}
+              <div className="flex items-center text-[11px] sp-subtle pl-1">
+                {staged.length} file{staged.length > 1 ? "s" : ""} ready · type your prompt and send
+              </div>
+            </div>
+          )}
           {showMentions && isGroup && (
             <div className="mb-2 sp-glass rounded-xl p-2 flex flex-wrap gap-2">
               {convAgents.map(a => (
@@ -610,9 +736,10 @@ export default function ConversationPage() {
             <input
               ref={fileInputRef}
               type="file"
+              multiple
               accept="image/*,video/*,audio/*,.pdf,.doc,.docx,.txt,.md,.csv,.json,.log,.xlsx,.pptx,.rtf"
               className="hidden"
-              onChange={onFilePicked}
+              onChange={onFilesPicked}
               data-testid="file-input"
             />
             <button
@@ -620,7 +747,7 @@ export default function ConversationPage() {
               onClick={() => fileInputRef.current?.click()}
               disabled={uploading}
               className="sp-btn sp-btn-ghost text-xs shrink-0 disabled:opacity-50"
-              title={uploading ? "Uploading…" : "Attach a file (image, PDF, doc, audio, video — up to 25 MB)"}
+              title={uploading ? "Uploading…" : "Attach files (images, PDF, doc, audio, video — up to 25 MB each, 6 files)"}
               data-testid="attach-file-btn"
             >
               <Paperclip className="w-3.5 h-3.5" />
@@ -644,16 +771,18 @@ export default function ConversationPage() {
               onKeyDown={(e) => {
                 if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(e); }
               }}
-              placeholder={isGroup
-                ? "Message the room… use @name to ping an agent. Ask for an image or a video and they'll just make it."
-                : `Message ${convAgents[0]?.name || "your agent"} — ask for posts, logos, or videos and they'll just make them.`}
+              placeholder={staged.length > 0
+                ? `Describe what to do with ${staged.length === 1 ? "this file" : `these ${staged.length} files`}…`
+                : (isGroup
+                  ? "Message the room… use @name to ping an agent. Ask for an image or a video and they'll just make it."
+                  : `Message ${convAgents[0]?.name || "your agent"} — ask for posts, logos, or videos and they'll just make them.`)}
               rows={1}
               className="flex-1 sp-glass rounded-2xl px-4 py-3.5 text-[16px] leading-relaxed placeholder:opacity-50 focus:sp-focus resize-none max-h-44"
               style={{ background: "var(--input-bg)", borderColor: "var(--input-border)", color: "var(--fg)" }}
             />
             <button
               type="submit"
-              disabled={sending || !text.trim()}
+              disabled={sending || uploading || (!text.trim() && staged.length === 0)}
               className="sp-btn sp-btn-primary text-sm disabled:opacity-50 shrink-0"
               data-testid="send-message-btn"
             >
