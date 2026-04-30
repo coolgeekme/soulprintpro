@@ -31,6 +31,11 @@ from llm_fallback import install_fallback as _install_llm_fallback
 _install_llm_fallback()  # patches LlmChat.send_message to use OPENAI_API_KEY on budget errors
 
 from brave_search import brave_web_search, format_results_for_prompt
+from perplexity_client import (
+    perplexity_company_summary,
+    perplexity_web_search,
+    is_available as _perplexity_available,
+)
 from kie_client import generate_video as kie_generate_video, submit_video as kie_submit_video, wait_for_video as kie_wait_for_video
 import asyncio
 import httpx
@@ -588,6 +593,27 @@ async def _generate_company_soul(name: str, website_text: str, manual_hint: str 
         raise SoulGenError("empty_output", "Soul generator returned an empty result.")
     return soul
 
+async def _fetch_company_context(name: str, url: str) -> str:
+    """Best-effort context for the Soul generator.
+
+    1. Try the regular httpx scraper (fast, cheap).
+    2. If we have a URL but the scrape produced too little text, fall back to
+       Perplexity Sonar — it sidesteps Cloudflare/SPA blocks since it queries
+       Perplexity's own index.
+
+    Returns "" if we couldn't get anything useful from either source.
+    """
+    text = await _fetch_url_text(url) if url else ""
+    if len(text) >= 200 or not url:
+        return text
+    if _perplexity_available():
+        pplx = await perplexity_company_summary(name, url)
+        if pplx:
+            logger.info("Soul context: Perplexity fallback used for %s", url)
+            return pplx
+    return text  # may be a short meta-tag stub or empty — caller handles both
+
+
 @org_r.post("")
 async def create_org(body: OrgCreateBody, u: dict = Depends(get_current_user)):
     if not body.name.strip():
@@ -600,7 +626,7 @@ async def create_org(body: OrgCreateBody, u: dict = Depends(get_current_user)):
     # org page later.
     website_url = (body.website_url or "").strip()
     manual = (body.soul_description or "").strip()
-    website_text = await _fetch_url_text(website_url) if website_url else ""
+    website_text = await _fetch_company_context(body.name.strip(), website_url)
     try:
         soul = await _generate_company_soul(body.name.strip(), website_text, manual)
     except SoulGenError as exc:
@@ -717,7 +743,7 @@ async def update_org(org_id: str, body: OrgUpdateBody, u: dict = Depends(get_cur
                 422,
                 "Add a website URL or a description before re-synthesising the Soul.",
             )
-        website_text = await _fetch_url_text(url) if url else ""
+        website_text = await _fetch_company_context(name, url) if url else ""
         if url and not website_text and not manual:
             raise HTTPException(
                 422,
@@ -1177,7 +1203,7 @@ async def build_transcript_tail(conv_id: str, limit: int = 12) -> List[dict]:
     return list(reversed(msgs))
 
 # ── Web-search intent classifier + injection ─────────────────────────────────
-WEB_SEARCH_AVAILABLE = bool(os.environ.get("BRAVE_API_KEY"))
+WEB_SEARCH_AVAILABLE = bool(os.environ.get("BRAVE_API_KEY")) or _perplexity_available()
 
 _IMAGE_KEYWORDS_RE = re.compile(
     r"\b("
@@ -1383,6 +1409,15 @@ async def maybe_fetch_web_context(message: str, transcript: str = "") -> tuple[s
     if not intent.get("search"):
         return "", [], intent
     results = await brave_web_search(intent["query"], count=5, freshness=intent.get("freshness"))
+    # Fall back to Perplexity Sonar when Brave returns nothing (rate-limited,
+    # 0 results, or BRAVE_API_KEY absent). Output shape is identical so the
+    # downstream prompt formatter doesn't care which source produced them.
+    if not results and _perplexity_available():
+        results = await perplexity_web_search(
+            intent["query"], count=5, freshness=intent.get("freshness")
+        )
+        if results:
+            logger.info("Web search: Perplexity fallback used for %r", intent["query"])
     if not results:
         return "", [], intent
     return format_results_for_prompt(results), results, intent
