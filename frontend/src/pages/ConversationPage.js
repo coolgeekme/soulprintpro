@@ -495,15 +495,17 @@ export default function ConversationPage() {
                   )}
                   {Array.isArray(m.web_sources) && m.web_sources.length > 0 && (
                     <div className="mt-3 pt-3 border-t border-white/10" data-testid={`web-sources-${m.id}`}>
-                      <div className="flex items-center gap-2 mb-2">
+                      <div className="flex items-center gap-2 mb-1.5">
                         <Globe className="w-3 h-3 text-white/70" />
-                        <span className="text-[10px] uppercase tracking-widest sp-subtle">Web sources · {m.web_sources.length}</span>
+                        <span className="text-[10px] uppercase tracking-widest sp-subtle">Sources · {m.web_sources.length}</span>
                       </div>
-                      <div className="flex flex-col gap-2">
+                      <ol className="flex flex-col gap-1">
                         {m.web_sources.slice(0, 5).map((s, i) => (
-                          <LinkPreviewCard key={`${m.id}-src-${i}`} source={s} />
+                          <li key={`${m.id}-src-${i}`} className="min-w-0">
+                            <LinkPreviewCard source={s} />
+                          </li>
                         ))}
-                      </div>
+                      </ol>
                     </div>
                   )}
                   {m.media_type === "image" && m.media_url && (
