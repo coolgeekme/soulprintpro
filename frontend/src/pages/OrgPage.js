@@ -7,6 +7,7 @@ import { Plus, Users, ArrowRight, Copy, UserPlus, FileText, Image as ImageIcon, 
 import BrandAssetsPanel from "../components/BrandAssetsPanel";
 import ActivityOverview from "../components/ActivityOverview";
 import DocumentsPanel from "../components/DocumentsPanel";
+import SocialStyleGuidePanel from "../components/SocialStyleGuidePanel";
 import Logo from "../components/Logo";
 import SchedulesPanel from "../components/SchedulesPanel";
 
@@ -306,6 +307,11 @@ export default function OrgPage() {
         {/* Brand Assets — primary/alt logo + brand colors + tagline. Used by
             the social-image generator to keep every cover image on-brand. */}
         <BrandAssetsPanel orgId={orgId} initial={org.brand_assets} onChange={(ba) => setOrg((prev) => prev ? { ...prev, brand_assets: ba } : prev)} />
+
+        {/* Social Style Guide — analyzes the org's social profiles + samples
+            to produce a brand voice + visual style guide that's auto-injected
+            into every Social Queue draft and every agent system prompt. */}
+        <SocialStyleGuidePanel orgId={orgId} />
 
         {/* Activity overview — KPI tiles + unified feed across social,
             schedules, conversations, and assets. */}

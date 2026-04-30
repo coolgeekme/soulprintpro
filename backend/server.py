@@ -52,6 +52,10 @@ from artifacts import (
     save_artifacts as _save_artifacts,
     make_documents_router,
 )
+from style_guide import (
+    make_style_guide_router,
+    format_guide_for_prompt as _format_style_guide_prompt,
+)
 
 ROOT_DIR = Path(__file__).parent
 UPLOAD_DIR = ROOT_DIR / "uploads"
@@ -1218,6 +1222,12 @@ def build_system_prompt(agent_id: str, team: dict, current_user_name: Optional[s
         block = format_assets_for_prompt(org_assets)
         if block:
             lines.append("\n" + block)
+    # Inject the org's social style guide (if synthesized) so any agent that
+    # writes customer-facing copy or kicks off an image/video stays on-brand.
+    style_guide = ((org or {}).get("style_guide") or {}).get("guide") or {}
+    sg_block = _format_style_guide_prompt(style_guide)
+    if sg_block:
+        lines.append("\n" + sg_block)
     if current_user_name:
         lines.append(f"\nThe person you're talking to is {current_user_name}.")
     user_ctx_block = _user_context_block()
@@ -3759,6 +3769,18 @@ docs_r = make_documents_router(
     get_current_user=get_current_user,
 )
 app.include_router(docs_r)
+
+# Social Style Guide — analyzes the org's social profiles + samples to
+# produce a structured brand-voice + visual-style guide that's auto-injected
+# into every social post draft and every agent's system prompt. See
+# style_guide.py.
+style_r = make_style_guide_router(
+    db=db, AGENTS=AGENTS, EMERGENT_LLM_KEY=EMERGENT_LLM_KEY,
+    LlmChat=LlmChat, UserMessage=UserMessage,
+    require_org_member=require_org_member,
+    get_current_user=get_current_user,
+)
+app.include_router(style_r)
 
 app.add_middleware(
     CORSMiddleware,

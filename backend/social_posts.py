@@ -113,6 +113,7 @@ async def _draft_via_agent(
     prompt: str,
     platforms: List[str],
     count: int,
+    style_guide_block: str = "",
 ) -> List[dict]:
     """Returns a list of `{platform, text, hashtags}` dicts. Empty list on
     parse failure — caller decides whether to surface an error.
@@ -146,7 +147,8 @@ async def _draft_via_agent(
     system = (
         f"You are {persona['name']} ({persona.get('division','')}), drafting "
         f"social posts that match the company's Soul:\n{soul_block}\n\n"
-        f"Output ONLY a JSON array of post objects, no markdown, no commentary. "
+        + (f"{style_guide_block}\n\n" if style_guide_block else "")
+        + f"Output ONLY a JSON array of post objects, no markdown, no commentary. "
         f"Each object: "
         f'{{"platform":"<one of: ' + ",".join(platforms) + f'>","text":"...","hashtags":["#x","#y"]}}\n'
         f"Tailor each post to its platform:\n{char_hints_block}\n"
@@ -268,6 +270,11 @@ def make_social_router(*, db, AGENTS, EMERGENT_LLM_KEY, LlmChat, UserMessage,
             # default tendency toward generic stock imagery and keeps a
             # consistent look across every post the org ever drafts.
             soul_bits.append(f"Visual style: {visual_style[:400]}")
+        # Visual style synthesized from the org's social profiles (if any)
+        sg_guide = ((org_doc or {}).get("style_guide") or {}).get("guide") or {}
+        sg_visual = (sg_guide.get("image_video_style") or "").strip()
+        if sg_visual:
+            soul_bits.append(f"Synthesized visual style (match this): {sg_visual[:600]}")
         sys_msg = (
             "You generate a single 1:1 social post cover image. The image must "
             "feel on-brand for the company described below. Avoid text inside "
@@ -342,12 +349,22 @@ def make_social_router(*, db, AGENTS, EMERGENT_LLM_KEY, LlmChat, UserMessage,
             agent_id = "marketing-social-media-strategist" if "marketing-social-media-strategist" in AGENTS else next(iter(AGENTS))
 
         org_soul = (ctx["org"] or {}).get("soul") or {}
+        # Pull the org's social style guide and fold it into the draft prompt
+        # so every generated post matches the brand voice synthesized from
+        # the org's profiles + samples.
+        try:
+            from style_guide import format_guide_for_prompt as _fmt_sg
+            sg_doc = (ctx["org"] or {}).get("style_guide") or {}
+            style_guide_block = _fmt_sg(sg_doc.get("guide") or {})
+        except Exception:
+            style_guide_block = ""
         try:
             posts = await _draft_via_agent(
                 LlmChat=LlmChat, UserMessage=UserMessage, EMERGENT_LLM_KEY=EMERGENT_LLM_KEY,
                 AGENTS=AGENTS, agent_id=agent_id, org_soul=org_soul,
                 team_soulprint=team_soulprint, prompt=body.prompt,
                 platforms=platforms, count=body.count,
+                style_guide_block=style_guide_block,
             )
         except HTTPException:
             raise

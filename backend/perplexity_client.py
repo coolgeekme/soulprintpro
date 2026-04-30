@@ -187,6 +187,72 @@ async def perplexity_company_summary(
     return cleaned[:max_chars]
 
 
+# ── Use case 3: Social profile style analysis ────────────────────────────────
+async def perplexity_analyze_social_profile(
+    platform: str, url: str, *, handle: str = "", role: str = "own",
+    max_chars: int = 3500,
+) -> str:
+    """Return a plain-text analysis of a public social profile's *style*.
+
+    Used by the Social Style Guide synthesizer. Empty string on failure
+    (rate-limit, profile not in Perplexity's index, blocked profile, etc.).
+    The caller treats this like any other text source for downstream LLM
+    style synthesis.
+    """
+    if not is_available():
+        return ""
+    platform = (platform or "").strip() or "social"
+    url = (url or "").strip()
+    handle = (handle or "").strip()
+    if not url and not handle:
+        return ""
+    role_label = "the user's own profile" if role == "own" else "an inspiration profile to emulate"
+    bits = [f"Platform: {platform}"]
+    if url:
+        bits.append(f"Profile URL (ground truth — analyze ONLY this exact account): {url}")
+    if handle:
+        bits.append(f"Handle: {handle}")
+    bits.append(f"Role: {role_label}")
+    bits.append(
+        "Analyze the most recent 10–20 public posts from this account and "
+        "produce a precise STYLE TEARDOWN covering:\n"
+        "1. Tone & voice (3–5 adjectives + a one-sentence gestalt).\n"
+        "2. Vocabulary patterns — favorite phrases, signature words, slang, "
+        "and words/phrases the account avoids.\n"
+        "3. Post structure — typical length, hook patterns, body shape, CTA "
+        "patterns, hashtag usage, emoji usage, line breaks.\n"
+        "4. Recurring themes / topics that perform well.\n"
+        "5. Visual style of attached images/videos — color palette, "
+        "composition, illustration vs photo, motion if videos, on-image "
+        "typography.\n"
+        "6. Posting cadence and best-performing post types if visible.\n"
+        "7. 2–3 verbatim sample posts (short quotes, exact wording).\n\n"
+        "Be specific and concrete — quote phrases, name colors, count "
+        "hashtags. If you cannot access this exact profile, respond with "
+        "the single word UNKNOWN and nothing else."
+    )
+    user_msg = "\n".join(bits)
+    content, _results = await _chat(
+        [
+            {"role": "system", "content": (
+                "You are a senior social-media brand strategist. Stay grounded "
+                "on the exact profile provided; never substitute a similarly-"
+                "named account. Be concrete, never generic."
+            )},
+            {"role": "user", "content": user_msg},
+        ],
+        max_tokens=1200,
+    )
+    if not content:
+        return ""
+    cleaned = re.sub(r"\[\d+(?:\]\[\d+)*\]", " ", content)
+    cleaned = re.sub(r"\s+\n", "\n", cleaned).strip()
+    if re.fullmatch(r"[\"'`*_ \t]*UNKNOWN[\"'`*_ \t.!,]*", cleaned, flags=re.IGNORECASE):
+        log.info("Perplexity returned UNKNOWN for social profile %s", url or handle)
+        return ""
+    return cleaned[:max_chars]
+
+
 # ── Use case 2: Brave-search drop-in fallback ────────────────────────────────
 # Returns the same shape as `brave_search.WebResult` so callers can swap in.
 async def perplexity_web_search(
