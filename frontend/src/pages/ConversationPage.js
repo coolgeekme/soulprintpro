@@ -4,7 +4,7 @@ import api, { BACKEND_URL } from "../lib/api";
 import TopBar from "../components/TopBar";
 import { toast } from "sonner";
 import { useAuth } from "../context/AuthContext";
-import { Send, Trash2, AtSign, Users, Repeat, Search, X, Lock, Film, Globe, ArrowUp, ArrowDown } from "lucide-react";
+import { Send, Trash2, AtSign, Users, Repeat, Search, X, Lock, Film, Globe, ArrowUp, ArrowDown, UserPlus } from "lucide-react";
 import LinkPreviewCard from "../components/LinkPreviewCard";
 
 const formatTime = (ts) => {
@@ -165,10 +165,17 @@ export default function ConversationPage() {
   const [switchDiv, setSwitchDiv] = useState("");
   const [switchBusy, setSwitchBusy] = useState(false);
   const [divisions, setDivisions] = useState([]);
+
+  // Manage-agents dialog state (group conversations only)
+  const [showAgents, setShowAgents] = useState(false);
+  const [agentsQ, setAgentsQ] = useState("");
+  const [agentsDiv, setAgentsDiv] = useState("");
+  const [agentsBusy, setAgentsBusy] = useState(false);
   useEffect(() => {
-    if (!showSwitch || divisions.length) return;
+    if (!showSwitch && !showAgents) return;
+    if (divisions.length) return;
     api.get("/agents/divisions").then((r) => setDivisions(r.data)).catch(() => {});
-  }, [showSwitch, divisions.length]);
+  }, [showSwitch, showAgents, divisions.length]);
 
   const filteredSwitchAgents = useMemo(() => {
     let arr = agents.filter((a) => !conv?.agent_ids?.includes(a.id));
@@ -197,6 +204,47 @@ export default function ConversationPage() {
     } catch (err) {
       toast.error(err?.response?.data?.detail || "Switch failed");
     } finally { setSwitchBusy(false); }
+  };
+
+  const filteredPickerAgents = useMemo(() => {
+    let arr = agents.filter((a) => !conv?.agent_ids?.includes(a.id));
+    if (agentsDiv) arr = arr.filter((a) => a.division_key === agentsDiv);
+    if (agentsQ.trim()) {
+      const n = agentsQ.toLowerCase();
+      arr = arr.filter((a) =>
+        a.id.includes(n) ||
+        (a.name || "").toLowerCase().includes(n) ||
+        (a.description || "").toLowerCase().includes(n) ||
+        (a.division || "").toLowerCase().includes(n)
+      );
+    }
+    return arr.slice(0, 60);
+  }, [agents, agentsQ, agentsDiv, conv]);
+
+  const addAgent = async (newAgentId) => {
+    if (agentsBusy) return;
+    setAgentsBusy(true);
+    try {
+      const { data } = await api.post(`/conversations/${convId}/agents`, { agent_id: newAgentId });
+      setConv(data.conversation);
+      setMessages((prev) => [...prev, data.system_message]);
+      setAgentsQ(""); setAgentsDiv("");
+      toast.success(`Added ${data.system_message.text.split("added ")[1]?.replace(" to the room.", "") || "agent"}`);
+    } catch (err) {
+      toast.error(err?.response?.data?.detail || "Add failed");
+    } finally { setAgentsBusy(false); }
+  };
+
+  const removeAgent = async (aid) => {
+    if (agentsBusy) return;
+    setAgentsBusy(true);
+    try {
+      const { data } = await api.delete(`/conversations/${convId}/agents/${aid}`);
+      setConv(data.conversation);
+      setMessages((prev) => [...prev, data.system_message]);
+    } catch (err) {
+      toast.error(err?.response?.data?.detail || "Remove failed");
+    } finally { setAgentsBusy(false); }
   };
 
   if (loading || !conv || !team) return <div className="min-h-screen"><TopBar>Loading…</TopBar></div>;
@@ -270,6 +318,16 @@ export default function ConversationPage() {
               <Repeat className="w-3 h-3" /> Switch agent
             </button>
           )}
+          {isGroup && (
+            <button
+              onClick={() => setShowAgents(true)}
+              className="sp-chip hover:!bg-white/15 hover:text-white inline-flex items-center gap-1"
+              data-testid="manage-agents-btn"
+              title="Add or remove specialists in this room"
+            >
+              <UserPlus className="w-3 h-3" /> Manage agents
+            </button>
+          )}
         </div>
       </div>
 
@@ -287,6 +345,15 @@ export default function ConversationPage() {
             </div>
           )}
           {messages.map((m) => {
+            // System notifications (agent added/removed etc.) render as a
+            // small centered chip rather than a chat bubble.
+            if (m.sender_type === "system") {
+              return (
+                <div key={m.id} className="flex justify-center sp-fade-up" data-testid={`system-msg-${m.id}`}>
+                  <span className="sp-chip text-[11px] !bg-white/5">{m.text}</span>
+                </div>
+              );
+            }
             const mine = m.sender_type === "user" && m.sender_id === user.id;
             const isAgent = m.sender_type === "agent";
             const a = isAgent ? agentMap[m.agent_id] : null;
@@ -503,6 +570,97 @@ export default function ConversationPage() {
               ))}
               {filteredSwitchAgents.length === 0 && (
                 <div className="col-span-full sp-glass rounded-xl p-4 text-center text-xs sp-subtle">No agents match.</div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Manage-agents dialog (group conversations) */}
+      {showAgents && (
+        <div className="fixed inset-0 z-40 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm" onClick={() => setShowAgents(false)}>
+          <div className="sp-glass-strong rounded-2xl w-full max-w-3xl p-6 sp-fade-up max-h-[85vh] overflow-hidden flex flex-col" onClick={(e) => e.stopPropagation()} data-testid="manage-agents-dialog">
+            <div className="flex items-center justify-between mb-1">
+              <h3 className="sp-display text-2xl">Manage agents</h3>
+              <button onClick={() => setShowAgents(false)} className="text-white/60 hover:text-white"><X className="w-4 h-4" /></button>
+            </div>
+            <p className="text-xs sp-subtle mb-4">
+              {convAgents.length} specialist{convAgents.length === 1 ? "" : "s"} in this room. Add anyone from the catalogue, or remove someone you don't need anymore.
+            </p>
+
+            {/* In-room agents (with remove × button each) */}
+            <div className="mb-4">
+              <div className="text-[10px] uppercase tracking-widest sp-subtle mb-2">In this room</div>
+              <div className="flex flex-wrap gap-2" data-testid="manage-agents-current">
+                {convAgents.map(a => (
+                  <span key={a.id} className="sp-chip !bg-white/10 inline-flex items-center gap-1.5">
+                    <span className="sp-dot" style={{ background: a.accent }} />
+                    {a.emoji ? `${a.emoji} ` : ""}{a.name}
+                    <span className="opacity-60">· {a.division}</span>
+                    {convAgents.length > 1 && (
+                      <button
+                        onClick={() => removeAgent(a.id)}
+                        disabled={agentsBusy}
+                        className="ml-1 -mr-1 p-0.5 rounded hover:bg-white/10 hover:text-red-300 disabled:opacity-50"
+                        title={`Remove ${a.name}`}
+                        data-testid={`remove-agent-${a.id}`}
+                      >
+                        <X className="w-3 h-3" />
+                      </button>
+                    )}
+                  </span>
+                ))}
+              </div>
+              {convAgents.length === 1 && (
+                <div className="text-[11px] sp-subtle mt-2">
+                  Add another specialist before you can remove this one — a group must keep at least one agent.
+                </div>
+              )}
+            </div>
+
+            {/* Add picker */}
+            <div className="text-[10px] uppercase tracking-widest sp-subtle mb-2">Add a specialist</div>
+            <div className="flex items-center gap-2 sp-glass rounded-xl px-3 py-2 mb-3">
+              <Search className="w-4 h-4 text-white/60" />
+              <input
+                value={agentsQ}
+                onChange={(e) => setAgentsQ(e.target.value)}
+                placeholder={`Search ${agents.length} agents…`}
+                className="flex-1 bg-transparent text-sm text-white placeholder:text-white/30 focus:outline-none"
+                data-testid="manage-agents-search"
+              />
+            </div>
+            <div className="flex flex-wrap gap-2 mb-3">
+              <button onClick={() => setAgentsDiv("")} className={`sp-chip ${agentsDiv === "" ? "!bg-white/15 !text-white" : ""}`}>All</button>
+              {divisions.map(d => (
+                <button key={d.key} onClick={() => setAgentsDiv(d.key === agentsDiv ? "" : d.key)} className={`sp-chip ${agentsDiv === d.key ? "!bg-white/15 !text-white" : ""}`}>
+                  {d.label} · {d.count}
+                </button>
+              ))}
+            </div>
+            <div className="grid sm:grid-cols-2 gap-2 overflow-y-auto pr-1 flex-1 min-h-0">
+              {filteredPickerAgents.map(a => (
+                <button
+                  key={a.id}
+                  onClick={() => addAgent(a.id)}
+                  disabled={agentsBusy}
+                  className="sp-glass rounded-xl p-3 text-left hover:border-white/25 disabled:opacity-50"
+                  data-testid={`add-agent-${a.id}`}
+                >
+                  <div className="flex items-start justify-between gap-2">
+                    <div className="w-8 h-8 rounded-lg flex items-center justify-center text-base shrink-0" style={{ background: `linear-gradient(160deg, ${a.accent}, rgba(255,255,255,0.06))` }}>
+                      <span>{a.emoji || ""}</span>
+                    </div>
+                    <span className="sp-chip text-[10px]">{a.division}</span>
+                  </div>
+                  <div className="text-white text-sm font-medium line-clamp-1 mt-2">{a.name}</div>
+                  <div className="text-[11px] sp-subtle line-clamp-2">{a.tagline}</div>
+                </button>
+              ))}
+              {filteredPickerAgents.length === 0 && (
+                <div className="col-span-full sp-glass rounded-xl p-4 text-center text-xs sp-subtle">
+                  {agentsQ || agentsDiv ? "No agents match that search." : "Every agent is already in this room."}
+                </div>
               )}
             </div>
           </div>

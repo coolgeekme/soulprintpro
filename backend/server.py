@@ -1683,6 +1683,74 @@ async def switch_agent(conv_id: str, body: SwitchAgentBody, u: dict = Depends(ge
         "agent_message": {k: v for k, v in agent_msg.items() if k != "_id"},
     }
 
+# ── Manage agents in a GROUP conversation ──────────────────────────────────
+class ConvAgentBody(BaseModel):
+    agent_id: str
+
+@conv_r.post("/conversations/{conv_id}/agents")
+async def add_conv_agent(conv_id: str, body: ConvAgentBody, u: dict = Depends(get_current_user)):
+    """Add a specialist to a group conversation. Posts a small system note so
+    everyone knows who just joined."""
+    conv = await load_conv_or_403(conv_id, u["id"])
+    if conv["type"] != "group":
+        raise HTTPException(400, "Only group conversations can have multiple agents")
+    if not is_agent(body.agent_id):
+        raise HTTPException(400, f"Unknown agent: {body.agent_id}")
+    if body.agent_id in (conv.get("agent_ids") or []):
+        raise HTTPException(400, "That agent is already in this conversation")
+    await db.conversations.update_one(
+        {"_id": ObjectId(conv_id)},
+        {"$addToSet": {"agent_ids": body.agent_id}},
+    )
+    note = {
+        "id": str(uuid.uuid4()),
+        "conversation_id": conv_id,
+        "sender_type": "system",
+        "sender_id": "system",
+        "sender_name": "System",
+        "text": f"{u['name']} added {AGENTS[body.agent_id]['name']} to the room.",
+        "intent": "agent_added",
+        "agent_id": body.agent_id,
+        "timestamp": datetime.now(timezone.utc),
+    }
+    await db.messages.insert_one({**note})
+    fresh = await db.conversations.find_one({"_id": ObjectId(conv_id)})
+    return {
+        "conversation": serialize_conv(fresh),
+        "system_message": {k: v for k, v in note.items() if k != "_id"},
+    }
+
+@conv_r.delete("/conversations/{conv_id}/agents/{agent_id}")
+async def remove_conv_agent(conv_id: str, agent_id: str, u: dict = Depends(get_current_user)):
+    conv = await load_conv_or_403(conv_id, u["id"])
+    if conv["type"] != "group":
+        raise HTTPException(400, "Only group conversations support removing agents")
+    if agent_id not in (conv.get("agent_ids") or []):
+        raise HTTPException(404, "That agent isn't in this conversation")
+    if len(conv.get("agent_ids") or []) <= 1:
+        raise HTTPException(400, "A group must keep at least one agent — add another before removing this one")
+    await db.conversations.update_one(
+        {"_id": ObjectId(conv_id)},
+        {"$pull": {"agent_ids": agent_id}},
+    )
+    note = {
+        "id": str(uuid.uuid4()),
+        "conversation_id": conv_id,
+        "sender_type": "system",
+        "sender_id": "system",
+        "sender_name": "System",
+        "text": f"{u['name']} removed {AGENTS[agent_id]['name']} from the room.",
+        "intent": "agent_removed",
+        "agent_id": agent_id,
+        "timestamp": datetime.now(timezone.utc),
+    }
+    await db.messages.insert_one({**note})
+    fresh = await db.conversations.find_one({"_id": ObjectId(conv_id)})
+    return {
+        "conversation": serialize_conv(fresh),
+        "system_message": {k: v for k, v in note.items() if k != "_id"},
+    }
+
 # ── Image generation tool (Nano Banana via Emergent LLM key) ─────────────────
 NANO_BANANA_MODEL = "gemini-3.1-flash-image-preview"
 
