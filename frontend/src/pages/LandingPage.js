@@ -105,7 +105,8 @@ export default function LandingPage() {
           </h2>
           <p className="sp-subtle max-w-2xl">
             Frontend wizards, brand guardians, deal coaches, privacy architects, narrative designers —
-            the full agency of <a className="underline hover:text-white" href="https://github.com/msitarzewski/agency-agents" target="_blank" rel="noreferrer">msitarzewski/agency-agents</a>, tuned by your team's SoulPrint.
+            a full agency of specialists, tuned by your team's SoulPrint and grounded in your
+            organisation's own assets.
           </p>
         </div>
         <div className="grid sm:grid-cols-2 lg:grid-cols-4 gap-3">

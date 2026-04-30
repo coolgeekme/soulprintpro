@@ -50,23 +50,29 @@ pattern. Users must be able to:
 - `GET|POST /api/conversations/{id}/messages`
 
 ## Implemented (Apr 29-30, 2026)
-- ✅ Full schema rewrite — orgs, teams, members, invites, conversations, messages
-- ✅ JWT cookie auth + Bearer fallback (localStorage). **CORS now `allow_origin_regex=".*"`** so deploys work from any domain.
-- ✅ **169 specialised agents** across **14 divisions**, seeded from
-  [msitarzewski/agency-agents](https://github.com/msitarzewski/agency-agents)
+- ✅ Full schema rewrite — orgs, teams, members, invites, conversations, messages, **assets**
+- ✅ JWT cookie auth + Bearer fallback (localStorage). CORS uses `allow_origin_regex=".*"` for any deploy domain.
+- ✅ **169 specialised agents** across **14 divisions** (sourced internally; no external attribution surfaced in the UI)
 - ✅ SoulPrint onboarding injected into every agent system prompt
+- ✅ **Org asset library** — upload images, PDFs, DOCX, text, audio, video (≤10 MB each).
+  Text files (PDF/DOCX/TXT) are extracted on upload and a compact list of asset
+  names + descriptions + excerpts is injected into every agent's system prompt
+  in that org so agents can cite the brand guide / handbook / etc.
 - ✅ Direct chats + group chats with `@mention` (id, short slug, or display name)
-- ✅ **Smart auto-routing** (`POST /api/teams/{id}/start`) — type free-text, app picks the best of 169 agents
+- ✅ **Smart auto-routing** — `POST /api/teams/{id}/start` routes a free-text prompt to the best of 169 agents
+- ✅ **Auto image generation** — when the user clearly asks for an image
+  (Instagram post, logo, banner, etc.), the chosen agent generates it
+  automatically without any toggle. Aspect-ratio hints for all major social
+  formats (1:1, 9:16, 1.91:1, 16:9) baked into the system message.
+- ✅ Manual 🎨 image-mode toggle still available for explicit prompts
 - ✅ **Switch agent** with bridging handoff
 - ✅ **Smart-expand groups** — auto-add a new specialist when the topic shifts
-- ✅ **Image generation** via Gemini Nano Banana, served from `/api/files/{filename}` with auth + conversation membership checks
-- ✅ **Real-time web search** via Brave Search API — every message runs through a small intent classifier; if fresh data is needed, top 5 results are injected into the agent's context and rendered as clickable source links under the reply
+- ✅ **Real-time web search** via Brave (intent-classified per message; sources rendered as clickable links under the reply)
 - ✅ **Privacy** — conversations scoped to `member_ids`; UI shows "Private to you" / "Shared with N" badges
 - ✅ Invite system: code + shareable link + mailto helper
 - ✅ Dark "liquid glass" UI **+ light theme** with persisted toggle in TopBar
-- ✅ Larger chat font sizes (16px body) to match modern AI chat platforms
-- ✅ Removed "Made with Emergent" badge (per user request)
-- ✅ Test suite: **76/76 pytest passing** across `test_soulprint.py`, `test_agents_catalogue.py`, `test_smart_routing.py`, `test_privacy_and_images.py`, `test_web_search.py`
+- ✅ 16px chat font (matches modern AI platforms)
+- ✅ Removed "Made with Emergent" badge per user request
 
 ## Roadmap
 - **P0 (next)** Tool-calling framework — agents invoke tools via OpenAI function

@@ -13,7 +13,7 @@ Architecture
 - Conversations: direct (1 user + 1 agent) OR group (many users + >=1 agent).
   In group mode agent responds only when @mentioned unless auto_respond is ON.
 """
-from fastapi import FastAPI, APIRouter, HTTPException, Request, Response, Depends
+from fastapi import FastAPI, APIRouter, HTTPException, Request, Response, Depends, UploadFile, File, Form
 from fastapi.responses import FileResponse
 from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
@@ -28,10 +28,19 @@ import os, logging, uuid, secrets, re, json, base64, bcrypt, jwt
 from emergentintegrations.llm.chat import LlmChat, UserMessage
 
 from brave_search import brave_web_search, format_results_for_prompt
+from assets import (
+    extract_text as extract_asset_text,
+    is_text_extractable,
+    trim as trim_text,
+    format_assets_for_prompt,
+    IMAGE_EXTS, PDF_EXTS, DOCX_EXTS, TEXT_LIKE_EXTS,
+)
 
 ROOT_DIR = Path(__file__).parent
 UPLOAD_DIR = ROOT_DIR / "uploads"
 UPLOAD_DIR.mkdir(exist_ok=True)
+ASSETS_DIR = ROOT_DIR / "uploads" / "assets"
+ASSETS_DIR.mkdir(parents=True, exist_ok=True)
 load_dotenv(ROOT_DIR / ".env")
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)s | %(message)s")
@@ -481,7 +490,8 @@ async def list_divisions(u: dict = Depends(get_current_user)):
 # ── Conversation + messaging ─────────────────────────────────────────────────
 conv_r = APIRouter(prefix="/api")
 
-def build_system_prompt(agent_id: str, team: dict, current_user_name: Optional[str] = None) -> str:
+def build_system_prompt(agent_id: str, team: dict, current_user_name: Optional[str] = None,
+                        org_assets: Optional[List[dict]] = None) -> str:
     meta = AGENTS[agent_id]
     sp = team.get("soulprint") or {}
     lines = [meta["system"]]
@@ -496,9 +506,27 @@ def build_system_prompt(agent_id: str, team: dict, current_user_name: Optional[s
             "\nThe team you're working with ({}) has this SoulPrint — honor it in every response:\n- ".format(team["name"])
             + "\n- ".join(sp_parts)
         )
+    if org_assets:
+        block = format_assets_for_prompt(org_assets)
+        if block:
+            lines.append("\n" + block)
     if current_user_name:
         lines.append(f"\nThe person you're talking to is {current_user_name}.")
     return "\n".join(lines)
+
+async def load_assets_brief(org_id: str, max_items: int = 30) -> List[dict]:
+    """Compact list of assets for prompt injection. Limits text excerpts."""
+    cur = db.assets.find({"org_id": org_id}).sort("uploaded_at", -1).limit(max_items)
+    out: List[dict] = []
+    async for a in cur:
+        excerpt = a.get("text_excerpt") or ""
+        out.append({
+            "original_name": a.get("original_name", ""),
+            "kind": a.get("kind", "file"),
+            "description": a.get("description", ""),
+            "preview": (excerpt[:240] + ("…" if len(excerpt) > 240 else "")) if excerpt else "",
+        })
+    return out
 
 @conv_r.post("/teams/{team_id}/conversations")
 async def create_conversation(team_id: str, body: ConversationCreateBody, u: dict = Depends(get_current_user)):
@@ -628,6 +656,35 @@ async def build_transcript_tail(conv_id: str, limit: int = 12) -> List[dict]:
 # ── Web-search intent classifier + injection ─────────────────────────────────
 WEB_SEARCH_AVAILABLE = bool(os.environ.get("BRAVE_API_KEY"))
 
+async def detect_image_intent(message: str) -> bool:
+    """Quick LLM classifier: does this message want an image generated?
+
+    Returns True for clear image asks ("design a logo", "create an Instagram
+    post", "give me a hero illustration", etc.). Returns False for everything
+    else, including text that merely *mentions* images.
+    """
+    if not message.strip():
+        return False
+    system = (
+        "You are a binary classifier. Decide whether the user's latest message is "
+        "asking the assistant to GENERATE an image. Lean YES for: 'create/make/design "
+        "an image / poster / graphic / logo / illustration / banner / thumbnail / "
+        "Instagram or LinkedIn or Twitter post / story / cover photo'. Lean NO for: "
+        "describing an existing image, asking for image-related advice, or mere mentions. "
+        "Reply with ONLY one word: yes or no."
+    )
+    try:
+        chat = LlmChat(
+            api_key=EMERGENT_LLM_KEY,
+            session_id=f"img-intent:{uuid.uuid4()}",
+            system_message=system,
+        ).with_model("openai", "gpt-4.1-mini")
+        raw = (await chat.send_message(UserMessage(text=message))) or ""
+    except Exception as exc:
+        logger.warning("image-intent error: %s", exc)
+        return False
+    return raw.strip().lower().startswith("y")
+
 async def detect_search_intent(message: str, transcript: str = "") -> dict:
     """Decide whether the agent should pull fresh web data before replying.
 
@@ -715,7 +772,15 @@ async def generate_agent_reply(conv: dict, team: dict, agent_id: str,
     # Web-search augmentation (parallel to building the system prompt)
     web_block, web_sources, _intent = await maybe_fetch_web_context(latest_user_text, transcript)
 
-    system = build_system_prompt(agent_id, team, current_user_name=latest_user_name)
+    # Pull a compact view of the org's asset library so the agent can cite it.
+    org_assets_brief: List[dict] = []
+    try:
+        org_assets_brief = await load_assets_brief(team["org_id"])
+    except Exception as exc:
+        logger.warning("asset brief load failed: %s", exc)
+
+    system = build_system_prompt(agent_id, team, current_user_name=latest_user_name,
+                                 org_assets=org_assets_brief)
     if conv["type"] == "group":
         system += (
             "\n\nYou are one of several participants in a GROUP conversation. "
@@ -919,6 +984,51 @@ async def send_message(conv_id: str, body: SendMessageBody, u: dict = Depends(ge
                 if new_agent_id not in responders:
                     responders.append(new_agent_id)
 
+    # ── Image-generation auto-routing ──────────────────────────────────────
+    # If the user clearly asked for an image, generate one with the first
+    # responder instead of (or in addition to) writing a text reply.
+    image_msg = None
+    if responders:
+        try:
+            wants_image = await detect_image_intent(body.text)
+        except Exception:
+            wants_image = False
+        if wants_image:
+            primary = responders[0]
+            sp = team.get("soulprint") or {}
+            sp_lines = [f"{k.capitalize()}: {sp[k]}" for k in ("mission", "tone", "audience", "values") if sp.get(k)]
+            sys_msg = (
+                f"You are {AGENTS[primary]['name']}, generating an image on behalf of the "
+                f"team \"{team['name']}\". Honor the team's voice and aesthetics.\n"
+                "If the user requests a social media graphic (Instagram post, story, "
+                "LinkedIn banner, Twitter/X header, Facebook cover, YouTube thumbnail), "
+                "match the appropriate aspect ratio (Instagram post 1:1; story / Reels / "
+                "TikTok 9:16; LinkedIn / Twitter post 1.91:1; YouTube thumbnail 16:9) and "
+                "render any text legibly in the safe area."
+                + (("\n" + "\n".join(sp_lines)) if sp_lines else "")
+            )
+            try:
+                fname, caption = await generate_image_via_nano_banana(body.text, sys_msg)
+                image_msg = {
+                    "id": str(uuid.uuid4()),
+                    "conversation_id": conv_id,
+                    "sender_type": "agent",
+                    "sender_id": primary,
+                    "sender_name": AGENTS[primary]["name"],
+                    "agent_id": primary,
+                    "text": (caption or "Here's a draft.").strip(),
+                    "media_type": "image",
+                    "media_filename": fname,
+                    "media_url": f"/api/files/{fname}",
+                    "timestamp": datetime.now(timezone.utc),
+                }
+                await db.messages.insert_one({**image_msg})
+                # Image alone is enough — skip the text reply for this turn
+                responders = []
+            except Exception as exc:
+                logger.warning("auto image generation failed: %s", exc)
+                # Fall through to a normal text reply
+
     agent_messages = []
     for aid in responders:
         reply, web_sources = await generate_agent_reply(conv, team, aid, body.text, u["name"])
@@ -940,6 +1050,8 @@ async def send_message(conv_id: str, body: SendMessageBody, u: dict = Depends(ge
     user_doc_resp = {k: v for k, v in user_doc.items() if k != "_id"}
     # Re-fetch fresh conv so frontend can mirror new agent_ids if expanded
     fresh_conv = await db.conversations.find_one({"_id": ObjectId(conv_id)})
+    if image_msg is not None:
+        agent_messages.insert(0, {k: v for k, v in image_msg.items() if k != "_id"})
     return {
         "user_message": user_doc_resp,
         "agent_messages": agent_messages,
@@ -985,6 +1097,49 @@ async def smart_start(team_id: str, body: SmartStartBody, u: dict = Depends(get_
         "timestamp": now,
     }
     await db.messages.insert_one({**user_doc})
+
+    # If the user clearly asked for an image, auto-generate it as the first reply.
+    try:
+        wants_image = await detect_image_intent(body.text)
+    except Exception:
+        wants_image = False
+    if wants_image:
+        sp = team.get("soulprint") or {}
+        sp_lines = [f"{k.capitalize()}: {sp[k]}" for k in ("mission", "tone", "audience", "values") if sp.get(k)]
+        sys_msg = (
+            f"You are {AGENTS[chosen]['name']}, generating an image on behalf of the "
+            f"team \"{team['name']}\". Honor the team's voice and aesthetics.\n"
+            "If the user requests a social media graphic (Instagram post, story, "
+            "LinkedIn banner, Twitter/X header, Facebook cover, YouTube thumbnail), "
+            "match the appropriate aspect ratio (Instagram post 1:1; story / Reels / "
+            "TikTok 9:16; LinkedIn / Twitter post 1.91:1; YouTube thumbnail 16:9) and "
+            "render any text legibly in the safe area."
+            + (("\n" + "\n".join(sp_lines)) if sp_lines else "")
+        )
+        try:
+            fname, caption = await generate_image_via_nano_banana(body.text, sys_msg)
+            agent_msg = {
+                "id": str(uuid.uuid4()),
+                "conversation_id": conv_id,
+                "sender_type": "agent",
+                "sender_id": chosen,
+                "sender_name": AGENTS[chosen]["name"],
+                "agent_id": chosen,
+                "text": (caption or "Here's a draft.").strip(),
+                "media_type": "image",
+                "media_filename": fname,
+                "media_url": f"/api/files/{fname}",
+                "timestamp": datetime.now(timezone.utc),
+            }
+            await db.messages.insert_one({**agent_msg})
+            return {
+                "conversation": serialize_conv(conv_doc),
+                "routed_agent_id": chosen,
+                "user_message": {k: v for k, v in user_doc.items() if k != "_id"},
+                "agent_message": {k: v for k, v in agent_msg.items() if k != "_id"},
+            }
+        except Exception as exc:
+            logger.warning("smart_start image generation failed, falling back to text: %s", exc)
 
     reply, web_sources = await generate_agent_reply(conv_doc, team, chosen, body.text, u["name"])
     agent_msg = {
@@ -1129,7 +1284,12 @@ async def generate_image(conv_id: str, body: GenerateImageBody, u: dict = Depend
             sp_lines.append(f"{k.capitalize()}: {sp[k]}")
     system_msg = (
         f"You are {AGENTS[agent_id]['name']}, generating an image on behalf of the "
-        f"team \"{team['name']}\". Honor the team's voice and aesthetics."
+        f"team \"{team['name']}\". Honor the team's voice and aesthetics.\n"
+        "If the user requests a social media graphic (Instagram post, story, LinkedIn banner, "
+        "Twitter/X header, Facebook cover, YouTube thumbnail, etc.), match the appropriate "
+        "aspect ratio and put text legibly in the safe area: Instagram post = 1:1 square, "
+        "Instagram story / Reels / TikTok = 9:16 vertical, LinkedIn / Twitter post = 1.91:1 "
+        "horizontal banner, YouTube thumbnail = 16:9. Always render text crisp and on-brand."
         + (("\n" + "\n".join(sp_lines)) if sp_lines else "")
     )
 
@@ -1175,10 +1335,167 @@ async def generate_image(conv_id: str, body: GenerateImageBody, u: dict = Depend
         "ok": True,
     }
 
+# ── Org assets — uploads, listing, deletion, serving ────────────────────────
+assets_r = APIRouter(prefix="/api")
+
+# Larger filename regex for asset files (uuid hex + arbitrary extension)
+ASSET_FILENAME_RE = re.compile(r"^[a-f0-9]{16,}\.[a-z0-9]{1,8}$", re.IGNORECASE)
+MAX_ASSET_SIZE = 10 * 1024 * 1024  # 10 MB
+ALLOWED_ASSET_EXTS = (
+    {"png", "jpg", "jpeg", "webp", "gif", "svg",
+     "pdf", "docx", "doc",
+     "txt", "md", "json", "csv", "log",
+     "mp3", "wav", "m4a",
+     "mp4", "mov", "webm",
+     "zip"}
+)
+
+def kind_for_ext(ext: str) -> str:
+    e = ext.lower()
+    if e in IMAGE_EXTS:    return "image"
+    if e in PDF_EXTS:      return "pdf"
+    if e in DOCX_EXTS:     return "doc"
+    if e in TEXT_LIKE_EXTS: return "text"
+    if e in {"mp3", "wav", "m4a"}:    return "audio"
+    if e in {"mp4", "mov", "webm"}:   return "video"
+    return "file"
+
+def serialize_asset(a: dict) -> dict:
+    return {
+        "id": str(a["_id"]),
+        "org_id": a["org_id"],
+        "original_name": a["original_name"],
+        "filename": a["filename"],
+        "kind": a.get("kind", "file"),
+        "ext": a.get("ext", ""),
+        "mime": a.get("mime", ""),
+        "size": a.get("size", 0),
+        "description": a.get("description", ""),
+        "uploaded_by": a.get("uploaded_by", ""),
+        "uploaded_by_name": a.get("uploaded_by_name", ""),
+        "uploaded_at": a["uploaded_at"].isoformat() if isinstance(a["uploaded_at"], datetime) else a["uploaded_at"],
+        "url": f"/api/files/assets/{a['filename']}",
+        "has_text": bool(a.get("text_excerpt")),
+    }
+
+@assets_r.post("/orgs/{org_id}/assets")
+async def upload_asset(
+    org_id: str,
+    description: str = Form(""),
+    file: UploadFile = File(...),
+    u: dict = Depends(get_current_user),
+):
+    await require_org_member(org_id, u["id"])
+    original_name = (file.filename or "file").strip().replace("/", "_").replace("\\", "_")
+    ext = original_name.rsplit(".", 1)[-1].lower() if "." in original_name else ""
+    if ext not in ALLOWED_ASSET_EXTS:
+        raise HTTPException(400, f"Unsupported file type: .{ext or '?'}")
+
+    # Stream up to MAX_ASSET_SIZE to disk
+    org_dir = ASSETS_DIR / org_id
+    org_dir.mkdir(parents=True, exist_ok=True)
+    filename = f"{uuid.uuid4().hex}.{ext}"
+    path = org_dir / filename
+    total = 0
+    with path.open("wb") as out:
+        while True:
+            chunk = await file.read(1024 * 1024)
+            if not chunk:
+                break
+            total += len(chunk)
+            if total > MAX_ASSET_SIZE:
+                out.close()
+                path.unlink(missing_ok=True)
+                raise HTTPException(413, "File too large (10 MB max)")
+            out.write(chunk)
+
+    text_excerpt = ""
+    if is_text_extractable(ext):
+        raw = extract_asset_text(path, ext)
+        text_excerpt = trim_text(raw, limit=4000)
+
+    doc = {
+        "org_id": org_id,
+        "filename": filename,
+        "original_name": original_name,
+        "ext": ext,
+        "mime": file.content_type or "application/octet-stream",
+        "size": total,
+        "kind": kind_for_ext(ext),
+        "description": description.strip()[:500],
+        "uploaded_by": u["id"],
+        "uploaded_by_name": u["name"],
+        "uploaded_at": datetime.now(timezone.utc),
+        "text_excerpt": text_excerpt,
+    }
+    res = await db.assets.insert_one(doc)
+    doc["_id"] = res.inserted_id
+    return serialize_asset(doc)
+
+@assets_r.get("/orgs/{org_id}/assets")
+async def list_assets(org_id: str, u: dict = Depends(get_current_user)):
+    await require_org_member(org_id, u["id"])
+    cur = db.assets.find({"org_id": org_id}).sort("uploaded_at", -1)
+    out = [serialize_asset(a) async for a in cur]
+    return out
+
+@assets_r.patch("/orgs/{org_id}/assets/{asset_id}")
+async def update_asset(
+    org_id: str, asset_id: str,
+    description: Optional[str] = Form(None),
+    u: dict = Depends(get_current_user),
+):
+    await require_org_member(org_id, u["id"])
+    try:
+        existing = await db.assets.find_one({"_id": ObjectId(asset_id), "org_id": org_id})
+    except Exception:
+        raise HTTPException(400, "Invalid asset id")
+    if not existing:
+        raise HTTPException(404, "Asset not found")
+    update = {}
+    if description is not None:
+        update["description"] = description.strip()[:500]
+    if update:
+        await db.assets.update_one({"_id": ObjectId(asset_id)}, {"$set": update})
+    fresh = await db.assets.find_one({"_id": ObjectId(asset_id)})
+    return serialize_asset(fresh)
+
+@assets_r.delete("/orgs/{org_id}/assets/{asset_id}")
+async def delete_asset(org_id: str, asset_id: str, u: dict = Depends(get_current_user)):
+    ctx = await require_org_member(org_id, u["id"])
+    try:
+        existing = await db.assets.find_one({"_id": ObjectId(asset_id), "org_id": org_id})
+    except Exception:
+        raise HTTPException(400, "Invalid asset id")
+    if not existing:
+        raise HTTPException(404, "Asset not found")
+    if existing["uploaded_by"] != u["id"] and ctx["member"]["role"] not in ("owner", "admin"):
+        raise HTTPException(403, "Only the uploader or org admins can delete")
+    path = ASSETS_DIR / org_id / existing["filename"]
+    path.unlink(missing_ok=True)
+    await db.assets.delete_one({"_id": ObjectId(asset_id)})
+    return {"ok": True}
+
 # ── Auth-checked file streaming for generated media ──────────────────────────
 files_r = APIRouter(prefix="/api/files")
 
 ALLOWED_FILENAME_RE = re.compile(r"^[a-f0-9]{16,}\.(png|jpg|jpeg|webp|gif|pdf)$", re.IGNORECASE)
+
+@files_r.get("/assets/{filename}")
+async def serve_org_asset(filename: str, u: dict = Depends(get_current_user)):
+    if not ASSET_FILENAME_RE.match(filename):
+        raise HTTPException(400, "Invalid filename")
+    asset = await db.assets.find_one({"filename": filename})
+    if not asset:
+        raise HTTPException(404, "Asset not found")
+    # Caller must be a member of the asset's org
+    m = await db.org_members.find_one({"org_id": asset["org_id"], "user_id": u["id"]})
+    if not m:
+        raise HTTPException(403, "No access to this asset")
+    path = ASSETS_DIR / asset["org_id"] / asset["filename"]
+    if not path.is_file():
+        raise HTTPException(404, "File missing on disk")
+    return FileResponse(path, filename=asset.get("original_name") or filename, media_type=asset.get("mime"))
 
 @files_r.get("/{filename}")
 async def serve_file(filename: str, u: dict = Depends(get_current_user)):
@@ -1209,6 +1526,7 @@ app.include_router(org_r)
 app.include_router(invite_r)
 app.include_router(team_r)
 app.include_router(conv_r)
+app.include_router(assets_r)
 app.include_router(files_r)
 
 app.add_middleware(
