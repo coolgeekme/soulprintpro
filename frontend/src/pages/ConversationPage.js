@@ -421,8 +421,17 @@ export default function ConversationPage() {
         <span className="text-white/90 truncate">{conv.title}</span>
       </TopBar>
 
-      {/* Meta strip */}
-      <div className="border-b border-white/5 bg-black/20">
+      {/* Meta strip — sticky below the TopBar so "Switch agent" / "Manage
+          agents" / privacy badges stay one click away no matter how far the
+          user has scrolled. `top` tracks the TopBar's rendered height including
+          the PWA notch inset; `z-30` layers below the TopBar's z-40. */}
+      <div
+        className="sticky z-30 border-b border-white/5 backdrop-blur-xl"
+        style={{
+          top: "calc(env(safe-area-inset-top) + 61px)",
+          background: "color-mix(in srgb, var(--bg) 82%, transparent)",
+        }}
+      >
         <div className="max-w-5xl mx-auto px-4 sm:px-6 py-3 sm:py-4 flex items-center gap-3 flex-wrap">
           <span className="sp-chip">{conv.type}</span>
           {(() => {

@@ -32,16 +32,21 @@ export default function TopBar({ children, right = null }) {
   };
   return (
     <header
-      className="relative z-10 border-b"
+      className="sticky top-0 z-40 border-b"
       style={{
         borderColor: "var(--border-soft)",
         // Pad for the iPhone notification bar when installed as a PWA. In a
         // regular browser window env(safe-area-inset-top) resolves to 0, so
         // this has no effect outside standalone mode.
         paddingTop: "env(safe-area-inset-top)",
+        // Translucent background with backdrop-blur so messages scrolling
+        // under the sticky bar stay readable without being distracting.
+        background: "color-mix(in srgb, var(--bg) 88%, transparent)",
+        backdropFilter: "blur(24px) saturate(140%)",
+        WebkitBackdropFilter: "blur(24px) saturate(140%)",
       }}
     >
-      <div className="bg-black/0 backdrop-blur-xl">
+      <div>
         <div className="max-w-7xl mx-auto flex items-center justify-between px-4 sm:px-6 py-3 gap-2 sm:gap-4">
           <div className="flex items-center gap-3 min-w-0">
             <Link to="/app" className="flex items-center gap-2 shrink-0" data-testid="topbar-brand">
