@@ -1450,9 +1450,34 @@ async def send_message(conv_id: str, body: SendMessageBody, u: dict = Depends(ge
     else:
         mentioned = detect_mentions(body.text, conv["agent_ids"])
         if mentioned:
+            # Explicit @mentions ALWAYS win — the user told us who to pull in
             responders = mentioned
         elif conv.get("auto_respond"):
-            responders = list(conv["agent_ids"])
+            # Auto-respond: pick the SINGLE best specialist for this message
+            # rather than spamming a reply from every agent in the room.
+            # This prevents the "social-media strategist" from answering a
+            # PDF-generation request just because it's in the conversation.
+            try:
+                best = await route_best_agent(
+                    team, body.text,
+                    exclude_ids=None,
+                    transcript="",
+                )
+            except Exception as exc:
+                logger.warning("auto-respond router error: %s", exc)
+                best = None
+            if best and best in conv.get("agent_ids", []):
+                responders = [best]
+            elif best and best in AGENTS:
+                # Router picked an agent that's not in this room — only honour
+                # it if smart-expand is on; otherwise fall back to the first
+                # in-room agent so somebody still answers.
+                if conv.get("smart_expand"):
+                    responders = [best]  # smart_expand block below adds them
+                else:
+                    responders = (conv.get("agent_ids") or [])[:1]
+            else:
+                responders = (conv.get("agent_ids") or [])[:1]
         else:
             responders = []
 
@@ -1793,19 +1818,28 @@ class ConvAgentBody(BaseModel):
 
 @conv_r.post("/conversations/{conv_id}/agents")
 async def add_conv_agent(conv_id: str, body: ConvAgentBody, u: dict = Depends(get_current_user)):
-    """Add a specialist to a group conversation. Posts a small system note so
-    everyone knows who just joined."""
+    """Add a specialist to a conversation. For DIRECT chats this turns the
+    chat into a group chat so multiple specialists can collaborate. Posts a
+    small system note so everyone can see who joined."""
     conv = await load_conv_or_403(conv_id, u["id"])
-    if conv["type"] != "group":
-        raise HTTPException(400, "Only group conversations can have multiple agents")
     if not is_agent(body.agent_id):
         raise HTTPException(400, f"Unknown agent: {body.agent_id}")
     if body.agent_id in (conv.get("agent_ids") or []):
         raise HTTPException(400, "That agent is already in this conversation")
-    await db.conversations.update_one(
-        {"_id": ObjectId(conv_id)},
-        {"$addToSet": {"agent_ids": body.agent_id}},
-    )
+    update_set: dict = {}
+    if conv["type"] == "direct":
+        update_set["type"] = "group"
+        update_set["auto_respond"] = True
+    if update_set:
+        await db.conversations.update_one(
+            {"_id": ObjectId(conv_id)},
+            {"$set": update_set, "$addToSet": {"agent_ids": body.agent_id}},
+        )
+    else:
+        await db.conversations.update_one(
+            {"_id": ObjectId(conv_id)},
+            {"$addToSet": {"agent_ids": body.agent_id}},
+        )
     note = {
         "id": str(uuid.uuid4()),
         "conversation_id": conv_id,
@@ -1827,12 +1861,10 @@ async def add_conv_agent(conv_id: str, body: ConvAgentBody, u: dict = Depends(ge
 @conv_r.delete("/conversations/{conv_id}/agents/{agent_id}")
 async def remove_conv_agent(conv_id: str, agent_id: str, u: dict = Depends(get_current_user)):
     conv = await load_conv_or_403(conv_id, u["id"])
-    if conv["type"] != "group":
-        raise HTTPException(400, "Only group conversations support removing agents")
     if agent_id not in (conv.get("agent_ids") or []):
         raise HTTPException(404, "That agent isn't in this conversation")
     if len(conv.get("agent_ids") or []) <= 1:
-        raise HTTPException(400, "A group must keep at least one agent — add another before removing this one")
+        raise HTTPException(400, "A conversation must keep at least one agent — add another before removing this one")
     await db.conversations.update_one(
         {"_id": ObjectId(conv_id)},
         {"$pull": {"agent_ids": agent_id}},

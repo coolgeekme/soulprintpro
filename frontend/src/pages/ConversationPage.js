@@ -4,7 +4,7 @@ import api, { BACKEND_URL } from "../lib/api";
 import TopBar from "../components/TopBar";
 import { toast } from "sonner";
 import { useAuth } from "../context/AuthContext";
-import { Send, Trash2, AtSign, Users, Repeat, Search, X, Lock, Film, Globe, ArrowUp, ArrowDown, UserPlus, Paperclip, FileText, File as FileIcon } from "lucide-react";
+import { Send, Trash2, AtSign, Users, Repeat, Search, X, Lock, Film, Globe, ArrowUp, ArrowDown, UserPlus, Paperclip, FileText, File as FileIcon, Download } from "lucide-react";
 import LinkPreviewCard from "../components/LinkPreviewCard";
 
 const formatTime = (ts) => {
@@ -428,16 +428,16 @@ export default function ConversationPage() {
               <Repeat className="w-3 h-3" /> Switch agent
             </button>
           )}
-          {isGroup && (
-            <button
-              onClick={() => setShowAgents(true)}
-              className="sp-chip hover:!bg-white/15 hover:text-white inline-flex items-center gap-1"
-              data-testid="manage-agents-btn"
-              title="Add or remove specialists in this room"
-            >
-              <UserPlus className="w-3 h-3" /> Manage agents
-            </button>
-          )}
+          <button
+            onClick={() => setShowAgents(true)}
+            className="sp-chip hover:!bg-white/15 hover:text-white inline-flex items-center gap-1"
+            data-testid="manage-agents-btn"
+            title={isGroup
+              ? "Add or remove specialists in this room"
+              : "Add another specialist (turns this into a group chat)"}
+          >
+            <UserPlus className="w-3 h-3" /> {isGroup ? "Manage agents" : "Add agent"}
+          </button>
         </div>
       </div>
 
@@ -510,51 +510,88 @@ export default function ConversationPage() {
                             ? "rounded-xl overflow-hidden border border-white/10"
                             : "grid grid-cols-2 sm:grid-cols-3 gap-2"}>
                             {imgs.map((a, i) => (
-                              <a
-                                key={`${m.id}-img-${i}`}
-                                href={resolveUrl(a)}
-                                target="_blank" rel="noreferrer"
-                                className={imgs.length === 1
-                                  ? "block hover:border-white/30 transition"
-                                  : "block rounded-xl overflow-hidden border border-white/10 hover:border-white/30 transition aspect-square bg-black/30"}
-                                data-testid={`attachment-image-${m.id}-${i}`}
-                              >
-                                <img
-                                  src={resolveUrl(a)}
-                                  alt={a.original_name || "attachment"}
-                                  referrerPolicy="no-referrer"
-                                  loading="lazy"
+                              <div key={`${m.id}-img-${i}`} className="relative group/media">
+                                <a
+                                  href={resolveUrl(a)}
+                                  target="_blank" rel="noreferrer"
                                   className={imgs.length === 1
-                                    ? "block w-full max-h-[480px] object-contain bg-black/30"
-                                    : "w-full h-full object-cover"}
-                                />
-                              </a>
+                                    ? "block hover:border-white/30 transition"
+                                    : "block rounded-xl overflow-hidden border border-white/10 hover:border-white/30 transition aspect-square bg-black/30"}
+                                  data-testid={`attachment-image-${m.id}-${i}`}
+                                >
+                                  <img
+                                    src={resolveUrl(a)}
+                                    alt={a.original_name || "attachment"}
+                                    referrerPolicy="no-referrer"
+                                    loading="lazy"
+                                    className={imgs.length === 1
+                                      ? "block w-full max-h-[480px] object-contain bg-black/30"
+                                      : "w-full h-full object-cover"}
+                                  />
+                                </a>
+                                {!a.url?.startsWith("blob:") && (
+                                  <a
+                                    href={resolveUrl(a)}
+                                    download={a.original_name || ""}
+                                    className="absolute top-2 right-2 sp-glass-strong rounded-full p-2 opacity-0 group-hover/media:opacity-100 hover:scale-105 transition shadow-lg"
+                                    data-testid={`download-attachment-${m.id}-${i}`}
+                                    title="Download"
+                                  >
+                                    <Download className="w-3.5 h-3.5" />
+                                  </a>
+                                )}
+                              </div>
                             ))}
                           </div>
                         )}
                         {others.map((a, i) => {
                           if (a.kind === "video") return (
-                            <video
-                              key={`${m.id}-v-${i}`}
-                              src={resolveUrl(a)}
-                              controls preload="metadata"
-                              className="block rounded-xl overflow-hidden border border-white/10 w-full max-h-[480px] bg-black/30"
-                              data-testid={`attachment-video-${m.id}-${i}`}
-                            />
+                            <div key={`${m.id}-v-${i}`} className="relative group/media">
+                              <video
+                                src={resolveUrl(a)}
+                                controls preload="metadata"
+                                className="block rounded-xl overflow-hidden border border-white/10 w-full max-h-[480px] bg-black/30"
+                                data-testid={`attachment-video-${m.id}-${i}`}
+                              />
+                              {!a.url?.startsWith("blob:") && (
+                                <a
+                                  href={resolveUrl(a)}
+                                  download={a.original_name || ""}
+                                  className="absolute top-2 right-2 sp-glass-strong rounded-full p-2 opacity-0 group-hover/media:opacity-100 hover:scale-105 transition shadow-lg"
+                                  data-testid={`download-attachment-video-${m.id}-${i}`}
+                                  title="Download"
+                                >
+                                  <Download className="w-3.5 h-3.5" />
+                                </a>
+                              )}
+                            </div>
                           );
                           if (a.kind === "audio") return (
-                            <audio
-                              key={`${m.id}-a-${i}`}
-                              src={resolveUrl(a)}
-                              controls preload="metadata"
-                              className="w-full"
-                              data-testid={`attachment-audio-${m.id}-${i}`}
-                            />
+                            <div key={`${m.id}-a-${i}`} className="flex items-center gap-2">
+                              <audio
+                                src={resolveUrl(a)}
+                                controls preload="metadata"
+                                className="flex-1"
+                                data-testid={`attachment-audio-${m.id}-${i}`}
+                              />
+                              {!a.url?.startsWith("blob:") && (
+                                <a
+                                  href={resolveUrl(a)}
+                                  download={a.original_name || ""}
+                                  className="sp-btn sp-btn-ghost !p-2"
+                                  data-testid={`download-attachment-audio-${m.id}-${i}`}
+                                  title="Download"
+                                >
+                                  <Download className="w-3.5 h-3.5" />
+                                </a>
+                              )}
+                            </div>
                           );
                           return (
                             <a
                               key={`${m.id}-f-${i}`}
                               href={resolveUrl(a)}
+                              download={a.original_name || ""}
                               target="_blank" rel="noreferrer"
                               className="flex items-center gap-3 rounded-xl border border-white/10 hover:border-white/30 px-3 py-2.5 transition"
                               data-testid={`attachment-file-${m.id}-${i}`}
@@ -572,6 +609,7 @@ export default function ConversationPage() {
                                   {m.attachment_pending ? " · uploading…" : ""}
                                 </div>
                               </div>
+                              <Download className="w-4 h-4 opacity-50 shrink-0" />
                             </a>
                           );
                         })}
@@ -594,20 +632,30 @@ export default function ConversationPage() {
                     </div>
                   )}
                   {m.media_type === "image" && m.media_url && (
-                    <a
-                      href={m.media_url.startsWith("http") ? m.media_url : `${BACKEND_URL}${m.media_url}`}
-                      target="_blank" rel="noreferrer"
-                      className="block mt-3 rounded-xl overflow-hidden border border-white/10 hover:border-white/30 transition"
-                      data-testid={`message-image-${m.id}`}
-                    >
-                      <img
-                        src={m.media_url.startsWith("http") ? m.media_url : `${BACKEND_URL}${m.media_url}`}
-                        alt="Generated"
-                        referrerPolicy="no-referrer"
-                        className="block w-full max-h-[520px] object-contain bg-black/30"
-                        loading="lazy"
-                      />
-                    </a>
+                    <div className="mt-3 relative group/media" data-testid={`message-image-${m.id}`}>
+                      <a
+                        href={m.media_url.startsWith("http") ? m.media_url : `${BACKEND_URL}${m.media_url}`}
+                        target="_blank" rel="noreferrer"
+                        className="block rounded-xl overflow-hidden border border-white/10 hover:border-white/30 transition"
+                      >
+                        <img
+                          src={m.media_url.startsWith("http") ? m.media_url : `${BACKEND_URL}${m.media_url}`}
+                          alt="Generated"
+                          referrerPolicy="no-referrer"
+                          className="block w-full max-h-[520px] object-contain bg-black/30"
+                          loading="lazy"
+                        />
+                      </a>
+                      <a
+                        href={m.media_url.startsWith("http") ? m.media_url : `${BACKEND_URL}${m.media_url}`}
+                        download
+                        className="absolute top-2 right-2 sp-glass-strong rounded-full p-2 opacity-0 group-hover/media:opacity-100 hover:scale-105 transition shadow-lg"
+                        data-testid={`download-image-${m.id}`}
+                        title="Download image"
+                      >
+                        <Download className="w-3.5 h-3.5" />
+                      </a>
+                    </div>
                   )}
                   {m.media_type === "video" && m.media_status === "pending" && (
                     <div className="mt-3 rounded-xl overflow-hidden border border-white/10 bg-black/40 aspect-video flex flex-col items-center justify-center gap-2"
@@ -617,13 +665,24 @@ export default function ConversationPage() {
                     </div>
                   )}
                   {m.media_type === "video" && m.media_status === "ready" && m.media_url && (
-                    <video
-                      src={m.media_url}
-                      controls
-                      preload="metadata"
-                      className="block mt-3 rounded-xl overflow-hidden border border-white/10 hover:border-white/30 transition w-full max-h-[480px] bg-black/30"
-                      data-testid={`message-video-${m.id}`}
-                    />
+                    <div className="mt-3 relative group/media" data-testid={`message-video-${m.id}`}>
+                      <video
+                        src={m.media_url}
+                        controls
+                        preload="metadata"
+                        className="block rounded-xl overflow-hidden border border-white/10 w-full max-h-[480px] bg-black/30"
+                      />
+                      <a
+                        href={m.media_url}
+                        download
+                        target="_blank" rel="noreferrer"
+                        className="absolute top-2 right-2 sp-glass-strong rounded-full p-2 opacity-0 group-hover/media:opacity-100 hover:scale-105 transition shadow-lg"
+                        data-testid={`download-video-${m.id}`}
+                        title="Download video"
+                      >
+                        <Download className="w-3.5 h-3.5" />
+                      </a>
+                    </div>
                   )}
                   {m.media_type === "video" && m.media_status === "failed" && (
                     <div className="mt-3 rounded-xl border border-red-500/30 bg-red-500/10 px-3 py-2 text-xs text-red-200/90"
