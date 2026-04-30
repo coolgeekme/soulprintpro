@@ -4,7 +4,7 @@ import api, { BACKEND_URL } from "../lib/api";
 import TopBar from "../components/TopBar";
 import { toast } from "sonner";
 import { useAuth } from "../context/AuthContext";
-import { Send, Trash2, AtSign, Users, Repeat, Search, X, Lock, Film, Globe, ArrowUp, ArrowDown, UserPlus, Paperclip, FileText, File as FileIcon, Download } from "lucide-react";
+import { Send, Trash2, AtSign, Users, Repeat, Search, X, Lock, Film, Globe, ArrowUp, ArrowDown, UserPlus, Paperclip, FileText, File as FileIcon, Download, CornerDownRight } from "lucide-react";
 import LinkPreviewCard from "../components/LinkPreviewCard";
 
 const formatTime = (ts) => {
@@ -269,6 +269,24 @@ export default function ConversationPage() {
     }
   };
 
+  // ── Fork-to-direct-chat ──────────────────────────────────────────────────
+  // Click the "↳ Continue privately" button on any agent bubble to spin up a
+  // new direct chat with just that agent, seeded with their reply. Lives in
+  // the org's auto-managed "Direct chats" team and shows up in the sidebar
+  // like any other thread.
+  const [forkingId, setForkingId] = useState("");
+  const forkFromMessage = async (m) => {
+    if (forkingId) return;
+    setForkingId(m.id);
+    try {
+      const { data } = await api.post(`/conversations/${convId}/fork`, { message_id: m.id });
+      toast.success(`Continuing privately with ${data.seed_message.sender_name}`);
+      nav(`/app/team/${data.team.id}/c/${data.conversation.id}`);
+    } catch (err) {
+      toast.error(err?.response?.data?.detail || "Couldn't fork conversation");
+    } finally { setForkingId(""); }
+  };
+
   // Switch-agent dialog (direct chats only)
   const [showSwitch, setShowSwitch] = useState(false);
   const [switchQ, setSwitchQ] = useState("");
@@ -467,9 +485,14 @@ export default function ConversationPage() {
             const mine = m.sender_type === "user" && m.sender_id === user.id;
             const isAgent = m.sender_type === "agent";
             const a = isAgent ? agentMap[m.agent_id] : null;
+            // Only offer "Continue privately" on agent bubbles in non-direct
+            // chats. We also need the agent to still exist (a?.id) and a
+            // persisted message (no `tmp-` optimistic id).
+            const canFork = isAgent && a && conv?.type !== "direct" && !String(m.id).startsWith("tmp-");
             return (
-              <div key={m.id} className={`flex ${mine ? "justify-end" : "justify-start"} sp-fade-up`}>
-                <div className={`max-w-[92%] sm:max-w-[88%] rounded-2xl px-4 sm:px-5 py-3 sm:py-3.5 ${mine ? "sp-bubble-user" : "sp-bubble-agent"}`}>
+              <div key={m.id} className={`flex ${mine ? "justify-end" : "justify-start"} sp-fade-up group/msg`}>
+                <div className="relative max-w-[92%] sm:max-w-[88%]">
+                <div className={`rounded-2xl px-4 sm:px-5 py-3 sm:py-3.5 ${mine ? "sp-bubble-user" : "sp-bubble-agent"}`}>
                   <div className="flex items-center gap-2 mb-1.5">
                     {isAgent && a && <span className="sp-dot" style={{ background: a.accent }} />}
                     <span className="text-sm font-medium">
@@ -690,6 +713,22 @@ export default function ConversationPage() {
                       Video generation failed. Try a different prompt or run it again.
                     </div>
                   )}
+                </div>
+                {canFork && (
+                  <button
+                    type="button"
+                    onClick={() => forkFromMessage(m)}
+                    disabled={forkingId === m.id}
+                    title={`Continue privately with ${a.name}`}
+                    aria-label={`Continue privately with ${a.name}`}
+                    data-testid={`fork-msg-${m.id}`}
+                    className="absolute -bottom-2 right-3 inline-flex items-center gap-1 sp-glass-strong rounded-full px-2.5 py-1 text-[11px] font-medium opacity-0 group-hover/msg:opacity-100 focus:opacity-100 transition shadow-lg hover:scale-105 disabled:opacity-60"
+                    style={{ color: "var(--fg)" }}
+                  >
+                    <CornerDownRight className="w-3 h-3" />
+                    {forkingId === m.id ? "Forking…" : "Continue privately"}
+                  </button>
+                )}
                 </div>
               </div>
             );

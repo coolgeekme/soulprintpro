@@ -279,6 +279,9 @@ class GenerateVideoBody(BaseModel):
     agent_id: Optional[str] = None
     aspect_ratio: Optional[str] = "16:9"  # 16:9, 9:16, Auto
 
+class ForkConvBody(BaseModel):
+    message_id: str  # id of an agent message in the source conversation
+
 # ── Access control helpers ───────────────────────────────────────────────────
 async def require_org_member(org_id: str, user_id: str) -> dict:
     try:
@@ -325,6 +328,8 @@ def serialize_team(team: dict) -> dict:
         "name": team["name"],
         "description": team.get("description", ""),
         "soulprint": team.get("soulprint", {}),
+        "is_general": bool(team.get("is_general")),
+        "is_direct": bool(team.get("is_direct")),
         "created_at": team["created_at"].isoformat() if isinstance(team["created_at"], datetime) else team["created_at"],
     }
 
@@ -1001,6 +1006,8 @@ async def delete_team(team_id: str, u: dict = Depends(get_current_user)):
         raise HTTPException(403, "Only owners/admins can delete a team")
     if ctx["team"].get("is_general"):
         raise HTTPException(400, "The General team cannot be deleted")
+    if ctx["team"].get("is_direct"):
+        raise HTTPException(400, "The Direct chats team cannot be deleted")
     convs = await db.conversations.find({"team_id": team_id}, {"_id": 1}).to_list(2000)
     conv_ids = [str(c["_id"]) for c in convs]
     if conv_ids:
@@ -1206,6 +1213,119 @@ async def delete_conv(conv_id: str, u: dict = Depends(get_current_user)):
     await db.messages.delete_many({"conversation_id": conv_id})
     await db.conversations.delete_one({"_id": ObjectId(conv_id)})
     return {"ok": True}
+
+
+async def _get_or_create_direct_team(org_id: str, user_id: str) -> dict:
+    """Lazily create the per-org "Direct chats" team. Idempotent — every fork
+    routes here, but the team is created at most once per org. Inherits the
+    org's Soul into its soulprint snapshot so direct-chat agents stay on-brand.
+    """
+    existing = await db.teams.find_one({"org_id": org_id, "is_direct": True})
+    if existing:
+        return existing
+    org = await db.organizations.find_one({"_id": ObjectId(org_id)})
+    soul = (org or {}).get("soul") or {}
+    now = datetime.now(timezone.utc)
+    doc = {
+        "org_id": org_id,
+        "name": "Direct chats",
+        "description": "Private one-on-one threads forked from group conversations.",
+        "soulprint": {
+            "mission":   soul.get("mission", ""),
+            "tone":      soul.get("tone", ""),
+            "audience":  soul.get("audience", ""),
+            "values":    soul.get("values", ""),
+            "north_star": soul.get("north_star", ""),
+        },
+        "created_by": user_id,
+        "created_at": now,
+        "is_direct": True,
+    }
+    res = await db.teams.insert_one(doc)
+    doc["_id"] = res.inserted_id
+    return doc
+
+
+@conv_r.post("/conversations/{conv_id}/fork")
+async def fork_conversation(
+    conv_id: str, body: ForkConvBody, u: dict = Depends(get_current_user),
+):
+    """Fork a single agent reply into a brand-new direct chat.
+
+    The new conversation lives in the org's auto-managed "Direct chats" team
+    and is seeded with a fresh copy of that agent message as its first turn.
+    Smart-expand is on so the system can pull in additional specialists when
+    the conversation's topic shifts later.
+    """
+    src = await load_conv_or_403(conv_id, u["id"])
+    src_team = await db.teams.find_one({"_id": ObjectId(src["team_id"])})
+    if not src_team:
+        raise HTTPException(404, "Source team not found")
+
+    msg = await db.messages.find_one({"id": body.message_id, "conversation_id": conv_id})
+    if not msg:
+        raise HTTPException(404, "Message not found in this conversation")
+    if msg.get("sender_type") != "agent":
+        raise HTTPException(400, "Only agent replies can be forked into a direct chat")
+    agent_id = msg.get("agent_id") or ""
+    if agent_id not in AGENTS:
+        raise HTTPException(400, "Source agent is no longer available")
+
+    direct_team = await _get_or_create_direct_team(src_team["org_id"], u["id"])
+    direct_team_id = str(direct_team["_id"])
+    now = datetime.now(timezone.utc)
+
+    new_conv = {
+        "team_id": direct_team_id,
+        "title": f"Chat with {AGENTS[agent_id]['name']}",
+        "type": "direct",
+        "agent_ids": [agent_id],
+        "member_ids": [u["id"]],
+        # Direct chats always auto-respond; smart_expand lets the system pull
+        # in more specialists if the topic shifts beyond this agent's lane.
+        "auto_respond": True,
+        "smart_expand": True,
+        "created_by": u["id"],
+        "created_at": now,
+        "forked_from": {
+            "conversation_id": conv_id,
+            "message_id": body.message_id,
+        },
+    }
+    res = await db.conversations.insert_one(new_conv)
+    new_conv["_id"] = res.inserted_id
+    new_conv_id = str(res.inserted_id)
+
+    # Seed the new conv with a fresh copy of the agent's reply. We carry
+    # over the substantive fields (text, media, web sources, attachments)
+    # but assign a new id and conversation_id so this stands on its own.
+    seed = {
+        "id": str(uuid.uuid4()),
+        "conversation_id": new_conv_id,
+        "sender_type": "agent",
+        "sender_id": agent_id,
+        "sender_name": AGENTS[agent_id]["name"],
+        "agent_id": agent_id,
+        "text": msg.get("text", ""),
+        "timestamp": now,
+        "is_seed": True,
+    }
+    # Preserve any inline media so the user sees the same artefact in the
+    # forked thread (image/video/web sources/attachments).
+    for k in ("media_type", "media_filename", "media_url", "media_caption",
+              "video_status", "video_aspect_ratio", "video_provider_task_id",
+              "web_sources", "attachments"):
+        if msg.get(k) is not None:
+            seed[k] = msg[k]
+    await db.messages.insert_one(seed)
+    seed.pop("_id", None)
+
+    return {
+        "conversation": serialize_conv(new_conv),
+        "team": serialize_team(direct_team),
+        "seed_message": seed,
+    }
+
 
 @conv_r.get("/conversations/{conv_id}/messages")
 async def get_messages(conv_id: str, u: dict = Depends(get_current_user)):
