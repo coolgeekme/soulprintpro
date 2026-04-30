@@ -4,7 +4,7 @@ import api, { BACKEND_URL } from "../lib/api";
 import TopBar from "../components/TopBar";
 import { toast } from "sonner";
 import { useAuth } from "../context/AuthContext";
-import { Send, Trash2, AtSign, Users, Repeat, Search, X, Lock, Image as ImageIcon, Film, Globe, ArrowUp, ArrowDown } from "lucide-react";
+import { Send, Trash2, AtSign, Users, Repeat, Search, X, Lock, Film, Globe, ArrowUp, ArrowDown } from "lucide-react";
 import LinkPreviewCard from "../components/LinkPreviewCard";
 
 const formatTime = (ts) => {
@@ -32,8 +32,8 @@ export default function ConversationPage() {
     const el = scrollerRef.current;
     if (!el) return;
     setScrollState({
-      canUp: el.scrollTop > 200,
-      canDown: el.scrollTop + el.clientHeight < el.scrollHeight - 200,
+      canUp: el.scrollTop > 60,
+      canDown: el.scrollTop + el.clientHeight < el.scrollHeight - 60,
     });
   };
   const scrollTo = (where) => {
@@ -75,8 +75,9 @@ export default function ConversationPage() {
     onScrollerScroll();
   }, [messages, sending]);
 
-  const [imageMode, setImageMode] = useState(false);
-  const [videoMode, setVideoMode] = useState(false);
+  // Pure "just type" composer: no manual image/video toggles. Backend
+  // auto-detects intent (keyword fast-path + LLM fallback) and either
+  // renders an image, kicks off a video, or replies with text.
 
   // Poll the message list every 5s while any video is still rendering.
   // Kie.ai usually finishes within 60-180s so we cap at ~5 min of polling.
@@ -111,46 +112,23 @@ export default function ConversationPage() {
       sender_type: "user",
       sender_id: user.id,
       sender_name: user.name,
-      text: videoMode ? `🎬 ${text}` : (imageMode ? `🎨 ${text}` : text),
+      text,
       timestamp: new Date().toISOString(),
     };
     setMessages((prev) => [...prev, optimistic]);
     const toSend = text;
-    const wasImage = imageMode;
-    const wasVideo = videoMode;
     setText("");
-    setImageMode(false);
-    setVideoMode(false);
     try {
-      if (wasVideo) {
-        const { data } = await api.post(`/conversations/${convId}/generate-video`, {
-          prompt: toSend, aspect_ratio: "16:9",
-        });
-        setMessages((prev) => {
-          const withoutOptim = prev.filter(m => m.id !== optimistic.id);
-          return [...withoutOptim, data.user_message, data.agent_message];
-        });
-      } else if (wasImage) {
-        const { data } = await api.post(`/conversations/${convId}/generate-image`, { prompt: toSend });
-        setMessages((prev) => {
-          const withoutOptim = prev.filter(m => m.id !== optimistic.id);
-          return [...withoutOptim, data.user_message, data.agent_message];
-        });
-        if (!data.ok) toast.error("Image generation failed");
-      } else {
-        const { data } = await api.post(`/conversations/${convId}/messages`, { text: toSend });
-        setMessages((prev) => {
-          const withoutOptim = prev.filter(m => m.id !== optimistic.id);
-          return [...withoutOptim, data.user_message, ...data.agent_messages];
-        });
-        if (data.conversation) setConv(data.conversation);
-      }
+      const { data } = await api.post(`/conversations/${convId}/messages`, { text: toSend });
+      setMessages((prev) => {
+        const withoutOptim = prev.filter(m => m.id !== optimistic.id);
+        return [...withoutOptim, data.user_message, ...data.agent_messages];
+      });
+      if (data.conversation) setConv(data.conversation);
     } catch (err) {
-      toast.error(wasVideo ? "Video request failed" : (wasImage ? "Image request failed" : "Message failed"));
+      toast.error("Message failed");
       setMessages((prev) => prev.filter(m => m.id !== optimistic.id));
       setText(toSend);
-      setImageMode(wasImage);
-      setVideoMode(wasVideo);
     } finally { setSending(false); }
   };
 
@@ -297,29 +275,6 @@ export default function ConversationPage() {
 
       {/* Messages */}
       <main ref={scrollerRef} onScroll={onScrollerScroll} className="flex-1 overflow-y-auto relative">
-        {/* Floating scroll-to-top / scroll-to-bottom arrows */}
-        {scrollState.canUp && (
-          <button
-            type="button"
-            onClick={() => scrollTo("top")}
-            className="sp-glass-strong rounded-full p-2.5 fixed sm:absolute right-4 top-4 z-20 hover:scale-105 transition shadow-xl"
-            data-testid="scroll-top-btn"
-            title="Jump to top"
-          >
-            <ArrowUp className="w-4 h-4" />
-          </button>
-        )}
-        {scrollState.canDown && (
-          <button
-            type="button"
-            onClick={() => scrollTo("bottom")}
-            className="sp-glass-strong rounded-full p-2.5 fixed sm:absolute right-4 bottom-28 z-20 hover:scale-105 transition shadow-xl"
-            data-testid="scroll-bottom-btn"
-            title="Jump to latest"
-          >
-            <ArrowDown className="w-4 h-4" />
-          </button>
-        )}
         <div className="max-w-5xl mx-auto px-3 sm:px-6 py-6 sm:py-10 flex flex-col gap-4" data-testid="messages-container">
           {messages.length === 0 && (
             <div className="sp-glass rounded-2xl p-8 text-center">
@@ -413,7 +368,34 @@ export default function ConversationPage() {
       </main>
 
       {/* Composer */}
-      <div className="border-t border-white/5 bg-black/30 backdrop-blur-xl">
+      <div className="border-t border-white/5 bg-black/30 backdrop-blur-xl relative">
+        {/* Floating scroll-to-top / scroll-to-latest arrows.
+            They live in the composer wrapper (absolute, bottom-aligned) so
+            they always pin to the viewport above the input bar regardless
+            of conversation length, and never scroll with the messages. */}
+        {scrollState.canUp && (
+          <button
+            type="button"
+            onClick={() => scrollTo("top")}
+            className="absolute right-3 sm:right-4 -top-12 sm:-top-14 z-20 sp-glass-strong rounded-full p-2.5 hover:scale-105 transition shadow-xl"
+            data-testid="scroll-top-btn"
+            title="Jump to top"
+          >
+            <ArrowUp className="w-4 h-4" />
+          </button>
+        )}
+        {scrollState.canDown && (
+          <button
+            type="button"
+            onClick={() => scrollTo("bottom")}
+            className="absolute right-3 sm:right-4 -top-12 sm:-top-14 z-20 sp-glass-strong rounded-full p-2.5 hover:scale-105 transition shadow-xl"
+            style={{ right: scrollState.canUp ? "4.25rem" : "0.75rem" }}
+            data-testid="scroll-bottom-btn"
+            title="Jump to latest"
+          >
+            <ArrowDown className="w-4 h-4" />
+          </button>
+        )}
         <form onSubmit={send} className="max-w-5xl mx-auto px-3 sm:px-6 py-4">
           {showMentions && isGroup && (
             <div className="mb-2 sp-glass rounded-xl p-2 flex flex-wrap gap-2">
@@ -443,24 +425,6 @@ export default function ConversationPage() {
                 <AtSign className="w-3.5 h-3.5" />
               </button>
             )}
-            <button
-              type="button"
-              onClick={() => { setImageMode(v => !v); setVideoMode(false); }}
-              className={`sp-btn text-xs shrink-0 ${imageMode ? "sp-btn-primary" : "sp-btn-ghost"}`}
-              title={imageMode ? "Image mode ON — your next message becomes an image prompt" : "Generate an image instead of a text reply"}
-              data-testid="image-mode-toggle"
-            >
-              <ImageIcon className="w-3.5 h-3.5" />
-            </button>
-            <button
-              type="button"
-              onClick={() => { setVideoMode(v => !v); setImageMode(false); }}
-              className={`sp-btn text-xs shrink-0 ${videoMode ? "sp-btn-primary" : "sp-btn-ghost"}`}
-              title={videoMode ? "Video mode ON — your next message becomes a Veo 3.1 prompt" : "Generate a video (Veo 3.1) instead of a text reply"}
-              data-testid="video-mode-toggle"
-            >
-              <Film className="w-3.5 h-3.5" />
-            </button>
             <textarea
               ref={inputRef}
               data-testid="message-input"
@@ -469,11 +433,9 @@ export default function ConversationPage() {
               onKeyDown={(e) => {
                 if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(e); }
               }}
-              placeholder={videoMode
-                ? `Describe the video — Veo 3.1 will render it (60–180s)`
-                : (imageMode
-                  ? `Describe the image — ${convAgents[0]?.name || "your agent"} will generate it`
-                  : (isGroup ? "Message the room… use @name to ping an agent" : `Message ${convAgents[0]?.name || "your agent"}`))}
+              placeholder={isGroup
+                ? "Message the room… use @name to ping an agent. Ask for an image or a video and they'll just make it."
+                : `Message ${convAgents[0]?.name || "your agent"} — ask for posts, logos, or videos and they'll just make them.`}
               rows={1}
               className="flex-1 sp-glass rounded-2xl px-4 py-3.5 text-[16px] leading-relaxed placeholder:opacity-50 focus:sp-focus resize-none max-h-44"
               style={{ background: "var(--input-bg)", borderColor: "var(--input-border)", color: "var(--fg)" }}
@@ -484,7 +446,7 @@ export default function ConversationPage() {
               className="sp-btn sp-btn-primary text-sm disabled:opacity-50 shrink-0"
               data-testid="send-message-btn"
             >
-              {videoMode ? <Film className="w-3.5 h-3.5" /> : (imageMode ? <ImageIcon className="w-3.5 h-3.5" /> : <Send className="w-3.5 h-3.5" />)}
+              <Send className="w-3.5 h-3.5" />
             </button>
           </div>
         </form>

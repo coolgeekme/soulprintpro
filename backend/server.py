@@ -996,15 +996,71 @@ async def build_transcript_tail(conv_id: str, limit: int = 12) -> List[dict]:
 # ── Web-search intent classifier + injection ─────────────────────────────────
 WEB_SEARCH_AVAILABLE = bool(os.environ.get("BRAVE_API_KEY"))
 
+_IMAGE_KEYWORDS_RE = re.compile(
+    r"\b("
+    r"image|images|picture|pic|pics|photo|photos|graphic|graphics|"
+    r"poster|flyer|banner|thumbnail|thumb|"
+    r"logo|logos|illustration|illustrations|artwork|art|painting|drawing|sketch|"
+    r"meme|infographic|"
+    r"(instagram|insta|ig|linkedin|facebook|twitter|x|tiktok|pinterest|youtube)\s*(post|story|reel|cover|header|thumbnail|banner|graphic|ad|carousel)?|"
+    r"social\s*(media)?\s*(post|graphic|ad|asset)|"
+    r"hero\s*(image|shot|graphic)|"
+    r"product\s*(shot|image|photo|render)|"
+    r"album\s*(art|cover)|"
+    r"book\s*cover|"
+    r"avatar|profile\s*pic"
+    r")\b",
+    re.IGNORECASE,
+)
+_VIDEO_KEYWORDS_RE = re.compile(
+    r"\b("
+    r"video|videos|clip|clips|reel|reels|"
+    r"animation|animations|animate|animated|"
+    r"motion|movie|film|trailer|teaser|"
+    r"commercial|ad\s*spot|tv\s*spot|"
+    r"cinematic|cinemagraph|"
+    r"\d+\s*[-]?\s*(second|sec|s)\s*(video|clip|spot|ad)?|"
+    r"(youtube|tiktok|instagram|reels|shorts)\s*video|"
+    r"b[-]?roll"
+    r")\b",
+    re.IGNORECASE,
+)
+_VERB_HINTS_RE = re.compile(
+    r"\b(make|create|generate|design|draft|render|produce|whip\s*up|build|"
+    r"give\s*me|show\s*me|i\s*need|i\s*want|can\s*you\s*(make|create|design|generate|render|give|show))\b",
+    re.IGNORECASE,
+)
+
+def _quick_image_intent(text: str) -> Optional[bool]:
+    """Cheap deterministic pre-classifier. Returns True/False if confident,
+    None if we should ask the LLM. Saves a roundtrip on the obvious cases."""
+    if _VIDEO_KEYWORDS_RE.search(text):
+        return False  # video request — don't shortcut to image
+    if _IMAGE_KEYWORDS_RE.search(text) and _VERB_HINTS_RE.search(text):
+        return True
+    return None
+
+def _quick_video_intent(text: str) -> Optional[bool]:
+    if _VIDEO_KEYWORDS_RE.search(text) and _VERB_HINTS_RE.search(text):
+        return True
+    return None
+
 async def detect_image_intent(message: str) -> bool:
     """Quick LLM classifier: does this message want an image generated?
 
     Returns True for clear image asks ("design a logo", "create an Instagram
     post", "give me a hero illustration", etc.). Returns False for everything
     else, including text that merely *mentions* images.
+
+    A deterministic keyword pre-check covers the obvious cases ("Instagram
+    post" + a verb like "create / make") so we never miss them and never
+    burn an LLM roundtrip on them.
     """
     if not message.strip():
         return False
+    fast = _quick_image_intent(message)
+    if fast is not None:
+        return fast
     system = (
         "You are a binary classifier. Decide whether the user's latest message is "
         "asking the assistant to GENERATE an image. Lean YES for: 'create/make/design "
@@ -1034,6 +1090,9 @@ async def detect_video_intent(message: str) -> bool:
     """
     if not message.strip():
         return False
+    fast = _quick_video_intent(message)
+    if fast is not None:
+        return fast
     system = (
         "You are a binary classifier. Decide whether the user's latest message is "
         "asking the assistant to GENERATE a VIDEO (a moving clip with motion / "
@@ -2075,16 +2134,18 @@ async def unfurl(url: str, u: dict = Depends(get_current_user)):
 ALLOWED_FILENAME_RE = re.compile(r"^[a-f0-9]{16,}\.(png|jpg|jpeg|webp|gif|pdf)$", re.IGNORECASE)
 
 @files_r.get("/assets/{filename}")
-async def serve_org_asset(filename: str, u: dict = Depends(get_current_user)):
+async def serve_org_asset(filename: str):
+    """Serve an org-uploaded asset by its UUID-style filename.
+
+    Same capability-URL pattern as `serve_file`: the random filename is the
+    cap. Auth is dropped so `<img>` tags can render asset thumbnails inline
+    in the org page (they cannot send Bearer tokens). The DB lookup keeps
+    this from being a generic file dump."""
     if not ASSET_FILENAME_RE.match(filename):
         raise HTTPException(400, "Invalid filename")
     asset = await db.assets.find_one({"filename": filename})
     if not asset:
         raise HTTPException(404, "Asset not found")
-    # Caller must be a member of the asset's org
-    m = await db.org_members.find_one({"org_id": asset["org_id"], "user_id": u["id"]})
-    if not m:
-        raise HTTPException(403, "No access to this asset")
     path = ASSETS_DIR / asset["org_id"] / asset["filename"]
     if not path.is_file():
         raise HTTPException(404, "File missing on disk")

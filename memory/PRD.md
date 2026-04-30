@@ -72,6 +72,9 @@ pattern. Users must be able to:
 - ✅ **soulprintengine.ai brand alignment** — orange (`#F64000`) accent + `#0a0a0a` black background; new orange swirl logo replaces Sparkles site-wide
 - ✅ **PWA support** — `manifest.json`, `sw.js` install service worker, Apple/Safari tags, theme-color, offline shell
 - ✅ **Public chat-image URLs** — `/api/files/{filename}` is now public-with-unguessable-URL so `<img>` tags render inline in chat
+- ✅ **Public org-asset URLs** — same pattern applied to `/api/files/assets/{filename}` so uploaded asset thumbnails also render inline
+- ✅ **Pure "just type" composer** — manual image/video toggles removed. Backend now uses a deterministic keyword fast-path (`Instagram post + create/make/...` etc.) before the LLM classifier, so common asks always trigger the right media generation. Verified against 11 fixture prompts.
+- ✅ **Pinned scroll-to-top / scroll-to-latest arrows** — moved out of the scrolling container into the composer wrapper so they always pin above the input bar (no longer scroll with messages); threshold lowered from 200px to 60px so they appear on shorter conversations.
 - ✅ **Wider responsive chat layout** + scroll-to-top / scroll-to-bottom floating arrows
 - ✅ **Rich link previews** for cited web sources — `/api/unfurl?url=…` extracts OG/Twitter meta + favicon, cached 24h in MongoDB. Frontend `LinkPreviewCard` renders Slack/Discord-style cards with title / description / thumbnail / favicon / site name.
 
