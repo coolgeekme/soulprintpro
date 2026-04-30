@@ -4,7 +4,7 @@ import api, { BACKEND_URL } from "../lib/api";
 import TopBar from "../components/TopBar";
 import { toast } from "sonner";
 import { useAuth } from "../context/AuthContext";
-import { Send, Trash2, AtSign, Users, Repeat, Search, X, Lock, Image as ImageIcon, ExternalLink, Globe } from "lucide-react";
+import { Send, Trash2, AtSign, Users, Repeat, Search, X, Lock, Image as ImageIcon, Film, ExternalLink, Globe } from "lucide-react";
 
 const formatTime = (ts) => {
   try { return new Date(ts).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }); }
@@ -56,6 +56,30 @@ export default function ConversationPage() {
   }, [messages, sending]);
 
   const [imageMode, setImageMode] = useState(false);
+  const [videoMode, setVideoMode] = useState(false);
+
+  // Poll the message list every 5s while any video is still rendering.
+  // Kie.ai usually finishes within 60-180s so we cap at ~5 min of polling.
+  useEffect(() => {
+    const hasPending = messages.some(
+      (m) => m.media_type === "video" && m.media_status === "pending"
+    );
+    if (!hasPending) return;
+    let cancelled = false;
+    let attempts = 0;
+    const tick = async () => {
+      if (cancelled) return;
+      attempts += 1;
+      try {
+        const { data } = await api.get(`/conversations/${convId}/messages`);
+        if (cancelled) return;
+        setMessages(data);
+      } catch {/* swallow */}
+      if (attempts < 60) setTimeout(tick, 5000);
+    };
+    const t = setTimeout(tick, 5000);
+    return () => { cancelled = true; clearTimeout(t); };
+  }, [messages, convId]);
 
   const send = async (e) => {
     e.preventDefault();
@@ -67,16 +91,26 @@ export default function ConversationPage() {
       sender_type: "user",
       sender_id: user.id,
       sender_name: user.name,
-      text: imageMode ? `🎨 ${text}` : text,
+      text: videoMode ? `🎬 ${text}` : (imageMode ? `🎨 ${text}` : text),
       timestamp: new Date().toISOString(),
     };
     setMessages((prev) => [...prev, optimistic]);
     const toSend = text;
     const wasImage = imageMode;
+    const wasVideo = videoMode;
     setText("");
     setImageMode(false);
+    setVideoMode(false);
     try {
-      if (wasImage) {
+      if (wasVideo) {
+        const { data } = await api.post(`/conversations/${convId}/generate-video`, {
+          prompt: toSend, aspect_ratio: "16:9",
+        });
+        setMessages((prev) => {
+          const withoutOptim = prev.filter(m => m.id !== optimistic.id);
+          return [...withoutOptim, data.user_message, data.agent_message];
+        });
+      } else if (wasImage) {
         const { data } = await api.post(`/conversations/${convId}/generate-image`, { prompt: toSend });
         setMessages((prev) => {
           const withoutOptim = prev.filter(m => m.id !== optimistic.id);
@@ -92,10 +126,11 @@ export default function ConversationPage() {
         if (data.conversation) setConv(data.conversation);
       }
     } catch (err) {
-      toast.error(wasImage ? "Image request failed" : "Message failed");
+      toast.error(wasVideo ? "Video request failed" : (wasImage ? "Image request failed" : "Message failed"));
       setMessages((prev) => prev.filter(m => m.id !== optimistic.id));
       setText(toSend);
       setImageMode(wasImage);
+      setVideoMode(wasVideo);
     } finally { setSending(false); }
   };
 
@@ -314,6 +349,28 @@ export default function ConversationPage() {
                       />
                     </a>
                   )}
+                  {m.media_type === "video" && m.media_status === "pending" && (
+                    <div className="mt-3 rounded-xl overflow-hidden border border-white/10 bg-black/40 aspect-video flex flex-col items-center justify-center gap-2"
+                         data-testid={`message-video-pending-${m.id}`}>
+                      <Film className="w-8 h-8 opacity-60 animate-pulse" />
+                      <div className="text-xs sp-subtle">Rendering video — Veo 3.1 typically takes 60–180s.</div>
+                    </div>
+                  )}
+                  {m.media_type === "video" && m.media_status === "ready" && m.media_url && (
+                    <video
+                      src={m.media_url}
+                      controls
+                      preload="metadata"
+                      className="block mt-3 rounded-xl overflow-hidden border border-white/10 hover:border-white/30 transition w-full max-h-[480px] bg-black/30"
+                      data-testid={`message-video-${m.id}`}
+                    />
+                  )}
+                  {m.media_type === "video" && m.media_status === "failed" && (
+                    <div className="mt-3 rounded-xl border border-red-500/30 bg-red-500/10 px-3 py-2 text-xs text-red-200/90"
+                         data-testid={`message-video-failed-${m.id}`}>
+                      Video generation failed. Try a different prompt or run it again.
+                    </div>
+                  )}
                 </div>
               </div>
             );
@@ -361,12 +418,21 @@ export default function ConversationPage() {
             )}
             <button
               type="button"
-              onClick={() => setImageMode(v => !v)}
+              onClick={() => { setImageMode(v => !v); setVideoMode(false); }}
               className={`sp-btn text-xs shrink-0 ${imageMode ? "sp-btn-primary" : "sp-btn-ghost"}`}
               title={imageMode ? "Image mode ON — your next message becomes an image prompt" : "Generate an image instead of a text reply"}
               data-testid="image-mode-toggle"
             >
               <ImageIcon className="w-3.5 h-3.5" />
+            </button>
+            <button
+              type="button"
+              onClick={() => { setVideoMode(v => !v); setImageMode(false); }}
+              className={`sp-btn text-xs shrink-0 ${videoMode ? "sp-btn-primary" : "sp-btn-ghost"}`}
+              title={videoMode ? "Video mode ON — your next message becomes a Veo 3.1 prompt" : "Generate a video (Veo 3.1) instead of a text reply"}
+              data-testid="video-mode-toggle"
+            >
+              <Film className="w-3.5 h-3.5" />
             </button>
             <textarea
               ref={inputRef}
@@ -376,9 +442,11 @@ export default function ConversationPage() {
               onKeyDown={(e) => {
                 if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(e); }
               }}
-              placeholder={imageMode
-                ? `Describe the image — ${convAgents[0]?.name || "your agent"} will generate it`
-                : (isGroup ? "Message the room… use @name to ping an agent" : `Message ${convAgents[0]?.name || "your agent"}`)}
+              placeholder={videoMode
+                ? `Describe the video — Veo 3.1 will render it (60–180s)`
+                : (imageMode
+                  ? `Describe the image — ${convAgents[0]?.name || "your agent"} will generate it`
+                  : (isGroup ? "Message the room… use @name to ping an agent" : `Message ${convAgents[0]?.name || "your agent"}`))}
               rows={1}
               className="flex-1 sp-glass rounded-2xl px-4 py-3.5 text-[16px] leading-relaxed placeholder:opacity-50 focus:sp-focus resize-none max-h-44"
               style={{ background: "var(--input-bg)", borderColor: "var(--input-border)", color: "var(--fg)" }}
@@ -389,7 +457,7 @@ export default function ConversationPage() {
               className="sp-btn sp-btn-primary text-sm disabled:opacity-50 shrink-0"
               data-testid="send-message-btn"
             >
-              {imageMode ? <ImageIcon className="w-3.5 h-3.5" /> : <Send className="w-3.5 h-3.5" />}
+              {videoMode ? <Film className="w-3.5 h-3.5" /> : (imageMode ? <ImageIcon className="w-3.5 h-3.5" /> : <Send className="w-3.5 h-3.5" />)}
             </button>
           </div>
         </form>

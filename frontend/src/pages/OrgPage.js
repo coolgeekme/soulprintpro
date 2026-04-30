@@ -3,7 +3,7 @@ import { useParams, Link, useNavigate } from "react-router-dom";
 import api, { BACKEND_URL } from "../lib/api";
 import TopBar from "../components/TopBar";
 import { toast } from "sonner";
-import { Plus, Users, ArrowRight, Copy, UserPlus, FileText, Image as ImageIcon, FileBox, Trash2, UploadCloud, Download, File as FileIcon } from "lucide-react";
+import { Plus, Users, ArrowRight, Copy, UserPlus, FileText, Image as ImageIcon, FileBox, Trash2, UploadCloud, Download, File as FileIcon, Sparkles, MessageCircle } from "lucide-react";
 
 const formatBytes = (n) => {
   if (!n) return "0 B";
@@ -166,11 +166,67 @@ export default function OrgPage() {
       </TopBar>
 
       <main className="max-w-6xl mx-auto px-6 py-10">
-        <div className="flex flex-col gap-2 mb-10">
+        <div className="flex flex-col gap-2 mb-8">
           <span className="sp-chip">{org.role}</span>
           <h1 className="sp-display text-4xl md:text-5xl">{org.name}</h1>
           <p className="sp-subtle">Spin up a team for each squad, brand, or project. Each team has its own SoulPrint.</p>
         </div>
+
+        {/* General chat — auto-created on org creation. Always-on entry point. */}
+        {org.general_team_id && org.general_conversation_id && (
+          <Link
+            to={`/app/team/${org.general_team_id}/c/${org.general_conversation_id}`}
+            className="sp-glass-strong rounded-2xl p-6 mb-6 flex items-center gap-4 hover:border-white/25 transition group"
+            data-testid="open-general-chat"
+          >
+            <div className="w-12 h-12 rounded-xl flex items-center justify-center"
+                 style={{ background: "linear-gradient(160deg, rgba(124,92,255,0.7), rgba(124,92,255,0.15))" }}>
+              <MessageCircle className="w-5 h-5 text-white" />
+            </div>
+            <div className="flex-1 min-w-0">
+              <div className="text-white font-medium text-lg">General chat</div>
+              <div className="text-xs sp-subtle">Always-on. Just type — the right specialist will respond, and others jump in when the topic shifts.</div>
+            </div>
+            <ArrowRight className="w-5 h-5 text-white/60 group-hover:text-white transition" />
+          </Link>
+        )}
+
+        {/* Company Soul — populated from URL scrape + LLM on creation */}
+        {(org.soul && (org.soul.mission || org.soul.summary)) && (
+          <div className="sp-glass rounded-2xl p-6 mb-8" data-testid="org-soul">
+            <div className="flex items-center gap-2 mb-3">
+              <Sparkles className="w-4 h-4 text-white/80" />
+              <h3 className="text-sm uppercase tracking-widest sp-subtle">Company Soul</h3>
+              {org.website_url && (
+                <a href={org.website_url.startsWith("http") ? org.website_url : `https://${org.website_url}`}
+                   target="_blank" rel="noreferrer"
+                   className="text-[11px] sp-subtle ml-auto hover:text-white truncate max-w-[260px]"
+                   title={org.website_url}>
+                  {org.website_url.replace(/^https?:\/\//, "")}
+                </a>
+              )}
+            </div>
+            {org.soul.summary && (
+              <p className="text-base mb-3 leading-relaxed" style={{ color: "var(--fg)" }}>
+                {org.soul.summary}
+              </p>
+            )}
+            <div className="grid sm:grid-cols-2 gap-3 text-sm">
+              {[
+                ["Mission", org.soul.mission],
+                ["Audience", org.soul.audience],
+                ["Tone", org.soul.tone],
+                ["Values", org.soul.values],
+                ["North star", org.soul.north_star],
+              ].filter(([, v]) => v).map(([label, v]) => (
+                <div key={label} className="sp-glass rounded-xl p-3">
+                  <div className="text-[10px] uppercase tracking-widest sp-subtle mb-1">{label}</div>
+                  <div className="leading-snug">{v}</div>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
 
         {showInviteTools && canInvite && (
           <div className="sp-glass-strong rounded-2xl p-6 mb-10" data-testid="invite-tools">
@@ -202,7 +258,7 @@ export default function OrgPage() {
         )}
 
         <div className="grid md:grid-cols-3 gap-4 mb-10">
-          {teams.map((t) => (
+          {teams.filter((t) => t.id !== org.general_team_id).map((t) => (
             <Link
               key={t.id}
               to={`/app/team/${t.id}`}
@@ -219,9 +275,9 @@ export default function OrgPage() {
               </div>
             </Link>
           ))}
-          {teams.length === 0 && (
+          {teams.filter((t) => t.id !== org.general_team_id).length === 0 && (
             <div className="sp-glass rounded-2xl p-6 col-span-full text-center text-sm sp-subtle">
-              No teams yet — create your first one below.
+              No specialised teams yet — create one below for a specific squad, brand, or project.
             </div>
           )}
         </div>

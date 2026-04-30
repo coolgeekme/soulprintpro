@@ -28,6 +28,9 @@ import os, logging, uuid, secrets, re, json, base64, bcrypt, jwt
 from emergentintegrations.llm.chat import LlmChat, UserMessage
 
 from brave_search import brave_web_search, format_results_for_prompt
+from kie_client import generate_video as kie_generate_video, submit_video as kie_submit_video, wait_for_video as kie_wait_for_video
+import asyncio
+import httpx
 from assets import (
     extract_text as extract_asset_text,
     is_text_extractable,
@@ -154,6 +157,8 @@ class LoginBody(BaseModel):
 
 class OrgCreateBody(BaseModel):
     name: str
+    website_url: Optional[str] = ""
+    soul_description: Optional[str] = ""  # manual override; if empty, generated from website_url
 
 class TeamCreateBody(BaseModel):
     name: str
@@ -195,6 +200,11 @@ class GenerateImageBody(BaseModel):
     prompt: str
     agent_id: Optional[str] = None  # if omitted, use the conversation's current agent
 
+class GenerateVideoBody(BaseModel):
+    prompt: str
+    agent_id: Optional[str] = None
+    aspect_ratio: Optional[str] = "16:9"  # 16:9, 9:16, Auto
+
 # ── Access control helpers ───────────────────────────────────────────────────
 async def require_org_member(org_id: str, user_id: str) -> dict:
     try:
@@ -226,6 +236,11 @@ def serialize_org(org: dict) -> dict:
         "id": str(org["_id"]),
         "name": org["name"],
         "owner_id": org["owner_id"],
+        "website_url": org.get("website_url", ""),
+        "soul_description": org.get("soul_description", ""),
+        "soul": org.get("soul") or {},
+        "general_team_id": org.get("general_team_id", ""),
+        "general_conversation_id": org.get("general_conversation_id", ""),
         "created_at": org["created_at"].isoformat() if isinstance(org["created_at"], datetime) else org["created_at"],
     }
 
@@ -298,17 +313,152 @@ async def me(u: dict = Depends(get_current_user)):
 # ── Org routes ───────────────────────────────────────────────────────────────
 org_r = APIRouter(prefix="/api/orgs")
 
+# Default agent that anchors the auto-created "General" group chat
+GENERAL_DEFAULT_AGENT = "specialized-chief-of-staff"
+
+async def _fetch_url_text(url: str, max_chars: int = 8000) -> str:
+    """Fetch a URL and return a compact plain-text excerpt of its body.
+
+    Strips scripts/styles + collapses whitespace so it's ready to feed to an LLM.
+    Returns "" on any failure — caller should fall back gracefully.
+    """
+    if not url or not url.strip():
+        return ""
+    target = url.strip()
+    if not target.startswith(("http://", "https://")):
+        target = "https://" + target
+    try:
+        async with httpx.AsyncClient(timeout=10.0, follow_redirects=True,
+                                    headers={"User-Agent": "SoulPrintEngineBot/1.0"}) as client:
+            resp = await client.get(target)
+        if resp.status_code >= 400:
+            logger.warning("scrape %s -> %s", target, resp.status_code)
+            return ""
+        html = resp.text or ""
+    except (httpx.HTTPError, ValueError) as exc:
+        logger.warning("scrape error %s: %s", target, exc)
+        return ""
+    # Strip head/script/style/svg blocks before pulling text
+    cleaned = re.sub(r"<(script|style|svg|noscript|head)[^>]*>.*?</\1>", " ",
+                     html, flags=re.IGNORECASE | re.DOTALL)
+    text = re.sub(r"<[^>]+>", " ", cleaned)
+    text = re.sub(r"\s+", " ", text).strip()
+    return text[:max_chars]
+
+async def _generate_company_soul(name: str, website_text: str, manual_hint: str = "") -> dict:
+    """Distil a company "Soul" — mission, audience, tone, values, north star, summary.
+
+    Returns a dict with those keys (empty strings on failure). Uses the
+    Emergent LLM key (gpt-4.1-mini) — should be cheap (<1k tokens out).
+    """
+    base = {"mission": "", "audience": "", "tone": "", "values": "", "north_star": "", "summary": ""}
+    if not website_text and not manual_hint:
+        return base
+    system = (
+        "You distil a company's essence (its 'Soul') from public-facing copy.\n"
+        "Output ONLY a single JSON object on one line, no markdown, with these keys:\n"
+        '{"mission": "...", "audience": "...", "tone": "...", "values": "...", '
+        '"north_star": "...", "summary": "..."}\n'
+        "Each value: 1–2 short sentences, plain English, no fluff. If you cannot find "
+        "something specific, infer the most plausible answer from the context. Never "
+        "leave a field blank."
+    )
+    payload_parts = [f"Company name: {name}"]
+    if manual_hint:
+        payload_parts.append(f"Founder hint:\n{manual_hint}")
+    if website_text:
+        payload_parts.append(f"Website excerpt (homepage):\n{website_text}")
+    user_payload = "\n\n".join(payload_parts)
+    try:
+        chat = LlmChat(
+            api_key=EMERGENT_LLM_KEY,
+            session_id=f"soul:{uuid.uuid4()}",
+            system_message=system,
+        ).with_model("openai", "gpt-4.1-mini")
+        raw = (await chat.send_message(UserMessage(text=user_payload))) or ""
+    except Exception as exc:
+        logger.warning("Soul generator LLM error: %s", exc)
+        return base
+    m = re.search(r"\{.*\}", raw, re.DOTALL)
+    if not m:
+        return base
+    try:
+        data = json.loads(m.group(0))
+    except json.JSONDecodeError:
+        return base
+    return {k: (data.get(k) or "").strip()[:600] for k in base.keys()}
+
 @org_r.post("")
 async def create_org(body: OrgCreateBody, u: dict = Depends(get_current_user)):
     if not body.name.strip():
         raise HTTPException(400, "Name required")
     now = datetime.now(timezone.utc)
-    doc = {"name": body.name.strip(), "owner_id": u["id"], "created_at": now}
+
+    # Step 1 — capture the company "Soul" (URL scrape → LLM, with optional manual hint)
+    website_url = (body.website_url or "").strip()
+    manual = (body.soul_description or "").strip()
+    website_text = await _fetch_url_text(website_url) if website_url else ""
+    soul = await _generate_company_soul(body.name.strip(), website_text, manual)
+
+    doc = {
+        "name": body.name.strip(),
+        "owner_id": u["id"],
+        "website_url": website_url,
+        "soul_description": manual,  # raw founder hint (kept for later edits)
+        "soul": soul,                # structured fields injected into agents
+        "created_at": now,
+    }
     res = await db.organizations.insert_one(doc)
     oid = str(res.inserted_id)
     await db.org_members.insert_one({
         "org_id": oid, "user_id": u["id"], "role": "owner", "joined_at": now,
     })
+
+    # Step 2 — auto-create a "General" team seeded with the org's Soul, so users
+    # can chat immediately without having to set up SoulPrint themselves.
+    team_doc = {
+        "org_id": oid,
+        "name": "General",
+        "description": "Always-on chat for the whole company",
+        "soulprint": {
+            "mission": soul.get("mission", ""),
+            "tone": soul.get("tone", ""),
+            "audience": soul.get("audience", ""),
+            "values": soul.get("values", ""),
+            "north_star": soul.get("north_star", ""),
+        },
+        "created_by": u["id"],
+        "created_at": now,
+        "is_general": True,
+    }
+    team_res = await db.teams.insert_one(team_doc)
+    team_id = str(team_res.inserted_id)
+
+    # Step 3 — auto-create a "General" group conversation. We seat
+    # chief-of-staff as the anchor agent, turn auto_respond ON so the user can
+    # just type, and turn smart_expand ON so other specialists get pulled in
+    # when the topic shifts.
+    anchor = GENERAL_DEFAULT_AGENT if GENERAL_DEFAULT_AGENT in AGENTS else next(iter(AGENTS))
+    conv_doc = {
+        "team_id": team_id,
+        "title": "General",
+        "type": "group",
+        "agent_ids": [anchor],
+        "member_ids": [u["id"]],
+        "auto_respond": True,
+        "smart_expand": True,
+        "created_by": u["id"],
+        "created_at": now,
+        "is_general": True,
+    }
+    conv_res = await db.conversations.insert_one(conv_doc)
+    conv_id = str(conv_res.inserted_id)
+
+    await db.organizations.update_one(
+        {"_id": res.inserted_id},
+        {"$set": {"general_team_id": team_id, "general_conversation_id": conv_id}},
+    )
+
     org = await db.organizations.find_one({"_id": res.inserted_id})
     return serialize_org(org)
 
@@ -491,10 +641,29 @@ async def list_divisions(u: dict = Depends(get_current_user)):
 conv_r = APIRouter(prefix="/api")
 
 def build_system_prompt(agent_id: str, team: dict, current_user_name: Optional[str] = None,
-                        org_assets: Optional[List[dict]] = None) -> str:
+                        org_assets: Optional[List[dict]] = None,
+                        org: Optional[dict] = None) -> str:
     meta = AGENTS[agent_id]
     sp = team.get("soulprint") or {}
     lines = [meta["system"]]
+
+    # Org-wide Soul (mission/audience/tone/values/north_star/summary) takes precedence
+    soul = (org or {}).get("soul") or {}
+    org_name = (org or {}).get("name") or ""
+    soul_parts = []
+    if soul.get("mission"): soul_parts.append(f"Mission: {soul['mission']}")
+    if soul.get("audience"): soul_parts.append(f"Audience: {soul['audience']}")
+    if soul.get("tone"): soul_parts.append(f"Tone of voice: {soul['tone']}")
+    if soul.get("values"): soul_parts.append(f"Values: {soul['values']}")
+    if soul.get("north_star"): soul_parts.append(f"North star: {soul['north_star']}")
+    if soul.get("summary"): soul_parts.append(f"In short: {soul['summary']}")
+    if soul_parts:
+        lines.append(
+            f"\nThe organization you work for ({org_name}) — its SOUL is:\n- "
+            + "\n- ".join(soul_parts)
+            + "\nEvery answer must respect and embody this Soul."
+        )
+
     sp_parts = []
     if sp.get("mission"): sp_parts.append(f"Mission: {sp['mission']}")
     if sp.get("audience"): sp_parts.append(f"Audience: {sp['audience']}")
@@ -670,7 +839,8 @@ async def detect_image_intent(message: str) -> bool:
         "asking the assistant to GENERATE an image. Lean YES for: 'create/make/design "
         "an image / poster / graphic / logo / illustration / banner / thumbnail / "
         "Instagram or LinkedIn or Twitter post / story / cover photo'. Lean NO for: "
-        "describing an existing image, asking for image-related advice, or mere mentions. "
+        "describing an existing image, asking for image-related advice, mere mentions, "
+        "or any request that involves motion / animation / video. "
         "Reply with ONLY one word: yes or no."
     )
     try:
@@ -682,6 +852,35 @@ async def detect_image_intent(message: str) -> bool:
         raw = (await chat.send_message(UserMessage(text=message))) or ""
     except Exception as exc:
         logger.warning("image-intent error: %s", exc)
+        return False
+    return raw.strip().lower().startswith("y")
+
+async def detect_video_intent(message: str) -> bool:
+    """Binary classifier: does the user want a VIDEO generated?
+
+    Lean YES for explicit video / clip / animation / reel / motion / commercial
+    / cinematic / 5-second/10-second video asks. Lean NO for stills.
+    """
+    if not message.strip():
+        return False
+    system = (
+        "You are a binary classifier. Decide whether the user's latest message is "
+        "asking the assistant to GENERATE a VIDEO (a moving clip with motion / "
+        "audio / shots). Lean YES for: 'create/make/generate a video / clip / reel "
+        "/ animation / commercial / cinematic shot / 5-second video / 10-second "
+        "video / film / movie / trailer'. Lean NO for: still images, photos, "
+        "graphics, posters, illustrations, or anything that does not move. "
+        "Reply with ONLY one word: yes or no."
+    )
+    try:
+        chat = LlmChat(
+            api_key=EMERGENT_LLM_KEY,
+            session_id=f"vid-intent:{uuid.uuid4()}",
+            system_message=system,
+        ).with_model("openai", "gpt-4.1-mini")
+        raw = (await chat.send_message(UserMessage(text=message))) or ""
+    except Exception as exc:
+        logger.warning("video-intent error: %s", exc)
         return False
     return raw.strip().lower().startswith("y")
 
@@ -774,13 +973,18 @@ async def generate_agent_reply(conv: dict, team: dict, agent_id: str,
 
     # Pull a compact view of the org's asset library so the agent can cite it.
     org_assets_brief: List[dict] = []
+    org_doc: Optional[dict] = None
     try:
         org_assets_brief = await load_assets_brief(team["org_id"])
     except Exception as exc:
         logger.warning("asset brief load failed: %s", exc)
+    try:
+        org_doc = await db.organizations.find_one({"_id": ObjectId(team["org_id"])})
+    except Exception as exc:
+        logger.warning("org load failed: %s", exc)
 
     system = build_system_prompt(agent_id, team, current_user_name=latest_user_name,
-                                 org_assets=org_assets_brief)
+                                 org_assets=org_assets_brief, org=org_doc)
     if conv["type"] == "group":
         system += (
             "\n\nYou are one of several participants in a GROUP conversation. "
@@ -984,50 +1188,58 @@ async def send_message(conv_id: str, body: SendMessageBody, u: dict = Depends(ge
                 if new_agent_id not in responders:
                     responders.append(new_agent_id)
 
-    # ── Image-generation auto-routing ──────────────────────────────────────
-    # If the user clearly asked for an image, generate one with the first
-    # responder instead of (or in addition to) writing a text reply.
+    # ── Video / Image generation auto-routing ─────────────────────────────
+    # If the user clearly asked for a video, kick that off (async polling) and
+    # skip any text reply. If not, fall through to the image classifier.
     image_msg = None
+    video_msg = None
     if responders:
         try:
-            wants_image = await detect_image_intent(body.text)
+            wants_video = bool(os.environ.get("KIE_API_KEY")) and await detect_video_intent(body.text)
         except Exception:
-            wants_image = False
-        if wants_image:
+            wants_video = False
+        if wants_video:
             primary = responders[0]
-            sp = team.get("soulprint") or {}
-            sp_lines = [f"{k.capitalize()}: {sp[k]}" for k in ("mission", "tone", "audience", "values") if sp.get(k)]
-            sys_msg = (
-                f"You are {AGENTS[primary]['name']}, generating an image on behalf of the "
-                f"team \"{team['name']}\". Honor the team's voice and aesthetics.\n"
-                "If the user requests a social media graphic (Instagram post, story, "
-                "LinkedIn banner, Twitter/X header, Facebook cover, YouTube thumbnail), "
-                "match the appropriate aspect ratio (Instagram post 1:1; story / Reels / "
-                "TikTok 9:16; LinkedIn / Twitter post 1.91:1; YouTube thumbnail 16:9) and "
-                "render any text legibly in the safe area."
-                + (("\n" + "\n".join(sp_lines)) if sp_lines else "")
-            )
+            video_msg = await _kick_off_video(conv_id, primary, body.text)
+            responders = []  # video reply is enough — no text
+        else:
             try:
-                fname, caption = await generate_image_via_nano_banana(body.text, sys_msg)
-                image_msg = {
-                    "id": str(uuid.uuid4()),
-                    "conversation_id": conv_id,
-                    "sender_type": "agent",
-                    "sender_id": primary,
-                    "sender_name": AGENTS[primary]["name"],
-                    "agent_id": primary,
-                    "text": (caption or "Here's a draft.").strip(),
-                    "media_type": "image",
-                    "media_filename": fname,
-                    "media_url": f"/api/files/{fname}",
-                    "timestamp": datetime.now(timezone.utc),
-                }
-                await db.messages.insert_one({**image_msg})
-                # Image alone is enough — skip the text reply for this turn
-                responders = []
-            except Exception as exc:
-                logger.warning("auto image generation failed: %s", exc)
-                # Fall through to a normal text reply
+                wants_image = await detect_image_intent(body.text)
+            except Exception:
+                wants_image = False
+            if wants_image:
+                primary = responders[0]
+                sp = team.get("soulprint") or {}
+                sp_lines = [f"{k.capitalize()}: {sp[k]}" for k in ("mission", "tone", "audience", "values") if sp.get(k)]
+                sys_msg = (
+                    f"You are {AGENTS[primary]['name']}, generating an image on behalf of the "
+                    f"team \"{team['name']}\". Honor the team's voice and aesthetics.\n"
+                    "If the user requests a social media graphic (Instagram post, story, "
+                    "LinkedIn banner, Twitter/X header, Facebook cover, YouTube thumbnail), "
+                    "match the appropriate aspect ratio (Instagram post 1:1; story / Reels / "
+                    "TikTok 9:16; LinkedIn / Twitter post 1.91:1; YouTube thumbnail 16:9) and "
+                    "render any text legibly in the safe area."
+                    + (("\n" + "\n".join(sp_lines)) if sp_lines else "")
+                )
+                try:
+                    fname, caption = await generate_image_via_nano_banana(body.text, sys_msg)
+                    image_msg = {
+                        "id": str(uuid.uuid4()),
+                        "conversation_id": conv_id,
+                        "sender_type": "agent",
+                        "sender_id": primary,
+                        "sender_name": AGENTS[primary]["name"],
+                        "agent_id": primary,
+                        "text": (caption or "Here's a draft.").strip(),
+                        "media_type": "image",
+                        "media_filename": fname,
+                        "media_url": f"/api/files/{fname}",
+                        "timestamp": datetime.now(timezone.utc),
+                    }
+                    await db.messages.insert_one({**image_msg})
+                    responders = []  # Image alone is enough
+                except Exception as exc:
+                    logger.warning("auto image generation failed: %s", exc)
 
     agent_messages = []
     for aid in responders:
@@ -1052,6 +1264,8 @@ async def send_message(conv_id: str, body: SendMessageBody, u: dict = Depends(ge
     fresh_conv = await db.conversations.find_one({"_id": ObjectId(conv_id)})
     if image_msg is not None:
         agent_messages.insert(0, {k: v for k, v in image_msg.items() if k != "_id"})
+    if video_msg is not None:
+        agent_messages.insert(0, video_msg)
     return {
         "user_message": user_doc_resp,
         "agent_messages": agent_messages,
@@ -1097,6 +1311,20 @@ async def smart_start(team_id: str, body: SmartStartBody, u: dict = Depends(get_
         "timestamp": now,
     }
     await db.messages.insert_one({**user_doc})
+
+    # If the user clearly asked for a video, kick off Kie.ai async polling
+    try:
+        wants_video = bool(os.environ.get("KIE_API_KEY")) and await detect_video_intent(body.text)
+    except Exception:
+        wants_video = False
+    if wants_video:
+        pending = await _kick_off_video(conv_id, chosen, body.text)
+        return {
+            "conversation": serialize_conv(conv_doc),
+            "routed_agent_id": chosen,
+            "user_message": {k: v for k, v in user_doc.items() if k != "_id"},
+            "agent_message": pending,
+        }
 
     # If the user clearly asked for an image, auto-generate it as the first reply.
     try:
@@ -1332,6 +1560,95 @@ async def generate_image(conv_id: str, body: GenerateImageBody, u: dict = Depend
     return {
         "user_message": {k: v for k, v in user_msg.items() if k != "_id"},
         "agent_message": {k: v for k, v in agent_msg.items() if k != "_id"},
+        "ok": True,
+    }
+
+# ── Video generation tool (Kie.ai Veo 3.1) ──────────────────────────────────
+async def _poll_and_save_video(message_id: str, prompt: str, aspect_ratio: str = "16:9") -> None:
+    """Background coroutine: call Kie.ai, then update the placeholder message.
+
+    The agent message is created with `media_status="pending"` immediately so
+    the UI can render a spinner. When polling resolves we patch the message
+    document with the final URL (or an error caption on failure).
+    """
+    try:
+        url = await kie_generate_video(prompt, aspect_ratio=aspect_ratio)
+    except Exception as exc:
+        logger.exception("Kie polling crash: %s", exc)
+        url = None
+    now = datetime.now(timezone.utc)
+    if url:
+        await db.messages.update_one(
+            {"id": message_id},
+            {"$set": {
+                "media_url": url,
+                "media_status": "ready",
+                "ready_at": now,
+            }},
+        )
+    else:
+        await db.messages.update_one(
+            {"id": message_id},
+            {"$set": {
+                "media_status": "failed",
+                "text": "I couldn't generate that video — try a different prompt or run it again.",
+                "ready_at": now,
+            }},
+        )
+
+async def _kick_off_video(conv_id: str, agent_id: str, prompt: str, aspect_ratio: str = "16:9") -> dict:
+    """Persist a placeholder agent message and fire off the Kie polling task.
+    Returns the message dict (sans _id) for the API response."""
+    if aspect_ratio not in ("16:9", "9:16", "Auto"):
+        aspect_ratio = "16:9"
+    msg = {
+        "id": str(uuid.uuid4()),
+        "conversation_id": conv_id,
+        "sender_type": "agent",
+        "sender_id": agent_id,
+        "sender_name": AGENTS[agent_id]["name"],
+        "agent_id": agent_id,
+        "text": "Generating your video — this usually takes 60–180s.",
+        "media_type": "video",
+        "media_status": "pending",
+        "media_prompt": prompt[:500],
+        "aspect_ratio": aspect_ratio,
+        "timestamp": datetime.now(timezone.utc),
+    }
+    await db.messages.insert_one({**msg})
+    asyncio.create_task(_poll_and_save_video(msg["id"], prompt, aspect_ratio))
+    return {k: v for k, v in msg.items() if k != "_id"}
+
+@conv_r.post("/conversations/{conv_id}/generate-video")
+async def generate_video_endpoint(conv_id: str, body: GenerateVideoBody, u: dict = Depends(get_current_user)):
+    if not body.prompt.strip():
+        raise HTTPException(400, "Prompt cannot be empty")
+    if not os.environ.get("KIE_API_KEY"):
+        raise HTTPException(503, "Video generation is not configured")
+    conv = await load_conv_or_403(conv_id, u["id"])
+    agent_id = body.agent_id or (conv.get("agent_ids") or [None])[0]
+    if not agent_id or agent_id not in AGENTS:
+        raise HTTPException(400, "No valid agent for this conversation")
+    if conv["type"] == "group" and agent_id not in conv.get("agent_ids", []):
+        raise HTTPException(400, "Agent is not part of this group")
+
+    now = datetime.now(timezone.utc)
+    user_msg = {
+        "id": str(uuid.uuid4()),
+        "conversation_id": conv_id,
+        "sender_type": "user",
+        "sender_id": u["id"],
+        "sender_name": u["name"],
+        "agent_id": None,
+        "text": f"🎬 {body.prompt}",
+        "intent": "video_request",
+        "timestamp": now,
+    }
+    await db.messages.insert_one({**user_msg})
+    pending = await _kick_off_video(conv_id, agent_id, body.prompt, body.aspect_ratio or "16:9")
+    return {
+        "user_message": {k: v for k, v in user_msg.items() if k != "_id"},
+        "agent_message": pending,
         "ok": True,
     }
 

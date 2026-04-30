@@ -9,6 +9,8 @@ export default function AppHome() {
   const [orgs, setOrgs] = useState([]);
   const [loading, setLoading] = useState(true);
   const [name, setName] = useState("");
+  const [websiteUrl, setWebsiteUrl] = useState("");
+  const [soulDesc, setSoulDesc] = useState("");
   const [creating, setCreating] = useState(false);
   const [code, setCode] = useState("");
   const [joining, setJoining] = useState(false);
@@ -33,9 +35,18 @@ export default function AppHome() {
     if (!name.trim()) return;
     setCreating(true);
     try {
-      const { data } = await api.post("/orgs", { name: name.trim() });
-      toast.success("Organization created");
-      nav(`/app/org/${data.id}`);
+      const { data } = await api.post("/orgs", {
+        name: name.trim(),
+        website_url: websiteUrl.trim(),
+        soul_description: soulDesc.trim(),
+      });
+      toast.success("Organization created — Soul captured");
+      // Jump straight into the auto-created General chat
+      if (data.general_team_id && data.general_conversation_id) {
+        nav(`/app/team/${data.general_team_id}/c/${data.general_conversation_id}`);
+      } else {
+        nav(`/app/org/${data.id}`);
+      }
     } catch (err) {
       toast.error(err?.response?.data?.detail || "Failed to create");
     } finally {
@@ -110,15 +121,34 @@ export default function AppHome() {
               value={name}
               onChange={(e) => setName(e.target.value)}
               placeholder="e.g. Nebula Labs"
-              className="w-full bg-white/[0.03] border border-white/10 rounded-xl px-4 py-3 text-sm text-white placeholder:text-white/30 focus:border-white/30 focus:sp-focus"
+              className="w-full bg-white/[0.03] border border-white/10 rounded-xl px-4 py-3 text-sm text-white placeholder:text-white/30 focus:border-white/30 focus:sp-focus mb-2"
             />
+            <input
+              data-testid="new-org-url"
+              type="url"
+              value={websiteUrl}
+              onChange={(e) => setWebsiteUrl(e.target.value)}
+              placeholder="Company website (optional) — we'll read it to capture your Soul"
+              className="w-full bg-white/[0.03] border border-white/10 rounded-xl px-4 py-3 text-sm text-white placeholder:text-white/30 focus:border-white/30 focus:sp-focus mb-2"
+            />
+            <textarea
+              data-testid="new-org-soul"
+              value={soulDesc}
+              onChange={(e) => setSoulDesc(e.target.value)}
+              placeholder="Optional — describe your company in one sentence (mission, audience, vibe). We'll use this if you skip the URL."
+              rows={2}
+              className="w-full bg-white/[0.03] border border-white/10 rounded-xl px-4 py-3 text-sm text-white placeholder:text-white/30 focus:border-white/30 focus:sp-focus resize-none"
+            />
+            <div className="text-[11px] sp-subtle mt-2">
+              We synthesise your company "Soul" — mission, audience, voice — and inject it into every agent. A General chat is created instantly so you can start talking.
+            </div>
             <button
               data-testid="create-org-btn"
               type="submit"
               disabled={creating || !name.trim()}
               className="sp-btn sp-btn-primary w-full justify-center mt-3 disabled:opacity-50"
             >
-              {creating ? "Creating…" : "Create organization"}
+              {creating ? "Capturing your Soul…" : "Create organization"}
             </button>
           </form>
 
