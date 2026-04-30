@@ -3,7 +3,7 @@ import { useParams, Link, useNavigate } from "react-router-dom";
 import api, { BACKEND_URL } from "../lib/api";
 import TopBar from "../components/TopBar";
 import { toast } from "sonner";
-import { Plus, Users, ArrowRight, Copy, UserPlus, FileText, Image as ImageIcon, FileBox, Trash2, UploadCloud, Download, File as FileIcon, MessageCircle, Pencil, Save, X as XIcon, RefreshCw, Megaphone } from "lucide-react";
+import { Plus, Users, ArrowRight, Copy, UserPlus, FileText, Image as ImageIcon, FileBox, Trash2, UploadCloud, Download, File as FileIcon, MessageCircle, Pencil, Save, X as XIcon, RefreshCw, Megaphone, Paperclip, Send, Loader2 } from "lucide-react";
 import Logo from "../components/Logo";
 import SchedulesPanel from "../components/SchedulesPanel";
 
@@ -288,23 +288,16 @@ export default function OrgPage() {
           </form>
         )}
 
-        {/* General chat — auto-created on org creation. Always-on entry point. */}
+        {/* General chat — auto-created on org creation. Always-on entry point.
+            Now doubles as a quick-upload zone: drop, paste, or paperclip-pick
+            files (and an optional prompt) to post them straight into General
+            without leaving the org page. */}
         {org.general_team_id && org.general_conversation_id && (
-          <Link
-            to={`/app/team/${org.general_team_id}/c/${org.general_conversation_id}`}
-            className="sp-glass-strong rounded-2xl p-6 mb-6 flex items-center gap-4 hover:border-white/25 transition group"
-            data-testid="open-general-chat"
-          >
-            <div className="w-12 h-12 rounded-xl flex items-center justify-center"
-                 style={{ background: "linear-gradient(160deg, rgba(246,64,0,0.7), rgba(246,64,0,0.15))" }}>
-              <MessageCircle className="w-5 h-5 text-white" />
-            </div>
-            <div className="flex-1 min-w-0">
-              <div className="text-white font-medium text-lg">General chat</div>
-              <div className="text-xs sp-subtle">Always-on. Just type — the right specialist will respond, and others jump in when the topic shifts.</div>
-            </div>
-            <ArrowRight className="w-5 h-5 text-white/60 group-hover:text-white transition" />
-          </Link>
+          <GeneralChatCard
+            orgId={orgId}
+            teamId={org.general_team_id}
+            convId={org.general_conversation_id}
+          />
         )}
 
         {/* Social Queue — generate, schedule, and one-click publish posts. */}
@@ -565,6 +558,206 @@ export default function OrgPage() {
           </div>
         </div>
       </main>
+    </div>
+  );
+}
+
+
+// ── General chat card with inline upload ───────────────────────────────────
+// A self-contained mini-composer that posts files (and an optional prompt)
+// straight into the org's General chat without leaving the org page.
+// Supports paperclip-pick, drag-and-drop, and clipboard paste — same UX as
+// the full ConversationPage composer.
+function GeneralChatCard({ orgId, teamId, convId }) {
+  const nav = useNavigate();
+  const fileInputRef = useRef(null);
+  const [staged, setStaged] = useState([]);
+  const [text, setText] = useState("");
+  const [uploading, setUploading] = useState(false);
+  const [isDragging, setIsDragging] = useState(false);
+
+  const stageFiles = (incoming) => {
+    const picked = Array.from(incoming || []).filter(Boolean);
+    if (!picked.length) return false;
+    const tooBig = picked.find((f) => f.size > 25 * 1024 * 1024);
+    if (tooBig) { toast.error(`${tooBig.name} is too large (max 25 MB)`); return false; }
+    if (staged.length + picked.length > 6) {
+      toast.error("Up to 6 files per upload"); return false;
+    }
+    setStaged((prev) => [
+      ...prev,
+      ...picked.map((f) => ({
+        id: `stg-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+        file: f.name && f.name !== "image.png" ? f : new File(
+          [f],
+          `pasted-${new Date().toISOString().replace(/[:.]/g, "-")}.${(f.type.split("/")[1] || "png")}`,
+          { type: f.type }),
+        kind: f.type.startsWith("image/") ? "image"
+              : f.type.startsWith("video/") ? "video"
+              : f.type.startsWith("audio/") ? "audio"
+              : "file",
+        previewUrl: f.type.startsWith("image/") ? URL.createObjectURL(f) : "",
+      })),
+    ]);
+    return true;
+  };
+
+  // Free preview blob URLs when the card unmounts
+  useEffect(() => () => staged.forEach((s) => s.previewUrl && URL.revokeObjectURL(s.previewUrl)),
+    /* eslint-disable-next-line react-hooks/exhaustive-deps */ []);
+
+  const onPick = (e) => {
+    const picked = Array.from(e.target.files || []);
+    e.target.value = "";
+    stageFiles(picked);
+  };
+  const onPaste = (e) => {
+    const files = Array.from(e.clipboardData?.files || []);
+    if (!files.length) return;
+    if (stageFiles(files)) {
+      e.preventDefault();
+      toast.success(`Pasted ${files.length} file${files.length > 1 ? "s" : ""}`);
+    }
+  };
+  const onDragOver = (e) => {
+    if (e.dataTransfer?.types?.includes("Files")) {
+      e.preventDefault();
+      if (!isDragging) setIsDragging(true);
+    }
+  };
+  const onDrop = (e) => {
+    if (!e.dataTransfer?.files?.length) return;
+    e.preventDefault();
+    setIsDragging(false);
+    stageFiles(Array.from(e.dataTransfer.files));
+  };
+  const removeStaged = (id) => setStaged((prev) => {
+    const tgt = prev.find((s) => s.id === id);
+    if (tgt?.previewUrl) URL.revokeObjectURL(tgt.previewUrl);
+    return prev.filter((s) => s.id !== id);
+  });
+
+  const submit = async (e) => {
+    e?.preventDefault?.();
+    if (uploading || staged.length === 0) return;
+    setUploading(true);
+    const fd = new FormData();
+    fd.append("text", text || "");
+    staged.forEach((s) => fd.append("files", s.file));
+    try {
+      await api.post(`/conversations/${convId}/upload`, fd, {
+        headers: { "Content-Type": "multipart/form-data" },
+      });
+      const n = staged.length;
+      staged.forEach((s) => s.previewUrl && URL.revokeObjectURL(s.previewUrl));
+      setStaged([]);
+      setText("");
+      toast.success(`Uploaded ${n} file${n > 1 ? "s" : ""} to General`, {
+        action: { label: "Open chat", onClick: () => nav(`/app/team/${teamId}/c/${convId}`) },
+      });
+    } catch (err) {
+      toast.error(err?.response?.data?.detail || "Upload failed");
+    } finally { setUploading(false); }
+  };
+
+  return (
+    <div
+      className="relative sp-glass-strong rounded-2xl p-6 mb-6"
+      onDragOver={onDragOver}
+      onDragLeave={() => setIsDragging(false)}
+      onDrop={onDrop}
+      data-testid="open-general-chat"
+    >
+      {isDragging && (
+        <div className="absolute inset-0 z-10 rounded-2xl border-2 border-dashed flex items-center justify-center pointer-events-none"
+             style={{ borderColor: "rgba(246,64,0,0.7)", background: "color-mix(in srgb, var(--bg) 80%, transparent)", backdropFilter: "blur(8px)", WebkitBackdropFilter: "blur(8px)" }}
+             data-testid="general-drop-overlay">
+          <div className="flex items-center gap-2 text-sm font-medium" style={{ color: "var(--fg)" }}>
+            <Paperclip className="w-4 h-4" /> Drop to attach to General
+          </div>
+        </div>
+      )}
+
+      <Link
+        to={`/app/team/${teamId}/c/${convId}`}
+        className="flex items-center gap-4 group"
+        data-testid="open-general-chat-link"
+      >
+        <div className="w-12 h-12 rounded-xl flex items-center justify-center shrink-0"
+             style={{ background: "linear-gradient(160deg, rgba(246,64,0,0.7), rgba(246,64,0,0.15))" }}>
+          <MessageCircle className="w-5 h-5 text-white" />
+        </div>
+        <div className="flex-1 min-w-0">
+          <div className="font-medium text-lg" style={{ color: "var(--fg)" }}>General chat</div>
+          <div className="text-xs sp-subtle">Always-on. Just type — the right specialist will respond, and others jump in when the topic shifts.</div>
+        </div>
+        <ArrowRight className="w-5 h-5 sp-subtle group-hover:opacity-100 opacity-70 transition" />
+      </Link>
+
+      {/* Inline upload row — paperclip + textarea + send */}
+      <form onSubmit={submit} className="mt-4 pt-4 border-t border-white/10">
+        {staged.length > 0 && (
+          <div className="flex flex-wrap gap-2 mb-3" data-testid="general-staged-tray">
+            {staged.map((s) => (
+              <div key={s.id} className="sp-glass rounded-lg px-3 py-1.5 flex items-center gap-2 text-xs" data-testid={`general-staged-${s.id}`}>
+                {s.previewUrl ? (
+                  <img src={s.previewUrl} alt="" className="w-6 h-6 rounded object-cover" />
+                ) : (
+                  <FileIcon className="w-3.5 h-3.5 sp-subtle" />
+                )}
+                <span className="max-w-[180px] truncate" title={s.file.name}>{s.file.name}</span>
+                <span className="sp-subtle">{formatBytes(s.file.size)}</span>
+                <button type="button" onClick={() => removeStaged(s.id)} className="sp-subtle hover:text-white"
+                        data-testid={`general-remove-staged-${s.id}`}>
+                  <XIcon className="w-3 h-3" />
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
+        <div className="flex items-center gap-2">
+          <input
+            ref={fileInputRef}
+            type="file"
+            multiple
+            accept="image/*,video/*,audio/*,.pdf,.doc,.docx,.txt,.md,.csv,.json,.log,.xlsx,.pptx,.rtf"
+            className="hidden"
+            onChange={onPick}
+            data-testid="general-file-input"
+          />
+          <button
+            type="button"
+            onClick={() => fileInputRef.current?.click()}
+            className="sp-btn sp-btn-ghost text-xs shrink-0"
+            title="Attach files (or paste / drop them anywhere on this card)"
+            data-testid="general-paperclip-btn"
+          >
+            <Paperclip className="w-3.5 h-3.5" />
+          </button>
+          <input
+            type="text"
+            value={text}
+            onChange={(e) => setText(e.target.value)}
+            onPaste={onPaste}
+            placeholder={staged.length > 0
+              ? `Optional — what should the agents do with ${staged.length === 1 ? "this file" : "these files"}?`
+              : "Drop, paste, or pick files to send to General — add an optional prompt"}
+            className="flex-1 rounded-xl px-4 py-2.5 text-sm focus:sp-focus"
+            style={{ background: "var(--input-bg)", border: "1px solid var(--input-border)", color: "var(--fg)" }}
+            data-testid="general-prompt-input"
+          />
+          <button
+            type="submit"
+            disabled={uploading || staged.length === 0}
+            className="sp-btn sp-btn-primary text-xs shrink-0 disabled:opacity-50"
+            data-testid="general-send-btn"
+            title={staged.length === 0 ? "Attach a file first" : "Send to General"}
+          >
+            {uploading ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Send className="w-3.5 h-3.5" />}
+            {uploading ? "Uploading…" : "Send"}
+          </button>
+        </div>
+      </form>
     </div>
   );
 }

@@ -41,12 +41,11 @@ export default function AppHome() {
         soul_description: soulDesc.trim(),
       });
       toast.success("Organization created — Soul captured");
-      // Jump straight into the auto-created General chat
-      if (data.general_team_id && data.general_conversation_id) {
-        nav(`/app/team/${data.general_team_id}/c/${data.general_conversation_id}`);
-      } else {
-        nav(`/app/org/${data.id}`);
-      }
+      // Land on the org workspace page so the user can review the captured
+      // Soul, see the General chat card, the Social Queue, and any teams
+      // before diving into a conversation. They can click the General chat
+      // card from there to start chatting.
+      nav(`/app/org/${data.id}`);
     } catch (err) {
       toast.error(err?.response?.data?.detail || "Failed to create");
     } finally {
