@@ -34,6 +34,11 @@ export default function ConversationPage() {
   // and ask "place the logo on the background" in one shot.
   const [staged, setStaged] = useState([]);
   const [scrollState, setScrollState] = useState({ canUp: false, canDown: false });
+  // Default-collapsed participant list so the meta strip doesn't eat half the
+  // screen on General chats with many auto-expanded specialists. Expanded
+  // state is hoisted above the early-return below so the hook order stays
+  // stable across renders (React's rules-of-hooks).
+  const [agentsExpanded, setAgentsExpanded] = useState(false);
 
   const onScrollerScroll = () => {
     const el = scrollerRef.current;
@@ -445,6 +450,13 @@ export default function ConversationPage() {
   if (loading || !conv || !team) return <div className="min-h-screen"><TopBar>Loading…</TopBar></div>;
 
   const convAgents = conv.agent_ids.map(id => agentMap[id]).filter(Boolean);
+
+  // Collapse threshold for the agent chip list. We collapse aggressively
+  // (anything beyond 1 agent) because on mobile the chip wall takes up a
+  // ridiculous amount of screen real estate and the exact list rarely
+  // matters. Click the stack to expand and see the full cast.
+  const AGENT_COLLAPSE_THRESHOLD = 1;
+  const agentsCollapsed = convAgents.length > AGENT_COLLAPSE_THRESHOLD && !agentsExpanded;
   const isGroup = conv.type === "group";
 
   return (
@@ -492,13 +504,48 @@ export default function ConversationPage() {
               </span>
             );
           })()}
-          {convAgents.map((a) => (
-            <span key={a.id} className="sp-chip !bg-white/5">
-              <span className="sp-dot" style={{ background: a.accent }} />
-              {a.emoji ? `${a.emoji} ` : ""}{a.name}
-              <span className="opacity-60">· {a.division}</span>
-            </span>
-          ))}
+          {agentsCollapsed ? (
+            <button
+              type="button"
+              onClick={() => setAgentsExpanded(true)}
+              className="sp-chip !bg-white/5 hover:!bg-white/15 hover:text-white inline-flex items-center gap-2"
+              data-testid="agent-stack-toggle"
+              title={convAgents.map((a) => a.name).join(", ")}
+            >
+              {/* Avatar stack — up to 5 overlapping dots of agent accent colours */}
+              <span className="inline-flex -space-x-1.5">
+                {convAgents.slice(0, 5).map((a) => (
+                  <span
+                    key={a.id}
+                    className="w-3 h-3 rounded-full ring-2"
+                    style={{ background: a.accent, boxShadow: "0 0 0 2px var(--bg)" }}
+                  />
+                ))}
+              </span>
+              {convAgents.length} agents
+              <ArrowDown className="w-3 h-3" />
+            </button>
+          ) : (
+            <>
+              {convAgents.map((a) => (
+                <span key={a.id} className="sp-chip !bg-white/5">
+                  <span className="sp-dot" style={{ background: a.accent }} />
+                  {a.emoji ? `${a.emoji} ` : ""}{a.name}
+                  <span className="opacity-60">· {a.division}</span>
+                </span>
+              ))}
+              {convAgents.length > AGENT_COLLAPSE_THRESHOLD && (
+                <button
+                  type="button"
+                  onClick={() => setAgentsExpanded(false)}
+                  className="sp-chip !bg-white/5 hover:!bg-white/15 hover:text-white inline-flex items-center gap-1"
+                  data-testid="agent-stack-collapse"
+                >
+                  <ArrowUp className="w-3 h-3" /> Collapse
+                </button>
+              )}
+            </>
+          )}
           {isGroup && (
             <span className="sp-chip !bg-white/5">
               <Users className="w-3 h-3" /> {conv.member_ids.length} people
