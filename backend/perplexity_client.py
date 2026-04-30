@@ -114,40 +114,76 @@ async def perplexity_company_summary(
 ) -> str:
     """Return plain-text context about the company sourced from Perplexity.
 
-    Empty string on failure (no key, network, parse). The caller (`server.py`
+    Empty string on failure (no key, network, parse, or the URL is genuinely
+    not in Perplexity's index — we DELIBERATELY don't accept descriptions of
+    similarly-named-but-different sites). The caller (`server.py`
     `_generate_company_soul`) treats this just like a successful website
     scrape.
     """
     if not is_available():
         return ""
     name = (name or "").strip()
+    url = (url or "").strip()
     if not name and not url:
         return ""
+    # Strict prompt: the URL is the ground truth, not the name. Lots of
+    # `.app` / `.io` startups share names with established `.com` companies
+    # (e.g. playtrackr.app vs playtrackr.com); without this guardrail
+    # Perplexity will happily describe the wrong one.
     bits: list[str] = []
-    if name:
-        bits.append(f"Company name: {name}")
     if url:
-        bits.append(f"Website: {url}")
+        bits.append(f"Website (ground truth — describe ONLY this exact URL): {url}")
+    if name:
+        bits.append(f"Company name (may overlap with unrelated sites): {name}")
     bits.append(
-        "In 4–6 short paragraphs, describe what this company does, who its "
-        "customers are, the tone of its public-facing copy, its core values, "
-        "and any clear long-term ambition. Quote phrases from their own site "
-        "where helpful. Don't include marketing fluff or your own opinions."
+        "In 4–6 short paragraphs, describe ONLY what the website at the URL "
+        "above does — its actual product, customers, tone, values, and "
+        "ambition. Do NOT describe a different site that happens to share the "
+        "name. Quote phrases from the site itself where helpful.\n\n"
+        "If you do NOT have specific information about the exact URL above "
+        "(not a similar-name site, the EXACT URL), respond with the single "
+        "word UNKNOWN and nothing else."
     )
     user_msg = "\n".join(bits)
     content, _results = await _chat(
         [
-            {"role": "system", "content": "You are a precise business research analyst."},
+            {"role": "system", "content": "You are a precise business research analyst. Stay grounded on the exact URL provided; never substitute a similarly-named site."},
             {"role": "user", "content": user_msg},
         ],
         max_tokens=900,
     )
     if not content:
         return ""
-    # Strip Perplexity's bracketed citation tokens like [1], [2][3] — they
-    # confuse the downstream Soul-extractor LLM and aren't useful here.
+    # Strip Perplexity's bracketed citation tokens like [1], [2][3]
     cleaned = re.sub(r"\[\d+(?:\]\[\d+)*\]", " ", content)
     cleaned = re.sub(r"\s+", " ", cleaned).strip()
+    # Detect the "UNKNOWN" response (sometimes wrapped in quotes/markdown)
+    if re.fullmatch(r"[\"'`*_ \t]*UNKNOWN[\"'`*_ \t.!,]*", cleaned, flags=re.IGNORECASE):
+        log.info("Perplexity returned UNKNOWN for %s", url or name)
+        return ""
+    # Extra safety net: if the response doesn't even mention the URL host or
+    # the company name, it's almost certainly hallucinating about a different
+    # site — discard it. We require at least one anchor token.
+    anchors = []
+    if url:
+        try:
+            from urllib.parse import urlparse
+            host = (urlparse(url if url.startswith(("http://", "https://")) else "https://" + url).hostname or "").lower()
+            if host:
+                anchors.append(host.replace("www.", ""))
+                # also accept the bare domain stem (e.g. "playtrackr")
+                stem = host.split(".")[0] if host else ""
+                if stem and len(stem) >= 4:
+                    anchors.append(stem)
+        except Exception:
+            pass
+    if name and len(name) >= 3:
+        anchors.append(name.lower())
+    if anchors:
+        low = cleaned.lower()
+        if not any(a in low for a in anchors):
+            log.info("Perplexity result didn't mention %s — discarding as off-target", anchors)
+            return ""
     return cleaned[:max_chars]
 
 

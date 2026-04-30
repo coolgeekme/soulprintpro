@@ -472,6 +472,9 @@ async def _fetch_url_text(url: str, max_chars: int = 8000) -> str:
             'property=["\']og:description["\']',
             'property=["\']og:site_name["\']',
             'name=["\']twitter:description["\']',
+            'name=["\']twitter:title["\']',
+            'name=["\']apple-mobile-web-app-title["\']',
+            'name=["\']application-name["\']',
         ):
             m = re.search(
                 rf'<meta[^>]+{prop}[^>]+content=["\']([^"\']+)["\']',
@@ -479,6 +482,46 @@ async def _fetch_url_text(url: str, max_chars: int = 8000) -> str:
             )
             if m:
                 bits.append(m.group(1).strip())
+        return " — ".join(b for b in bits if b)
+
+    def _manifest_url(html: str, base: str) -> Optional[str]:
+        """Many PWAs (esp. on `.app` domains) ship `<link rel="manifest" href="/manifest.json">`
+        whose `name` + `description` are the canonical site description, even
+        when the static HTML has no title/meta tags at all."""
+        m = re.search(
+            r'<link[^>]+rel=["\']manifest["\'][^>]+href=["\']([^"\']+)["\']',
+            html, flags=re.IGNORECASE,
+        )
+        if not m:
+            return None
+        href = m.group(1).strip()
+        if href.startswith(("http://", "https://")):
+            return href
+        try:
+            from urllib.parse import urljoin
+            return urljoin(base, href)
+        except Exception:
+            return None
+
+    async def _manifest_text(client: "httpx.AsyncClient", url: str) -> str:
+        """Fetch a PWA manifest and stitch its name + short_name + description."""
+        try:
+            resp = await client.get(url)
+        except (httpx.HTTPError, ValueError):
+            return ""
+        if resp.status_code >= 400:
+            return ""
+        try:
+            data = resp.json()
+        except (ValueError, json.JSONDecodeError):
+            return ""
+        if not isinstance(data, dict):
+            return ""
+        bits = [
+            (data.get("name") or "").strip(),
+            (data.get("short_name") or "").strip(),
+            (data.get("description") or "").strip(),
+        ]
         return " — ".join(b for b in bits if b)
 
     def _visible_text(html: str) -> str:
@@ -521,6 +564,14 @@ async def _fetch_url_text(url: str, max_chars: int = 8000) -> str:
 
             if len(visible) >= 200:
                 return visible[:max_chars]
+
+            # SPA shells (PWA `.app` sites etc) usually have no title/desc but
+            # DO ship a manifest.json — fetch it for the canonical name+desc.
+            manifest_href = _manifest_url(html, cand)
+            if manifest_href:
+                manifest = await _manifest_text(client, manifest_href)
+                if len(manifest) >= 40:
+                    return manifest[:max_chars]
 
             # Last resort: meta-tag stitch (title + description + OG)
             meta = _meta_fallback(html)
