@@ -158,10 +158,38 @@ async def _draft_via_agent(
     ).with_model("openai", "gpt-4.1-mini")
     raw = (await chat.send_message(UserMessage(text=prompt))) or ""
 
-    # Strip stray ```json fences and grab the first JSON array
-    cleaned = re.sub(r"^```(?:json)?\s*|\s*```$", "", raw.strip(), flags=re.IGNORECASE | re.MULTILINE)
-    m = re.search(r"\[\s*\{.*?\}\s*\]", cleaned, re.DOTALL)
-    if not m:
+    # Strip stray ```json fences and grab the first complete JSON array.
+    # The earlier `\[.*?\]` non-greedy regex truncated arrays whose objects
+    # contained nested braces (e.g. nested hashtag dicts) — we now bracket-
+    # count to find the matching `]` so the whole array is parsed.
+    cleaned = re.sub(r"^```(?:json)?\s*|\s*```$", "", raw.strip(),
+                     flags=re.IGNORECASE | re.MULTILINE)
+    arr_text = ""
+    start = cleaned.find("[")
+    if start != -1:
+        depth = 0
+        in_str = False
+        esc = False
+        for i in range(start, len(cleaned)):
+            ch = cleaned[i]
+            if in_str:
+                if esc:
+                    esc = False
+                elif ch == "\\":
+                    esc = True
+                elif ch == '"':
+                    in_str = False
+                continue
+            if ch == '"':
+                in_str = True
+            elif ch == "[":
+                depth += 1
+            elif ch == "]":
+                depth -= 1
+                if depth == 0:
+                    arr_text = cleaned[start:i + 1]
+                    break
+    if not arr_text:
         # Fallback: emit one draft per requested platform with the raw text
         logger.info("Social draft: agent did not return JSON, falling back")
         return [
@@ -169,7 +197,7 @@ async def _draft_via_agent(
             for p in platforms[:count]
         ]
     try:
-        data = json.loads(m.group(0))
+        data = json.loads(arr_text)
     except json.JSONDecodeError:
         return [
             {"platform": p, "text": raw.strip()[:600], "hashtags": []}

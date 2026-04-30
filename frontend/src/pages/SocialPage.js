@@ -33,7 +33,7 @@ const PLATFORMS = {
   },
   threads: {
     label: "Threads",
-    accent: "#fff",
+    accent: "#101010",
     composeUrl: (p) =>
       `https://www.threads.net/intent/post?text=${encodeURIComponent(joinPostText(p))}`,
   },
@@ -66,7 +66,7 @@ const PLATFORMS = {
   },
   // No-deeplink platforms — UI swaps these to "Copy + Download"
   instagram: { label: "Instagram", accent: "#E1306C", composeUrl: () => "" },
-  tiktok:    { label: "TikTok",    accent: "#fff",    composeUrl: () => "" },
+  tiktok:    { label: "TikTok",    accent: "#FE2C55", composeUrl: () => "" },
   youtube:   { label: "YouTube",   accent: "#FF0000", composeUrl: () => "" },
 };
 const PLATFORM_ORDER = [
@@ -476,7 +476,6 @@ function PostCard({ post, onUpdate, onDelete }) {
               if (url) {
                 return (
                   <a key={id} href={url} target="_blank" rel="noreferrer"
-                     onClick={() => copyText(post)}
                      data-testid={`open-${id}-${post.id}`}
                      className="sp-btn sp-btn-ghost text-xs">
                     <ExternalLink className="w-3 h-3" /> Open in {meta.label}
@@ -492,6 +491,12 @@ function PostCard({ post, onUpdate, onDelete }) {
                 </button>
               );
             })}
+            <button type="button" onClick={() => copyText(post)}
+                    title="Copy post text + hashtags"
+                    data-testid={`copy-text-${post.id}`}
+                    className="sp-btn sp-btn-ghost text-xs">
+              <Copy className="w-3 h-3" /> Copy text
+            </button>
             {post.media?.[0]?.url && (
               <a href={post.media[0].url.startsWith("http") ? post.media[0].url : `${BACKEND_URL}${post.media[0].url}`}
                  download target="_blank" rel="noreferrer"
