@@ -4,7 +4,7 @@ import api, { BACKEND_URL } from "../lib/api";
 import TopBar from "../components/TopBar";
 import { toast } from "sonner";
 import { useAuth } from "../context/AuthContext";
-import { Send, Trash2, AtSign, Users, Repeat, Search, X, Lock, Image as ImageIcon, Globe, ExternalLink } from "lucide-react";
+import { Send, Trash2, AtSign, Users, Repeat, Search, X, Lock, Image as ImageIcon, ExternalLink, Globe } from "lucide-react";
 
 const formatTime = (ts) => {
   try { return new Date(ts).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }); }
@@ -227,9 +227,6 @@ export default function ConversationPage() {
           {isGroup && conv.smart_expand && (
             <span className="sp-chip !bg-white/5">Smart expand</span>
           )}
-          <span className="sp-chip !bg-sky-400/10 !text-sky-200/90" data-testid="web-enabled-badge">
-            <Globe className="w-3 h-3" /> Web access
-          </span>
           {!isGroup && (
             <button
               onClick={() => setShowSwitch(true)}
@@ -248,10 +245,10 @@ export default function ConversationPage() {
         <div className="max-w-3xl mx-auto px-6 py-10 flex flex-col gap-4" data-testid="messages-container">
           {messages.length === 0 && (
             <div className="sp-glass rounded-2xl p-8 text-center">
-              <div className="text-white mb-1">You're in.</div>
-              <div className="text-sm sp-subtle">
+              <div className="mb-1 text-lg">You're in.</div>
+              <div className="text-base sp-subtle">
                 {isGroup
-                  ? <>Type a message. {conv.auto_respond ? "Every agent will respond." : <>Use <span className="text-white">@agent-name</span> to call an agent.</>}</>
+                  ? <>Type a message. {conv.auto_respond ? "Every agent will respond." : <>Use <span style={{ color: "var(--fg)" }}>@agent-name</span> to call an agent.</>}</>
                   : <>Ask {convAgents[0]?.name} anything. They already know your team.</>}
               </div>
             </div>
@@ -262,16 +259,16 @@ export default function ConversationPage() {
             const a = isAgent ? agentMap[m.agent_id] : null;
             return (
               <div key={m.id} className={`flex ${mine ? "justify-end" : "justify-start"} sp-fade-up`}>
-                <div className={`max-w-[82%] rounded-2xl px-4 py-3 ${mine ? "sp-bubble-user" : "sp-bubble-agent"}`}>
-                  <div className="flex items-center gap-2 mb-1">
+                <div className={`max-w-[82%] rounded-2xl px-5 py-3.5 ${mine ? "sp-bubble-user" : "sp-bubble-agent"}`}>
+                  <div className="flex items-center gap-2 mb-1.5">
                     {isAgent && a && <span className="sp-dot" style={{ background: a.accent }} />}
-                    <span className="text-xs font-medium text-white/90">
+                    <span className="text-sm font-medium">
                       {isAgent ? (a?.name || "Agent") : (mine ? "You" : m.sender_name)}
                     </span>
-                    {isAgent && a && <span className="text-[10px] sp-subtle uppercase tracking-widest">{a.division}</span>}
-                    <span className="text-[10px] sp-subtle ml-auto">{formatTime(m.timestamp)}</span>
+                    {isAgent && a && <span className="text-[11px] sp-subtle uppercase tracking-widest">{a.division}</span>}
+                    <span className="text-[11px] sp-subtle ml-auto">{formatTime(m.timestamp)}</span>
                   </div>
-                  <div className="whitespace-pre-wrap text-sm leading-relaxed">{m.text}</div>
+                  <div className="whitespace-pre-wrap text-[16px] leading-[1.6]">{m.text}</div>
                   {Array.isArray(m.web_sources) && m.web_sources.length > 0 && (
                     <div className="mt-3 pt-3 border-t border-white/10" data-testid={`web-sources-${m.id}`}>
                       <div className="flex items-center gap-2 mb-2">
@@ -383,7 +380,8 @@ export default function ConversationPage() {
                 ? `Describe the image — ${convAgents[0]?.name || "your agent"} will generate it`
                 : (isGroup ? "Message the room… use @name to ping an agent" : `Message ${convAgents[0]?.name || "your agent"}`)}
               rows={1}
-              className="flex-1 bg-white/[0.03] border border-white/10 rounded-2xl px-4 py-3 text-sm text-white placeholder:text-white/30 focus:border-white/30 focus:sp-focus resize-none max-h-40"
+              className="flex-1 sp-glass rounded-2xl px-4 py-3.5 text-[16px] leading-relaxed placeholder:opacity-50 focus:sp-focus resize-none max-h-44"
+              style={{ background: "var(--input-bg)", borderColor: "var(--input-border)", color: "var(--fg)" }}
             />
             <button
               type="submit"

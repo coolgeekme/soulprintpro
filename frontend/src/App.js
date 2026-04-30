@@ -1,6 +1,7 @@
 import "./App.css";
 import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
 import { AuthProvider, useAuth } from "./context/AuthContext";
+import { ThemeProvider } from "./context/ThemeContext";
 import { Toaster } from "./components/ui/sonner";
 
 import LandingPage from "./pages/LandingPage";
@@ -34,23 +35,25 @@ const PublicOnly = ({ children }) => {
 
 function App() {
   return (
-    <div className="App sp-grain min-h-screen">
-      <AuthProvider>
-        <BrowserRouter>
-          <Routes>
-            <Route path="/" element={<PublicOnly><LandingPage /></PublicOnly>} />
-            <Route path="/auth" element={<PublicOnly><AuthPage /></PublicOnly>} />
-            <Route path="/invite/:code" element={<Protected><AcceptInvitePage /></Protected>} />
-            <Route path="/app" element={<Protected><AppHome /></Protected>} />
-            <Route path="/app/org/:orgId" element={<Protected><OrgPage /></Protected>} />
-            <Route path="/app/team/:teamId" element={<Protected><TeamPage /></Protected>} />
-            <Route path="/app/team/:teamId/c/:convId" element={<Protected><ConversationPage /></Protected>} />
-            <Route path="*" element={<Navigate to="/" replace />} />
-          </Routes>
-        </BrowserRouter>
-        <Toaster theme="dark" />
-      </AuthProvider>
-    </div>
+    <ThemeProvider>
+      <div className="App sp-grain min-h-screen">
+        <AuthProvider>
+          <BrowserRouter>
+            <Routes>
+              <Route path="/" element={<PublicOnly><LandingPage /></PublicOnly>} />
+              <Route path="/auth" element={<PublicOnly><AuthPage /></PublicOnly>} />
+              <Route path="/invite/:code" element={<Protected><AcceptInvitePage /></Protected>} />
+              <Route path="/app" element={<Protected><AppHome /></Protected>} />
+              <Route path="/app/org/:orgId" element={<Protected><OrgPage /></Protected>} />
+              <Route path="/app/team/:teamId" element={<Protected><TeamPage /></Protected>} />
+              <Route path="/app/team/:teamId/c/:convId" element={<Protected><ConversationPage /></Protected>} />
+              <Route path="*" element={<Navigate to="/" replace />} />
+            </Routes>
+          </BrowserRouter>
+          <Toaster theme="dark" />
+        </AuthProvider>
+      </div>
+    </ThemeProvider>
   );
 }
 

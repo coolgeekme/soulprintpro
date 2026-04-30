@@ -1211,11 +1211,10 @@ app.include_router(team_r)
 app.include_router(conv_r)
 app.include_router(files_r)
 
-frontend_url = os.environ.get("FRONTEND_URL", "http://localhost:3000")
 app.add_middleware(
     CORSMiddleware,
     allow_credentials=True,
-    allow_origins=[frontend_url, "http://localhost:3000"],
+    allow_origin_regex=r".*",
     allow_methods=["*"],
     allow_headers=["*"],
 )

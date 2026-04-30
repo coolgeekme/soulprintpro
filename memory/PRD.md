@@ -49,32 +49,24 @@ pattern. Users must be able to:
 - `GET|POST /api/teams/{id}/conversations` · `GET|DELETE /api/conversations/{id}`
 - `GET|POST /api/conversations/{id}/messages`
 
-## Implemented (Apr 29, 2026)
+## Implemented (Apr 29-30, 2026)
 - ✅ Full schema rewrite — orgs, teams, members, invites, conversations, messages
-- ✅ JWT cookie auth + Bearer fallback (localStorage)
+- ✅ JWT cookie auth + Bearer fallback (localStorage). **CORS now `allow_origin_regex=".*"`** so deploys work from any domain.
 - ✅ **169 specialised agents** across **14 divisions**, seeded from
   [msitarzewski/agency-agents](https://github.com/msitarzewski/agency-agents)
 - ✅ SoulPrint onboarding injected into every agent system prompt
-- ✅ Direct chats (always respond) and group chats with `@mention` support for
-  **id, short-slug, or slugified display name**, plus `auto_respond` toggle
-- ✅ **Smart auto-routing** — `POST /api/teams/{id}/start` routes a free-text prompt
-  to the best of 169 agents and posts the first message in one shot
-- ✅ **Switch agent** — `POST /api/conversations/{id}/switch-agent` swaps the
-  agent on a direct conversation with a bridging handoff
+- ✅ Direct chats + group chats with `@mention` (id, short slug, or display name)
+- ✅ **Smart auto-routing** (`POST /api/teams/{id}/start`) — type free-text, app picks the best of 169 agents
+- ✅ **Switch agent** with bridging handoff
 - ✅ **Smart-expand groups** — auto-add a new specialist when the topic shifts
-- ✅ **Image generation** — `POST /api/conversations/{id}/generate-image` via
-  Gemini Nano Banana (Emergent LLM key). Files served from
-  `/api/files/{filename}` with auth + conversation-membership checks
-- ✅ **Privacy** — conversations are scoped to `member_ids`. UI shows
-  "Private to you" or "Shared with N people" badges in the meta strip and
-  conversation cards
-- ✅ Invite system: code + shareable link (`/invite/:code`) + mailto helper
-- ✅ Access control at org + team + conversation + file level
-- ✅ Dark "liquid glass" UI; "Just start typing" composer + image-mode toggle
-- ✅ Searchable + division-filterable crew browser & dialogs
-- ✅ Test suite: **60/60 pytest passing** across `test_soulprint.py`,
-  `test_agents_catalogue.py`, `test_smart_routing.py`,
-  `test_privacy_and_images.py`
+- ✅ **Image generation** via Gemini Nano Banana, served from `/api/files/{filename}` with auth + conversation membership checks
+- ✅ **Real-time web search** via Brave Search API — every message runs through a small intent classifier; if fresh data is needed, top 5 results are injected into the agent's context and rendered as clickable source links under the reply
+- ✅ **Privacy** — conversations scoped to `member_ids`; UI shows "Private to you" / "Shared with N" badges
+- ✅ Invite system: code + shareable link + mailto helper
+- ✅ Dark "liquid glass" UI **+ light theme** with persisted toggle in TopBar
+- ✅ Larger chat font sizes (16px body) to match modern AI chat platforms
+- ✅ Removed "Made with Emergent" badge (per user request)
+- ✅ Test suite: **76/76 pytest passing** across `test_soulprint.py`, `test_agents_catalogue.py`, `test_smart_routing.py`, `test_privacy_and_images.py`, `test_web_search.py`
 
 ## Roadmap
 - **P0 (next)** Tool-calling framework — agents invoke tools via OpenAI function

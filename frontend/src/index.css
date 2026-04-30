@@ -4,13 +4,81 @@
 @tailwind components;
 @tailwind utilities;
 
-:root {
+/* ──────────────────────────────────────────────────────────────────────────
+   Theme tokens (default = dark). [data-theme="light"] overrides on <html>.
+   ────────────────────────────────────────────────────────────────────────── */
+:root,
+:root[data-theme="dark"] {
   color-scheme: dark;
+  --bg: #05060a;
+  --bg-aurora-1: rgba(124, 92, 255, 0.18);
+  --bg-aurora-2: rgba(34, 211, 238, 0.12);
+  --bg-aurora-3: rgba(249, 112, 102, 0.20);
+  --fg: #e9ecf1;
+  --fg-soft: rgba(235, 237, 245, 0.62);
+  --border-soft: rgba(255, 255, 255, 0.08);
+  --border-strong: rgba(255, 255, 255, 0.18);
+  --glass-bg-from: rgba(255, 255, 255, 0.035);
+  --glass-bg-to:   rgba(255, 255, 255, 0.015);
+  --glass-strong-from: rgba(255, 255, 255, 0.055);
+  --glass-strong-to:   rgba(255, 255, 255, 0.02);
+  --inner-highlight: rgba(255, 255, 255, 0.05);
+  --shadow: 0 30px 80px -30px rgba(0, 0, 0, 0.8);
+  --chip-bg: rgba(255, 255, 255, 0.04);
+  --chip-fg: rgba(235, 237, 245, 0.75);
+  --chip-strong-bg: rgba(255, 255, 255, 0.10);
+  --bubble-user-bg: linear-gradient(180deg, rgba(124,92,255,0.22), rgba(124,92,255,0.10));
+  --bubble-user-border: rgba(124,92,255,0.35);
+  --bubble-user-fg: #f4f5fb;
+  --bubble-agent-bg: rgba(255, 255, 255, 0.035);
+  --bubble-agent-border: rgba(255, 255, 255, 0.08);
+  --bubble-agent-fg: #ecedf3;
+  --input-bg: rgba(255,255,255,0.03);
+  --input-border: rgba(255,255,255,0.10);
+  --input-border-focus: rgba(255,255,255,0.30);
+  --primary-bg: linear-gradient(180deg, #f5f6fa 0%, #d7dae4 100%);
+  --primary-fg: #0a0a12;
+  --primary-border: rgba(255,255,255,0.25);
+  --gradient-text: linear-gradient(180deg, #ffffff 0%, #b6bac9 100%);
+}
+
+:root[data-theme="light"] {
+  color-scheme: light;
+  --bg: #f6f5f1;
+  --bg-aurora-1: rgba(124, 92, 255, 0.14);
+  --bg-aurora-2: rgba(45, 200, 230, 0.10);
+  --bg-aurora-3: rgba(249, 145, 102, 0.10);
+  --fg: #1a1a22;
+  --fg-soft: rgba(26, 26, 34, 0.62);
+  --border-soft: rgba(20, 20, 28, 0.08);
+  --border-strong: rgba(20, 20, 28, 0.20);
+  --glass-bg-from: rgba(255, 255, 255, 0.70);
+  --glass-bg-to:   rgba(255, 255, 255, 0.45);
+  --glass-strong-from: rgba(255, 255, 255, 0.85);
+  --glass-strong-to:   rgba(255, 255, 255, 0.55);
+  --inner-highlight: rgba(255, 255, 255, 0.85);
+  --shadow: 0 30px 80px -30px rgba(20, 20, 30, 0.18);
+  --chip-bg: rgba(20, 20, 28, 0.05);
+  --chip-fg: rgba(26, 26, 34, 0.78);
+  --chip-strong-bg: rgba(20, 20, 28, 0.10);
+  --bubble-user-bg: linear-gradient(180deg, rgba(124,92,255,0.18), rgba(124,92,255,0.08));
+  --bubble-user-border: rgba(124,92,255,0.30);
+  --bubble-user-fg: #1a1a22;
+  --bubble-agent-bg: rgba(255,255,255,0.70);
+  --bubble-agent-border: rgba(20,20,28,0.10);
+  --bubble-agent-fg: #1a1a22;
+  --input-bg: rgba(255,255,255,0.85);
+  --input-border: rgba(20,20,28,0.12);
+  --input-border-focus: rgba(124,92,255,0.50);
+  --primary-bg: linear-gradient(180deg, #1a1a22 0%, #303040 100%);
+  --primary-fg: #f6f5f1;
+  --primary-border: rgba(20,20,28,0.20);
+  --gradient-text: linear-gradient(180deg, #1a1a22 0%, #5a5a72 100%);
 }
 
 html, body, #root {
   height: 100%;
-  background-color: #05060a;
+  background-color: var(--bg);
 }
 
 body {
@@ -18,20 +86,23 @@ body {
   font-family: 'Inter', ui-sans-serif, system-ui, -apple-system, "Helvetica Neue", Arial, sans-serif;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
-  color: #e9ecf1;
+  color: var(--fg);
   background:
-    radial-gradient(1200px 600px at 8% -10%, rgba(124, 92, 255, 0.18), transparent 60%),
-    radial-gradient(900px 500px at 95% 10%, rgba(34, 211, 238, 0.12), transparent 55%),
-    #05060a;
+    radial-gradient(1200px 600px at 8% -10%, var(--bg-aurora-1), transparent 60%),
+    radial-gradient(900px 500px at 95% 10%, var(--bg-aurora-2), transparent 55%),
+    var(--bg);
   background-attachment: fixed;
   letter-spacing: -0.01em;
+  /* Bumped base size to match modern AI chat platforms (~16-17px) */
+  font-size: 16px;
+  line-height: 1.55;
 }
 
 code, pre {
   font-family: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
 }
 
-/* Shadcn design tokens (dark) */
+/* Shadcn design tokens (mapped to theme vars) */
 @layer base {
   :root {
     --background: 232 25% 4%;
@@ -56,7 +127,6 @@ code, pre {
     --radius: 0.75rem;
   }
 }
-
 @layer base {
   * { @apply border-border; }
   body { @apply bg-background text-foreground; }
@@ -64,28 +134,26 @@ code, pre {
 
 /* ── Liquid glass surfaces ──────────────────────────────────────────────── */
 .sp-glass {
-  background: linear-gradient(180deg, rgba(255,255,255,0.035), rgba(255,255,255,0.015));
-  border: 1px solid rgba(255, 255, 255, 0.07);
+  background: linear-gradient(180deg, var(--glass-bg-from), var(--glass-bg-to));
+  border: 1px solid var(--border-soft);
   backdrop-filter: blur(20px) saturate(120%);
   -webkit-backdrop-filter: blur(20px) saturate(120%);
   box-shadow:
-    inset 0 1px 0 rgba(255,255,255,0.05),
-    0 20px 60px -20px rgba(0,0,0,0.6);
+    inset 0 1px 0 var(--inner-highlight),
+    var(--shadow);
 }
 
 .sp-glass-strong {
-  background: linear-gradient(180deg, rgba(255,255,255,0.055), rgba(255,255,255,0.02));
-  border: 1px solid rgba(255, 255, 255, 0.09);
+  background: linear-gradient(180deg, var(--glass-strong-from), var(--glass-strong-to));
+  border: 1px solid var(--border-soft);
   backdrop-filter: blur(22px) saturate(140%);
   -webkit-backdrop-filter: blur(22px) saturate(140%);
   box-shadow:
-    inset 0 1px 0 rgba(255,255,255,0.06),
-    0 30px 80px -30px rgba(0,0,0,0.8);
+    inset 0 1px 0 var(--inner-highlight),
+    var(--shadow);
 }
 
-.sp-hairline {
-  border: 1px solid rgba(255,255,255,0.08);
-}
+.sp-hairline { border: 1px solid var(--border-soft); }
 
 /* grain overlay: adds texture without weight */
 .sp-grain::after {
@@ -93,7 +161,7 @@ code, pre {
   position: fixed; inset: 0;
   pointer-events: none;
   opacity: 0.04;
-  background-image: radial-gradient(#fff 1px, transparent 1px);
+  background-image: radial-gradient(currentColor 1px, transparent 1px);
   background-size: 3px 3px;
   z-index: 1;
 }
@@ -103,9 +171,9 @@ code, pre {
   position: absolute; inset: -20%;
   filter: blur(60px);
   background:
-    radial-gradient(40% 40% at 20% 30%, rgba(124,92,255,0.45), transparent 60%),
-    radial-gradient(40% 40% at 80% 20%, rgba(34,211,238,0.35), transparent 60%),
-    radial-gradient(50% 50% at 60% 90%, rgba(249,112,102,0.2), transparent 60%);
+    radial-gradient(40% 40% at 20% 30%, var(--bg-aurora-1), transparent 60%),
+    radial-gradient(40% 40% at 80% 20%, var(--bg-aurora-2), transparent 60%),
+    radial-gradient(50% 50% at 60% 90%, var(--bg-aurora-3), transparent 60%);
   animation: sp-aurora 22s ease-in-out infinite alternate;
   pointer-events: none;
 }
@@ -120,16 +188,14 @@ code, pre {
   font-family: 'Instrument Serif', 'Times New Roman', serif;
   font-weight: 400;
   letter-spacing: -0.015em;
-  line-height: 0.98;
+  line-height: 1.0;
 }
 
-.sp-subtle {
-  color: rgba(235, 237, 245, 0.62);
-}
+.sp-subtle { color: var(--fg-soft); }
 
 /* gradient text */
 .sp-gradient-text {
-  background: linear-gradient(180deg, #ffffff 0%, #b6bac9 100%);
+  background: var(--gradient-text);
   -webkit-background-clip: text;
   background-clip: text;
   color: transparent;
@@ -138,40 +204,41 @@ code, pre {
 /* buttons */
 .sp-btn {
   display: inline-flex; align-items: center; gap: 0.5rem;
-  padding: 0.7rem 1.1rem;
+  padding: 0.65rem 1.05rem;
   border-radius: 999px;
   font-weight: 500;
-  transition: transform 180ms ease, background 180ms ease, border-color 180ms ease, box-shadow 180ms ease;
+  font-size: 0.95rem;
+  transition: transform 180ms ease, background 180ms ease, border-color 180ms ease, box-shadow 180ms ease, color 180ms ease;
 }
 .sp-btn:active { transform: translateY(1px); }
 
 .sp-btn-primary {
-  background: linear-gradient(180deg, #f5f6fa 0%, #d7dae4 100%);
-  color: #0a0a12;
-  border: 1px solid rgba(255,255,255,0.25);
-  box-shadow: 0 10px 30px -12px rgba(255,255,255,0.25), inset 0 1px 0 rgba(255,255,255,0.8);
+  background: var(--primary-bg);
+  color: var(--primary-fg);
+  border: 1px solid var(--primary-border);
+  box-shadow: 0 10px 30px -12px rgba(0,0,0,0.25), inset 0 1px 0 var(--inner-highlight);
 }
 .sp-btn-primary:hover { transform: translateY(-1px); }
 
 .sp-btn-ghost {
-  background: rgba(255,255,255,0.03);
-  color: #e9ecf1;
-  border: 1px solid rgba(255,255,255,0.1);
+  background: var(--chip-bg);
+  color: var(--fg);
+  border: 1px solid var(--border-soft);
 }
 .sp-btn-ghost:hover {
-  background: rgba(255,255,255,0.06);
-  border-color: rgba(255,255,255,0.18);
+  background: var(--chip-strong-bg);
+  border-color: var(--border-strong);
 }
 
 /* subtle chip */
 .sp-chip {
   display: inline-flex; align-items: center; gap: 0.4rem;
-  padding: 0.25rem 0.65rem;
+  padding: 0.28rem 0.72rem;
   border-radius: 999px;
-  background: rgba(255,255,255,0.04);
-  border: 1px solid rgba(255,255,255,0.08);
-  color: rgba(235,237,245,0.75);
-  font-size: 0.72rem;
+  background: var(--chip-bg);
+  border: 1px solid var(--border-soft);
+  color: var(--chip-fg);
+  font-size: 0.74rem;
   letter-spacing: 0.06em;
   text-transform: uppercase;
 }
@@ -179,33 +246,29 @@ code, pre {
 /* thin divider */
 .sp-divider {
   height: 1px;
-  background: linear-gradient(90deg, transparent, rgba(255,255,255,0.15), transparent);
+  background: linear-gradient(90deg, transparent, var(--border-strong), transparent);
 }
 
 /* scrollbars */
 ::-webkit-scrollbar { width: 10px; height: 10px; }
 ::-webkit-scrollbar-track { background: transparent; }
-::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.08); border-radius: 999px; }
-::-webkit-scrollbar-thumb:hover { background: rgba(255,255,255,0.16); }
+::-webkit-scrollbar-thumb { background: var(--border-soft); border-radius: 999px; }
+::-webkit-scrollbar-thumb:hover { background: var(--border-strong); }
 
 /* focus ring */
-input:focus, textarea:focus, button:focus {
-  outline: none;
-}
-.sp-focus {
-  box-shadow: 0 0 0 2px rgba(124, 92, 255, 0.35);
-}
+input:focus, textarea:focus, button:focus { outline: none; }
+.sp-focus { box-shadow: 0 0 0 2px rgba(124, 92, 255, 0.35); }
 
 /* chat bubbles */
 .sp-bubble-user {
-  background: linear-gradient(180deg, rgba(124,92,255,0.22), rgba(124,92,255,0.1));
-  border: 1px solid rgba(124,92,255,0.35);
-  color: #f4f5fb;
+  background: var(--bubble-user-bg);
+  border: 1px solid var(--bubble-user-border);
+  color: var(--bubble-user-fg);
 }
 .sp-bubble-agent {
-  background: rgba(255,255,255,0.035);
-  border: 1px solid rgba(255,255,255,0.08);
-  color: #ecedf3;
+  background: var(--bubble-agent-bg);
+  border: 1px solid var(--bubble-agent-border);
+  color: var(--bubble-agent-fg);
 }
 
 /* marker dot */
@@ -214,7 +277,7 @@ input:focus, textarea:focus, button:focus {
   display: inline-block;
 }
 
-/* accordion / shadcn debug wrappers (kept from original scaffolding) */
+/* shadcn debug wrappers (kept from original scaffolding) */
 @layer base {
   [data-debug-wrapper="true"] { display: contents !important; }
 }
@@ -225,7 +288,7 @@ input:focus, textarea:focus, button:focus {
 .sp-typing span {
   display: inline-block;
   width: 6px; height: 6px;
-  background: rgba(235,237,245,0.55);
+  background: var(--fg-soft);
   border-radius: 999px;
   margin: 0 2px;
   animation: sp-bounce 1.2s infinite ease-in-out;
@@ -243,3 +306,50 @@ input:focus, textarea:focus, button:focus {
   to { opacity: 1; transform: none; }
 }
 .sp-fade-up { animation: sp-fade-up 500ms cubic-bezier(.2,.6,.2,1) both; }
+
+/* Inputs themed */
+.sp-input,
+input[type="text"], input[type="email"], input[type="password"], textarea {
+  background-color: var(--input-bg);
+}
+
+/* In light theme, hard-coded white-ish utility classes should follow the
+   theme foreground instead of forcing pure white. Targets the most common
+   classes used across pages without us needing to rewrite every component. */
+:root[data-theme="light"] .text-white,
+:root[data-theme="light"] .text-white\/95,
+:root[data-theme="light"] .text-white\/90,
+:root[data-theme="light"] .text-white\/80,
+:root[data-theme="light"] .text-white\/70 {
+  color: var(--fg) !important;
+}
+:root[data-theme="light"] .text-white\/60,
+:root[data-theme="light"] .text-white\/50,
+:root[data-theme="light"] .text-white\/40,
+:root[data-theme="light"] .text-white\/30 {
+  color: var(--fg-soft) !important;
+}
+:root[data-theme="light"] .placeholder\:text-white\/30::placeholder { color: var(--fg-soft); }
+:root[data-theme="light"] .bg-white\/\[0\.03\],
+:root[data-theme="light"] .bg-white\/5,
+:root[data-theme="light"] .bg-white\/\[0\.05\] { background-color: var(--input-bg) !important; }
+:root[data-theme="light"] .border-white\/5,
+:root[data-theme="light"] .border-white\/10,
+:root[data-theme="light"] .border-white\/20,
+:root[data-theme="light"] .border-white\/30 { border-color: var(--border-soft) !important; }
+:root[data-theme="light"] .hover\:border-white\/20:hover,
+:root[data-theme="light"] .hover\:border-white\/25:hover,
+:root[data-theme="light"] .hover\:border-white\/30:hover { border-color: var(--border-strong) !important; }
+
+/* Make the auth backdrop and dialog overlays look right in light mode */
+:root[data-theme="light"] .bg-black\/0,
+:root[data-theme="light"] .bg-black\/20,
+:root[data-theme="light"] .bg-black\/30,
+:root[data-theme="light"] .bg-black\/40 { background-color: rgba(255,255,255,0.45) !important; }
+:root[data-theme="light"] .bg-black\/60 { background-color: rgba(20,20,30,0.40) !important; }
+
+/* Bigger base sizes for inputs to match modern AI chats */
+input[type="text"], input[type="email"], input[type="password"], textarea {
+  font-size: 1rem;
+  line-height: 1.5;
+}
