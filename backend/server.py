@@ -56,6 +56,10 @@ from style_guide import (
     make_style_guide_router,
     format_guide_for_prompt as _format_style_guide_prompt,
 )
+from missions import (
+    make_missions_router,
+    build_tools as _build_mission_tools,
+)
 
 ROOT_DIR = Path(__file__).parent
 UPLOAD_DIR = ROOT_DIR / "uploads"
@@ -3948,6 +3952,49 @@ style_r = make_style_guide_router(
 )
 app.include_router(style_r)
 
+
+# ── Mission Mode — autonomous multi-step agent workflows ───────────────────
+def _build_mission_tools_factory():
+    """Return freshly-built tools each call (they're stateless but cheap)."""
+    return _build_mission_tools(
+        db=db, docs_root=DOCS_DIR, UPLOAD_DIR=UPLOAD_DIR, AGENTS=AGENTS,
+        brave_search=brave_web_search,
+        perplexity_web_search=perplexity_web_search,
+        perplexity_available=_perplexity_available,
+        generate_image_for=generate_image_for,
+        save_artifacts=_save_artifacts,
+    )
+
+
+def _build_lead_mission_system_prompt(tool_catalog: str) -> str:
+    """Compact system prompt for the mission loop's LLM."""
+    from missions import JSON_STEP_SCHEMA
+    return (
+        "You are the lead agent on an autonomous SoulPrint mission. Your job "
+        "is to achieve the user's goal by iteratively choosing tools from the "
+        "catalog below and producing real artifacts (files, images, research "
+        "summaries) along the way. Be decisive: prefer action over asking.\n\n"
+        "Always think first, then pick ONE tool per turn. Use web_search "
+        "liberally for facts. Use write_artifact to save briefs, checklists, "
+        ".ics invites, .csv exports, email drafts, scripts — anything the "
+        "user will want to download. Use generate_image for visual assets. "
+        "Use read_org_document when the user refers to their own prior work.\n\n"
+        "Finish as soon as the goal is met. Don't loop forever. Don't invent "
+        "identifiers — if you don't have an ID, don't make one up.\n\n"
+        f"{tool_catalog}\n\n{JSON_STEP_SCHEMA}"
+    )
+
+
+missions_r = make_missions_router(
+    db=db, AGENTS=AGENTS, EMERGENT_LLM_KEY=EMERGENT_LLM_KEY,
+    LlmChat=LlmChat, UserMessage=UserMessage,
+    require_org_member=require_org_member,
+    get_current_user=get_current_user,
+    build_tools_factory=_build_mission_tools_factory,
+    build_lead_system_prompt=_build_lead_mission_system_prompt,
+)
+app.include_router(missions_r)
+
 app.add_middleware(
     CORSMiddleware,
     allow_credentials=True,
@@ -3974,6 +4021,9 @@ async def startup():
     await db.documents.create_index([("org_id", 1), ("created_at", -1)])
     await db.documents.create_index([("org_id", 1), ("filename", 1)], unique=True)
     await db.documents.create_index("conversation_id")
+    await db.missions.create_index([("org_id", 1), ("started_at", -1)])
+    await db.missions.create_index("status")
+    await db.mission_events.create_index([("mission_id", 1), ("ts", 1)])
     # Boot the in-process scheduler and rehydrate persisted jobs
     if not scheduler.running:
         scheduler.start()

@@ -12,6 +12,7 @@ import TeamPage from "./pages/TeamPage";
 import ConversationPage from "./pages/ConversationPage";
 import AcceptInvitePage from "./pages/AcceptInvitePage";
 import SocialPage from "./pages/SocialPage";
+import MissionsPage from "./pages/MissionsPage";
 
 const Loader = () => (
   <div className="flex items-center justify-center h-screen">
@@ -47,6 +48,8 @@ function App() {
               <Route path="/app" element={<Protected><AppHome /></Protected>} />
               <Route path="/app/org/:orgId" element={<Protected><OrgPage /></Protected>} />
               <Route path="/app/org/:orgId/social" element={<Protected><SocialPage /></Protected>} />
+              <Route path="/app/org/:orgId/missions" element={<Protected><MissionsPage /></Protected>} />
+              <Route path="/app/org/:orgId/missions/:missionId" element={<Protected><MissionsPage /></Protected>} />
               <Route path="/app/team/:teamId" element={<Protected><TeamPage /></Protected>} />
               <Route path="/app/team/:teamId/c/:convId" element={<Protected><ConversationPage /></Protected>} />
               <Route path="*" element={<Navigate to="/" replace />} />

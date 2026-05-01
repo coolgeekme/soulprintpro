@@ -3,7 +3,7 @@ import { useParams, Link, useNavigate } from "react-router-dom";
 import api, { BACKEND_URL } from "../lib/api";
 import TopBar from "../components/TopBar";
 import { toast } from "sonner";
-import { Plus, Users, ArrowRight, Copy, UserPlus, FileText, Image as ImageIcon, FileBox, Trash2, UploadCloud, Download, File as FileIcon, MessageCircle, Pencil, Save, X as XIcon, RefreshCw, Megaphone, Paperclip, Send, Loader2 } from "lucide-react";
+import { Plus, Users, ArrowRight, Copy, UserPlus, FileText, Image as ImageIcon, FileBox, Trash2, UploadCloud, Download, File as FileIcon, MessageCircle, Pencil, Save, X as XIcon, RefreshCw, Megaphone, Paperclip, Send, Loader2, Rocket } from "lucide-react";
 import BrandAssetsPanel from "../components/BrandAssetsPanel";
 import ActivityOverview from "../components/ActivityOverview";
 import DocumentsPanel from "../components/DocumentsPanel";
@@ -314,7 +314,7 @@ export default function OrgPage() {
         {/* Social Queue — jump straight in. */}
         <Link
           to={`/app/org/${orgId}/social`}
-          className="sp-glass rounded-2xl p-5 mb-6 flex items-center gap-4 hover:border-white/25 transition group"
+          className="sp-glass rounded-2xl p-5 mb-4 flex items-center gap-4 hover:border-white/25 transition group"
           data-testid="open-social-queue"
         >
           <div className="w-10 h-10 rounded-xl flex items-center justify-center"
@@ -324,6 +324,23 @@ export default function OrgPage() {
           <div className="flex-1 min-w-0">
             <div className="text-white font-medium">Social Queue</div>
             <div className="text-xs sp-subtle">Generate posts with your agents, schedule them, then one-click open in any platform's web composer.</div>
+          </div>
+          <ArrowRight className="w-4 h-4 text-white/60 group-hover:text-white transition" />
+        </Link>
+
+        {/* Missions — autonomous multi-step agent runs. */}
+        <Link
+          to={`/app/org/${orgId}/missions`}
+          className="sp-glass rounded-2xl p-5 mb-6 flex items-center gap-4 hover:border-white/25 transition group"
+          data-testid="open-missions"
+        >
+          <div className="w-10 h-10 rounded-xl flex items-center justify-center"
+               style={{ background: "linear-gradient(160deg, rgba(96,165,250,0.45), rgba(96,165,250,0.08))" }}>
+            <Rocket className="w-4 h-4 text-white" />
+          </div>
+          <div className="flex-1 min-w-0">
+            <div className="text-white font-medium">Missions</div>
+            <div className="text-xs sp-subtle">Give an agent a goal — it picks tools, researches, writes artifacts, and ships deliverables autonomously. Pause or answer anytime.</div>
           </div>
           <ArrowRight className="w-4 h-4 text-white/60 group-hover:text-white transition" />
         </Link>
