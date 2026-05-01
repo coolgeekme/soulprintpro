@@ -641,33 +641,10 @@ def build_tools(
         url = (args.get("url") or "").strip()
         if not url:
             return {"error": "url is required"}
-        # Per-mission cache: if the same URL has already been fetched in
-        # this mission's recent events, return the cached result with a
-        # nudge so the LLM stops re-calling. Saves Playwright cycles AND
-        # helps the loop-detector kick in faster.
-        try:
-            mid = ctx.get("mission_id", "")
-            if mid:
-                prev_cur = db.mission_events.find(
-                    {"mission_id": mid, "kind": "tool_result", "tool": "browse_url"},
-                    {"_id": 0, "result_preview": 1, "args": 1},
-                ).sort("ts", -1).limit(20)
-                async for prev in prev_cur:
-                    # We don't store args on tool_result, so peek at the
-                    # paired tool_call. Cheap heuristic: look for matching
-                    # URL substring in the result_preview.
-                    if url in (prev.get("result_preview") or ""):
-                        return {
-                            "cached": True,
-                            "note": ("You already browsed this URL earlier "
-                                     "in this mission. Use the prior text "
-                                     "to write an artifact or move on."),
-                            "url": url,
-                        }
-        except Exception:
-            pass
         # Off-load to the browser_tools module — handles SSRF, JS render,
-        # screenshot, text cleanup, and 30s timeout.
+        # screenshot, text cleanup, page-map, and 30s timeout. Sticky page
+        # is keyed by mission_id so subsequent browse_fill / browse_click
+        # / browse_submit operate on the same context.
         result = await _browse_url(
             url, take_screenshot=True, upload_dir=UPLOAD_DIR,
             mission_id=ctx.get("mission_id") or None,
@@ -728,12 +705,17 @@ def build_tools(
                 artifact = None
         # Trim the text block we hand back to the LLM; the full screenshot
         # is already saved as a downloadable artifact.
+        compact = _compact_page_map(result)
         return {
             "final_url": result.get("final_url"),
             "title": result.get("title"),
             "status": result.get("status"),
-            "text_preview": (result.get("text") or "")[:8000],
+            "text_preview": (result.get("text") or "")[:6000],
             "text_bytes": len((result.get("text") or "").encode("utf-8")),
+            "affordances_summary": compact["affordances_summary"],
+            "links": compact["links"],
+            "buttons": compact["buttons"],
+            "forms": compact["forms"],
             "artifact": artifact,
         }
 
@@ -748,6 +730,64 @@ def build_tools(
         return sub
 
     # ── Layer B: form interaction ──────────────────────────────────────
+    def _compact_page_map(result: dict) -> dict:
+        """Distill the rich page-map (`links`, `buttons`, `forms`) into a
+        compact, LLM-friendly shape. We:
+          - drop selectors from links/buttons (LLM sees text + href; if it
+            wants to click it can pass `text=` or use the URL)
+          - keep first 12 links + 12 buttons (whatever the page has)
+          - keep forms in full so the LLM sees field labels & types
+          - synthesize an `affordances_summary` one-liner so the agent
+            *immediately* notices forms present on the page
+        """
+        links_raw = result.get("links") or []
+        buttons_raw = result.get("buttons") or []
+        forms_raw = result.get("forms") or []
+        links = [{"text": l.get("text"), "href": l.get("href")}
+                 for l in links_raw[:12] if l.get("text")]
+        buttons = [{"text": b.get("text"), "selector": b.get("selector")}
+                   for b in buttons_raw[:12] if b.get("text")]
+        forms = []
+        for f in forms_raw[:4]:
+            fields = []
+            for fld in (f.get("fields") or [])[:12]:
+                fields.append({
+                    "name": fld.get("name"),
+                    "type": fld.get("type"),
+                    "label": fld.get("label"),
+                    "placeholder": fld.get("placeholder"),
+                    "required": fld.get("required"),
+                })
+            forms.append({
+                "selector": f.get("selector"),
+                "submit_text": f.get("submit_text"),
+                "action": f.get("action"),
+                "fields": fields,
+            })
+        # Plain-English summary the LLM can react to without parsing JSON
+        parts = []
+        if forms:
+            field_names = ", ".join(
+                (fld.get("label") or fld.get("name") or fld.get("placeholder") or fld.get("type") or "?")
+                for fld in (forms[0].get("fields") or [])[:6]
+            )
+            parts.append(
+                f"{len(forms)} form(s) on this page; first form has fields: {field_names or '(none visible)'}"
+                + (f"; submit button says {forms[0]['submit_text']!r}" if forms[0].get("submit_text") else "")
+            )
+        else:
+            parts.append("No <form> elements on this page.")
+        if buttons:
+            parts.append("Buttons: " + ", ".join(b["text"] for b in buttons[:8]))
+        if links:
+            parts.append("Links: " + ", ".join(l["text"] for l in links[:8]))
+        return {
+            "affordances_summary": " | ".join(parts),
+            "links": links,
+            "buttons": buttons,
+            "forms": forms,
+        }
+
     async def _persist_action_screenshot(ctx: dict, result: dict) -> Optional[dict]:
         """Promote the Playwright screenshot in `result["screenshot"]` (a
         filename in UPLOAD_DIR) into a real Document so the Mission UI can
@@ -812,11 +852,16 @@ def build_tools(
         if result.get("error"):
             return {"error": result["error"]}
         artifact = await _persist_action_screenshot(ctx, result)
+        compact = _compact_page_map(result)
         return {
             "clicked": result.get("clicked"),
             "final_url": result.get("final_url"),
             "title": result.get("title"),
             "text_preview": (result.get("text") or "")[:4000],
+            "affordances_summary": compact["affordances_summary"],
+            "links": compact["links"],
+            "buttons": compact["buttons"],
+            "forms": compact["forms"],
             "artifact": artifact,
         }
 
@@ -831,12 +876,15 @@ def build_tools(
         if result.get("error"):
             return {"error": result["error"]}
         artifact = await _persist_action_screenshot(ctx, result)
+        compact = _compact_page_map(result)
         return {
             "filled": result.get("filled", []),
             "not_found": result.get("not_found", []),
             "final_url": result.get("final_url"),
             "title": result.get("title"),
             "text_preview": (result.get("text") or "")[:4000],
+            "affordances_summary": compact["affordances_summary"],
+            "forms": compact["forms"],
             "artifact": artifact,
         }
 
@@ -849,11 +897,16 @@ def build_tools(
         if result.get("error"):
             return {"error": result["error"]}
         artifact = await _persist_action_screenshot(ctx, result)
+        compact = _compact_page_map(result)
         return {
             "submitted_via": result.get("submitted_via"),
             "final_url": result.get("final_url"),
             "title": result.get("title"),
             "text_preview": (result.get("text") or "")[:4000],
+            "affordances_summary": compact["affordances_summary"],
+            "links": compact["links"],
+            "buttons": compact["buttons"],
+            "forms": compact["forms"],
             "artifact": artifact,
         }
 
@@ -874,7 +927,7 @@ def build_tools(
              '{"prompt": "...", "model": "nano-banana"|"gpt-image-1"}',
              generate_image, side_effect=True),
         Tool("browse_url",
-             "Load a real web page in a headless Chromium (handles JavaScript / SPA / cookie walls), return its rendered text and a screenshot. Use AFTER web_search when you need the full content of a specific result, or to read a page web_search couldn't index. Also the first step before browse_fill / browse_click / browse_submit on the same page.",
+             "Load a real web page in a headless Chromium (handles JavaScript / SPA / cookie walls). Returns rendered text, a screenshot, AND a structured page-map: `forms` (with field labels & types), `buttons` and `links` (with their visible text). ALWAYS read the `affordances_summary` field first — it tells you what's clickable on this page. The first step in any form-fill or multi-hop navigation goal.",
              '{"url": "https://..."}',
              browse_url, side_effect=True),
         Tool("screenshot_url",

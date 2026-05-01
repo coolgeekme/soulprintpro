@@ -294,7 +294,7 @@ async def _drive_navigate(page, url: str, *, take_screenshot: bool,
 
 async def _populate_snapshot(page, out: dict, take_screenshot: bool,
                              upload_dir: Optional[Path]) -> None:
-    """Read title / text / screenshot off `page` into `out` (best-effort)."""
+    """Read title / text / screenshot / page-map off `page` into `out`."""
     try:
         out["title"] = (await page.title()) or ""
     except Exception:
@@ -307,6 +307,22 @@ async def _populate_snapshot(page, out: dict, take_screenshot: bool,
         body_text = ""
         logger.warning("innerText extraction failed: %s", exc)
     out["text"] = _clean_text(body_text)
+
+    # Pull a structured page map so the LLM can see what's clickable / what
+    # forms exist. Without this, the agent has to guess at button text from
+    # plain innerText, which is exactly the navigation-blindness problem.
+    try:
+        page_map = await page.evaluate(_PAGE_MAP_JS)
+        if isinstance(page_map, dict):
+            out["links"] = page_map.get("links") or []
+            out["buttons"] = page_map.get("buttons") or []
+            out["forms"] = page_map.get("forms") or []
+        else:
+            out["links"] = out["buttons"] = out["forms"] = []
+    except Exception as exc:
+        logger.warning("page-map extraction failed: %s", exc)
+        out["links"] = out["buttons"] = out["forms"] = []
+
     if take_screenshot and upload_dir is not None:
         try:
             fname = f"{uuid.uuid4().hex}.png"
@@ -316,6 +332,136 @@ async def _populate_snapshot(page, out: dict, take_screenshot: bool,
         except Exception as exc:
             logger.warning("screenshot failed: %s", exc)
             out["screenshot"] = None
+
+
+# JavaScript payload that extracts a structured "what can I do on this
+# page" map. Returned shape:
+#   {
+#     links:   [{text, href, selector}],
+#     buttons: [{text, selector, type}],
+#     forms:   [{
+#       selector, action, method,
+#       fields: [{name, type, label, placeholder, required}],
+#       submit_text
+#     }],
+#   }
+# We score links/buttons by "interactive likelihood" (visible, non-empty
+# text, ≤ 80 chars, not a footer link) and cap each list to 30 items so
+# the agent's context budget stays sane.
+_PAGE_MAP_JS = r"""
+() => {
+  const isVisible = (el) => {
+    if (!el) return false;
+    const r = el.getBoundingClientRect();
+    if (r.width === 0 && r.height === 0) return false;
+    const cs = window.getComputedStyle(el);
+    if (cs.display === 'none' || cs.visibility === 'hidden' || cs.opacity === '0') return false;
+    return true;
+  };
+  const cssEscape = (s) => (window.CSS && CSS.escape) ? CSS.escape(s) : (s || '').replace(/[^a-zA-Z0-9_-]/g, '_');
+  const buildSelector = (el) => {
+    if (!el) return '';
+    if (el.id) return '#' + cssEscape(el.id);
+    if (el.name) return el.tagName.toLowerCase() + "[name='" + cssEscape(el.name) + "']";
+    // Use a single stable class if available
+    const cls = (el.className || '').toString().trim().split(/\s+/).filter(Boolean);
+    if (cls.length) return el.tagName.toLowerCase() + '.' + cls.slice(0, 2).map(cssEscape).join('.');
+    return el.tagName.toLowerCase();
+  };
+  const cleanText = (s) => (s || '').replace(/\s+/g, ' ').trim().slice(0, 120);
+
+  // Links
+  const linkEls = Array.from(document.querySelectorAll('a[href]'));
+  const links = [];
+  const seenLinks = new Set();
+  for (const a of linkEls) {
+    if (links.length >= 30) break;
+    if (!isVisible(a)) continue;
+    const text = cleanText(a.innerText || a.getAttribute('aria-label') || a.title);
+    if (!text || text.length > 80) continue;
+    const href = a.href || '';
+    const key = text.toLowerCase() + '|' + href;
+    if (seenLinks.has(key)) continue;
+    seenLinks.add(key);
+    links.push({ text, href, selector: buildSelector(a) });
+  }
+
+  // Buttons (and role=button + submit inputs)
+  const btnEls = Array.from(document.querySelectorAll(
+    "button, [role='button'], input[type='submit'], input[type='button']"
+  ));
+  const buttons = [];
+  const seenBtns = new Set();
+  for (const b of btnEls) {
+    if (buttons.length >= 30) break;
+    if (!isVisible(b)) continue;
+    const text = cleanText(
+      b.innerText || b.value || b.getAttribute('aria-label') || b.title
+    );
+    if (!text || text.length > 80) continue;
+    if (seenBtns.has(text.toLowerCase())) continue;
+    seenBtns.add(text.toLowerCase());
+    buttons.push({
+      text,
+      selector: buildSelector(b),
+      type: (b.getAttribute('type') || (b.tagName === 'BUTTON' ? 'button' : '')) || ''
+    });
+  }
+
+  // Forms — with field labels resolved
+  const labelFor = (input) => {
+    // 1. <label for="id">
+    if (input.id) {
+      const lbl = document.querySelector("label[for='" + cssEscape(input.id) + "']");
+      if (lbl && lbl.innerText) return cleanText(lbl.innerText);
+    }
+    // 2. wrapping <label>
+    let p = input.parentElement;
+    while (p && p !== document.body) {
+      if (p.tagName === 'LABEL' && p.innerText) return cleanText(p.innerText);
+      p = p.parentElement;
+    }
+    // 3. aria-label / title
+    return cleanText(input.getAttribute('aria-label') || input.title || '');
+  };
+
+  const formEls = Array.from(document.querySelectorAll('form'));
+  const forms = [];
+  for (const f of formEls) {
+    if (forms.length >= 6) break;
+    if (!isVisible(f)) continue;
+    const inputs = Array.from(f.querySelectorAll('input, textarea, select'));
+    const fields = [];
+    for (const inp of inputs) {
+      if (!isVisible(inp)) continue;
+      const type = (inp.type || inp.tagName.toLowerCase() || '').toLowerCase();
+      // Skip hidden / submit / button — those aren't user fields
+      if (['hidden', 'submit', 'button', 'image'].includes(type)) continue;
+      fields.push({
+        name: inp.name || '',
+        type,
+        label: labelFor(inp),
+        placeholder: cleanText(inp.placeholder || ''),
+        required: !!inp.required,
+      });
+      if (fields.length >= 20) break;
+    }
+    // Submit button text
+    let submitText = '';
+    const sb = f.querySelector("button[type='submit'], input[type='submit'], button:not([type])");
+    if (sb) submitText = cleanText(sb.innerText || sb.value || '');
+    forms.push({
+      selector: buildSelector(f),
+      action: f.getAttribute('action') || '',
+      method: (f.getAttribute('method') || 'get').toLowerCase(),
+      fields,
+      submit_text: submitText,
+    });
+  }
+
+  return { links, buttons, forms };
+}
+"""
 
 
 async def screenshot_url(url: str, upload_dir: Path) -> dict:
@@ -359,15 +505,22 @@ async def browse_click(
             else:
                 # `get_by_role` is the most robust way to match buttons/links
                 # by visible text. We try role=button first, then role=link,
-                # then submit inputs, falling back to :has-text on a wide
-                # element set.
+                # role=radio / checkbox (often wrapped in <label>), then
+                # submit inputs, then `<label>` elements (which when clicked
+                # activate any wrapped form control), and finally a wide
+                # has-text fallback.
                 candidates = [
                     page.get_by_role("button", name=re.compile(re.escape(text), re.I)).first,
                     page.get_by_role("link", name=re.compile(re.escape(text), re.I)).first,
+                    page.get_by_role("radio", name=re.compile(re.escape(text), re.I)).first,
+                    page.get_by_role("checkbox", name=re.compile(re.escape(text), re.I)).first,
                     page.locator(
                         f"input[type=submit][value*='{text}' i], "
                         f"input[type=button][value*='{text}' i]"
                     ).first,
+                    # <label>Medium</label> wrapping a radio — clicking the
+                    # label is how a real user picks the option.
+                    page.locator(f"label:has-text('{text}')").first,
                     page.locator(
                         f"button:has-text('{text}'), a:has-text('{text}'), "
                         f"[role=button]:has-text('{text}')"
