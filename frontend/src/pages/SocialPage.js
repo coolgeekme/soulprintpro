@@ -1135,6 +1135,13 @@ function SessionWizard({ orgId, onClose }) {
   const [testResult, setTestResult] = useState(null);  // {ok, message}
   const [saving, setSaving] = useState(false);
 
+  // ESC to close — convention-aligns the wizard with other modals in the app.
+  useEffect(() => {
+    const handler = (e) => { if (e.key === "Escape") onClose(); };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, [onClose]);
+
   const wiz = PLATFORM_WIZARD[platform] || PLATFORM_WIZARD.twitter;
 
   const handleFiles = async (files) => {

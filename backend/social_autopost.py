@@ -166,8 +166,8 @@ def normalise_session_upload(raw: str) -> dict:
         return {"cookies": cookies, "origins": []}
     raise ValueError(
         "Couldn't read that file. Expected a Playwright storage_state JSON "
-        "({\"cookies\":[...]}), a Netscape cookies.txt, or a JSON array of "
-        "cookie objects."
+        "({\"cookies\":[...]}), a Netscape cookies.txt (TAB-separated columns, "
+        "not spaces), or a JSON array of cookie objects."
     )
 
 
