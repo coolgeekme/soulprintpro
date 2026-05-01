@@ -74,6 +74,25 @@ _playwright = None
 # the loop uses asyncio.create_task for artifacts so belt + braces).
 _MISSION_PAGES: Dict[str, Dict[str, Any]] = {}
 
+# Per-mission Playwright storage_state to pre-load into the context so the
+# mission's browser starts already logged in to a target platform. Used by
+# the autonomous social-posting flow where the user has previously uploaded
+# cookies for their Twitter/LinkedIn/etc. session. Consumed lazily inside
+# _get_or_create_mission_page the first time a page is needed for that
+# mission, then discarded.
+_MISSION_STORAGE_STATE: Dict[str, Dict[str, Any]] = {}
+
+
+def register_mission_storage_state(mission_id: str, storage_state: Dict[str, Any]) -> None:
+    """Register a Playwright storage_state dict for an upcoming mission.
+
+    Must be called BEFORE the mission's first browser call so the cookies
+    get applied on context creation. A ``None`` or empty dict is ignored.
+    """
+    if not mission_id or not storage_state:
+        return
+    _MISSION_STORAGE_STATE[mission_id] = storage_state
+
 
 # ── SSRF protection ────────────────────────────────────────────────────────
 _PRIVATE_HOSTNAMES = {"localhost", "metadata.google.internal", "169.254.169.254"}
@@ -193,13 +212,21 @@ async def _get_or_create_mission_page(mission_id: str):
     if entry is not None:
         return entry
     browser = await _ensure_browser()
-    ctx = await browser.new_context(
+    ctx_kwargs: Dict[str, Any] = dict(
         user_agent=USER_AGENT,
         viewport={"width": 1280, "height": 800},
         locale="en-US",
         extra_http_headers={"Accept-Language": "en-US,en;q=0.9"},
         ignore_https_errors=False,
     )
+    # Pre-load cookies/localStorage if the caller registered a storage_state
+    # for this mission (autonomous social posting relies on this to reuse
+    # a previously-authenticated session).
+    pre_state = _MISSION_STORAGE_STATE.pop(mission_id, None)
+    if pre_state:
+        ctx_kwargs["storage_state"] = pre_state
+        logger.info("Mission %s: loading pre-registered storage_state", mission_id)
+    ctx = await browser.new_context(**ctx_kwargs)
     page = await ctx.new_page()
     entry = {"context": ctx, "page": page, "lock": asyncio.Lock()}
     _MISSION_PAGES[mission_id] = entry
@@ -796,4 +823,5 @@ __all__ = [
     "browse_url", "screenshot_url",
     "browse_click", "browse_fill", "browse_submit",
     "cleanup_mission_page", "shutdown_browser",
+    "register_mission_storage_state",
 ]

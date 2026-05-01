@@ -6,6 +6,7 @@ import { toast } from "sonner";
 import {
   Send, Sparkles, Calendar, CheckCircle2, Trash2, Copy, ExternalLink,
   Download, Save, X, Loader2, Megaphone, Image as ImageIcon, Wand2,
+  Zap, KeyRound, AlertTriangle, Rocket, Pencil,
 } from "lucide-react";
 
 // ── Platform metadata ─────────────────────────────────────────────────────
@@ -72,6 +73,15 @@ const PLATFORMS = {
 const PLATFORM_ORDER = [
   "twitter", "linkedin", "instagram", "facebook", "threads", "bluesky",
   "tiktok", "youtube", "pinterest", "reddit", "mastodon",
+];
+
+// Platforms where Mission-driven autoposting is supported (public web
+// composer available + kept in sync with backend SUPPORTED_AUTOPOST_PLATFORMS).
+// Instagram / TikTok / YouTube are NOT here — no public composer we can drive
+// reliably headlessly, and file-upload flows aren't wired yet.
+const AUTOPOST_PLATFORMS = [
+  "twitter", "linkedin", "facebook",
+  "threads", "bluesky", "mastodon", "reddit",
 ];
 
 const joinPostText = (p) => {
@@ -259,6 +269,9 @@ export default function SocialPage() {
           </div>
         </form>
 
+        {/* Social sessions — cookies per platform so autopost Missions can log in */}
+        <SocialSessionsPanel orgId={orgId} />
+
         {/* Tabs */}
         <div className="flex items-center gap-1 mb-4" role="tablist">
           {[
@@ -307,6 +320,14 @@ function PostCard({ post, onUpdate, onDelete }) {
   const [platforms, setPlatforms] = useState(post.platforms || []);
   const [saving, setSaving] = useState(false);
 
+  // Autopost state — lets the user ask a Mission to actually publish the
+  // post on the scheduled time instead of just reminding them.
+  const [autopostEnabled, setAutopostEnabled] = useState(Boolean(post.autopost_enabled));
+  const [autopostPlatform, setAutopostPlatform] = useState(
+    post.autopost_platform || (post.platforms || []).find((p) => AUTOPOST_PLATFORMS.includes(p)) || "twitter"
+  );
+  const [autopostBusy, setAutopostBusy] = useState(false);
+
   // Re-sync if upstream post changes (e.g. after schedule auto-flips status)
   useEffect(() => {
     if (!editing) {
@@ -314,6 +335,8 @@ function PostCard({ post, onUpdate, onDelete }) {
       setHashtags((post.hashtags || []).join(" "));
       setScheduledLocal(isoToLocalInput(post.scheduled_for));
       setPlatforms(post.platforms || []);
+      setAutopostEnabled(Boolean(post.autopost_enabled));
+      if (post.autopost_platform) setAutopostPlatform(post.autopost_platform);
     }
   }, [post, editing]);
 
@@ -340,10 +363,60 @@ function PostCard({ post, onUpdate, onDelete }) {
       patch.scheduled_for = "";
     }
     const ok = await onUpdate(post.id, patch);
+    // If autopost was toggled on AND we have a scheduled time, hand off to
+    // the autopost endpoint so APScheduler registers the Mission trigger.
+    // If toggled off, cancel any pending autopost.
+    if (ok) {
+      try {
+        if (autopostEnabled && scheduledLocal) {
+          await api.post(`/social/posts/${post.id}/schedule-autopost`, {
+            scheduled_for: new Date(scheduledLocal).toISOString(),
+            platform: autopostPlatform,
+          });
+        } else if (!autopostEnabled && post.autopost_enabled) {
+          await api.delete(`/social/posts/${post.id}/schedule-autopost`);
+        }
+      } catch (err) {
+        toast.error(err?.response?.data?.detail || "Autopost update failed");
+      }
+    }
     setSaving(false);
     if (ok) {
       toast.success("Saved");
       setEditing(false);
+    }
+  };
+
+  // Quick toggle used from the status row (outside edit mode).
+  const toggleAutopostFromCard = async () => {
+    if (!post.scheduled_for) {
+      toast.error("Schedule a time first — open the card and pick a date/time.");
+      return;
+    }
+    setAutopostBusy(true);
+    try {
+      if (post.autopost_enabled) {
+        await api.delete(`/social/posts/${post.id}/schedule-autopost`);
+        toast.success("Autopost cancelled");
+      } else {
+        const platform = autopostPlatform || (post.platforms || []).find((p) => AUTOPOST_PLATFORMS.includes(p));
+        if (!platform) {
+          toast.error("Add a supported platform first (Twitter, LinkedIn, Threads, Bluesky, Mastodon, Reddit, Facebook)");
+          return;
+        }
+        await api.post(`/social/posts/${post.id}/schedule-autopost`, {
+          scheduled_for: post.scheduled_for,
+          platform,
+        });
+        toast.success("Autopost scheduled — a Mission will run at the set time");
+      }
+      // Force parent to refresh — easiest path: bounce through onUpdate with a
+      // no-op patch that returns the fresh post.
+      await onUpdate(post.id, {});
+    } catch (err) {
+      toast.error(err?.response?.data?.detail || "Autopost toggle failed");
+    } finally {
+      setAutopostBusy(false);
     }
   };
 
@@ -386,6 +459,7 @@ function PostCard({ post, onUpdate, onDelete }) {
             <CheckCircle2 className="w-3 h-3 text-emerald-400" /> Published {formatScheduleLocal(post.published_at)}
           </span>
         )}
+        <AutopostStatusPill post={post} />
       </div>
 
       {editing ? (
@@ -434,7 +508,7 @@ function PostCard({ post, onUpdate, onDelete }) {
                 data-testid={`edit-schedule-${post.id}`}
               />
               {scheduledLocal && (
-                <button type="button" onClick={() => setScheduledLocal("")} className="sp-subtle hover:text-white">
+                <button type="button" onClick={() => setScheduledLocal("")} className="sp-btn sp-btn-ghost !py-0.5 !px-1.5 text-[11px]">
                   <X className="w-3 h-3" />
                 </button>
               )}
@@ -448,6 +522,43 @@ function PostCard({ post, onUpdate, onDelete }) {
               </button>
             </div>
           </div>
+
+          {/* Autopost via Mission — only shown when a schedule time is set */}
+          {scheduledLocal && (
+            <div className="rounded-xl p-3 border border-orange-500/20 bg-orange-500/[0.04] flex flex-wrap items-center gap-3"
+                 data-testid={`autopost-row-${post.id}`}>
+              <label className="flex items-center gap-2 text-xs cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={autopostEnabled}
+                  onChange={(e) => setAutopostEnabled(e.target.checked)}
+                  className="accent-orange-500"
+                  data-testid={`autopost-toggle-${post.id}`}
+                />
+                <Zap className="w-3.5 h-3.5 text-orange-400" />
+                <span className="text-white/90 font-medium">Auto-post via Mission</span>
+              </label>
+              <span className="text-[11px] sp-subtle">
+                An agent will open the platform and publish this for you.
+              </span>
+              {autopostEnabled && (
+                <div className="flex items-center gap-1.5 ml-auto">
+                  <span className="text-[11px] sp-subtle">Target:</span>
+                  <select
+                    value={autopostPlatform}
+                    onChange={(e) => setAutopostPlatform(e.target.value)}
+                    className="rounded-lg px-2 py-1 text-xs"
+                    style={{ background: "var(--input-bg)", border: "1px solid var(--input-border)", color: "var(--fg)" }}
+                    data-testid={`autopost-platform-${post.id}`}
+                  >
+                    {AUTOPOST_PLATFORMS.map((p) => (
+                      <option key={p} value={p}>{PLATFORMS[p]?.label || p}</option>
+                    ))}
+                  </select>
+                </div>
+              )}
+            </div>
+          )}
         </div>
       ) : (
         <>
@@ -525,6 +636,20 @@ function PostCard({ post, onUpdate, onDelete }) {
                   Unschedule
                 </button>
               )}
+              {post.status === "queued" && post.scheduled_for && (
+                <button type="button" onClick={toggleAutopostFromCard}
+                        disabled={autopostBusy || post.autopost_status === "running"}
+                        title={post.autopost_enabled
+                          ? "Cancel the Mission-based autopost"
+                          : "Have a Mission open the platform at the scheduled time and publish automatically"}
+                        className={`sp-btn text-xs ${post.autopost_enabled ? "sp-btn-ghost" : "sp-btn-primary"} disabled:opacity-50`}
+                        data-testid={`autopost-quick-${post.id}`}>
+                  {autopostBusy
+                    ? <Loader2 className="w-3 h-3 animate-spin" />
+                    : post.autopost_enabled ? <X className="w-3 h-3" /> : <Rocket className="w-3 h-3" />}
+                  {post.autopost_enabled ? "Cancel autopost" : "Autopost via Mission"}
+                </button>
+              )}
               <button type="button" onClick={() => setEditing(true)} className="sp-btn sp-btn-ghost text-xs"
                       data-testid={`edit-post-${post.id}`}>
                 Edit
@@ -542,6 +667,44 @@ function PostCard({ post, onUpdate, onDelete }) {
 }
 
 
+// ── Autopost status pill — sits next to the schedule badge in the card ────
+function AutopostStatusPill({ post }) {
+  const status = post.autopost_status || "";
+  if (!status && !post.autopost_enabled) return null;
+  const styleFor = (s) => {
+    if (s === "posted")    return { bg: "bg-emerald-500/15", border: "border-emerald-400/30", text: "text-emerald-200" };
+    if (s === "running")   return { bg: "bg-sky-500/15",     border: "border-sky-400/30",     text: "text-sky-200" };
+    if (s === "pending")   return { bg: "bg-orange-500/15",  border: "border-orange-400/30",  text: "text-orange-200" };
+    if (s === "failed")    return { bg: "bg-red-500/15",     border: "border-red-400/30",     text: "text-red-200" };
+    if (s === "cancelled") return { bg: "bg-white/5",         border: "border-white/15",       text: "text-white/60" };
+    return { bg: "bg-white/5", border: "border-white/15", text: "text-white/60" };
+  };
+  const sty = styleFor(status);
+  const label = {
+    posted:    "Autoposted",
+    running:   "Autoposting…",
+    pending:   "Autopost pending",
+    failed:    "Autopost failed",
+    cancelled: "Autopost cancelled",
+  }[status] || "Autopost";
+  const Icon = status === "failed" ? AlertTriangle
+            : status === "running" ? Loader2
+            : status === "posted"  ? CheckCircle2
+            : Zap;
+  return (
+    <span
+      className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] border ${sty.bg} ${sty.border} ${sty.text}`}
+      title={post.autopost_error || (post.autopost_platform ? `Target: ${post.autopost_platform}` : "")}
+      data-testid={`autopost-status-${post.id}`}
+    >
+      <Icon className={`w-3 h-3 ${status === "running" ? "animate-spin" : ""}`} />
+      {label}
+      {post.autopost_platform && (
+        <span className="opacity-70">· {post.autopost_platform}</span>
+      )}
+    </span>
+  );
+}
 // ── Cover image with 5-corner logo picker ─────────────────────────────────
 const LOGO_POSITIONS = [
   { id: "top-left",     label: "TL" },
@@ -738,6 +901,154 @@ function SocialPromptEditor({ initial, postText, onSubmit, onCancel, generating,
           {generating ? "Generating…" : "Generate with this prompt"}
         </button>
       </div>
+    </div>
+  );
+}
+
+
+
+// ── Social Sessions: Playwright storage_state per platform ────────────────
+// Users upload a `storage_state.json` captured from their own browser so
+// the Mission-driven autoposter boots logged-in on Twitter/LinkedIn/etc.
+// We only persist what they paste — never leak it back to the UI.
+function SocialSessionsPanel({ orgId }) {
+  const [open, setOpen] = useState(false);
+  const [sessions, setSessions] = useState([]);
+  const [loading, setLoading] = useState(false);
+  const [platform, setPlatform] = useState("twitter");
+  const [label, setLabel] = useState("");
+  const [raw, setRaw] = useState("");
+  const [saving, setSaving] = useState(false);
+
+  const load = async () => {
+    setLoading(true);
+    try {
+      const { data } = await api.get(`/orgs/${orgId}/social/sessions`);
+      setSessions(data || []);
+    } catch (err) {
+      toast.error(err?.response?.data?.detail || "Could not load sessions");
+    } finally { setLoading(false); }
+  };
+  useEffect(() => { if (open) load(); /* eslint-disable-next-line */ }, [open, orgId]);
+
+  const submit = async (e) => {
+    e.preventDefault();
+    let parsed;
+    try { parsed = JSON.parse(raw); }
+    catch { toast.error("That doesn't look like valid JSON."); return; }
+    setSaving(true);
+    try {
+      await api.post(`/orgs/${orgId}/social/sessions`, {
+        platform, storage_state: parsed, label: label.trim(),
+      });
+      toast.success("Session saved");
+      setRaw(""); setLabel("");
+      await load();
+    } catch (err) {
+      toast.error(err?.response?.data?.detail || "Save failed");
+    } finally { setSaving(false); }
+  };
+
+  const remove = async (p) => {
+    if (!window.confirm(`Delete ${p} session? Autopost will fail until you re-upload.`)) return;
+    try {
+      await api.delete(`/orgs/${orgId}/social/sessions/${p}`);
+      await load();
+    } catch (err) {
+      toast.error(err?.response?.data?.detail || "Delete failed");
+    }
+  };
+
+  return (
+    <div className="mb-6" data-testid="social-sessions-panel">
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        className="sp-btn sp-btn-ghost text-xs"
+        data-testid="social-sessions-toggle"
+      >
+        <KeyRound className="w-3.5 h-3.5" />
+        {open ? "Hide" : "Manage"} login sessions ({sessions.length || 0})
+      </button>
+      {open && (
+        <div className="sp-glass rounded-2xl p-5 mt-3 space-y-4">
+          <div>
+            <h3 className="text-sm font-medium mb-1 flex items-center gap-2">
+              <KeyRound className="w-4 h-4 text-orange-400" /> Login sessions for autoposting
+            </h3>
+            <p className="text-xs sp-subtle leading-relaxed">
+              To autopost via Mission, upload a Playwright <code>storage_state.json</code> per platform.
+              Easiest way: install a cookies-export browser extension (e.g. <em>Get cookies.txt LOCALLY</em>)
+              while logged in on twitter.com / linkedin.com etc., then paste the JSON below.
+              We store the blob opaquely and hand it to the headless browser before a Mission runs —
+              the raw cookies never leave your org.
+            </p>
+          </div>
+
+          {loading ? (
+            <div className="text-xs sp-subtle">Loading sessions…</div>
+          ) : sessions.length === 0 ? (
+            <div className="text-xs sp-subtle">No sessions uploaded yet.</div>
+          ) : (
+            <div className="space-y-1">
+              {sessions.map((s) => (
+                <div key={s.id} className="flex items-center gap-3 text-xs py-1.5 border-t border-white/5"
+                     data-testid={`session-row-${s.platform}`}>
+                  <span className="font-medium text-white/90">{PLATFORMS[s.platform]?.label || s.platform}</span>
+                  {s.label && <span className="sp-subtle">· {s.label}</span>}
+                  <span className="sp-subtle">
+                    {s.cookies_count} cookie{s.cookies_count === 1 ? "" : "s"}, {s.origins_count} origin{s.origins_count === 1 ? "" : "s"}
+                  </span>
+                  <span className="ml-auto sp-subtle">
+                    updated {formatScheduleLocal(s.updated_at)}
+                  </span>
+                  <button type="button" onClick={() => remove(s.platform)}
+                          className="sp-btn sp-btn-ghost !py-0.5 !px-1.5 text-[11px] hover:!text-red-300"
+                          data-testid={`session-delete-${s.platform}`}>
+                    <Trash2 className="w-3 h-3" />
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
+
+          <form onSubmit={submit} className="space-y-2 border-t border-white/10 pt-4">
+            <div className="flex items-center gap-2 flex-wrap">
+              <label className="text-xs sp-subtle">Platform</label>
+              <select value={platform} onChange={(e) => setPlatform(e.target.value)}
+                      className="rounded-lg px-2 py-1 text-sm"
+                      style={{ background: "var(--input-bg)", border: "1px solid var(--input-border)", color: "var(--fg)" }}
+                      data-testid="session-platform-select">
+                {AUTOPOST_PLATFORMS.map((p) => (
+                  <option key={p} value={p}>{PLATFORMS[p]?.label || p}</option>
+                ))}
+              </select>
+              <input value={label} onChange={(e) => setLabel(e.target.value)}
+                     placeholder="Label (optional, e.g. 'brand account')"
+                     className="flex-1 min-w-[180px] rounded-lg px-2 py-1 text-sm"
+                     style={{ background: "var(--input-bg)", border: "1px solid var(--input-border)", color: "var(--fg)" }}
+                     data-testid="session-label-input"
+              />
+            </div>
+            <textarea
+              value={raw} onChange={(e) => setRaw(e.target.value)}
+              placeholder='Paste your Playwright storage_state JSON here. It should look like {"cookies": [...], "origins": [...]}.'
+              rows={5}
+              className="w-full rounded-lg px-3 py-2 text-xs font-mono resize-y"
+              style={{ background: "var(--input-bg)", border: "1px solid var(--input-border)", color: "var(--fg)" }}
+              data-testid="session-json-input"
+            />
+            <div className="flex items-center justify-end gap-2">
+              <button type="submit" disabled={saving || !raw.trim()}
+                      className="sp-btn sp-btn-primary text-xs disabled:opacity-50"
+                      data-testid="session-save-btn">
+                {saving ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Save className="w-3.5 h-3.5" />}
+                {saving ? "Saving…" : "Save session"}
+              </button>
+            </div>
+          </form>
+        </div>
+      )}
     </div>
   );
 }

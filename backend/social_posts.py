@@ -100,6 +100,13 @@ def serialize_social_post(p: dict) -> dict:
         "published_at": _iso(p.get("published_at")),
         "created_at": _iso(p.get("created_at")),
         "created_by": p.get("created_by", ""),
+        # Autonomous Mission-driven posting — see social_autopost.py
+        "autopost_enabled": bool(p.get("autopost_enabled", False)),
+        "autopost_platform": p.get("autopost_platform", ""),
+        "autopost_status": p.get("autopost_status", ""),  # "" | pending | running | posted | failed | cancelled
+        "autopost_mission_id": p.get("autopost_mission_id", ""),
+        "autopost_error": p.get("autopost_error", ""),
+        "autopost_last_run_at": _iso(p.get("autopost_last_run_at")),
     }
 
 

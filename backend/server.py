@@ -4236,6 +4236,25 @@ missions_r = make_missions_router(
 )
 app.include_router(missions_r)
 
+# Autonomous social posting — scheduled Missions that drive a headless
+# browser to publish a queued social post on the user's behalf. Uses the
+# same APScheduler instance as the cron-style schedules above. See
+# social_autopost.py for the full flow.
+from social_autopost import (  # noqa: E402
+    make_social_autopost_router,
+    rehydrate_autopost_jobs,
+)
+social_autopost_r = make_social_autopost_router(
+    db=db, scheduler=scheduler, AGENTS=AGENTS,
+    EMERGENT_LLM_KEY=EMERGENT_LLM_KEY,
+    LlmChat=LlmChat, UserMessage=UserMessage,
+    require_org_member=require_org_member,
+    get_current_user=get_current_user,
+    build_tools_factory=_build_mission_tools_factory,
+    build_lead_system_prompt=_build_lead_mission_system_prompt,
+)
+app.include_router(social_autopost_r)
+
 app.add_middleware(
     CORSMiddleware,
     allow_credentials=True,
@@ -4259,6 +4278,12 @@ async def startup():
     await db.social_posts.create_index([("org_id", 1), ("created_at", -1)])
     await db.social_posts.create_index([("org_id", 1), ("status", 1)])
     await db.social_posts.create_index("scheduled_for", sparse=True)
+    await db.social_posts.create_index(
+        [("autopost_enabled", 1), ("autopost_status", 1)], sparse=True,
+    )
+    await db.social_sessions.create_index(
+        [("org_id", 1), ("platform", 1)], unique=True,
+    )
     await db.documents.create_index([("org_id", 1), ("created_at", -1)])
     await db.documents.create_index([("org_id", 1), ("filename", 1)], unique=True)
     await db.documents.create_index("conversation_id")
@@ -4273,6 +4298,11 @@ async def startup():
             _scheduler_register(s)
         except Exception as exc:
             logger.warning("Could not rehydrate schedule %s: %s", s.get("_id"), exc)
+    # Rehydrate any pending autopost jobs so restarts don't drop them.
+    try:
+        await rehydrate_autopost_jobs(db=db, router=social_autopost_r)
+    except Exception as exc:
+        logger.warning("Autopost rehydrate failed: %s", exc)
     logger.info("SoulPrint API ready.")
 
 @app.on_event("shutdown")
