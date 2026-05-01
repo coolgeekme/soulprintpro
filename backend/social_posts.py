@@ -639,7 +639,10 @@ def make_social_router(*, db, AGENTS, EMERGENT_LLM_KEY, LlmChat, UserMessage,
         """Reposition the logo overlay without re-generating the base image.
 
         We always keep `image.raw_filename` (un-composited) on disk so this
-        is a cheap PIL paste — no LLM call.
+        is a cheap PIL paste — no LLM call. For legacy posts generated
+        before we started persisting `raw_filename`, we fall back to the
+        currently-displayed image as the base (which in those cases is
+        ALSO un-composited because logo compositing failed — same file).
         """
         if position not in ("top-left", "top-right", "bottom-left", "bottom-right", "center"):
             raise HTTPException(422, "Invalid position")
@@ -656,24 +659,64 @@ def make_social_router(*, db, AGENTS, EMERGENT_LLM_KEY, LlmChat, UserMessage,
         primary = (ba.get("primary_logo") or {}) if ba else {}
         logo_filename = (primary or {}).get("filename") or ""
         existing_img = post.get("image") or {}
-        raw_filename = existing_img.get("raw_filename") or ""
-        if logo_filename and raw_filename and compose_logo_on_image and upload_dir:
-            try:
-                base_path = _Path(upload_dir) / raw_filename
-                logo_path = _Path(upload_dir) / logo_filename
-                if base_path.is_file() and logo_path.is_file():
-                    composed = compose_logo_on_image(
-                        base_path, logo_path, position=position,
-                        out_dir=_Path(upload_dir),
-                    )
-                    update["image"] = {
-                        "filename": composed.name,
-                        "url": f"/api/files/{composed.name}",
-                        "with_logo": True,
-                        "raw_filename": raw_filename,
-                    }
-            except Exception as exc:
-                logger.warning("Reposition logo failed: %s", exc)
+        # Prefer the un-composited raw when we have it (modern posts),
+        # otherwise fall back to the current image.filename — in legacy
+        # posts with with_logo=False, image.filename IS the un-composited
+        # image (because compositing failed at generation time). Using the
+        # current composed file as the base would cause double-branding,
+        # which we explicitly guard against.
+        base_filename = existing_img.get("raw_filename") or ""
+        if not base_filename and not existing_img.get("with_logo"):
+            base_filename = existing_img.get("filename") or ""
+        if not existing_img:
+            raise HTTPException(
+                422,
+                "This post has no generated image yet — use 'Generate cover "
+                "image' first, then position the logo.",
+            )
+        if not logo_filename:
+            raise HTTPException(
+                422,
+                "Your organization has no primary logo uploaded. Go to the "
+                "Org page and upload one, then try again.",
+            )
+        if not base_filename:
+            raise HTTPException(
+                422,
+                "Can't re-apply the logo — this image is already composited "
+                "and the un-composited source is no longer on file. Click "
+                "'Regenerate' to produce a fresh image with the logo.",
+            )
+        if compose_logo_on_image is None or not upload_dir:
+            raise HTTPException(500, "Logo composite helper unavailable.")
+        base_path = _Path(upload_dir) / base_filename
+        logo_path = _Path(upload_dir) / logo_filename
+        if not logo_path.is_file():
+            raise HTTPException(
+                422,
+                "Your logo file is missing from storage — please re-upload "
+                "the primary logo on the Org page.",
+            )
+        if not base_path.is_file():
+            raise HTTPException(
+                422,
+                "The original image file is missing from storage. Click "
+                "'Regenerate' to produce a fresh image.",
+            )
+        try:
+            composed = compose_logo_on_image(
+                base_path, logo_path, position=position,
+                out_dir=_Path(upload_dir),
+            )
+        except Exception as exc:
+            logger.warning("Reposition logo failed: %s", exc)
+            raise HTTPException(500, f"Couldn't apply logo: {exc}") from exc
+        update["image"] = {
+            "filename": composed.name,
+            "url": f"/api/files/{composed.name}",
+            "with_logo": True,
+            "raw_filename": base_filename,
+        }
         await db.social_posts.update_one({"_id": _OID(post_id)}, {"$set": update})
         fresh = await db.social_posts.find_one({"_id": _OID(post_id)})
         return serialize_social_post(fresh)
