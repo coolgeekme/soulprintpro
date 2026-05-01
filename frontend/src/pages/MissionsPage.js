@@ -198,7 +198,7 @@ function StartMissionDialog({ onClose, onSubmit }) {
           onChange={(e) => setGoal(e.target.value)}
           rows={5}
           disabled={busy}
-          placeholder={`Examples:\n• Research the top 10 competitors and write a one-page teardown.\n• Draft 5 LinkedIn posts about our Q1 launch and save each as markdown.\n• Read our brand guide and generate 3 hero images for the landing page.`}
+          placeholder={`Examples:\n• Research the top 10 competitors and write a one-page teardown.\n• Draft 5 LinkedIn posts about our Q1 launch and save each as markdown.\n• Read our brand guide and generate 3 hero images for the landing page.\n• Go to acme.com/contact, fill the form (name, email, message), and submit it.`}
           className="w-full sp-glass rounded-xl px-3 py-2 text-sm focus:outline-none resize-none"
           style={{ background: "var(--input-bg)", color: "var(--fg)" }}
           data-testid="mission-goal-input"

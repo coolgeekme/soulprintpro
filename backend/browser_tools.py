@@ -1,24 +1,41 @@
-"""Headless browser tool for Mission Mode (Phase 2 — Layer A: read-only).
+"""Headless browser tool for Mission Mode.
 
-Powered by Playwright + Chromium. Single shared browser instance per process,
-new context per call so cookies/cache don't leak between missions.
+Phase 2 — Layer A (read-only) + Layer B (form interaction).
 
-The browser sits behind two coroutines:
-  • `browse_url(url, *, take_screenshot=True)` — loads the URL with a real
-    Chromium, waits for the network to idle, and returns rendered text, the
-    final URL after redirects, the page title, and an optional PNG
-    screenshot saved to the uploads dir.
-  • `screenshot_url(url)` — visual-only shortcut.
+Powered by Playwright + Chromium. One shared browser instance per process.
 
-Both are designed to be safe defaults:
-  • 30s navigation timeout
-  • 50 KB text cap (Mission loop's working memory is small)
-  • Common bot-detection mitigations: realistic user-agent, viewport,
-    accept-language, en-US locale.
-  • SSRF protection: http(s) only, refuses RFC1918 / loopback / metadata IPs
+Two interaction models, both supported:
 
-The user-controlled-login flow (Phase 3) will reuse this module by adding
-a per-user persistent context dir.
+  1. **Ephemeral** (Layer A) — one-shot fetch. `browse_url(url, take_screenshot=True)`
+     creates a fresh context per call so cookies/cache don't leak between
+     missions. Perfect for "read one page, summarise it, move on".
+
+  2. **Sticky mission page** (Layer B) — pass a `mission_id` and each call
+     reuses the same context + page, so the LLM can navigate → fill →
+     click → submit across multiple tool turns. Cleanup is explicit via
+     `cleanup_mission_page(mission_id)`.
+
+New Layer B primitives:
+
+  - `browse_click(mission_id, selector?, text?)`  — click a button or link,
+    either by CSS selector or by visible text (case-insensitive substring).
+  - `browse_fill(mission_id, fields)`             — fill inputs / textareas
+    by label, name, placeholder, or CSS selector. For `<select>` elements
+    we pick the option whose visible text matches the requested value.
+  - `browse_submit(mission_id, selector?)`        — submit a form; either
+    the caller's selector, or the first `button[type=submit]` /
+    `input[type=submit]` on the page.
+
+Every Layer B call returns a standard `snapshot` — `{final_url, title,
+status, text_preview, screenshot}` — so the Mission loop's tool_result
+event has something visual to render.
+
+Safety rails:
+  - 30s navigation / action timeout.
+  - 50 KB text cap (same as Layer A — keeps LLM working memory cheap).
+  - SSRF protection: http(s) only, refuses RFC1918 / loopback / metadata.
+  - Form cap: 20 fields per `browse_fill` call, 2000 chars per value.
+  - Bot-mitigation: realistic UA, viewport, en-US locale, Accept-Language.
 """
 from __future__ import annotations
 
@@ -29,7 +46,7 @@ import re
 import socket
 import uuid
 from pathlib import Path
-from typing import Optional, Tuple
+from typing import Any, Dict, Optional, Tuple
 from urllib.parse import urlparse
 
 logger = logging.getLogger(__name__)
@@ -38,6 +55,9 @@ logger = logging.getLogger(__name__)
 # past the LLM's context budget and rarely improves the agent's reasoning.
 MAX_TEXT_BYTES = 50_000
 NAV_TIMEOUT_MS = 30_000
+ACTION_TIMEOUT_MS = 15_000
+MAX_FILL_FIELDS = 20
+MAX_FILL_VALUE_LEN = 2000
 USER_AGENT = (
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_5) "
     "AppleWebKit/537.36 (KHTML, like Gecko) "
@@ -48,13 +68,19 @@ _BROWSER_LOCK = asyncio.Lock()
 _browser = None
 _playwright = None
 
+# Per-mission sticky contexts. Keyed by mission_id → (context, page, lock).
+# A per-mission lock prevents two concurrent tool calls in the same mission
+# from stepping on each other (the LLM shouldn't emit concurrent calls but
+# the loop uses asyncio.create_task for artifacts so belt + braces).
+_MISSION_PAGES: Dict[str, Dict[str, Any]] = {}
+
 
 # ── SSRF protection ────────────────────────────────────────────────────────
 _PRIVATE_HOSTNAMES = {"localhost", "metadata.google.internal", "169.254.169.254"}
 
 
 def _is_safe_url(raw: str) -> Tuple[bool, str]:
-    """Return (ok, error_message). Refuses non-http(s) and private IPs."""
+    """Return (ok, error_message_or_normalized_url)."""
     if not raw or not isinstance(raw, str):
         return False, "URL is required"
     raw = raw.strip()
@@ -73,7 +99,6 @@ def _is_safe_url(raw: str) -> Tuple[bool, str]:
         return False, "URL is missing a host"
     if host in _PRIVATE_HOSTNAMES:
         return False, "Refusing to browse a local/metadata host"
-    # Resolve and check IP — block RFC1918 / loopback / link-local
     try:
         infos = socket.getaddrinfo(host, None)
         for info in infos:
@@ -89,7 +114,7 @@ def _is_safe_url(raw: str) -> Tuple[bool, str]:
 
 # ── Browser lifecycle ──────────────────────────────────────────────────────
 async def _ensure_browser():
-    """Lazy-init a single shared Chromium. Cheaper than re-launching per call."""
+    """Lazy-init a single shared Chromium. Cheaper than relaunching per call."""
     global _browser, _playwright
     if _browser is not None:
         return _browser
@@ -112,11 +137,9 @@ async def _ensure_browser():
         env_exe = _os.environ.get("PLAYWRIGHT_CHROME_EXECUTABLE_PATH")
         if env_exe:
             candidates.append(env_exe)
-        # System Chromium shipped in this container
         candidates.append("/usr/bin/chromium")
         candidates.append("/usr/bin/chromium-browser")
         candidates.append("/usr/bin/google-chrome")
-        # Playwright-managed bundles in standard locations
         for root in ("/pw-browsers", "/root/.cache/ms-playwright"):
             for sub in ("chromium-1217", "chromium-1208", "chromium-1167",
                         "chromium_headless_shell-1217", "chromium_headless_shell-1208"):
@@ -139,6 +162,9 @@ async def _ensure_browser():
 async def shutdown_browser():
     """Called at FastAPI shutdown to release the Chromium process."""
     global _browser, _playwright
+    # Tear down any stragglers first so mission contexts don't leak.
+    for mid in list(_MISSION_PAGES.keys()):
+        await cleanup_mission_page(mid)
     try:
         if _browser is not None:
             await _browser.close()
@@ -155,26 +181,17 @@ async def shutdown_browser():
         _playwright = None
 
 
-# ── Public API ─────────────────────────────────────────────────────────────
-async def browse_url(
-    url: str,
-    *,
-    take_screenshot: bool = True,
-    upload_dir: Optional[Path] = None,
-) -> dict:
-    """Load `url` with Playwright, return rendered text + screenshot path.
+# ── Mission-scoped sticky pages (Layer B) ──────────────────────────────────
+async def _get_or_create_mission_page(mission_id: str):
+    """Return the sticky (context, page, lock) triple for this mission.
 
-    Returns::
-
-        {"final_url": str, "title": str, "text": str,
-         "screenshot": "<filename>.png" or None,
-         "status": int, "error": str | ""}
+    First call per mission launches a fresh Chromium context so cookies /
+    form state persist across browse_url → browse_fill → browse_submit
+    calls. Subsequent calls reuse the same page.
     """
-    ok, normalized = _is_safe_url(url)
-    if not ok:
-        return {"error": normalized, "text": "", "title": "", "final_url": "",
-                "screenshot": None, "status": 0}
-
+    entry = _MISSION_PAGES.get(mission_id)
+    if entry is not None:
+        return entry
     browser = await _ensure_browser()
     ctx = await browser.new_context(
         user_agent=USER_AGENT,
@@ -184,52 +201,68 @@ async def browse_url(
         ignore_https_errors=False,
     )
     page = await ctx.new_page()
-    out: dict = {"final_url": normalized, "title": "", "text": "",
-                 "screenshot": None, "status": 0, "error": ""}
+    entry = {"context": ctx, "page": page, "lock": asyncio.Lock()}
+    _MISSION_PAGES[mission_id] = entry
+    logger.info("Mission %s: new sticky browser page", mission_id)
+    return entry
+
+
+async def cleanup_mission_page(mission_id: str) -> None:
+    """Close the sticky context for a mission and drop the bookkeeping."""
+    entry = _MISSION_PAGES.pop(mission_id, None)
+    if not entry:
+        return
+    ctx = entry.get("context")
     try:
-        try:
-            resp = await page.goto(normalized, wait_until="domcontentloaded",
-                                   timeout=NAV_TIMEOUT_MS)
-        except Exception as exc:
-            out["error"] = f"Navigation failed: {exc}"
-            return out
-        out["status"] = resp.status if resp else 0
-        out["final_url"] = page.url
-        # Best-effort: wait for network to settle so SPA content has loaded.
-        # Don't fail the whole call if it times out — many sites keep
-        # connections open forever for analytics / chat widgets.
-        try:
-            await page.wait_for_load_state("networkidle", timeout=8000)
-        except Exception:
-            pass
+        if ctx is not None:
+            await ctx.close()
+    except Exception as exc:
+        logger.warning("mission %s context close failed: %s", mission_id, exc)
 
-        try:
-            out["title"] = (await page.title()) or ""
-        except Exception:
-            out["title"] = ""
 
-        # Pull readable text from the DOM. innerText respects display:none
-        # and preserves visible whitespace, which beats raw textContent.
-        try:
-            body_text = await page.evaluate(
-                "() => document.body ? document.body.innerText : ''"
+# ── Public API: Layer A (read-only) ────────────────────────────────────────
+async def browse_url(
+    url: str,
+    *,
+    take_screenshot: bool = True,
+    upload_dir: Optional[Path] = None,
+    mission_id: Optional[str] = None,
+) -> dict:
+    """Load `url` with Playwright, return rendered text + optional screenshot.
+
+    If `mission_id` is supplied, navigation happens on the mission's sticky
+    page so follow-up `browse_fill` / `browse_click` / `browse_submit` calls
+    operate on the same loaded page.
+    """
+    ok, normalized = _is_safe_url(url)
+    if not ok:
+        return {"error": normalized, "text": "", "title": "", "final_url": "",
+                "screenshot": None, "status": 0}
+
+    if mission_id:
+        entry = await _get_or_create_mission_page(mission_id)
+        async with entry["lock"]:
+            return await _drive_navigate(
+                entry["page"], normalized,
+                take_screenshot=take_screenshot, upload_dir=upload_dir,
+                keep_page_open=True,
             )
-        except Exception as exc:
-            body_text = ""
-            logger.warning("innerText extraction failed: %s", exc)
-        out["text"] = _clean_text(body_text)
-
-        if take_screenshot and upload_dir is not None:
-            try:
-                fname = f"{uuid.uuid4().hex}.png"
-                shot_bytes = await page.screenshot(full_page=False, type="png")
-                (upload_dir / fname).write_bytes(shot_bytes)
-                out["screenshot"] = fname
-            except Exception as exc:
-                logger.warning("screenshot failed: %s", exc)
-                out["screenshot"] = None
-
-        return out
+    # Ephemeral path — existing Layer A behaviour.
+    browser = await _ensure_browser()
+    ctx = await browser.new_context(
+        user_agent=USER_AGENT,
+        viewport={"width": 1280, "height": 800},
+        locale="en-US",
+        extra_http_headers={"Accept-Language": "en-US,en;q=0.9"},
+        ignore_https_errors=False,
+    )
+    page = await ctx.new_page()
+    try:
+        return await _drive_navigate(
+            page, normalized,
+            take_screenshot=take_screenshot, upload_dir=upload_dir,
+            keep_page_open=False,
+        )
     finally:
         try:
             await ctx.close()
@@ -237,32 +270,366 @@ async def browse_url(
             pass
 
 
+async def _drive_navigate(page, url: str, *, take_screenshot: bool,
+                          upload_dir: Optional[Path],
+                          keep_page_open: bool) -> dict:
+    """Navigate `page` to `url` and return the snapshot dict."""
+    out: dict = {"final_url": url, "title": "", "text": "",
+                 "screenshot": None, "status": 0, "error": ""}
+    try:
+        resp = await page.goto(url, wait_until="domcontentloaded",
+                               timeout=NAV_TIMEOUT_MS)
+    except Exception as exc:
+        out["error"] = f"Navigation failed: {exc}"
+        return out
+    out["status"] = resp.status if resp else 0
+    out["final_url"] = page.url
+    try:
+        await page.wait_for_load_state("networkidle", timeout=8000)
+    except Exception:
+        pass
+    await _populate_snapshot(page, out, take_screenshot, upload_dir)
+    return out
+
+
+async def _populate_snapshot(page, out: dict, take_screenshot: bool,
+                             upload_dir: Optional[Path]) -> None:
+    """Read title / text / screenshot off `page` into `out` (best-effort)."""
+    try:
+        out["title"] = (await page.title()) or ""
+    except Exception:
+        out["title"] = ""
+    try:
+        body_text = await page.evaluate(
+            "() => document.body ? document.body.innerText : ''"
+        )
+    except Exception as exc:
+        body_text = ""
+        logger.warning("innerText extraction failed: %s", exc)
+    out["text"] = _clean_text(body_text)
+    if take_screenshot and upload_dir is not None:
+        try:
+            fname = f"{uuid.uuid4().hex}.png"
+            shot_bytes = await page.screenshot(full_page=False, type="png")
+            (upload_dir / fname).write_bytes(shot_bytes)
+            out["screenshot"] = fname
+        except Exception as exc:
+            logger.warning("screenshot failed: %s", exc)
+            out["screenshot"] = None
+
+
 async def screenshot_url(url: str, upload_dir: Path) -> dict:
-    """Visual-only shortcut. Returns `{"screenshot": filename, "final_url": …}`."""
+    """Visual-only shortcut (ephemeral)."""
     return await browse_url(url, take_screenshot=True, upload_dir=upload_dir)
+
+
+# ── Public API: Layer B (form interaction) ─────────────────────────────────
+async def browse_click(
+    mission_id: str,
+    *,
+    selector: str = "",
+    text: str = "",
+    upload_dir: Optional[Path] = None,
+) -> dict:
+    """Click an element on the mission's sticky page.
+
+    Resolution order:
+      1. If `selector` is provided, try it as a CSS selector.
+      2. Else, if `text` is provided, match the FIRST visible element whose
+         inner text contains the substring (case-insensitive) across
+         `button`, `a`, `[role=button]`, `input[type=submit]`, `input[type=button]`.
+
+    Returns the standard snapshot plus `{clicked: "<what"}`.
+    """
+    selector = (selector or "").strip()
+    text = (text or "").strip()
+    if not selector and not text:
+        return {"error": "Provide `selector` (CSS) or `text` (button/link label)."}
+    entry = await _get_or_create_mission_page(mission_id)
+    async with entry["lock"]:
+        page = entry["page"]
+        if not page.url or page.url == "about:blank":
+            return {"error": "No page is loaded. Call browse_url first."}
+        target_desc = ""
+        try:
+            locator = None
+            if selector:
+                locator = page.locator(selector).first
+                target_desc = f"css={selector!r}"
+            else:
+                # `get_by_role` is the most robust way to match buttons/links
+                # by visible text. We try role=button first, then role=link,
+                # then submit inputs, falling back to :has-text on a wide
+                # element set.
+                candidates = [
+                    page.get_by_role("button", name=re.compile(re.escape(text), re.I)).first,
+                    page.get_by_role("link", name=re.compile(re.escape(text), re.I)).first,
+                    page.locator(
+                        f"input[type=submit][value*='{text}' i], "
+                        f"input[type=button][value*='{text}' i]"
+                    ).first,
+                    page.locator(
+                        f"button:has-text('{text}'), a:has-text('{text}'), "
+                        f"[role=button]:has-text('{text}')"
+                    ).first,
+                ]
+                for cand in candidates:
+                    try:
+                        if await cand.count() > 0:
+                            locator = cand
+                            break
+                    except Exception:
+                        continue
+                target_desc = f"text={text!r}"
+
+            if locator is None:
+                return {"error": f"No element matched {target_desc}"}
+            try:
+                await locator.wait_for(state="visible", timeout=ACTION_TIMEOUT_MS)
+            except Exception:
+                pass
+            try:
+                await locator.click(timeout=ACTION_TIMEOUT_MS)
+            except Exception as exc:
+                return {"error": f"Click failed ({target_desc}): {exc}"}
+
+            try:
+                await page.wait_for_load_state("networkidle", timeout=8000)
+            except Exception:
+                pass
+            snap = await _snapshot_mission_page(page, upload_dir)
+            snap["clicked"] = target_desc
+            return snap
+        except Exception as exc:
+            return {"error": f"browse_click crash: {exc}"}
+
+
+async def browse_fill(
+    mission_id: str,
+    *,
+    fields: Dict[str, Any],
+    upload_dir: Optional[Path] = None,
+) -> dict:
+    """Fill form fields on the mission's sticky page.
+
+    `fields` is a dict of `{label_or_selector: value}` pairs. Each key is
+    resolved by trying, in order:
+      1. As a CSS selector         (`"#email"`, `"input[name=email]"`)
+      2. As an ARIA label          (`get_by_label`)
+      3. As a placeholder substring
+      4. As a `name="..."` attribute
+
+    For `<select>` elements we pick the option whose visible label matches
+    `value` (case-insensitive). For checkboxes / radios, truthy values
+    check the box, falsy values uncheck it.
+    """
+    if not isinstance(fields, dict) or not fields:
+        return {"error": "`fields` must be a non-empty mapping"}
+    if len(fields) > MAX_FILL_FIELDS:
+        return {"error": f"Too many fields (max {MAX_FILL_FIELDS})"}
+
+    entry = await _get_or_create_mission_page(mission_id)
+    async with entry["lock"]:
+        page = entry["page"]
+        if not page.url or page.url == "about:blank":
+            return {"error": "No page is loaded. Call browse_url first."}
+
+        filled: list = []
+        not_found: list = []
+        for raw_key, raw_value in fields.items():
+            key = str(raw_key or "").strip()
+            if not key:
+                continue
+            if isinstance(raw_value, str) and len(raw_value) > MAX_FILL_VALUE_LEN:
+                raw_value = raw_value[:MAX_FILL_VALUE_LEN]
+            value = raw_value
+            loc, how = await _resolve_form_field(page, key)
+            if loc is None:
+                not_found.append(key)
+                continue
+            try:
+                tag = (await loc.evaluate("el => el.tagName && el.tagName.toLowerCase()") or "").strip()
+                input_type = ""
+                if tag == "input":
+                    input_type = (await loc.evaluate("el => (el.type || '').toLowerCase()") or "").strip()
+
+                if tag == "select":
+                    # Try label match, then value match, then visible text
+                    label_val = str(value)
+                    try:
+                        await loc.select_option(label=label_val, timeout=ACTION_TIMEOUT_MS)
+                    except Exception:
+                        try:
+                            await loc.select_option(value=label_val, timeout=ACTION_TIMEOUT_MS)
+                        except Exception:
+                            not_found.append(f"{key} (select option not found)")
+                            continue
+                elif input_type in {"checkbox", "radio"}:
+                    want_on = bool(value) and str(value).lower() not in {"false", "no", "off", "0", ""}
+                    if want_on:
+                        await loc.check(timeout=ACTION_TIMEOUT_MS)
+                    else:
+                        await loc.uncheck(timeout=ACTION_TIMEOUT_MS)
+                elif input_type == "file":
+                    not_found.append(f"{key} (file upload not supported yet)")
+                    continue
+                else:
+                    # textarea + text/email/tel/url/password/number/etc.
+                    await loc.fill(str(value), timeout=ACTION_TIMEOUT_MS)
+                filled.append({"field": key, "matched_by": how})
+            except Exception as exc:
+                not_found.append(f"{key} ({exc.__class__.__name__})")
+
+        snap = await _snapshot_mission_page(page, upload_dir)
+        snap["filled"] = filled
+        snap["not_found"] = not_found
+        return snap
+
+
+async def browse_submit(
+    mission_id: str,
+    *,
+    selector: str = "",
+    upload_dir: Optional[Path] = None,
+) -> dict:
+    """Submit a form on the mission's sticky page.
+
+    If `selector` is provided it can point at either a `<form>` (we call
+    `form.submit()`) or a button (we click it). If `selector` is empty we
+    click the first visible `button[type=submit]` or `input[type=submit]`.
+    """
+    entry = await _get_or_create_mission_page(mission_id)
+    async with entry["lock"]:
+        page = entry["page"]
+        if not page.url or page.url == "about:blank":
+            return {"error": "No page is loaded. Call browse_url first."}
+        clicked = ""
+        try:
+            if selector:
+                loc = page.locator(selector).first
+                if await loc.count() == 0:
+                    return {"error": f"No element matched {selector!r}"}
+                tag = (await loc.evaluate("el => el.tagName && el.tagName.toLowerCase()") or "").strip()
+                if tag == "form":
+                    # Use requestSubmit so native validation + submit events
+                    # fire the way the site expects.
+                    await loc.evaluate(
+                        "el => { if (el.requestSubmit) el.requestSubmit(); else el.submit(); }"
+                    )
+                    clicked = f"form={selector!r}"
+                else:
+                    await loc.click(timeout=ACTION_TIMEOUT_MS)
+                    clicked = f"css={selector!r}"
+            else:
+                candidates = [
+                    page.locator("button[type=submit]").first,
+                    page.locator("input[type=submit]").first,
+                    page.locator("button:not([type])").first,  # default type is submit
+                ]
+                loc = None
+                for cand in candidates:
+                    try:
+                        if await cand.count() > 0:
+                            loc = cand
+                            break
+                    except Exception:
+                        continue
+                if loc is None:
+                    return {"error": "No submit button found on the page"}
+                await loc.click(timeout=ACTION_TIMEOUT_MS)
+                clicked = "auto=submit-button"
+            try:
+                await page.wait_for_load_state("networkidle", timeout=8000)
+            except Exception:
+                pass
+            snap = await _snapshot_mission_page(page, upload_dir)
+            snap["submitted_via"] = clicked
+            return snap
+        except Exception as exc:
+            return {"error": f"browse_submit crash: {exc}"}
+
+
+async def _resolve_form_field(page, key: str):
+    """Locate a form input by CSS selector → ARIA label → placeholder → name.
+
+    Returns (locator_or_None, how_matched_string).
+    """
+    # 1. As CSS selector (only if it looks like one — don't let "Email"
+    #    accidentally match the <em>ail</em> tag via CSS).
+    if any(c in key for c in "#.[]:>"):
+        try:
+            loc = page.locator(key).first
+            if await loc.count() > 0:
+                return loc, "css"
+        except Exception:
+            pass
+
+    # 2. ARIA label
+    try:
+        loc = page.get_by_label(key, exact=False).first
+        if await loc.count() > 0:
+            return loc, "label"
+    except Exception:
+        pass
+
+    # 3. Placeholder
+    try:
+        loc = page.get_by_placeholder(key, exact=False).first
+        if await loc.count() > 0:
+            return loc, "placeholder"
+    except Exception:
+        pass
+
+    # 4. name attribute (common for server-rendered forms)
+    try:
+        loc = page.locator(
+            f"input[name='{key}'], textarea[name='{key}'], select[name='{key}']"
+        ).first
+        if await loc.count() > 0:
+            return loc, "name"
+    except Exception:
+        pass
+
+    # 5. Case-insensitive name fallback (LLM capitalization is inconsistent)
+    try:
+        ci = key.lower()
+        loc = page.locator(
+            f"input[name i='{ci}'], textarea[name i='{ci}'], select[name i='{ci}']"
+        ).first
+        if await loc.count() > 0:
+            return loc, "name-ci"
+    except Exception:
+        pass
+
+    return None, ""
+
+
+async def _snapshot_mission_page(page, upload_dir: Optional[Path]) -> dict:
+    """After a Layer B action, build the standard `{final_url, title, text,
+    status, screenshot}` dict. Status isn't available post-click (no
+    response object) so we surface 0."""
+    out: dict = {"final_url": page.url, "title": "", "text": "",
+                 "screenshot": None, "status": 0, "error": ""}
+    await _populate_snapshot(page, out, True, upload_dir)
+    return out
 
 
 # ── Text cleanup ───────────────────────────────────────────────────────────
 def _clean_text(raw: str) -> str:
-    """Collapse whitespace and cap to MAX_TEXT_BYTES.
-
-    We deliberately don't try to parse the page semantically (no readability,
-    no boilerplate removal) at this stage — the LLM is good at finding the
-    important parts, and naive heuristics tend to delete the answer the
-    user wanted.
-    """
+    """Collapse whitespace and cap to MAX_TEXT_BYTES."""
     if not raw:
         return ""
-    # Collapse runs of whitespace, strip null bytes that occasionally creep
-    # in from binary blobs the page evaluated.
     t = re.sub(r"[ \t]+", " ", raw)
     t = re.sub(r"\n{3,}", "\n\n", t)
     t = t.replace("\x00", "").strip()
     encoded = t.encode("utf-8")
     if len(encoded) <= MAX_TEXT_BYTES:
         return t
-    # Truncate on a UTF-8 boundary so we don't split a multibyte char
     return encoded[:MAX_TEXT_BYTES].decode("utf-8", errors="ignore") + "\n[…truncated…]"
 
 
-__all__ = ["browse_url", "screenshot_url", "shutdown_browser"]
+__all__ = [
+    "browse_url", "screenshot_url",
+    "browse_click", "browse_fill", "browse_submit",
+    "cleanup_mission_page", "shutdown_browser",
+]

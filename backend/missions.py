@@ -415,6 +415,15 @@ async def run_mission_loop(
     except Exception as exc:  # pragma: no cover
         logger.exception("mission %s crashed: %s", mission_id, exc)
         await _fail_mission(db, mission_id, str(exc)[:400])
+    finally:
+        # Release the sticky browser context (if any) so the Chromium
+        # process doesn't accumulate one zombie context per mission.
+        # Best-effort — losing the cleanup doesn't affect mission state.
+        try:
+            from browser_tools import cleanup_mission_page
+            await cleanup_mission_page(mission_id)
+        except Exception as exc:
+            logger.warning("mission %s browser cleanup failed: %s", mission_id, exc)
 
 
 async def _fail_mission(db, mission_id: str, err: str) -> None:
@@ -435,7 +444,12 @@ def build_tools(
     generate_image_for, save_artifacts,
 ) -> List[Tool]:
     """Wire our existing building blocks into Mission tools."""
-    from browser_tools import browse_url as _browse_url
+    from browser_tools import (
+        browse_url as _browse_url,
+        browse_click as _browse_click,
+        browse_fill as _browse_fill,
+        browse_submit as _browse_submit,
+    )
 
     async def web_search(ctx, args):
         q = (args.get("query") or "").strip()
@@ -639,7 +653,6 @@ def build_tools(
                     {"_id": 0, "result_preview": 1, "args": 1},
                 ).sort("ts", -1).limit(20)
                 async for prev in prev_cur:
-                    prev_url = ""
                     # We don't store args on tool_result, so peek at the
                     # paired tool_call. Cheap heuristic: look for matching
                     # URL substring in the result_preview.
@@ -655,7 +668,10 @@ def build_tools(
             pass
         # Off-load to the browser_tools module — handles SSRF, JS render,
         # screenshot, text cleanup, and 30s timeout.
-        result = await _browse_url(url, take_screenshot=True, upload_dir=UPLOAD_DIR)
+        result = await _browse_url(
+            url, take_screenshot=True, upload_dir=UPLOAD_DIR,
+            mission_id=ctx.get("mission_id") or None,
+        )
         if result.get("error"):
             return {"error": result["error"]}
         # If we captured a screenshot, register it in the documents library
@@ -731,6 +747,116 @@ def build_tools(
         sub.pop("text_bytes", None)
         return sub
 
+    # ── Layer B: form interaction ──────────────────────────────────────
+    async def _persist_action_screenshot(ctx: dict, result: dict) -> Optional[dict]:
+        """Promote the Playwright screenshot in `result["screenshot"]` (a
+        filename in UPLOAD_DIR) into a real Document so the Mission UI can
+        render it in the work log. Mutates result: removes 'screenshot'
+        filename and sets result['artifact'] to the doc descriptor.
+        """
+        shot = result.get("screenshot")
+        if not shot:
+            return None
+        shot_path = UPLOAD_DIR / shot
+        try:
+            shot_bytes = shot_path.read_bytes()
+            doc_filename = f"{uuid.uuid4().hex}.png"
+            org_folder = docs_root / ctx["org_id"]
+            org_folder.mkdir(parents=True, exist_ok=True)
+            (org_folder / doc_filename).write_bytes(shot_bytes)
+            host = urlparse(result.get("final_url") or "").hostname or "page"
+            friendly = f"{host.replace('.', '_')}.png"
+            doc = {
+                "id": str(uuid.uuid4()),
+                "org_id": ctx["org_id"],
+                "conversation_id": ctx.get("mission_id", ""),
+                "message_id": ctx.get("mission_id", ""),
+                "agent_id": ctx.get("lead_agent_id", ""),
+                "agent_name": ctx.get("lead_agent_name", "Mission"),
+                "created_by": ctx.get("created_by", ""),
+                "filename": doc_filename,
+                "original_name": friendly,
+                "title": f"Screenshot of {result.get('title') or host}",
+                "mime": "image/png",
+                "kind": "image",
+                "ext": "png",
+                "size": len(shot_bytes),
+                "preview": "",
+                "tags": [],
+                "created_at": datetime.now(timezone.utc),
+            }
+            await db.documents.insert_one({**doc})
+            artifact = {
+                "document_id": doc["id"],
+                "original_name": friendly,
+                "mime": "image/png",
+                "url": f"/api/files/docs/{ctx['org_id']}/{doc_filename}",
+                "size": len(shot_bytes),
+            }
+            try: shot_path.unlink(missing_ok=True)
+            except Exception: pass
+            return artifact
+        except Exception as exc:
+            logger.warning("action screenshot persistence failed: %s", exc)
+            return None
+
+    async def browse_click(ctx, args):
+        mid = ctx.get("mission_id") or ""
+        if not mid:
+            return {"error": "browse_click requires a mission context"}
+        selector = (args.get("selector") or "").strip()
+        text = (args.get("text") or "").strip()
+        result = await _browse_click(
+            mid, selector=selector, text=text, upload_dir=UPLOAD_DIR,
+        )
+        if result.get("error"):
+            return {"error": result["error"]}
+        artifact = await _persist_action_screenshot(ctx, result)
+        return {
+            "clicked": result.get("clicked"),
+            "final_url": result.get("final_url"),
+            "title": result.get("title"),
+            "text_preview": (result.get("text") or "")[:4000],
+            "artifact": artifact,
+        }
+
+    async def browse_fill(ctx, args):
+        mid = ctx.get("mission_id") or ""
+        if not mid:
+            return {"error": "browse_fill requires a mission context"}
+        fields = args.get("fields") or {}
+        if not isinstance(fields, dict) or not fields:
+            return {"error": "`fields` must be a non-empty object mapping label/selector → value"}
+        result = await _browse_fill(mid, fields=fields, upload_dir=UPLOAD_DIR)
+        if result.get("error"):
+            return {"error": result["error"]}
+        artifact = await _persist_action_screenshot(ctx, result)
+        return {
+            "filled": result.get("filled", []),
+            "not_found": result.get("not_found", []),
+            "final_url": result.get("final_url"),
+            "title": result.get("title"),
+            "text_preview": (result.get("text") or "")[:4000],
+            "artifact": artifact,
+        }
+
+    async def browse_submit(ctx, args):
+        mid = ctx.get("mission_id") or ""
+        if not mid:
+            return {"error": "browse_submit requires a mission context"}
+        selector = (args.get("selector") or "").strip()
+        result = await _browse_submit(mid, selector=selector, upload_dir=UPLOAD_DIR)
+        if result.get("error"):
+            return {"error": result["error"]}
+        artifact = await _persist_action_screenshot(ctx, result)
+        return {
+            "submitted_via": result.get("submitted_via"),
+            "final_url": result.get("final_url"),
+            "title": result.get("title"),
+            "text_preview": (result.get("text") or "")[:4000],
+            "artifact": artifact,
+        }
+
     return [
         Tool("web_search",
              "Search the LIVE web (Brave + Perplexity fallback). Always use this for anything involving current events, recent launches, dates, prices, or 'latest'. Pass freshness='day'|'week'|'month'|'year' for time-sensitive queries — defaults to 'month' when the query mentions 'latest', 'this year', or a recent quarter. If results come back empty, DO NOT guess from your training data — retry with a refined query or ask_user.",
@@ -748,13 +874,25 @@ def build_tools(
              '{"prompt": "...", "model": "nano-banana"|"gpt-image-1"}',
              generate_image, side_effect=True),
         Tool("browse_url",
-             "Load a real web page in a headless Chromium (handles JavaScript / SPA / cookie walls), return its rendered text and a screenshot. Use AFTER web_search when you need the full content of a specific result, or to read a page web_search couldn't index.",
+             "Load a real web page in a headless Chromium (handles JavaScript / SPA / cookie walls), return its rendered text and a screenshot. Use AFTER web_search when you need the full content of a specific result, or to read a page web_search couldn't index. Also the first step before browse_fill / browse_click / browse_submit on the same page.",
              '{"url": "https://..."}',
              browse_url, side_effect=True),
         Tool("screenshot_url",
              "Visual-only snapshot of a page (no text extraction). Use when the user asks 'what does X look like' or for visual artifacts.",
              '{"url": "https://..."}',
              screenshot_url, side_effect=True),
+        Tool("browse_fill",
+             "Fill form inputs on the CURRENT browser page (after browse_url). Keys can be CSS selectors, ARIA labels, placeholders, or `name` attributes — the LLM-friendly way is to pass the visible field label, e.g. {'Email address': 'x@y.com', 'Your message': 'Hi…'}. For <select> pass the visible option text. Max 20 fields per call.",
+             '{"fields": {"Email": "x@y.com", "Name": "Ada Lovelace"}}',
+             browse_fill, side_effect=True),
+        Tool("browse_click",
+             "Click an element on the CURRENT browser page. Pass either a CSS `selector` or visible `text` (matches buttons, links, role=button, and submit inputs, case-insensitive). Use this for cookie banners, 'Next' wizard buttons, or navigating SPA tabs.",
+             '{"selector": "#cta", "text": "Sign up"}',
+             browse_click, side_effect=True),
+        Tool("browse_submit",
+             "Submit a form on the CURRENT browser page. With no args, clicks the first `button[type=submit]` / `input[type=submit]`. You can also pass a `selector` pointing at a specific form or submit button. Use AFTER browse_fill.",
+             '{"selector": "form#contact"}',
+             browse_submit, side_effect=True),
     ]
 
 
@@ -865,6 +1003,14 @@ def make_missions_router(
             {"$set": {"status": "cancelled",
                       "finished_at": datetime.now(timezone.utc)}},
         )
+        # Release browser context eagerly — the loop's `finally` will also
+        # clean up but we want the Chromium memory back now, not after
+        # CancelledError propagates.
+        try:
+            from browser_tools import cleanup_mission_page
+            await cleanup_mission_page(mission_id)
+        except Exception:
+            pass
         return {"ok": True}
 
     @r.post("/missions/{mission_id}/answer")
@@ -982,6 +1128,12 @@ def make_missions_router(
             try: task.cancel()
             except Exception: pass
         _PAUSE_FLAGS.pop(mission_id, None)
+        # And release any sticky browser context the mission held open.
+        try:
+            from browser_tools import cleanup_mission_page
+            await cleanup_mission_page(mission_id)
+        except Exception:
+            pass
 
         # Remove artifacts this mission produced (the linked Document rows
         # + the on-disk files). Each artifact dict has a `document_id`.
