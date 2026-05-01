@@ -4056,4 +4056,10 @@ async def shutdown():
             scheduler.shutdown(wait=False)
     except Exception:
         pass
+    # Tear down the shared headless browser if it was started.
+    try:
+        from browser_tools import shutdown_browser
+        await shutdown_browser()
+    except Exception:
+        pass
     client.close()

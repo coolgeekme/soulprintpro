@@ -31,6 +31,7 @@ import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
+from urllib.parse import urlparse
 
 from bson import ObjectId
 from fastapi import APIRouter, Depends, HTTPException
@@ -407,6 +408,7 @@ def build_tools(
     generate_image_for, save_artifacts,
 ) -> List[Tool]:
     """Wire our existing building blocks into Mission tools."""
+    from browser_tools import browse_url as _browse_url
 
     async def web_search(ctx, args):
         q = (args.get("query") or "").strip()
@@ -594,6 +596,88 @@ def build_tools(
         # social_posts.py.
         return {"error": "Not available yet — use write_artifact to save a .md post for the Social Queue."}
 
+    async def browse_url(ctx, args):
+        url = (args.get("url") or "").strip()
+        if not url:
+            return {"error": "url is required"}
+        # Off-load to the browser_tools module — handles SSRF, JS render,
+        # screenshot, text cleanup, and 30s timeout.
+        result = await _browse_url(url, take_screenshot=True, upload_dir=UPLOAD_DIR)
+        if result.get("error"):
+            return {"error": result["error"]}
+        # If we captured a screenshot, register it in the documents library
+        # so it shows up alongside other mission deliverables and is
+        # downloadable. Mission detail page already renders artifact list.
+        artifact = None
+        shot = result.get("screenshot")
+        if shot:
+            shot_path = UPLOAD_DIR / shot
+            try:
+                shot_bytes = shot_path.read_bytes()
+                # Register as a real Document. Save bytes verbatim into the
+                # docs folder so capability URLs work.
+                doc_filename = f"{uuid.uuid4().hex}.png"
+                org_folder = docs_root / ctx["org_id"]
+                org_folder.mkdir(parents=True, exist_ok=True)
+                (org_folder / doc_filename).write_bytes(shot_bytes)
+                # Friendly name from the URL host
+                host = urlparse(result["final_url"]).hostname or "screenshot"
+                friendly = f"{host.replace('.', '_')}.png"
+                doc = {
+                    "id": str(uuid.uuid4()),
+                    "org_id": ctx["org_id"],
+                    "conversation_id": ctx.get("mission_id", ""),
+                    "message_id": ctx.get("mission_id", ""),
+                    "agent_id": ctx.get("lead_agent_id", ""),
+                    "agent_name": ctx.get("lead_agent_name", "Mission"),
+                    "created_by": ctx.get("created_by", ""),
+                    "filename": doc_filename,
+                    "original_name": friendly,
+                    "title": f"Screenshot of {result.get('title') or host}",
+                    "mime": "image/png",
+                    "kind": "image",
+                    "ext": "png",
+                    "size": len(shot_bytes),
+                    "preview": "",
+                    "tags": [],
+                    "created_at": datetime.now(timezone.utc),
+                }
+                await db.documents.insert_one({**doc})
+                artifact = {
+                    "document_id": doc["id"],
+                    "original_name": friendly,
+                    "mime": "image/png",
+                    "url": f"/api/files/docs/{ctx['org_id']}/{doc_filename}",
+                    "size": len(shot_bytes),
+                }
+                # Tidy up the working copy in UPLOAD_DIR (we have a permanent
+                # copy in docs_root now). Best-effort.
+                try: shot_path.unlink(missing_ok=True)
+                except Exception: pass
+            except Exception as exc:
+                logger.warning("browse_url screenshot persistence failed: %s", exc)
+                artifact = None
+        # Trim the text block we hand back to the LLM; the full screenshot
+        # is already saved as a downloadable artifact.
+        return {
+            "final_url": result.get("final_url"),
+            "title": result.get("title"),
+            "status": result.get("status"),
+            "text_preview": (result.get("text") or "")[:8000],
+            "text_bytes": len((result.get("text") or "").encode("utf-8")),
+            "artifact": artifact,
+        }
+
+    async def screenshot_url(ctx, args):
+        # Thin wrapper over browse_url that skips the text payload; useful
+        # when the agent only wants the visual.
+        sub = await browse_url(ctx, {"url": args.get("url")})
+        if sub.get("error"):
+            return sub
+        sub.pop("text_preview", None)
+        sub.pop("text_bytes", None)
+        return sub
+
     return [
         Tool("web_search",
              "Search the LIVE web (Brave + Perplexity fallback). Always use this for anything involving current events, recent launches, dates, prices, or 'latest'. Pass freshness='day'|'week'|'month'|'year' for time-sensitive queries — defaults to 'month' when the query mentions 'latest', 'this year', or a recent quarter. If results come back empty, DO NOT guess from your training data — retry with a refined query or ask_user.",
@@ -610,6 +694,14 @@ def build_tools(
              "Render a new image (Nano Banana default, or GPT Image 1) and save it.",
              '{"prompt": "...", "model": "nano-banana"|"gpt-image-1"}',
              generate_image, side_effect=True),
+        Tool("browse_url",
+             "Load a real web page in a headless Chromium (handles JavaScript / SPA / cookie walls), return its rendered text and a screenshot. Use AFTER web_search when you need the full content of a specific result, or to read a page web_search couldn't index.",
+             '{"url": "https://..."}',
+             browse_url, side_effect=True),
+        Tool("screenshot_url",
+             "Visual-only snapshot of a page (no text extraction). Use when the user asks 'what does X look like' or for visual artifacts.",
+             '{"url": "https://..."}',
+             screenshot_url, side_effect=True),
     ]
 
 

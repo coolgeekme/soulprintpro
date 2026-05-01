@@ -328,17 +328,24 @@ function MissionDetail({ orgId, missionId }) {
                 const url = a.url?.startsWith("http") ? a.url : `${BACKEND_URL}${a.url}`;
                 const isImg = (a.mime || "").startsWith("image/");
                 return (
-                  <li key={i} className="sp-glass rounded-xl p-3 flex items-start gap-2.5">
-                    <div className="w-8 h-8 rounded-lg sp-glass-strong flex items-center justify-center shrink-0">
-                      {isImg ? <ImageIcon className="w-3.5 h-3.5" /> : <FileText className="w-3.5 h-3.5" />}
+                  <li key={i} className="sp-glass rounded-xl p-3 flex flex-col gap-2">
+                    <div className="flex items-start gap-2.5">
+                      <div className="w-8 h-8 rounded-lg sp-glass-strong flex items-center justify-center shrink-0">
+                        {isImg ? <ImageIcon className="w-3.5 h-3.5" /> : <FileText className="w-3.5 h-3.5" />}
+                      </div>
+                      <div className="min-w-0 flex-1">
+                        <div className="text-sm font-medium truncate">{a.original_name}</div>
+                        <div className="text-[11px] sp-subtle truncate">{a.mime}</div>
+                      </div>
+                      <a href={url} download={a.original_name} className="sp-btn sp-btn-ghost text-[11px]">
+                        <Download className="w-3 h-3" /> Get
+                      </a>
                     </div>
-                    <div className="min-w-0 flex-1">
-                      <div className="text-sm font-medium truncate">{a.original_name}</div>
-                      <div className="text-[11px] sp-subtle truncate">{a.mime}</div>
-                    </div>
-                    <a href={url} download={a.original_name} className="sp-btn sp-btn-ghost text-[11px]">
-                      <Download className="w-3 h-3" /> Get
-                    </a>
+                    {isImg && (
+                      <a href={url} target="_blank" rel="noreferrer" className="block rounded-lg overflow-hidden border border-white/10">
+                        <img src={url} alt={a.original_name} loading="lazy" className="w-full max-h-48 object-cover bg-black/40" />
+                      </a>
+                    )}
                   </li>
                 );
               })}
@@ -425,10 +432,19 @@ function EventRow({ e }) {
   }
   if (e.kind === "artifact") {
     const a = e.artifact || {};
+    const isImg = (a.mime || "").startsWith("image/");
+    const url = a.url ? (a.url.startsWith("http") ? a.url : `${BACKEND_URL}${a.url}`) : "";
     return (
-      <div className="flex gap-2">
+      <div className="flex gap-2 items-start">
         <span className="sp-subtle w-8 shrink-0">[{iter}]</span>
-        <span className="text-emerald-200">📎 saved {a.original_name}</span>
+        <div className="min-w-0 flex-1">
+          <span className="text-emerald-200">📎 saved {a.original_name}</span>
+          {isImg && url && (
+            <a href={url} target="_blank" rel="noreferrer" className="block mt-2 max-w-md rounded-lg overflow-hidden border border-white/10 hover:border-white/30 transition">
+              <img src={url} alt={a.original_name} loading="lazy" className="w-full max-h-72 object-contain bg-black/40" />
+            </a>
+          )}
+        </div>
       </div>
     );
   }
