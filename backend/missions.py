@@ -712,6 +712,7 @@ def make_missions_router(
     require_org_member, get_current_user,
     build_tools_factory: Callable[[], List[Tool]],
     build_lead_system_prompt: Callable[[str], str],
+    docs_root: Path,
 ):
     r = APIRouter(prefix="/api")
 
@@ -849,6 +850,52 @@ def make_missions_router(
             build_lead_system_prompt=build_lead_system_prompt,
         ))
         _RUNNING[mission_id] = task
+        return {"ok": True}
+
+    @r.delete("/missions/{mission_id}")
+    async def delete_mission(mission_id: str,
+                             u: dict = Depends(get_current_user)):
+        """Permanently delete a mission, its event log, AND any artifacts
+        produced by that mission (so owners can scrub a bad run completely).
+
+        Cancels the asyncio task first if the mission is still live so we
+        don't race the loop's own writes against our delete.
+        """
+        m = await db.missions.find_one({"id": mission_id})
+        if not m:
+            raise HTTPException(404, "Mission not found")
+        await require_org_member(m["org_id"], u["id"])
+
+        # Stop the loop if it's still running. Best-effort — if cancelling
+        # raises, we still proceed with the delete; the task will see its
+        # mission row gone on next iteration and bail.
+        task = _RUNNING.pop(mission_id, None)
+        if task and not task.done():
+            try: task.cancel()
+            except Exception: pass
+        _PAUSE_FLAGS.pop(mission_id, None)
+
+        # Remove artifacts this mission produced (the linked Document rows
+        # + the on-disk files). Each artifact dict has a `document_id`.
+        for a in (m.get("artifacts") or []):
+            doc_id = a.get("document_id")
+            if not doc_id:
+                continue
+            try:
+                d = await db.documents.find_one(
+                    {"id": doc_id, "org_id": m["org_id"]},
+                )
+                if d:
+                    try:
+                        (docs_root / d["org_id"] / d["filename"]).unlink(missing_ok=True)
+                    except Exception:
+                        pass
+                    await db.documents.delete_one({"id": doc_id})
+            except Exception as exc:
+                logger.warning("artifact cleanup failed for %s: %s", doc_id, exc)
+
+        await db.mission_events.delete_many({"mission_id": mission_id})
+        await db.missions.delete_one({"id": mission_id})
         return {"ok": True}
 
     return r

@@ -6,6 +6,7 @@ import { toast } from "sonner";
 import {
   Rocket, Play, X, Loader2, ArrowLeft, Search, FileText, Wrench,
   ChevronRight, Check, AlertTriangle, HelpCircle, Send, Download, Image as ImageIcon,
+  Trash2,
 } from "lucide-react";
 
 /**
@@ -68,6 +69,18 @@ function MissionList({ orgId }) {
     }
   };
 
+  const deleteMission = async (id, e) => {
+    if (e) { e.preventDefault(); e.stopPropagation(); }
+    if (!window.confirm("Delete this mission, its work log, and any artifacts it produced? This can't be undone.")) return;
+    try {
+      await api.delete(`/missions/${id}`);
+      setMissions((prev) => (prev || []).filter((m) => m.id !== id));
+      toast.success("Mission deleted");
+    } catch (err) {
+      toast.error(err?.response?.data?.detail || "Delete failed");
+    }
+  };
+
   return (
     <div className="min-h-screen" style={{ background: "var(--bg)", color: "var(--fg)" }}>
       <TopBar />
@@ -112,9 +125,17 @@ function MissionList({ orgId }) {
                 <li key={m.id}>
                   <Link
                     to={`/app/org/${orgId}/missions/${m.id}`}
-                    className="sp-glass rounded-xl p-4 block hover:border-white/25 transition group"
+                    className="sp-glass rounded-xl p-4 block hover:border-white/25 transition group relative"
                     data-testid={`mission-card-${m.id}`}
                   >
+                    <button
+                      onClick={(e) => deleteMission(m.id, e)}
+                      className="absolute top-2 right-2 sp-btn sp-btn-ghost !p-1.5 opacity-0 group-hover:opacity-100 transition hover:!text-red-300"
+                      data-testid={`delete-mission-${m.id}`}
+                      title="Delete mission"
+                    >
+                      <Trash2 className="w-3.5 h-3.5" />
+                    </button>
                     <div className="flex items-start gap-3">
                       <div className="w-9 h-9 rounded-lg sp-glass-strong flex items-center justify-center shrink-0">
                         <Rocket className="w-4 h-4" />
@@ -264,6 +285,18 @@ function MissionDetail({ orgId, missionId }) {
     }
   };
 
+  const nav = useNavigate();
+  const remove = async () => {
+    if (!window.confirm("Delete this mission, its work log, and any artifacts it produced? This can't be undone.")) return;
+    try {
+      await api.delete(`/missions/${missionId}`);
+      toast.success("Mission deleted");
+      nav(`/app/org/${orgId}/missions`);
+    } catch (err) {
+      toast.error(err?.response?.data?.detail || "Delete failed");
+    }
+  };
+
   const sendAnswer = async () => {
     const a = answer.trim();
     if (!a) return;
@@ -315,6 +348,9 @@ function MissionDetail({ orgId, missionId }) {
                   <X className="w-3.5 h-3.5" /> Cancel
                 </button>
               )}
+              <button onClick={remove} className="sp-btn sp-btn-ghost text-xs hover:!text-red-300" data-testid="mission-delete-btn" title="Delete this mission">
+                <Trash2 className="w-3.5 h-3.5" /> Delete
+              </button>
             </div>
           </div>
         )}

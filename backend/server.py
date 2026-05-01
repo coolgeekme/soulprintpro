@@ -4007,6 +4007,7 @@ missions_r = make_missions_router(
     get_current_user=get_current_user,
     build_tools_factory=_build_mission_tools_factory,
     build_lead_system_prompt=_build_lead_mission_system_prompt,
+    docs_root=DOCS_DIR,
 )
 app.include_router(missions_r)
 
