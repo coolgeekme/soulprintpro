@@ -82,6 +82,7 @@ def build_tool_catalog(tools: List[Tool]) -> str:
 class StartMissionBody(BaseModel):
     goal: str = Field(..., min_length=6, max_length=4000)
     lead_agent_id: Optional[str] = None
+    conversation_id: Optional[str] = None  # set when started from a chat
     model: Optional[str] = None  # reserved (we use Sonnet by default)
 
 
@@ -98,6 +99,7 @@ def serialize_mission(m: dict) -> dict:
     return {
         "id": m.get("id"),
         "org_id": m.get("org_id"),
+        "conversation_id": m.get("conversation_id"),
         "goal": m.get("goal"),
         "status": m.get("status"),
         "lead_agent_id": m.get("lead_agent_id"),
@@ -1023,16 +1025,39 @@ def make_missions_router(
             # all-rounder; fall back to the first catalog entry if it isn't
             # present.
             lead = "project-shepherd" if "project-shepherd" in AGENTS else next(iter(AGENTS))
+        # If `conversation_id` was passed (mission started from inside a
+        # chat), validate the user can post in that conversation. The chat
+        # ownership check is done by load_conv_or_403 — but we don't have
+        # that helper available here without a circular import, so we do a
+        # cheap membership check via the conversation's team.
+        conv_id = (body.conversation_id or "").strip() or None
+        if conv_id:
+            try:
+                conv = await db.conversations.find_one({"_id": ObjectId(conv_id)})
+            except Exception:
+                conv = None
+            if not conv:
+                raise HTTPException(404, "Conversation not found")
+            # Conversation must belong to this org (team→org chain). The
+            # team doc carries org_id.
+            try:
+                team = await db.teams.find_one({"_id": ObjectId(conv["team_id"])})
+            except Exception:
+                team = None
+            if not team or team.get("org_id") != org_id:
+                raise HTTPException(400, "Conversation is not in this org")
+        now = datetime.now(timezone.utc)
         mission = {
             "id": str(uuid.uuid4()),
             "org_id": org_id,
+            "conversation_id": conv_id,
             "goal": body.goal.strip(),
             "lead_agent_id": lead,
             "lead_agent_name": AGENTS[lead]["name"],
             "status": "running",
             "iteration_count": 0,
-            "started_at": datetime.now(timezone.utc),
-            "last_activity_at": datetime.now(timezone.utc),
+            "started_at": now,
+            "last_activity_at": now,
             "finished_at": None,
             "summary": "",
             "artifacts": [],
@@ -1041,6 +1066,25 @@ def make_missions_router(
             "created_by": u["id"],
         }
         await db.missions.insert_one({**mission})
+
+        # When started from a conversation, drop a special `mission_card`
+        # message into that conv so the user can watch progress inline. The
+        # frontend renders these with a live-polling status component.
+        card_msg = None
+        if conv_id:
+            card_msg = {
+                "id": str(uuid.uuid4()),
+                "conversation_id": conv_id,
+                "sender_type": "agent",
+                "sender_id": lead,
+                "sender_name": AGENTS[lead]["name"],
+                "agent_id": lead,
+                "kind": "mission_card",
+                "mission_id": mission["id"],
+                "text": f"🚀 Mission started: {mission['goal'][:200]}",
+                "timestamp": now,
+            }
+            await db.messages.insert_one({**card_msg})
 
         tools = build_tools_factory()
         ctx = {
@@ -1057,7 +1101,10 @@ def make_missions_router(
             build_lead_system_prompt=build_lead_system_prompt,
         ))
         _RUNNING[mission["id"]] = task
-        return serialize_mission(mission)
+        out = serialize_mission(mission)
+        if card_msg:
+            out["chat_message"] = {k: v for k, v in card_msg.items() if k != "_id"}
+        return out
 
     @r.get("/missions/{mission_id}")
     async def get_mission(mission_id: str, u: dict = Depends(get_current_user)):

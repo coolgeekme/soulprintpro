@@ -4,8 +4,9 @@ import api, { BACKEND_URL } from "../lib/api";
 import TopBar from "../components/TopBar";
 import { toast } from "sonner";
 import { useAuth } from "../context/AuthContext";
-import { Send, Trash2, AtSign, Users, Repeat, Search, X, Lock, Film, Globe, ArrowUp, ArrowDown, UserPlus, Paperclip, FileText, File as FileIcon, Download, CornerDownRight, Megaphone, Pencil, Sparkles, Loader2 } from "lucide-react";
+import { Send, Trash2, AtSign, Users, Repeat, Search, X, Lock, Film, Globe, ArrowUp, ArrowDown, UserPlus, Paperclip, FileText, File as FileIcon, Download, CornerDownRight, Megaphone, Pencil, Sparkles, Loader2, Rocket } from "lucide-react";
 import LinkPreviewCard from "../components/LinkPreviewCard";
+import { MissionCard } from "../components/MissionCard";
 
 const formatTime = (ts) => {
   try { return new Date(ts).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }); }
@@ -309,10 +310,62 @@ export default function ConversationPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // Spin up a mission tied to this conversation. The backend returns a
+  // mission_card chat-message that we drop into the local message list so
+  // the user sees it immediately without waiting for the next poll.
+  const runAsMission = async (goalText) => {
+    if (!team?.org_id) {
+      toast.error("Couldn't find this team's org");
+      return false;
+    }
+    if (!goalText || goalText.trim().length < 6) {
+      toast.error("Mission goals need at least a sentence");
+      return false;
+    }
+    try {
+      const { data } = await api.post(`/orgs/${team.org_id}/missions`, {
+        goal: goalText.trim(),
+        conversation_id: convId,
+      });
+      if (data?.chat_message) {
+        setMessages((prev) => [...prev, data.chat_message]);
+      }
+      toast.success("Mission started — watch the card below.");
+      return true;
+    } catch (err) {
+      toast.error(err?.response?.data?.detail || "Couldn't start mission");
+      return false;
+    }
+  };
+
+  // Mission-intent detection (lightweight regex). Used to surface a
+  // "Make this a mission" pill below the composer when the user is typing
+  // a goal that smells like multi-step work (research, build a list,
+  // visit and submit, etc.). The agent's ask_user / chat path is fine for
+  // single-shot Q&A, but multi-step requests deserve the autonomous loop.
+  const MISSION_INTENT_RE = /\b(research(?:ing)?|investigate|find|build|compile|create|generate|gather|fill (?:out|in)|submit|visit (?:every|all|each)|browse|crawl|sign ?up|join (?:the|every|all)|register (?:on|at|for))\b.{0,80}\b(top \d+|each|every|all|list|spreadsheet|csv|dossier|brief|teardown|comparison|report|directory|waitlist|newsletter|directory)\b/i;
+  const looksLikeMission = !!(text && text.length > 24 && MISSION_INTENT_RE.test(text) && !/^\/mission\s/i.test(text || ""));
+
   const send = async (e) => {
     e.preventDefault();
     if (sending || uploading) return;
     if (!text.trim() && staged.length === 0) return;
+
+    // ── Slash command path: /mission <goal> ──────────────────────────────
+    // Lightweight parser: only fires when the message starts with the
+    // literal token, and there's no file staging in play (missions don't
+    // accept attachments today). Strips the prefix and routes to the
+    // mission runner; the user keeps their typed text on failure.
+    const trimmed = (text || "").trim();
+    if (staged.length === 0 && /^\/mission(\s|$)/i.test(trimmed)) {
+      const goal = trimmed.replace(/^\/mission\s*/i, "").trim();
+      if (!goal) { toast.error("Type a mission goal after /mission"); return; }
+      const wasText = text;
+      setText("");
+      const ok = await runAsMission(goal);
+      if (!ok) setText(wasText);
+      return;
+    }
 
     // ── Multi-file upload path ────────────────────────────────────────────
     if (staged.length > 0) {
@@ -714,6 +767,15 @@ export default function ConversationPage() {
               return (
                 <div key={m.id} className="flex justify-center sp-fade-up" data-testid={`system-msg-${m.id}`}>
                   <span className="sp-chip text-[11px] !bg-white/5">{m.text}</span>
+                </div>
+              );
+            }
+            // Mission cards — special rendering: live-updating status card
+            // bound to the mission_id rather than a normal chat bubble.
+            if (m.kind === "mission_card" && m.mission_id) {
+              return (
+                <div key={m.id} className="sp-fade-up" data-testid={`mission-card-msg-${m.id}`}>
+                  <MissionCard orgId={team?.org_id} missionId={m.mission_id} />
                 </div>
               );
             }
@@ -1121,6 +1183,30 @@ export default function ConversationPage() {
               </div>
             </div>
           )}
+          {looksLikeMission && (
+            <div className="mb-2 sp-glass rounded-xl px-3 py-2 flex items-center gap-2 sp-fade-up"
+                 data-testid="mission-suggest-pill">
+              <Sparkles className="w-3.5 h-3.5 opacity-70 shrink-0" />
+              <div className="text-xs leading-snug flex-1 min-w-0">
+                This looks like a multi-step goal. Run it as a <span className="font-medium">mission</span>—the agent will browse, fill forms, and ship deliverables on its own.
+              </div>
+              <button
+                type="button"
+                onClick={async () => {
+                  const goal = (text || "").trim();
+                  if (!goal) return;
+                  const wasText = text;
+                  setText("");
+                  const ok = await runAsMission(goal);
+                  if (!ok) setText(wasText);
+                }}
+                className="sp-btn sp-btn-primary text-[11px] shrink-0"
+                data-testid="mission-suggest-accept-btn"
+              >
+                <Rocket className="w-3 h-3 mr-1" /> Run as mission
+              </button>
+            </div>
+          )}
           {showMentions && isGroup && (
             <div className="mb-2 sp-glass rounded-xl p-2 flex flex-wrap gap-2">
               {convAgents.map(a => (
@@ -1186,6 +1272,25 @@ export default function ConversationPage() {
               className="flex-1 sp-glass rounded-2xl px-4 py-3.5 text-[16px] leading-relaxed placeholder:opacity-50 focus:sp-focus resize-none max-h-44"
               style={{ background: "var(--input-bg)", borderColor: "var(--input-border)", color: "var(--fg)" }}
             />
+            <button
+              type="button"
+              onClick={async () => {
+                const goal = (text || "").trim();
+                if (!goal) { toast.error("Type the goal first, then click Run as mission"); return; }
+                const wasText = text;
+                setText("");
+                const ok = await runAsMission(goal);
+                if (!ok) setText(wasText);
+              }}
+              disabled={sending || uploading || !text.trim() || staged.length > 0}
+              className="sp-btn sp-btn-ghost text-xs shrink-0 disabled:opacity-40"
+              title={staged.length > 0
+                ? "Missions don't accept attachments yet — clear staged files first"
+                : "Run as mission — agent autonomously plans, browses, and ships deliverables"}
+              data-testid="run-as-mission-btn"
+            >
+              <Rocket className="w-3.5 h-3.5" />
+            </button>
             <button
               type="submit"
               disabled={sending || uploading || (!text.trim() && staged.length === 0)}

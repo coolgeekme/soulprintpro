@@ -6,7 +6,7 @@ import { toast } from "sonner";
 import {
   Rocket, Play, X, Loader2, ArrowLeft, Search, FileText, Wrench,
   ChevronRight, Check, AlertTriangle, HelpCircle, Send, Download, Image as ImageIcon,
-  Trash2,
+  Trash2, CornerDownRight,
 } from "lucide-react";
 
 /**
@@ -382,6 +382,9 @@ function MissionDetail({ orgId, missionId }) {
                   </span>
                 </div>
                 <div className="text-base font-medium leading-snug">{mission.goal}</div>
+                {mission.conversation_id && (
+                  <ConvBacklink convId={mission.conversation_id} />
+                )}
                 {mission.summary && (
                   <div className="text-sm mt-2 sp-subtle leading-relaxed">{mission.summary}</div>
                 )}
@@ -597,5 +600,35 @@ function EventRow({ e }) {
       <span className="sp-subtle w-8 shrink-0">[{iter}]</span>
       <span className="sp-subtle">{e.text}</span>
     </div>
+  );
+}
+
+
+function ConvBacklink({ convId }) {
+  // The mission row only stores `conversation_id`. To build a link to
+  // /app/team/:teamId/c/:convId we need the team_id, so resolve it lazily
+  // via the conversation API. Falls back to no-op if the API errors (e.g.
+  // the conversation was deleted) — in that case we show nothing.
+  const [teamId, setTeamId] = useState(null);
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const { data } = await api.get(`/conversations/${convId}`);
+        if (!cancelled) setTeamId(data?.team_id);
+      } catch { /* conv gone — silent */ }
+    })();
+    return () => { cancelled = true; };
+  }, [convId]);
+  if (!teamId) return null;
+  return (
+    <Link
+      to={`/app/team/${teamId}/c/${convId}`}
+      className="text-xs sp-subtle hover:text-white inline-flex items-center gap-1 mt-1"
+      data-testid="mission-conv-backlink"
+    >
+      <CornerDownRight className="w-3 h-3" />
+      Started in chat — open conversation
+    </Link>
   );
 }
