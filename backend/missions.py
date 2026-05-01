@@ -137,6 +137,10 @@ Schema:
 }
 
 Rules:
+- "action" MUST be EXACTLY one of: "tool", "finish", "ask_user". Do NOT put a tool name in the action field — that goes in "tool".
+- Example correct: {"thought":"…","action":"tool","tool":"web_search","args":{"query":"…"}}
+- Example correct: {"thought":"…","action":"finish","args":{"summary":"…"}}
+- Example WRONG: {"action":"web_search","tool":"web_search",…}   ← do not do this.
 - Keep "thought" to a single sentence.
 - Never invent tool names — pick from the catalog.
 - When finishing, put a 2–4 sentence summary in args.summary.
@@ -222,6 +226,14 @@ async def run_mission_loop(
             history = await db.mission_events.find(
                 {"mission_id": mission_id}
             ).sort("ts", 1).to_list(MAX_EVENTS_IN_CONTEXT)
+            # Loop-detection: if the last 4 tool calls have all been
+            # web_search (i.e. we're spinning on retries), prepend a hard
+            # nudge so the LLM stops repeating itself.
+            recent_calls = [e for e in history if e.get("kind") == "tool_call"][-4:]
+            spinning_on_search = (
+                len(recent_calls) >= 4
+                and all(c.get("tool") == "web_search" for c in recent_calls)
+            )
             memory_lines: List[str] = []
             for e in history[-MAX_EVENTS_IN_CONTEXT:]:
                 k = e.get("kind")
@@ -240,6 +252,14 @@ async def run_mission_loop(
             user_turn = (
                 f"MISSION GOAL:\n{mission['goal']}\n\n"
                 f"WORK LOG (most-recent last):\n" + ("\n".join(memory_lines) or "(empty)")
+                + (
+                    "\n\nIMPORTANT: You have already called web_search 4 times "
+                    "in a row with no useful results. STOP retrying. Either "
+                    "(a) call ask_user to clarify the request, or (b) call "
+                    "finish with a truthful summary that live data was "
+                    "unavailable. Do NOT call web_search again this turn."
+                    if spinning_on_search else ""
+                )
                 + f"\n\nWhat is the next single action? Remember: STRICT JSON only."
                 + f" You are on iteration {iteration}/{MAX_ITERATIONS}."
             )
@@ -267,6 +287,13 @@ async def run_mission_loop(
 
             action = (step.get("action") or "").strip().lower()
             args = step.get("args") or {}
+
+            # Tolerant action parsing — many LLMs use action="web_search"
+            # (the tool name) instead of action="tool"+tool="web_search".
+            # If the action matches a known tool, treat it as such.
+            if action and action not in {"tool", "finish", "ask_user"} and action in tool_map:
+                step["tool"] = action
+                action = "tool"
 
             if action == "finish":
                 summary = (args.get("summary") or thought or "").strip()[:2000] or "Mission complete."
@@ -385,24 +412,77 @@ def build_tools(
         q = (args.get("query") or "").strip()
         if not q:
             return {"error": "query is required"}
-        # Reuse the same Brave→Perplexity fallback the chat uses
+        # Honor the agent's explicit freshness override, else auto-detect.
+        # We err on the side of fresh: anything that smells like "current /
+        # recent / this year / this month / latest / today" or mentions a
+        # year in the past 2 quarters gets a month-scoped freshness filter.
+        explicit = (args.get("freshness") or "").strip().lower()
+        freshness_map = {
+            "day": "pd", "week": "pw", "month": "pm", "year": "py",
+            "pd": "pd", "pw": "pw", "pm": "pm", "py": "py",
+        }
+        freshness = freshness_map.get(explicit, "")
+        if not freshness:
+            lower = q.lower()
+            from datetime import datetime as _dt
+            current_year = _dt.now(timezone.utc).year
+            time_signals = [
+                "today", "this week", "this month", "this quarter",
+                "latest", "current", "right now", "recently",
+                "last week", "last month", "this year",
+                str(current_year), f"q1 {current_year}", f"q2 {current_year}",
+                f"q3 {current_year}", f"q4 {current_year}",
+            ]
+            if any(sig in lower for sig in time_signals):
+                freshness = "pm"   # Past month — aggressive but right for "latest"
+
+        # Brave first, Perplexity fallback. Both respect `freshness`.
         results = []
         try:
-            results = await brave_search(q, count=5) or []
+            results = await brave_search(q, count=5, freshness=freshness or None) or []
         except Exception:
             results = []
         if not results and perplexity_available():
             try:
-                results = await perplexity_web_search(q, count=5) or []
+                results = await perplexity_web_search(
+                    q, count=5, freshness=freshness or None,
+                ) or []
             except Exception:
                 results = []
-        out = [
-            {"title": getattr(r, "title", "") or "",
-             "url": getattr(r, "url", "") or "",
-             "snippet": (getattr(r, "snippet", "") or "")[:400]}
-            for r in results[:5]
-        ]
-        return {"query": q, "results": out}
+        # Brave & Perplexity both return TypedDicts (`title`, `url`,
+        # `snippet`, `published?`). Use `.get()`, not `getattr()` — they're
+        # plain dicts at runtime.
+        out = []
+        for r in results[:5]:
+            if isinstance(r, dict):
+                out.append({
+                    "title": (r.get("title") or "").strip(),
+                    "url": (r.get("url") or "").strip(),
+                    "snippet": (r.get("snippet") or r.get("description") or "")[:400],
+                    "published": (r.get("published") or r.get("age") or ""),
+                })
+            else:
+                out.append({
+                    "title": getattr(r, "title", "") or "",
+                    "url": getattr(r, "url", "") or "",
+                    "snippet": (getattr(r, "snippet", "") or "")[:400],
+                    "published": getattr(r, "published", "") or "",
+                })
+        # If we got nothing, be explicit so the LLM doesn't fall back on its
+        # training-data "knowledge" of the topic — a stale answer is worse
+        # than no answer.
+        if not out:
+            return {
+                "query": q,
+                "results": [],
+                "freshness": freshness or "unset",
+                "hint": ("No live results. DO NOT answer from your training "
+                         "data — it is months or years old. Either retry "
+                         "web_search with a different query, call ask_user "
+                         "for guidance, or finish the mission honestly with "
+                         "a note that live data was unavailable."),
+            }
+        return {"query": q, "results": out, "freshness": freshness or "unset"}
 
     async def read_org_document(ctx, args):
         # Look up by document_id first, then by original_name substring
@@ -516,8 +596,9 @@ def build_tools(
 
     return [
         Tool("web_search",
-             "Search the live web (Brave + Perplexity fallback). Use for facts, research, current events.",
-             '{"query": "search terms"}', web_search),
+             "Search the LIVE web (Brave + Perplexity fallback). Always use this for anything involving current events, recent launches, dates, prices, or 'latest'. Pass freshness='day'|'week'|'month'|'year' for time-sensitive queries — defaults to 'month' when the query mentions 'latest', 'this year', or a recent quarter. If results come back empty, DO NOT guess from your training data — retry with a refined query or ask_user.",
+             '{"query": "search terms", "freshness": "day"|"week"|"month"|"year"}',
+             web_search),
         Tool("read_org_document",
              "Read a previously-generated artifact from the Org Documents library. Call with no args to list, or pass document_id / name.",
              '{"document_id": "...", "name": "substring"}', read_org_document),
