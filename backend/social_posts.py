@@ -94,6 +94,7 @@ def serialize_social_post(p: dict) -> dict:
         "link_url": p.get("link_url", ""),
         "media": p.get("media", []),
         "image": p.get("image") or None,  # auto-generated cover image (with logo overlay)
+        "image_prompt": p.get("image_prompt", ""),  # user-authored override prompt
         "logo_position": p.get("logo_position") or "bottom-right",
         "scheduled_for": _iso(p.get("scheduled_for")),
         "published_at": _iso(p.get("published_at")),
@@ -240,13 +241,16 @@ def make_social_router(*, db, AGENTS, EMERGENT_LLM_KEY, LlmChat, UserMessage,
     from pathlib import Path as _Path
     r = APIRouter(prefix="/api")
 
-    async def _generate_post_image(post: dict, org_doc: dict) -> Optional[dict]:
+    async def _generate_post_image(post: dict, org_doc: dict, override_prompt: str = "") -> Optional[dict]:
         """Generate a cover image for a single post using Nano Banana, then
         composite the org's primary logo on top at the chosen anchor.
         Returns ``{filename, url, with_logo}`` or None on failure.
 
         Image prompt = org Soul (mission/tone/audience/values) + post text →
-        keeps every social image visually on-brand.
+        keeps every social image visually on-brand. If ``override_prompt``
+        is provided (user hand-authored or edited the prompt), it REPLACES
+        the post-text body while keeping the Soul + visual-style context
+        so the image still matches the brand.
         """
         if not generate_image_via_nano_banana or not upload_dir:
             return None
@@ -280,13 +284,14 @@ def make_social_router(*, db, AGENTS, EMERGENT_LLM_KEY, LlmChat, UserMessage,
             "feel on-brand for the company described below. Avoid text inside "
             "the image — typography is added separately. Output only the image."
         )
+        body_text = (override_prompt or "").strip() or (post.get("text") or "").strip()[:600]
         prompt_parts = [
             "Create a striking, on-brand 1:1 cover image illustrating the "
             "social post copy below. Vivid, bold, professional.",
             "\n--- Company brand ---",
             *soul_bits,
-            "\n--- Post copy ---",
-            (post.get("text") or "").strip()[:600],
+            "\n--- Post copy / user direction ---",
+            body_text,
         ]
         prompt = "\n".join(p for p in prompt_parts if p)
         try:
@@ -552,12 +557,24 @@ def make_social_router(*, db, AGENTS, EMERGENT_LLM_KEY, LlmChat, UserMessage,
         doc["_id"] = res.inserted_id
         return serialize_social_post(doc)
 
+    class GenerateImageBody(BaseModel):
+        # Optional. If provided, replaces the default "post text" body in
+        # the image prompt — so users can hand-author or tweak what the
+        # image depicts without changing the post copy. The org's Soul +
+        # visual style still get prepended automatically.
+        prompt: str = Field("", max_length=2000)
+
     @r.post("/social/posts/{post_id}/generate-image")
-    async def generate_post_image(post_id: str, u: dict = Depends(get_current_user)):
-        """On-demand cover image generation for posts that didn't get one
-        during the initial batch (hybrid strategy — only the first draft in
-        a batch auto-generates). Same Soul + post text → Nano Banana → logo
-        composite at the post's current `logo_position`.
+    async def generate_post_image(
+        post_id: str,
+        body: GenerateImageBody = GenerateImageBody(),
+        u: dict = Depends(get_current_user),
+    ):
+        """On-demand cover image generation. Optional `prompt` body lets
+        the user override the image direction (same Soul + visual-style
+        scaffold, different creative body). The override is persisted on
+        the post as `image_prompt` so subsequent regenerations keep it
+        unless the user clears or re-edits it.
         """
         try:
             post = await db.social_posts.find_one({"_id": _OID(post_id)})
@@ -567,11 +584,17 @@ def make_social_router(*, db, AGENTS, EMERGENT_LLM_KEY, LlmChat, UserMessage,
             raise HTTPException(404, "Post not found")
         await require_org_member(post["org_id"], u["id"])
         org = await db.organizations.find_one({"_id": _OID(post["org_id"])})
-        img = await _generate_post_image(post, org or {})
+        override = (body.prompt or "").strip()
+        # Fall back to the persisted image_prompt from a previous edit
+        effective_prompt = override or (post.get("image_prompt") or "")
+        img = await _generate_post_image(post, org or {}, effective_prompt)
         if not img:
             raise HTTPException(502, "Could not generate image. Try again in a moment.")
+        update = {"image": img}
+        if override:
+            update["image_prompt"] = override
         await db.social_posts.update_one(
-            {"_id": _OID(post_id)}, {"$set": {"image": img}},
+            {"_id": _OID(post_id)}, {"$set": update},
         )
         fresh = await db.social_posts.find_one({"_id": _OID(post_id)})
         return serialize_social_post(fresh)

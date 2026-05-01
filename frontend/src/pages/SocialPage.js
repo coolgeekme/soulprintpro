@@ -554,20 +554,24 @@ const LOGO_POSITIONS = [
 function PostCoverImage({ post, onUpdate }) {
   const [generating, setGenerating] = useState(false);
   const [reposing, setReposing] = useState("");
+  const [showPromptEditor, setShowPromptEditor] = useState(false);
+  const [promptDraft, setPromptDraft] = useState(post.image_prompt || "");
 
-  const generate = async () => {
+  // Keep the local draft in sync if the parent re-fetches and the
+  // persisted `image_prompt` on this post changes under us (e.g. another
+  // tab edited it, or generate overwrote it).
+  useEffect(() => { setPromptDraft(post.image_prompt || ""); }, [post.image_prompt]);
+
+  const generate = async (customPrompt = null) => {
     if (generating) return;
     setGenerating(true);
     try {
-      const { data } = await api.post(`/social/posts/${post.id}/generate-image`);
-      // Patch via parent so the post object refreshes in-place
-      await onUpdate(post.id, {});  // no-op patch to refresh; but we need optimistic
-      // Simpler: just hand the agent the new doc directly via a custom field
+      const body = customPrompt !== null ? { prompt: customPrompt } : {};
+      const { data } = await api.post(`/social/posts/${post.id}/generate-image`, body);
       Object.assign(post, data);
-      // Force a re-render: parent already updates on PATCH; for now toast and rely on next reload
-      toast.success("Image generated");
-      // Trigger a tab refresh by patching status to itself (no-op but persists)
+      toast.success(customPrompt ? "Image regenerated with your prompt" : "Image generated");
       onUpdate(post.id, { status: data.status });
+      setShowPromptEditor(false);
     } catch (err) {
       toast.error(err?.response?.data?.detail || "Generation failed");
     } finally { setGenerating(false); }
@@ -586,17 +590,41 @@ function PostCoverImage({ post, onUpdate }) {
 
   if (!post.image) {
     return (
-      <div className="flex items-center justify-between sp-glass rounded-xl px-4 py-2.5 border border-white/10">
-        <div className="flex items-center gap-2 text-xs sp-subtle">
-          <ImageIcon className="w-3.5 h-3.5" />
-          No cover image yet
+      <div className="mt-2">
+        <div className="flex items-center justify-between sp-glass rounded-xl px-4 py-2.5 border border-white/10">
+          <div className="flex items-center gap-2 text-xs sp-subtle">
+            <ImageIcon className="w-3.5 h-3.5" />
+            No cover image yet
+          </div>
+          <div className="flex items-center gap-1.5 shrink-0">
+            <button
+              type="button"
+              onClick={() => setShowPromptEditor(true)}
+              disabled={generating}
+              className="sp-btn sp-btn-ghost text-xs disabled:opacity-50"
+              data-testid={`edit-image-prompt-${post.id}`}
+              title="Write or edit the prompt before generating"
+            >
+              <Pencil className="w-3.5 h-3.5" /> Edit prompt
+            </button>
+            <button type="button" onClick={() => generate()} disabled={generating}
+                    className="sp-btn sp-btn-primary text-xs disabled:opacity-50"
+                    data-testid={`generate-image-${post.id}`}>
+              {generating ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Wand2 className="w-3.5 h-3.5" />}
+              {generating ? "Generating…" : "Generate cover image"}
+            </button>
+          </div>
         </div>
-        <button type="button" onClick={generate} disabled={generating}
-                className="sp-btn sp-btn-ghost text-xs disabled:opacity-50"
-                data-testid={`generate-image-${post.id}`}>
-          {generating ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Wand2 className="w-3.5 h-3.5" />}
-          {generating ? "Generating…" : "Generate cover image"}
-        </button>
+        {showPromptEditor && (
+          <SocialPromptEditor
+            initial={promptDraft}
+            postText={post.text}
+            onSubmit={(p) => generate(p)}
+            onCancel={() => setShowPromptEditor(false)}
+            generating={generating}
+            postId={post.id}
+          />
+        )}
       </div>
     );
   }
@@ -634,11 +662,80 @@ function PostCoverImage({ post, onUpdate }) {
             </button>
           ))}
         </div>
-        <button type="button" onClick={generate} disabled={generating}
+        <button type="button" onClick={() => setShowPromptEditor(true)} disabled={generating}
                 className="sp-btn sp-btn-ghost text-xs ml-auto disabled:opacity-50"
+                data-testid={`edit-image-prompt-${post.id}`}
+                title="Edit the prompt used to render this image">
+          <Pencil className="w-3.5 h-3.5" /> Edit prompt
+        </button>
+        <button type="button" onClick={() => generate()} disabled={generating}
+                className="sp-btn sp-btn-ghost text-xs disabled:opacity-50"
                 data-testid={`regenerate-image-${post.id}`}>
           {generating ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Wand2 className="w-3.5 h-3.5" />}
           {generating ? "Generating…" : "Regenerate"}
+        </button>
+      </div>
+      {showPromptEditor && (
+        <SocialPromptEditor
+          initial={promptDraft}
+          postText={post.text}
+          onSubmit={(p) => generate(p)}
+          onCancel={() => setShowPromptEditor(false)}
+          generating={generating}
+          postId={post.id}
+        />
+      )}
+    </div>
+  );
+}
+
+/**
+ * SocialPromptEditor — inline modal for authoring the image prompt before
+ * generation/regeneration. Shows the original post copy for reference so
+ * users can reference it without guessing what the default prompt was.
+ * A visible "Reset to post copy" shortcut clears the override and falls
+ * back to the auto-derived prompt ({Soul}+{post.text}).
+ */
+function SocialPromptEditor({ initial, postText, onSubmit, onCancel, generating, postId }) {
+  const [draft, setDraft] = useState(initial || "");
+  return (
+    <div className="mt-2 sp-glass rounded-xl p-3 border border-orange-500/20" data-testid={`social-prompt-editor-${postId}`}>
+      <div className="flex items-center justify-between mb-2">
+        <div className="text-[11px] sp-subtle uppercase tracking-widest">Image prompt</div>
+        {postText && (
+          <button
+            type="button"
+            onClick={() => setDraft("")}
+            className="text-[11px] sp-subtle hover:text-white"
+            title="Clear the override and use the post copy as the prompt body"
+          >
+            Reset to post copy
+          </button>
+        )}
+      </div>
+      <textarea
+        value={draft}
+        onChange={(e) => setDraft(e.target.value)}
+        placeholder={postText ? `Leave blank to use the post copy:\n"${(postText || "").slice(0, 140)}"` : "Describe the image you want…"}
+        className="w-full min-h-[90px] rounded-lg bg-black/30 border border-white/10 px-3 py-2 text-sm resize-y focus:outline-none focus:border-orange-500/50"
+        data-testid={`social-prompt-textarea-${postId}`}
+      />
+      <div className="text-[11px] sp-subtle mt-1.5 leading-relaxed">
+        Your company's brand Soul + visual style are prepended automatically; this is the scene / direction.
+      </div>
+      <div className="flex items-center justify-end gap-2 mt-3">
+        <button type="button" onClick={onCancel} disabled={generating}
+                className="sp-btn sp-btn-ghost text-xs disabled:opacity-50"
+                data-testid={`social-prompt-cancel-${postId}`}>
+          Cancel
+        </button>
+        <button type="button"
+                onClick={() => onSubmit(draft)}
+                disabled={generating}
+                className="sp-btn sp-btn-primary text-xs disabled:opacity-50"
+                data-testid={`social-prompt-submit-${postId}`}>
+          {generating ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Wand2 className="w-3.5 h-3.5" />}
+          {generating ? "Generating…" : "Generate with this prompt"}
         </button>
       </div>
     </div>
