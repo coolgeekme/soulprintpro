@@ -533,6 +533,56 @@ def make_social_autopost_router(
     return r
 
 
+async def load_org_social_storage_state(*, db, org_id: str) -> dict:
+    """Merge every social_session for an org into a single Playwright
+    storage_state dict. Playwright happily accepts cookies/origins for
+    multiple domains in one storage_state, so the browser boots logged-in
+    on every platform the org has uploaded — the agent doesn't have to
+    know which session to pick.
+
+    Returns ``{"cookies": [...], "origins": [...]}``. Empty-but-valid dict
+    when the org has no sessions.
+    """
+    merged = {"cookies": [], "origins": []}
+    cur = db.social_sessions.find({"org_id": org_id})
+    async for s in cur:
+        ss = s.get("storage_state") or {}
+        cookies = ss.get("cookies") or []
+        origins = ss.get("origins") or []
+        if isinstance(cookies, list):
+            merged["cookies"].extend(cookies)
+        if isinstance(origins, list):
+            merged["origins"].extend(origins)
+    return merged
+
+
+def detect_social_platform_in_goal(goal: str) -> str:
+    """Best-effort platform detection from a user-typed mission goal.
+
+    Returns the platform key (e.g. 'linkedin') when the goal clearly
+    references one of our supported platforms, or '' when ambiguous.
+    Used to tailor the system prompt and — if no session is on file for
+    the detected platform — fail fast instead of asking the user for
+    credentials.
+    """
+    text = (goal or "").lower()
+    # Order matters: longer / more-specific keywords first so 'twitter.com'
+    # beats 'twit' etc. Keys match SUPPORTED_AUTOPOST_PLATFORMS.
+    markers = [
+        ("twitter",  ("twitter", "x.com ", "tweet", "/x ", " on x,", " on x ", " on x.")),
+        ("linkedin", ("linkedin",)),
+        ("facebook", ("facebook", "fb.com")),
+        ("threads",  ("threads.net", "on threads")),
+        ("bluesky",  ("bluesky", "bsky")),
+        ("mastodon", ("mastodon",)),
+        ("reddit",   ("reddit",)),
+    ]
+    for platform, keys in markers:
+        if any(k in text for k in keys):
+            return platform
+    return ""
+
+
 async def rehydrate_autopost_jobs(*, db, router) -> int:
     """On server startup, re-register APScheduler jobs for any posts whose
     autopost window is still in the future (or just a bit in the past, due
@@ -576,6 +626,8 @@ async def rehydrate_autopost_jobs(*, db, router) -> int:
 __all__ = [
     "make_social_autopost_router",
     "rehydrate_autopost_jobs",
+    "load_org_social_storage_state",
+    "detect_social_platform_in_goal",
     "SUPPORTED_AUTOPOST_PLATFORMS",
     "PLATFORM_COMPOSERS",
 ]

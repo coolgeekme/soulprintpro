@@ -115,6 +115,10 @@ def serialize_mission(m: dict) -> dict:
         "error": m.get("error", ""),
         "question": m.get("question", ""),
         "created_by": m.get("created_by"),
+        # Social-posting context — lets the UI surface a "Upload cookies"
+        # CTA when a post-mission fails because no session was on file.
+        "social_platform": m.get("social_platform", ""),
+        "has_social_session": bool(m.get("has_social_session", False)),
     }
 
 
@@ -1085,11 +1089,89 @@ def make_missions_router(
             if not team or team.get("org_id") != org_id:
                 raise HTTPException(400, "Conversation is not in this org")
         now = datetime.now(timezone.utc)
+        # If the mission looks like a social post request, auto-inject the
+        # org's stored Playwright cookies so the browser boots logged-in
+        # and the agent doesn't try to ask the user for credentials. Also
+        # stamp the detected platform onto the mission so the UI can
+        # surface a helpful link back to /social/sessions if it fails.
+        #
+        # This is the same plumbing the dedicated autopost scheduler uses —
+        # we extend it to user-initiated missions here so "post a tweet on
+        # X" from the chat works the same as scheduled autopost.
+        detected_platform = ""
+        try:
+            from social_autopost import (
+                detect_social_platform_in_goal,
+                load_org_social_storage_state,
+                PLATFORM_COMPOSERS,
+            )
+            detected_platform = detect_social_platform_in_goal(body.goal)
+        except Exception:
+            PLATFORM_COMPOSERS = {}
+        merged_state = {}
+        has_session_for_detected = False
+        if detected_platform:
+            try:
+                merged_state = await load_org_social_storage_state(
+                    db=db, org_id=org_id,
+                )
+                # Did we get any cookies matching the detected platform?
+                # We use a loose domain-suffix match because cookies
+                # exported from x.com, api.x.com etc. all count.
+                platform_domain_hints = {
+                    "twitter":  ("x.com", "twitter.com"),
+                    "linkedin": ("linkedin.com",),
+                    "facebook": ("facebook.com", "fb.com"),
+                    "threads":  ("threads.net", "instagram.com"),
+                    "bluesky":  ("bsky.app", "bsky.social"),
+                    "mastodon": ("mastodon",),  # user-chosen instance
+                    "reddit":   ("reddit.com",),
+                }
+                hints = platform_domain_hints.get(detected_platform, ())
+                has_session_for_detected = any(
+                    any(h in (c.get("domain") or "") for h in hints)
+                    for c in merged_state.get("cookies", [])
+                )
+            except Exception as exc:
+                logger.warning(
+                    "mission: failed to load social sessions for org %s: %s",
+                    org_id, exc,
+                )
+        goal_with_context = body.goal.strip()
+        if detected_platform:
+            composer = PLATFORM_COMPOSERS.get(detected_platform, "")
+            if has_session_for_detected:
+                goal_with_context += (
+                    f"\n\n[SYSTEM CONTEXT — DO NOT IGNORE]\n"
+                    f"This mission involves posting on {detected_platform.upper()}.\n"
+                    f"• Authenticated cookies for {detected_platform} are ALREADY "
+                    f"loaded in your browser — do NOT ask the user to log in; "
+                    f"do NOT ask for credentials.\n"
+                    f"• You MUST actually publish the post via browse_url → "
+                    f"browse_fill → browse_submit on {composer or 'the composer page'}. "
+                    f"Do NOT finish with 'here's the draft, go post it'.\n"
+                    f"• If you hit a login wall anyway (cookies expired), "
+                    f"finish IMMEDIATELY with summary starting 'FAILED: login "
+                    f"session expired on {detected_platform}'.\n"
+                    f"• On successful publication, finish with summary starting "
+                    f"'PUBLISHED:' and include the verified post URL.\n"
+                )
+            else:
+                goal_with_context += (
+                    f"\n\n[SYSTEM CONTEXT — DO NOT IGNORE]\n"
+                    f"This mission involves posting on {detected_platform.upper()}.\n"
+                    f"• NO authenticated session is on file for {detected_platform} — "
+                    f"DO NOT attempt to log in, DO NOT ask the user for credentials.\n"
+                    f"• Finish the mission IMMEDIATELY with summary: "
+                    f"'FAILED: no login cookies on file for {detected_platform} — "
+                    f"user must upload a session at the org's Social Queue page "
+                    f"(Manage login sessions) before this mission can run.'\n"
+                )
         mission = {
             "id": str(uuid.uuid4()),
             "org_id": org_id,
             "conversation_id": conv_id,
-            "goal": body.goal.strip(),
+            "goal": goal_with_context,
             "lead_agent_id": lead,
             "lead_agent_name": AGENTS[lead]["name"],
             "status": "running",
@@ -1102,6 +1184,8 @@ def make_missions_router(
             "error": "",
             "question": "",
             "created_by": u["id"],
+            "social_platform": detected_platform or "",
+            "has_social_session": has_session_for_detected,
         }
         await db.missions.insert_one({**mission})
 
@@ -1132,6 +1216,19 @@ def make_missions_router(
             "lead_agent_name": AGENTS[lead]["name"],
             "created_by": u["id"],
         }
+        # Pre-load stored cookies so the headless browser boots logged-in
+        # to every platform the org has uploaded a session for. Must happen
+        # BEFORE run_mission_loop opens its first page, which is why we
+        # register here (before asyncio.create_task).
+        if merged_state and (merged_state.get("cookies") or merged_state.get("origins")):
+            try:
+                from browser_tools import register_mission_storage_state
+                register_mission_storage_state(mission["id"], merged_state)
+            except Exception as exc:
+                logger.warning(
+                    "mission %s: could not register storage_state: %s",
+                    mission["id"], exc,
+                )
         task = asyncio.create_task(run_mission_loop(
             db=db, mission=mission, tools=tools, ctx=ctx,
             LlmChat=LlmChat, UserMessage=UserMessage,

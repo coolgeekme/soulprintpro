@@ -138,6 +138,20 @@ export function MissionCard({ orgId, missionId }) {
               {mission.summary}
             </div>
           )}
+          {/* Surface an upload-cookies CTA when a social-post mission
+              failed due to a missing or expired login session. */}
+          {isDone && mission.social_platform && (
+            (mission.summary || "").toUpperCase().startsWith("FAILED:") &&
+            /login|cookie|session/i.test(mission.summary || "")
+          ) && (
+            <Link
+              to={`/app/org/${mission.org_id}/social`}
+              className="mt-2 inline-flex items-center gap-1.5 text-xs px-2.5 py-1 rounded-full bg-orange-500/15 border border-orange-400/30 text-orange-200 hover:bg-orange-500/25 transition"
+              data-testid={`mission-card-upload-session-${missionId}`}
+            >
+              Upload {mission.social_platform} login cookies →
+            </Link>
+          )}
           {isFailed && mission.error && (
             <div className="text-xs text-red-300 mt-2 flex items-start gap-1">
               <AlertTriangle className="w-3 h-3 mt-0.5" /> {mission.error}
