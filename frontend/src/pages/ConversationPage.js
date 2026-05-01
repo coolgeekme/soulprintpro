@@ -7,6 +7,7 @@ import { useAuth } from "../context/AuthContext";
 import { Send, Trash2, AtSign, Users, Repeat, Search, X, Lock, Film, Globe, ArrowUp, ArrowDown, UserPlus, Paperclip, FileText, File as FileIcon, Download, CornerDownRight, Megaphone, Pencil, Sparkles, Loader2, Rocket } from "lucide-react";
 import LinkPreviewCard from "../components/LinkPreviewCard";
 import { MissionCard } from "../components/MissionCard";
+import { MessageActions } from "../components/MessageActions";
 
 const formatTime = (ts) => {
   try { return new Date(ts).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }); }
@@ -625,7 +626,7 @@ export default function ConversationPage() {
   const isGroup = conv.type === "group";
 
   return (
-    <div className="min-h-screen flex flex-col">
+    <div className="h-dvh flex flex-col overflow-hidden" style={{ background: "var(--bg)", color: "var(--fg)" }}>
       <TopBar
         right={
           conv.created_by === user.id && (
@@ -1072,6 +1073,7 @@ export default function ConversationPage() {
                   </div>
                 )}
                 </div>
+                <MessageActions convId={convId} message={m} alignRight={mine} />
               </div>
             );
           })}

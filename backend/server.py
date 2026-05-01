@@ -1454,6 +1454,35 @@ async def get_messages(conv_id: str, u: dict = Depends(get_current_user)):
     msgs = await db.messages.find(
         {"conversation_id": conv_id}, {"_id": 0}
     ).sort("timestamp", 1).to_list(1000)
+    # Inline the feedback tally + this user's vote so the frontend renders
+    # in a single round-trip. One aggregation pass over message_feedback —
+    # cheaper than N lookups. Feedback is opt-in, so most messages will
+    # have `up_count: 0, down_count: 0, my_feedback: ""`.
+    if msgs:
+        ids = [m["id"] for m in msgs if m.get("id")]
+        if ids:
+            pipe = [
+                {"$match": {"message_id": {"$in": ids}}},
+                {"$group": {
+                    "_id": "$message_id",
+                    "up": {"$sum": {"$cond": [{"$eq": ["$value", "up"]}, 1, 0]}},
+                    "down": {"$sum": {"$cond": [{"$eq": ["$value", "down"]}, 1, 0]}},
+                    "mine": {"$max": {"$cond": [{"$eq": ["$user_id", u["id"]]}, "$value", None]}},
+                }},
+            ]
+            tally_by_id = {}
+            async for row in db.message_feedback.aggregate(pipe):
+                tally_by_id[row["_id"]] = row
+            for m in msgs:
+                t = tally_by_id.get(m.get("id"))
+                if t:
+                    m["up_count"] = t.get("up") or 0
+                    m["down_count"] = t.get("down") or 0
+                    m["my_feedback"] = t.get("mine") or ""
+                else:
+                    m["up_count"] = 0
+                    m["down_count"] = 0
+                    m["my_feedback"] = ""
     return msgs
 
 def detect_mentions(text: str, agent_ids: List[str]) -> List[str]:
@@ -2691,6 +2720,55 @@ async def generate_image(conv_id: str, body: GenerateImageBody, u: dict = Depend
 class RegenerateImageBody(BaseModel):
     prompt: Optional[str] = None       # if blank, reuse the original prompt
     model: Optional[str] = None        # "nano-banana" (default) | "gpt-image-1"
+
+
+class MessageFeedbackBody(BaseModel):
+    # "up" or "down" to register/flip. Omit or pass "" to clear.
+    value: str = Field("", max_length=8)
+
+
+@conv_r.post("/conversations/{conv_id}/messages/{msg_id}/feedback")
+async def set_message_feedback(
+    conv_id: str, msg_id: str,
+    body: MessageFeedbackBody,
+    u: dict = Depends(get_current_user),
+):
+    """Set or clear the current user's thumbs-up / thumbs-down on a message.
+
+    Thumbs are per-user (each member can vote independently). We store
+    feedback in a dedicated `message_feedback` collection keyed by
+    (message_id, user_id) — so flipping up↔down is idempotent and clearing
+    just removes the row. We also maintain a denormalised tally on the
+    message itself (`up_count` / `down_count` / `my_feedback`) so the chat
+    endpoint doesn't need a second query to render counts.
+    """
+    val = (body.value or "").strip().lower()
+    if val not in {"up", "down", ""}:
+        raise HTTPException(400, "value must be 'up', 'down', or '' to clear")
+
+    conv = await load_conv_or_403(conv_id, u["id"])
+    # Cheap existence check — keeps the happy-path response identical to
+    # the typical agent reply shape. Fails fast if the message was deleted.
+    msg = await db.messages.find_one({"id": msg_id}, {"_id": 0, "conversation_id": 1})
+    if not msg or str(msg.get("conversation_id", "")) != conv_id:
+        raise HTTPException(404, "Message not found")
+
+    key = {"message_id": msg_id, "user_id": u["id"]}
+    if not val:
+        await db.message_feedback.delete_one(key)
+    else:
+        await db.message_feedback.update_one(
+            key,
+            {"$set": {**key, "value": val,
+                      "updated_at": datetime.now(timezone.utc)}},
+            upsert=True,
+        )
+    # Refresh tallies
+    ups = await db.message_feedback.count_documents({"message_id": msg_id, "value": "up"})
+    downs = await db.message_feedback.count_documents({"message_id": msg_id, "value": "down"})
+    return {"my_feedback": val, "up_count": ups, "down_count": downs}
+
+
 
 
 @conv_r.post("/conversations/{conv_id}/messages/{msg_id}/regenerate-image")

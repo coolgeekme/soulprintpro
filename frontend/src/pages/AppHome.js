@@ -92,10 +92,14 @@ export default function AppHome() {
             // Primary action on every card is "jump into General chat" so the
             // user is one click from talking to their agents. Org dashboard /
             // teams / members stay reachable via the small "Manage" link.
-            const hasGeneral = Boolean(o.general_team_id && o.general_conversation_id);
-            const primaryHref = hasGeneral
+            // Primary click target: the org dashboard page — where the
+            // owner can see Soul, assets, documents, teams, recent
+            // activity, schedules, etc. The General chat is still
+            // reachable via the secondary "Open General chat" row below.
+            const primaryHref = `/app/org/${o.id}`;
+            const chatHref = (o.general_team_id && o.general_conversation_id)
               ? `/app/team/${o.general_team_id}/c/${o.general_conversation_id}`
-              : `/app/org/${o.id}`;
+              : null;
             return (
               <div
                 key={o.id}
@@ -111,18 +115,20 @@ export default function AppHome() {
                 <Link to={primaryHref} className="block" data-testid={`org-card-open-${o.id}`}>
                   <div className="text-white font-medium text-lg truncate">{o.name}</div>
                   <div className="flex items-center gap-2 mt-4 text-xs sp-subtle group-hover:text-white/80">
-                    <MessageCircle className="w-3.5 h-3.5" />
-                    {hasGeneral ? "Open General chat" : "Open organization"}
+                    <Settings className="w-3.5 h-3.5" />
+                    Open organization
                     <ArrowRight className="w-3.5 h-3.5" />
                   </div>
                 </Link>
-                <Link
-                  to={`/app/org/${o.id}`}
-                  className="inline-flex items-center gap-1.5 mt-3 text-[11px] sp-subtle hover:text-white transition"
-                  data-testid={`org-card-manage-${o.id}`}
-                >
-                  <Settings className="w-3 h-3" /> Manage
-                </Link>
+                {chatHref && (
+                  <Link
+                    to={chatHref}
+                    className="inline-flex items-center gap-1.5 mt-3 text-[11px] sp-subtle hover:text-white transition"
+                    data-testid={`org-card-chat-${o.id}`}
+                  >
+                    <MessageCircle className="w-3 h-3" /> Open General chat
+                  </Link>
+                )}
               </div>
             );
           })}
