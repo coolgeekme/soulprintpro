@@ -178,4 +178,59 @@ def make_activity_router(*, db, require_org_member, get_current_user, AGENTS):
             "feed": feed,
         }
 
+    @r.get("/orgs/{org_id}/recent-conversations")
+    async def recent_conversations(
+        org_id: str, limit: int = 5, u: dict = Depends(get_current_user),
+    ):
+        """Lightweight feed for the Org page's "pick up where you left off"
+        strip. Returns the N most-recently-active conversations the user is
+        a member of, each with a one-line preview of the latest message."""
+        await require_org_member(org_id, u["id"])
+        limit = max(1, min(20, limit))
+
+        team_docs = await db.teams.find(
+            {"org_id": org_id},
+            {"_id": 1, "name": 1, "is_general": 1, "is_direct": 1},
+        ).to_list(500)
+        team_lookup = {str(t["_id"]): t for t in team_docs}
+        team_ids = list(team_lookup.keys())
+        if not team_ids:
+            return []
+
+        # Member-gated: only include conversations the caller is a member
+        # of (direct chats are per-user, groups include the creator's id).
+        conv_cur = db.conversations.find(
+            {"team_id": {"$in": team_ids}, "member_ids": u["id"]},
+        ).sort([("last_message_at", -1), ("created_at", -1)]).limit(limit * 2)
+        convs = await conv_cur.to_list(limit * 2)
+
+        out = []
+        for c in convs[:limit]:
+            t = team_lookup.get(c.get("team_id", "")) or {}
+            last_msg = await db.messages.find_one(
+                {"conversation_id": str(c["_id"])},
+                sort=[("timestamp", -1)],
+            )
+            preview = ""
+            agent_name = ""
+            if last_msg:
+                preview = (last_msg.get("text") or "").strip()[:160]
+                if last_msg.get("sender_type") == "agent":
+                    aid = last_msg.get("agent_id") or ""
+                    agent_name = (AGENTS.get(aid) or {}).get("name", "Agent")
+            ts = c.get("last_message_at") or c.get("created_at")
+            out.append({
+                "id": str(c["_id"]),
+                "title": c.get("title") or "Conversation",
+                "team_id": c.get("team_id", ""),
+                "team_name": t.get("name", ""),
+                "is_general": bool(t.get("is_general")),
+                "is_direct": bool(t.get("is_direct")) or c.get("type") == "direct",
+                "last_message_at": _iso(ts),
+                "preview": preview,
+                "agent_name": agent_name,
+                "deeplink": f"/app/team/{c.get('team_id', '')}/c/{str(c['_id'])}",
+            })
+        return out
+
     return r

@@ -102,13 +102,42 @@ export default function ConversationPage() {
     // we have messages), pin to the latest message. Use rAF + a couple of
     // staggered timeouts so lazy-loaded images, link previews, and any other
     // late-layout content can't leave us stranded above the bottom.
+    // We also attach a ResizeObserver for the first ~4 seconds so that any
+    // image / iframe that decodes late re-triggers a snap — the LCP of a
+    // chat full of generated covers or social embeds is often well past the
+    // 400ms mark and without this the user ends up mid-conversation.
     if (!initialSnapDoneRef.current && !loading && messages.length > 0) {
       snap();
       const r = requestAnimationFrame(snap);
       const t1 = setTimeout(snap, 120);
       const t2 = setTimeout(snap, 400);
+      const t3 = setTimeout(snap, 1200);
+      // Watch the inner messages container for height growth — if anything
+      // pushes the scrollHeight up during the initial window, re-snap. We
+      // tear the observer down after 4s (by which point everything has
+      // decoded) to avoid fighting manual scrolling later.
+      let ro = null;
+      try {
+        const inner = el.firstElementChild;  // the max-w-5xl wrapper
+        if (inner && typeof ResizeObserver !== "undefined") {
+          ro = new ResizeObserver(() => {
+            // Only re-snap if we're still close to the bottom — once the
+            // user has scrolled up to read, we respect their position.
+            const n = scrollerRef.current;
+            if (!n) return;
+            const nearBottom = n.scrollHeight - (n.scrollTop + n.clientHeight) < 240;
+            if (nearBottom) snap();
+          });
+          ro.observe(inner);
+        }
+      } catch { /* no-op — browsers without RO just use the timeouts above */ }
+      const tStop = setTimeout(() => { if (ro) ro.disconnect(); }, 4000);
       initialSnapDoneRef.current = true;
-      return () => { cancelAnimationFrame(r); clearTimeout(t1); clearTimeout(t2); };
+      return () => {
+        cancelAnimationFrame(r);
+        clearTimeout(t1); clearTimeout(t2); clearTimeout(t3); clearTimeout(tStop);
+        if (ro) ro.disconnect();
+      };
     }
     // After the initial snap, keep snapping when the user is sending or new
     // messages arrive *and* the user is already near the bottom — don't yank

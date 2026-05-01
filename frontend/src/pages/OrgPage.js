@@ -8,6 +8,8 @@ import BrandAssetsPanel from "../components/BrandAssetsPanel";
 import ActivityOverview from "../components/ActivityOverview";
 import DocumentsPanel from "../components/DocumentsPanel";
 import SocialStyleGuidePanel from "../components/SocialStyleGuidePanel";
+import RecentConversations from "../components/RecentConversations";
+import CollapsibleSection from "../components/CollapsibleSection";
 import Logo from "../components/Logo";
 import SchedulesPanel from "../components/SchedulesPanel";
 
@@ -292,8 +294,13 @@ export default function OrgPage() {
           </form>
         )}
 
+        {/* ────────────────────────────────────────────────────────────
+            WORK FIRST — everything above the fold is "get started now".
+            Admin / setup panels live inside the collapsible section below.
+            ──────────────────────────────────────────────────────────── */}
+
         {/* General chat — auto-created on org creation. Always-on entry point.
-            Now doubles as a quick-upload zone: drop, paste, or paperclip-pick
+            Doubles as a quick-upload zone: drop, paste, or paperclip-pick
             files (and an optional prompt) to post them straight into General
             without leaving the org page. */}
         {org.general_team_id && org.general_conversation_id && (
@@ -304,28 +311,10 @@ export default function OrgPage() {
           />
         )}
 
-        {/* Brand Assets — primary/alt logo + brand colors + tagline. Used by
-            the social-image generator to keep every cover image on-brand. */}
-        <BrandAssetsPanel orgId={orgId} initial={org.brand_assets} onChange={(ba) => setOrg((prev) => prev ? { ...prev, brand_assets: ba } : prev)} />
-
-        {/* Social Style Guide — analyzes the org's social profiles + samples
-            to produce a brand voice + visual style guide that's auto-injected
-            into every Social Queue draft and every agent system prompt. */}
-        <SocialStyleGuidePanel orgId={orgId} />
-
-        {/* Activity overview — KPI tiles + unified feed across social,
-            schedules, conversations, and assets. */}
-        <ActivityOverview orgId={orgId} />
-
-        {/* Documents library — every artifact agents have generated
-            (calendar invites, briefs, CSVs, scripts, emails). Searchable,
-            previewable, downloadable, deletable. */}
-        <DocumentsPanel orgId={orgId} />
-
-        {/* Social Queue — generate, schedule, and one-click publish posts. */}
+        {/* Social Queue — jump straight in. */}
         <Link
           to={`/app/org/${orgId}/social`}
-          className="sp-glass rounded-2xl p-5 mb-8 flex items-center gap-4 hover:border-white/25 transition group"
+          className="sp-glass rounded-2xl p-5 mb-6 flex items-center gap-4 hover:border-white/25 transition group"
           data-testid="open-social-queue"
         >
           <div className="w-10 h-10 rounded-xl flex items-center justify-center"
@@ -339,42 +328,57 @@ export default function OrgPage() {
           <ArrowRight className="w-4 h-4 text-white/60 group-hover:text-white transition" />
         </Link>
 
-        {/* Company Soul — populated from URL scrape + LLM on creation */}
-        {(org.soul && (org.soul.mission || org.soul.summary)) && (
-          <div className="sp-glass rounded-2xl p-6 mb-8" data-testid="org-soul">
-            <div className="flex items-center gap-2 mb-3">
-              <Logo className="w-4 h-4 text-white/80" />
-              <h3 className="text-sm uppercase tracking-widest sp-subtle">Company Soul</h3>
-              {org.website_url && (
-                <a href={org.website_url.startsWith("http") ? org.website_url : `https://${org.website_url}`}
-                   target="_blank" rel="noreferrer"
-                   className="text-[11px] sp-subtle ml-auto hover:text-white truncate max-w-[260px]"
-                   title={org.website_url}>
-                  {org.website_url.replace(/^https?:\/\//, "")}
-                </a>
-              )}
-            </div>
-            {org.soul.summary && (
-              <p className="text-base mb-3 leading-relaxed" style={{ color: "var(--fg)" }}>
-                {org.soul.summary}
-              </p>
-            )}
-            <div className="grid sm:grid-cols-2 gap-3 text-sm">
-              {[
-                ["Mission", org.soul.mission],
-                ["Audience", org.soul.audience],
-                ["Tone", org.soul.tone],
-                ["Values", org.soul.values],
-                ["North star", org.soul.north_star],
-              ].filter(([, v]) => v).map(([label, v]) => (
-                <div key={label} className="sp-glass rounded-xl p-3">
-                  <div className="text-[10px] uppercase tracking-widest sp-subtle mb-1">{label}</div>
-                  <div className="leading-snug">{v}</div>
-                </div>
-              ))}
-            </div>
+        {/* Pick up where you left off — recent conversations strip */}
+        <RecentConversations orgId={orgId} />
+
+        {/* Documents library — every artifact agents have generated
+            (calendar invites, briefs, CSVs, scripts, emails). Searchable,
+            previewable, downloadable, deletable. */}
+        <DocumentsPanel orgId={orgId} />
+
+        {/* Teams — specialized workspaces. Owner's "New team" form moves
+            into the collapsible admin section below to keep this tidy. */}
+        <div className="mb-6">
+          <div className="flex items-center justify-between mb-3">
+            <h3 className="text-sm uppercase tracking-widest sp-subtle flex items-center gap-2">
+              <Users className="w-3.5 h-3.5" /> Teams
+            </h3>
+            <span className="text-[11px] sp-subtle">
+              {teams.filter((t) => t.id !== org.general_team_id).length} specialised
+            </span>
           </div>
-        )}
+          <div className="grid md:grid-cols-3 gap-4">
+            {teams.filter((t) => t.id !== org.general_team_id).map((t) => (
+              <div key={t.id} className="sp-glass rounded-2xl p-6 hover:border-white/20 transition group relative" data-testid={`team-card-${t.id}`}>
+                {canEdit && (
+                  <button
+                    onClick={(e) => { e.preventDefault(); e.stopPropagation(); removeTeam(t); }}
+                    className="absolute top-3 right-3 sp-btn sp-btn-ghost !p-1.5 opacity-0 group-hover:opacity-100 transition hover:!text-red-300"
+                    data-testid={`delete-team-${t.id}`}
+                    title="Delete team"
+                  >
+                    <Trash2 className="w-3.5 h-3.5" />
+                  </button>
+                )}
+                <Link to={`/app/team/${t.id}`} className="block">
+                  <div className="w-10 h-10 rounded-xl sp-glass-strong flex items-center justify-center mb-4">
+                    <Users className="w-5 h-5 text-white/90" />
+                  </div>
+                  <div className="text-white font-medium text-lg truncate">{t.name}</div>
+                  {t.description && <div className="text-xs sp-subtle mt-1 line-clamp-2">{t.description}</div>}
+                  <div className="flex items-center gap-2 mt-4 text-xs sp-subtle group-hover:text-white/80">
+                    Open workspace <ArrowRight className="w-3.5 h-3.5" />
+                  </div>
+                </Link>
+              </div>
+            ))}
+            {teams.filter((t) => t.id !== org.general_team_id).length === 0 && (
+              <div className="sp-glass rounded-2xl p-6 col-span-full text-center text-sm sp-subtle">
+                No specialised teams yet — create one in <span className="text-white/80">Org setup</span> below.
+              </div>
+            )}
+          </div>
+        </div>
 
         {showInviteTools && canInvite && (
           <div className="sp-glass-strong rounded-2xl p-6 mb-10" data-testid="invite-tools">
@@ -405,180 +409,225 @@ export default function OrgPage() {
           </div>
         )}
 
-        <div className="grid md:grid-cols-3 gap-4 mb-10">
-          {teams.filter((t) => t.id !== org.general_team_id).map((t) => (
-            <div key={t.id} className="sp-glass rounded-2xl p-6 hover:border-white/20 transition group relative" data-testid={`team-card-${t.id}`}>
-              {canEdit && (
-                <button
-                  onClick={(e) => { e.preventDefault(); e.stopPropagation(); removeTeam(t); }}
-                  className="absolute top-3 right-3 sp-btn sp-btn-ghost !p-1.5 opacity-0 group-hover:opacity-100 transition hover:!text-red-300"
-                  data-testid={`delete-team-${t.id}`}
-                  title="Delete team"
-                >
-                  <Trash2 className="w-3.5 h-3.5" />
-                </button>
-              )}
-              <Link to={`/app/team/${t.id}`} className="block">
-                <div className="w-10 h-10 rounded-xl sp-glass-strong flex items-center justify-center mb-4">
-                  <Users className="w-5 h-5 text-white/90" />
-                </div>
-                <div className="text-white font-medium text-lg truncate">{t.name}</div>
-                {t.description && <div className="text-xs sp-subtle mt-1 line-clamp-2">{t.description}</div>}
-                <div className="flex items-center gap-2 mt-4 text-xs sp-subtle group-hover:text-white/80">
-                  Open workspace <ArrowRight className="w-3.5 h-3.5" />
-                </div>
-              </Link>
-            </div>
-          ))}
-          {teams.filter((t) => t.id !== org.general_team_id).length === 0 && (
-            <div className="sp-glass rounded-2xl p-6 col-span-full text-center text-sm sp-subtle">
-              No specialised teams yet — create one below for a specific squad, brand, or project.
-            </div>
-          )}
-        </div>
+        {/* ────────────────────────────────────────────────────────────
+            ORG SETUP & ADMIN — collapsible. Auto-expands for a brand-new
+            org (no Soul + no logo) so the owner can set things up. Once
+            configured, stays collapsed by default; the toggle state is
+            remembered per-org in localStorage so returning users land on
+            their preferred view.
+            ──────────────────────────────────────────────────────────── */}
+        {(() => {
+          const hasSoul = !!(org.soul && (org.soul.mission || org.soul.summary));
+          const hasLogo = !!(org.brand_assets && org.brand_assets.primary_logo);
+          const isSetUp = hasSoul && hasLogo;
+          const unconfiguredCount = [!hasSoul, !hasLogo].filter(Boolean).length;
+          const subtitle = isSetUp
+            ? "Brand assets, Soul, style guide, schedules, files, activity — plus team management."
+            : `Finish setup (${unconfiguredCount} item${unconfiguredCount === 1 ? "" : "s"} left) — brand assets, Soul, team management.`;
+          return (
+            <CollapsibleSection
+              title={isSetUp ? "Org setup & insights" : "Finish setting up this org"}
+              subtitle={subtitle}
+              storageKey={`org-admin-${orgId}`}
+              defaultOpen={!isSetUp}
+              badge={!isSetUp ? `${unconfiguredCount} to go` : null}
+              testId="org-admin-section"
+            >
+              {/* Brand Assets */}
+              <BrandAssetsPanel orgId={orgId} initial={org.brand_assets} onChange={(ba) => setOrg((prev) => prev ? { ...prev, brand_assets: ba } : prev)} />
 
-        {/* Asset library */}
-        <SchedulesPanel scope="org" targetId={orgId} orgId={orgId} />
-        <div className="h-6" />
-        <section className="sp-glass-strong rounded-2xl p-6 mb-10" data-testid="assets-section">
-          <div className="flex items-center justify-between mb-4 flex-wrap gap-3">
-            <div className="flex items-center gap-2">
-              <UploadCloud className="w-4 h-4" />
-              <h3 className="text-sm uppercase tracking-widest sp-subtle">Asset library</h3>
-              <span className="sp-chip">{assets.length}</span>
-            </div>
-            <p className="text-xs sp-subtle max-w-md">
-              Upload logos, brand guides, handbooks, photos, copy decks. Every conversation in this org will be able to reference these.
-            </p>
-          </div>
-
-          <div
-            onDragOver={(e) => { e.preventDefault(); setDragActive(true); }}
-            onDragLeave={() => setDragActive(false)}
-            onDrop={onDrop}
-            className={`sp-glass rounded-xl p-6 border-2 border-dashed flex flex-col items-center text-center gap-3 transition ${dragActive ? "border-orange-400/60" : ""}`}
-            style={{ borderColor: dragActive ? "rgba(124,92,255,0.6)" : "var(--border-soft)" }}
-            data-testid="assets-dropzone"
-          >
-            <UploadCloud className="w-6 h-6 opacity-70" />
-            <div className="text-base">
-              Drop files here, or{" "}
-              <button
-                type="button"
-                onClick={() => fileRef.current?.click()}
-                className="underline underline-offset-4 hover:opacity-90"
-                data-testid="assets-browse-btn"
-              >browse</button>
-            </div>
-            <div className="text-xs sp-subtle">PDF · DOCX · images · text · audio · video · zip · up to 10 MB each</div>
-            <input
-              type="text"
-              value={uploadDesc}
-              onChange={(e) => setUploadDesc(e.target.value)}
-              placeholder="Optional description (applied to next upload)"
-              className="w-full max-w-md rounded-lg px-3 py-2 text-sm focus:sp-focus"
-              style={{ background: "var(--input-bg)", border: "1px solid var(--input-border)", color: "var(--fg)" }}
-              data-testid="asset-desc-input"
-            />
-            <input
-              ref={fileRef}
-              type="file"
-              multiple
-              hidden
-              onChange={onFileChange}
-              data-testid="assets-file-input"
-            />
-            {uploading && <div className="text-xs sp-subtle">Uploading…</div>}
-          </div>
-
-          {assets.length > 0 && (
-            <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-3 mt-4">
-              {assets.map((a) => {
-                const Icon = KIND_ICONS[a.kind] || FileIcon;
-                const isImg = a.kind === "image";
-                const url = `${BACKEND_URL}${a.url}`;
-                return (
-                  <div key={a.id} className="sp-glass rounded-xl p-3 flex flex-col gap-2" data-testid={`asset-card-${a.id}`}>
-                    <div className="flex items-start gap-2">
-                      <div className="w-9 h-9 rounded-lg sp-glass-strong flex items-center justify-center shrink-0">
-                        <Icon className="w-4 h-4" />
-                      </div>
-                      <div className="min-w-0 flex-1">
-                        <div className="text-sm font-medium truncate" title={a.original_name}>{a.original_name}</div>
-                        <div className="text-[11px] sp-subtle">
-                          {a.kind} · {formatBytes(a.size)} · by {a.uploaded_by_name}
-                        </div>
-                      </div>
-                    </div>
-                    {a.description && <div className="text-xs sp-subtle line-clamp-2">{a.description}</div>}
-                    {isImg && (
-                      <a href={url} target="_blank" rel="noreferrer" className="block rounded-lg overflow-hidden border" style={{ borderColor: "var(--border-soft)" }}>
-                        <img src={url} alt={a.original_name} loading="lazy" className="w-full max-h-32 object-cover" />
+              {/* Company Soul — read-only display when populated */}
+              {(org.soul && (org.soul.mission || org.soul.summary)) && (
+                <div className="sp-glass rounded-2xl p-6 mb-8" data-testid="org-soul">
+                  <div className="flex items-center gap-2 mb-3">
+                    <Logo className="w-4 h-4 text-white/80" />
+                    <h3 className="text-sm uppercase tracking-widest sp-subtle">Company Soul</h3>
+                    {org.website_url && (
+                      <a href={org.website_url.startsWith("http") ? org.website_url : `https://${org.website_url}`}
+                         target="_blank" rel="noreferrer"
+                         className="text-[11px] sp-subtle ml-auto hover:text-white truncate max-w-[260px]"
+                         title={org.website_url}>
+                        {org.website_url.replace(/^https?:\/\//, "")}
                       </a>
                     )}
-                    <div className="flex items-center justify-end gap-1 mt-auto">
-                      <a href={url} target="_blank" rel="noreferrer" className="sp-btn sp-btn-ghost text-xs" download>
-                        <Download className="w-3 h-3" /> Open
-                      </a>
-                      <button onClick={() => removeAsset(a.id)} className="sp-btn sp-btn-ghost text-xs" data-testid={`asset-delete-${a.id}`}>
-                        <Trash2 className="w-3 h-3" />
-                      </button>
-                    </div>
                   </div>
-                );
-              })}
-            </div>
-          )}
-        </section>
-
-        <div className="grid md:grid-cols-2 gap-4">
-          <form onSubmit={createTeam} className="sp-glass rounded-2xl p-6">
-            <div className="flex items-center gap-2 mb-3">
-              <Plus className="w-4 h-4 text-white/80" />
-              <h3 className="text-sm uppercase tracking-widest sp-subtle">New team</h3>
-            </div>
-            <input
-              data-testid="new-team-name"
-              value={newTeam}
-              onChange={(e) => setNewTeam(e.target.value)}
-              placeholder="e.g. Product Marketing"
-              className="w-full bg-white/[0.03] border border-white/10 rounded-xl px-4 py-3 text-sm text-white placeholder:text-white/30 focus:border-white/30 focus:sp-focus mb-2"
-            />
-            <input
-              data-testid="new-team-desc"
-              value={newTeamDesc}
-              onChange={(e) => setNewTeamDesc(e.target.value)}
-              placeholder="One-line description (optional)"
-              className="w-full bg-white/[0.03] border border-white/10 rounded-xl px-4 py-3 text-sm text-white placeholder:text-white/30 focus:border-white/30 focus:sp-focus"
-            />
-            <button
-              type="submit"
-              disabled={creating || !newTeam.trim()}
-              className="sp-btn sp-btn-primary w-full justify-center mt-3 disabled:opacity-50"
-              data-testid="create-team-btn"
-            >
-              {creating ? "Creating…" : "Create team"}
-            </button>
-          </form>
-
-          <div className="sp-glass rounded-2xl p-6">
-            <div className="flex items-center gap-2 mb-3">
-              <Users className="w-4 h-4 text-white/80" />
-              <h3 className="text-sm uppercase tracking-widest sp-subtle">Members ({members.length})</h3>
-            </div>
-            <div className="flex flex-col gap-2 max-h-60 overflow-y-auto">
-              {members.map((m) => (
-                <div key={m.user_id} className="flex items-center justify-between p-3 rounded-xl sp-glass">
-                  <div className="min-w-0">
-                    <div className="text-sm text-white truncate">{m.name}</div>
-                    <div className="text-xs sp-subtle truncate">{m.email}</div>
+                  {org.soul.summary && (
+                    <p className="text-base mb-3 leading-relaxed" style={{ color: "var(--fg)" }}>
+                      {org.soul.summary}
+                    </p>
+                  )}
+                  <div className="grid sm:grid-cols-2 gap-3 text-sm">
+                    {[
+                      ["Mission", org.soul.mission],
+                      ["Audience", org.soul.audience],
+                      ["Tone", org.soul.tone],
+                      ["Values", org.soul.values],
+                      ["North star", org.soul.north_star],
+                    ].filter(([, v]) => v).map(([label, v]) => (
+                      <div key={label} className="sp-glass rounded-xl p-3">
+                        <div className="text-[10px] uppercase tracking-widest sp-subtle mb-1">{label}</div>
+                        <div className="leading-snug">{v}</div>
+                      </div>
+                    ))}
                   </div>
-                  <span className="sp-chip">{m.role}</span>
                 </div>
-              ))}
-            </div>
-          </div>
-        </div>
+              )}
+
+              {/* Social Style Guide */}
+              <SocialStyleGuidePanel orgId={orgId} />
+
+              {/* Schedules */}
+              <SchedulesPanel scope="org" targetId={orgId} orgId={orgId} />
+              <div className="h-6" />
+
+              {/* Asset library (PDFs / docs / raw files) */}
+              <section className="sp-glass-strong rounded-2xl p-6 mb-10" data-testid="assets-section">
+                <div className="flex items-center justify-between mb-4 flex-wrap gap-3">
+                  <div className="flex items-center gap-2">
+                    <UploadCloud className="w-4 h-4" />
+                    <h3 className="text-sm uppercase tracking-widest sp-subtle">Asset library</h3>
+                    <span className="sp-chip">{assets.length}</span>
+                  </div>
+                  <p className="text-xs sp-subtle max-w-md">
+                    Upload logos, brand guides, handbooks, photos, copy decks. Every conversation in this org will be able to reference these.
+                  </p>
+                </div>
+
+                <div
+                  onDragOver={(e) => { e.preventDefault(); setDragActive(true); }}
+                  onDragLeave={() => setDragActive(false)}
+                  onDrop={onDrop}
+                  className={`sp-glass rounded-xl p-6 border-2 border-dashed flex flex-col items-center text-center gap-3 transition ${dragActive ? "border-orange-400/60" : ""}`}
+                  style={{ borderColor: dragActive ? "rgba(124,92,255,0.6)" : "var(--border-soft)" }}
+                  data-testid="assets-dropzone"
+                >
+                  <UploadCloud className="w-6 h-6 opacity-70" />
+                  <div className="text-base">
+                    Drop files here, or{" "}
+                    <button
+                      type="button"
+                      onClick={() => fileRef.current?.click()}
+                      className="underline underline-offset-4 hover:opacity-90"
+                      data-testid="assets-browse-btn"
+                    >browse</button>
+                  </div>
+                  <div className="text-xs sp-subtle">PDF · DOCX · images · text · audio · video · zip · up to 10 MB each</div>
+                  <input
+                    type="text"
+                    value={uploadDesc}
+                    onChange={(e) => setUploadDesc(e.target.value)}
+                    placeholder="Optional description (applied to next upload)"
+                    className="w-full max-w-md rounded-lg px-3 py-2 text-sm focus:sp-focus"
+                    style={{ background: "var(--input-bg)", border: "1px solid var(--input-border)", color: "var(--fg)" }}
+                    data-testid="asset-desc-input"
+                  />
+                  <input
+                    ref={fileRef}
+                    type="file"
+                    multiple
+                    hidden
+                    onChange={onFileChange}
+                    data-testid="assets-file-input"
+                  />
+                  {uploading && <div className="text-xs sp-subtle">Uploading…</div>}
+                </div>
+
+                {assets.length > 0 && (
+                  <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-3 mt-4">
+                    {assets.map((a) => {
+                      const Icon = KIND_ICONS[a.kind] || FileIcon;
+                      const isImg = a.kind === "image";
+                      const url = `${BACKEND_URL}${a.url}`;
+                      return (
+                        <div key={a.id} className="sp-glass rounded-xl p-3 flex flex-col gap-2" data-testid={`asset-card-${a.id}`}>
+                          <div className="flex items-start gap-2">
+                            <div className="w-9 h-9 rounded-lg sp-glass-strong flex items-center justify-center shrink-0">
+                              <Icon className="w-4 h-4" />
+                            </div>
+                            <div className="min-w-0 flex-1">
+                              <div className="text-sm font-medium truncate" title={a.original_name}>{a.original_name}</div>
+                              <div className="text-[11px] sp-subtle">
+                                {a.kind} · {formatBytes(a.size)} · by {a.uploaded_by_name}
+                              </div>
+                            </div>
+                          </div>
+                          {a.description && <div className="text-xs sp-subtle line-clamp-2">{a.description}</div>}
+                          {isImg && (
+                            <a href={url} target="_blank" rel="noreferrer" className="block rounded-lg overflow-hidden border" style={{ borderColor: "var(--border-soft)" }}>
+                              <img src={url} alt={a.original_name} loading="lazy" className="w-full max-h-32 object-cover" />
+                            </a>
+                          )}
+                          <div className="flex items-center justify-end gap-1 mt-auto">
+                            <a href={url} target="_blank" rel="noreferrer" className="sp-btn sp-btn-ghost text-xs" download>
+                              <Download className="w-3 h-3" /> Open
+                            </a>
+                            <button onClick={() => removeAsset(a.id)} className="sp-btn sp-btn-ghost text-xs" data-testid={`asset-delete-${a.id}`}>
+                              <Trash2 className="w-3 h-3" />
+                            </button>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </section>
+
+              {/* Activity overview — metrics panel. Set aside for owners
+                  and managers; not the first thing casual users need. */}
+              <ActivityOverview orgId={orgId} />
+
+              {/* New team form + Members list */}
+              <div className="grid md:grid-cols-2 gap-4">
+                <form onSubmit={createTeam} className="sp-glass rounded-2xl p-6">
+                  <div className="flex items-center gap-2 mb-3">
+                    <Plus className="w-4 h-4 text-white/80" />
+                    <h3 className="text-sm uppercase tracking-widest sp-subtle">New team</h3>
+                  </div>
+                  <input
+                    data-testid="new-team-name"
+                    value={newTeam}
+                    onChange={(e) => setNewTeam(e.target.value)}
+                    placeholder="e.g. Product Marketing"
+                    className="w-full bg-white/[0.03] border border-white/10 rounded-xl px-4 py-3 text-sm text-white placeholder:text-white/30 focus:border-white/30 focus:sp-focus mb-2"
+                  />
+                  <input
+                    data-testid="new-team-desc"
+                    value={newTeamDesc}
+                    onChange={(e) => setNewTeamDesc(e.target.value)}
+                    placeholder="One-line description (optional)"
+                    className="w-full bg-white/[0.03] border border-white/10 rounded-xl px-4 py-3 text-sm text-white placeholder:text-white/30 focus:border-white/30 focus:sp-focus"
+                  />
+                  <button
+                    type="submit"
+                    disabled={creating || !newTeam.trim()}
+                    className="sp-btn sp-btn-primary w-full justify-center mt-3 disabled:opacity-50"
+                    data-testid="create-team-btn"
+                  >
+                    {creating ? "Creating…" : "Create team"}
+                  </button>
+                </form>
+
+                <div className="sp-glass rounded-2xl p-6">
+                  <div className="flex items-center gap-2 mb-3">
+                    <Users className="w-4 h-4 text-white/80" />
+                    <h3 className="text-sm uppercase tracking-widest sp-subtle">Members ({members.length})</h3>
+                  </div>
+                  <div className="flex flex-col gap-2 max-h-60 overflow-y-auto">
+                    {members.map((m) => (
+                      <div key={m.user_id} className="flex items-center justify-between p-3 rounded-xl sp-glass">
+                        <div className="min-w-0">
+                          <div className="text-sm text-white truncate">{m.name}</div>
+                          <div className="text-xs sp-subtle truncate">{m.email}</div>
+                        </div>
+                        <span className="sp-chip">{m.role}</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              </div>
+            </CollapsibleSection>
+          );
+        })()}
       </main>
     </div>
   );
