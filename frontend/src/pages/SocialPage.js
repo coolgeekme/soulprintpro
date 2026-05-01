@@ -700,7 +700,7 @@ function AutopostStatusPill({ post }) {
       <Icon className={`w-3 h-3 ${status === "running" ? "animate-spin" : ""}`} />
       {label}
       {post.autopost_platform && (
-        <span className="opacity-70">· {post.autopost_platform}</span>
+        <span className="opacity-70 ml-1">· {post.autopost_platform}</span>
       )}
     </span>
   );
