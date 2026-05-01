@@ -41,6 +41,8 @@ logger = logging.getLogger(__name__)
 
 MAX_ITERATIONS = 18            # hard safety cap per mission
 MAX_EVENTS_IN_CONTEXT = 40     # truncation window for the loop's memory
+LLM_CALL_TIMEOUT_S = 90        # hard ceiling on a single LLM round-trip
+TOOL_CALL_TIMEOUT_S = 60       # hard ceiling on any single tool execution
 
 # Active mission Tasks keyed by mission_id — for cancel / pause signalling.
 _RUNNING: Dict[str, asyncio.Task] = {}
@@ -103,6 +105,7 @@ def serialize_mission(m: dict) -> dict:
         "iteration_count": m.get("iteration_count", 0),
         "started_at": _iso(m.get("started_at")),
         "finished_at": _iso(m.get("finished_at")),
+        "last_activity_at": _iso(m.get("last_activity_at")),
         "summary": m.get("summary", ""),
         "artifacts": m.get("artifacts") or [],
         "error": m.get("error", ""),
@@ -174,11 +177,12 @@ async def _append_event(db, mission_id: str, *, kind: str, text: str = "",
                         tool: str = "", args: dict = None,
                         result_preview: str = "", artifact: dict = None,
                         iteration: int = 0) -> dict:
+    now = datetime.now(timezone.utc)
     doc = {
         "id": str(uuid.uuid4()),
         "mission_id": mission_id,
         "kind": kind,
-        "ts": datetime.now(timezone.utc),
+        "ts": now,
         "text": text,
         "tool": tool,
         "args": args or {},
@@ -187,6 +191,15 @@ async def _append_event(db, mission_id: str, *, kind: str, text: str = "",
         "iteration": iteration,
     }
     await db.mission_events.insert_one({**doc})
+    # Heartbeat — frontend uses this to detect stalled missions and offer a
+    # "force-cancel" action when nothing has happened in 2+ minutes.
+    try:
+        await db.missions.update_one(
+            {"id": mission_id}, {"$set": {"last_activity_at": now}},
+        )
+    except Exception:
+        # Heartbeat failures must never break the loop.
+        pass
     return doc
 
 
@@ -299,7 +312,25 @@ async def run_mission_loop(
             ).with_model("openai", "gpt-4.1-mini")
 
             try:
-                raw = await chat.send_message(UserMessage(text=user_turn))
+                raw = await asyncio.wait_for(
+                    chat.send_message(UserMessage(text=user_turn)),
+                    timeout=LLM_CALL_TIMEOUT_S,
+                )
+            except asyncio.TimeoutError:
+                # The LLM API hung beyond our ceiling — log it and give the
+                # next iteration a chance instead of freezing the mission.
+                logger.warning(
+                    "mission %s LLM call timed out after %ds (iter %d)",
+                    mission_id, LLM_CALL_TIMEOUT_S, iteration,
+                )
+                await _append_event(
+                    db, mission_id, kind="system",
+                    text=(f"LLM call exceeded {LLM_CALL_TIMEOUT_S}s — retrying "
+                          "with a fresh round. If this persists, the model "
+                          "provider may be degraded; cancel and try again."),
+                    iteration=iteration,
+                )
+                continue
             except Exception as exc:
                 logger.exception("mission %s LLM error: %s", mission_id, exc)
                 await _append_event(db, mission_id, kind="system",
@@ -368,7 +399,20 @@ async def run_mission_loop(
             await _append_event(db, mission_id, kind="tool_call",
                                 tool=tool_name, args=args, iteration=iteration)
             try:
-                result = await t(ctx, args)
+                result = await asyncio.wait_for(
+                    t(ctx, args), timeout=TOOL_CALL_TIMEOUT_S,
+                )
+            except asyncio.TimeoutError:
+                logger.warning(
+                    "mission %s tool %s timed out after %ds (iter %d)",
+                    mission_id, tool_name, TOOL_CALL_TIMEOUT_S, iteration,
+                )
+                result = {
+                    "error": (f"Tool '{tool_name}' exceeded {TOOL_CALL_TIMEOUT_S}s "
+                              "and was aborted. Try a different tool, simplify "
+                              "the args (e.g. shorter prompt / different URL), "
+                              "or call finish."),
+                }
             except Exception as exc:
                 logger.exception("tool %s raised: %s", tool_name, exc)
                 result = {"error": str(exc)[:400]}
@@ -988,6 +1032,7 @@ def make_missions_router(
             "status": "running",
             "iteration_count": 0,
             "started_at": datetime.now(timezone.utc),
+            "last_activity_at": datetime.now(timezone.utc),
             "finished_at": None,
             "summary": "",
             "artifacts": [],

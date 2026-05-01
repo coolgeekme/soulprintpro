@@ -274,6 +274,29 @@ function MissionDetail({ orgId, missionId }) {
     if (near) el.scrollTop = el.scrollHeight;
   }, [events.length]);
 
+  const isLive = ["running", "awaiting_user"].includes(mission?.status);
+
+  // Stall detection — a "running" mission with no event in 2+ minutes is
+  // very likely stuck on a slow tool call or a degraded model provider.
+  // We surface a warning + "Force cancel" affordance so users always have
+  // an escape hatch instead of staring at a frozen spinner.
+  const lastActivityIso =
+    mission?.last_activity_at ||
+    (events.length ? events[events.length - 1].ts : mission?.started_at);
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    if (!isLive) return;
+    const id = setInterval(() => setNow(Date.now()), 5000);
+    return () => clearInterval(id);
+  }, [isLive]);
+  const stalledSeconds = (() => {
+    if (!isLive || !lastActivityIso) return 0;
+    try {
+      return Math.max(0, Math.floor((now - new Date(lastActivityIso).getTime()) / 1000));
+    } catch { return 0; }
+  })();
+  const isStalled = isLive && stalledSeconds >= 120;
+
   const cancel = async () => {
     if (!window.confirm("Cancel this mission?")) return;
     try {
@@ -329,7 +352,6 @@ function MissionDetail({ orgId, missionId }) {
   };
 
   const status = mission?.status ? STATUS_MAP[mission.status] : null;
-  const isLive = ["running", "awaiting_user"].includes(mission?.status);
 
   return (
     <div className="min-h-screen" style={{ background: "var(--bg)", color: "var(--fg)" }}>
@@ -349,6 +371,12 @@ function MissionDetail({ orgId, missionId }) {
               <div className="min-w-0 flex-1">
                 <div className="flex items-center gap-2 mb-1 flex-wrap">
                   {status && <span className={`sp-chip text-[10px] ${status.cls}`} data-testid="mission-status">{status.label}</span>}
+                  {isStalled && (
+                    <span className="sp-chip text-[10px] !bg-amber-400/15 !text-amber-200 flex items-center gap-1" data-testid="mission-stalled-chip">
+                      <AlertTriangle className="w-3 h-3" />
+                      Stalled · no activity for {Math.floor(stalledSeconds / 60)}m {stalledSeconds % 60}s
+                    </span>
+                  )}
                   <span className="text-[11px] sp-subtle">
                     {mission.lead_agent_name} · {mission.iteration_count || 0}/{18} steps
                   </span>
@@ -359,6 +387,11 @@ function MissionDetail({ orgId, missionId }) {
                 )}
                 {mission.error && (
                   <div className="text-xs mt-2 text-red-300 flex items-center gap-1"><AlertTriangle className="w-3 h-3" /> {mission.error}</div>
+                )}
+                {isStalled && (
+                  <div className="text-xs mt-3 sp-glass rounded-lg px-3 py-2 border border-amber-400/30 text-amber-100 leading-relaxed" data-testid="mission-stalled-banner">
+                    The agent hasn't logged activity in over 2 minutes. This usually means a tool or LLM call is hung. Click <span className="font-medium">Cancel</span> on the right to stop it — you can then start a fresh mission, or use <span className="font-medium">Continue</span> to resume from where it left off.
+                  </div>
                 )}
               </div>
               {isLive && (

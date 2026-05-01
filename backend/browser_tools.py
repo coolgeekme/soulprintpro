@@ -294,25 +294,34 @@ async def _drive_navigate(page, url: str, *, take_screenshot: bool,
 
 async def _populate_snapshot(page, out: dict, take_screenshot: bool,
                              upload_dir: Optional[Path]) -> None:
-    """Read title / text / screenshot / page-map off `page` into `out`."""
+    """Read title / text / screenshot / page-map off `page` into `out`.
+
+    Each step is wrapped in a tight timeout because a misbehaving page can
+    keep `page.evaluate` running indefinitely (e.g., infinite redirects,
+    hung Web Workers, deeply recursive DOM walkers). An incomplete snapshot
+    is always better than a hung mission loop.
+    """
     try:
-        out["title"] = (await page.title()) or ""
+        out["title"] = await asyncio.wait_for(page.title(), timeout=8) or ""
     except Exception:
         out["title"] = ""
     try:
-        body_text = await page.evaluate(
-            "() => document.body ? document.body.innerText : ''"
+        body_text = await asyncio.wait_for(
+            page.evaluate("() => document.body ? document.body.innerText : ''"),
+            timeout=12,
         )
     except Exception as exc:
         body_text = ""
-        logger.warning("innerText extraction failed: %s", exc)
+        logger.warning("innerText extraction failed/timeout: %s", exc)
     out["text"] = _clean_text(body_text)
 
     # Pull a structured page map so the LLM can see what's clickable / what
     # forms exist. Without this, the agent has to guess at button text from
     # plain innerText, which is exactly the navigation-blindness problem.
     try:
-        page_map = await page.evaluate(_PAGE_MAP_JS)
+        page_map = await asyncio.wait_for(
+            page.evaluate(_PAGE_MAP_JS), timeout=12,
+        )
         if isinstance(page_map, dict):
             out["links"] = page_map.get("links") or []
             out["buttons"] = page_map.get("buttons") or []
@@ -320,17 +329,19 @@ async def _populate_snapshot(page, out: dict, take_screenshot: bool,
         else:
             out["links"] = out["buttons"] = out["forms"] = []
     except Exception as exc:
-        logger.warning("page-map extraction failed: %s", exc)
+        logger.warning("page-map extraction failed/timeout: %s", exc)
         out["links"] = out["buttons"] = out["forms"] = []
 
     if take_screenshot and upload_dir is not None:
         try:
             fname = f"{uuid.uuid4().hex}.png"
-            shot_bytes = await page.screenshot(full_page=False, type="png")
+            shot_bytes = await asyncio.wait_for(
+                page.screenshot(full_page=False, type="png"), timeout=12,
+            )
             (upload_dir / fname).write_bytes(shot_bytes)
             out["screenshot"] = fname
         except Exception as exc:
-            logger.warning("screenshot failed: %s", exc)
+            logger.warning("screenshot failed/timeout: %s", exc)
             out["screenshot"] = None
 
 
