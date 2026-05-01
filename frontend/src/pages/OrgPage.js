@@ -397,6 +397,27 @@ export default function OrgPage() {
           </div>
         </div>
 
+        {canInvite && !showInviteTools && (
+          <div className="sp-glass rounded-2xl p-5 mb-6 flex items-start gap-4" data-testid="invite-teammates-card">
+            <div className="w-10 h-10 rounded-xl sp-glass-strong flex items-center justify-center shrink-0">
+              <UserPlus className="w-5 h-5 text-white/90" />
+            </div>
+            <div className="flex-1 min-w-0">
+              <div className="font-medium text-sm">Invite your teammates to {org.name}</div>
+              <div className="text-xs sp-subtle mt-0.5">
+                Generate a one-time invite code or a shareable link. Members can post to your teams and chat with agents; admins can also manage org settings.
+              </div>
+            </div>
+            <button
+              onClick={() => { setShowInviteTools(true); if (invites.length === 0) { createInvite("member"); } }}
+              className="sp-btn sp-btn-primary text-xs shrink-0"
+              data-testid="invite-teammates-btn"
+            >
+              <UserPlus className="w-3.5 h-3.5" /> Create invite
+            </button>
+          </div>
+        )}
+
         {showInviteTools && canInvite && (
           <div className="sp-glass-strong rounded-2xl p-6 mb-10" data-testid="invite-tools">
             <div className="flex items-center justify-between mb-4">

@@ -91,7 +91,31 @@ export default function BrandAssetsPanel({ orgId, initial, onChange }) {
       </div>
       <div className="flex items-center justify-center h-32 rounded-lg" style={{ background: "color-mix(in srgb, var(--bg-soft) 80%, transparent)" }}>
         {doc ? (
-          <img src={`${BACKEND_URL}${doc.url}`} alt={`${kind} logo`} className="max-h-28 max-w-full object-contain" data-testid={`brand-${kind}-img`} />
+          <img
+            /* Cache-bust with the filename itself (logos get new filenames
+               on every upload so the cache-key naturally changes). Adding
+               ?v=... is belt-and-braces in case a CDN along the way
+               ignored the new path. */
+            src={`${BACKEND_URL}${doc.url}${doc.url.includes("?") ? "&" : "?"}v=${encodeURIComponent(doc.filename || "")}`}
+            alt={`${kind} logo`}
+            className="max-h-28 max-w-full object-contain"
+            data-testid={`brand-${kind}-img`}
+            onError={(e) => {
+              // If the image 404s on a reload (e.g. file was cleaned up or
+              // the path encoding is off), hide the <img> and show the
+              // placeholder icon so the user doesn't see the browser's
+              // broken-image glyph. They can re-upload via the button below.
+              e.currentTarget.style.display = "none";
+              const parent = e.currentTarget.parentElement;
+              if (parent && !parent.querySelector("[data-logo-err]")) {
+                const fb = document.createElement("div");
+                fb.setAttribute("data-logo-err", "1");
+                fb.className = "text-[11px] text-red-300 text-center leading-snug px-2";
+                fb.innerHTML = "Couldn't load this logo — please re-upload.";
+                parent.appendChild(fb);
+              }
+            }}
+          />
         ) : (
           <ImageIcon className="w-7 h-7 sp-subtle opacity-50" />
         )}
