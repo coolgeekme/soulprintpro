@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo, useState } from "react";
+import { createPortal } from "react-dom";
 import { Link, useParams } from "react-router-dom";
 import api, { BACKEND_URL } from "../lib/api";
 import TopBar from "../components/TopBar";
@@ -7,6 +8,7 @@ import {
   Send, Sparkles, Calendar, CheckCircle2, Trash2, Copy, ExternalLink,
   Download, Save, X, Loader2, Megaphone, Image as ImageIcon, Wand2,
   Zap, KeyRound, AlertTriangle, Rocket, Pencil,
+  UploadCloud, ShieldCheck, ChevronRight,
 } from "lucide-react";
 
 // ── Platform metadata ─────────────────────────────────────────────────────
@@ -969,18 +971,41 @@ function SocialPromptEditor({ initial, postText, onSubmit, onCancel, generating,
 
 
 
-// ── Social Sessions: Playwright storage_state per platform ────────────────
-// Users upload a `storage_state.json` captured from their own browser so
-// the Mission-driven autoposter boots logged-in on Twitter/LinkedIn/etc.
-// We only persist what they paste — never leak it back to the UI.
+// ── Per-platform 3-step wizard config ─────────────────────────────────────
+// For each supported platform we spell out the exact domain the user
+// should visit and which cookies.txt extension we recommend. Keeping
+// these in data (not prose) lets us render them compactly and swap
+// recommendations later without touching render code.
+const PLATFORM_WIZARD = {
+  twitter:  { domain: "x.com",          label: "X (Twitter)",  home: "https://x.com/home" },
+  linkedin: { domain: "linkedin.com",   label: "LinkedIn",     home: "https://www.linkedin.com/feed/" },
+  facebook: { domain: "facebook.com",   label: "Facebook",     home: "https://www.facebook.com/" },
+  threads:  { domain: "threads.net",    label: "Threads",      home: "https://www.threads.net/" },
+  bluesky:  { domain: "bsky.app",       label: "Bluesky",      home: "https://bsky.app/" },
+  mastodon: { domain: "mastodon.social",label: "Mastodon",     home: "https://mastodon.social/home" },
+  reddit:   { domain: "reddit.com",     label: "Reddit",       home: "https://www.reddit.com/" },
+};
+const COOKIES_EXTENSION_URL =
+  "https://chromewebstore.google.com/detail/get-cookiestxt-locally/cclelndahbckbenkjhflpdbgdldlbecc";
+
+
+// ── Social Sessions wizard ────────────────────────────────────────────────
+// Goal: make the "upload your login cookies" step approachable for people
+// who've never seen a terminal. Flow:
+//   Step 1: pick platform
+//   Step 2: open the platform, install/use the recommended extension,
+//           export cookies for that domain
+//   Step 3: drag-and-drop (or paste) the exported file — we accept
+//           cookies.txt, storage_state JSON, or a raw cookie JSON array
+//           and convert it server-side. Followed by a one-click
+//           "Test my session" that actually logs in via headless
+//           browser so the user knows their upload works BEFORE
+//           trusting the autoposter with real content.
 function SocialSessionsPanel({ orgId }) {
   const [open, setOpen] = useState(false);
   const [sessions, setSessions] = useState([]);
   const [loading, setLoading] = useState(false);
-  const [platform, setPlatform] = useState("twitter");
-  const [label, setLabel] = useState("");
-  const [raw, setRaw] = useState("");
-  const [saving, setSaving] = useState(false);
+  const [wizardOpen, setWizardOpen] = useState(false);
 
   const load = async () => {
     setLoading(true);
@@ -993,24 +1018,6 @@ function SocialSessionsPanel({ orgId }) {
   };
   useEffect(() => { if (open) load(); /* eslint-disable-next-line */ }, [open, orgId]);
 
-  const submit = async (e) => {
-    e.preventDefault();
-    let parsed;
-    try { parsed = JSON.parse(raw); }
-    catch { toast.error("That doesn't look like valid JSON."); return; }
-    setSaving(true);
-    try {
-      await api.post(`/orgs/${orgId}/social/sessions`, {
-        platform, storage_state: parsed, label: label.trim(),
-      });
-      toast.success("Session saved");
-      setRaw(""); setLabel("");
-      await load();
-    } catch (err) {
-      toast.error(err?.response?.data?.detail || "Save failed");
-    } finally { setSaving(false); }
-  };
-
   const remove = async (p) => {
     if (!window.confirm(`Delete ${p} session? Autopost will fail until you re-upload.`)) return;
     try {
@@ -1018,6 +1025,19 @@ function SocialSessionsPanel({ orgId }) {
       await load();
     } catch (err) {
       toast.error(err?.response?.data?.detail || "Delete failed");
+    }
+  };
+
+  const testExisting = async (platform) => {
+    const t = toast.loading(`Testing ${platform} session…`);
+    try {
+      const { data } = await api.post(`/orgs/${orgId}/social/sessions/${platform}/test`, {});
+      toast.dismiss(t);
+      if (data.ok) toast.success(data.message);
+      else toast.error(data.message);
+    } catch (err) {
+      toast.dismiss(t);
+      toast.error(err?.response?.data?.detail || "Test failed");
     }
   };
 
@@ -1039,18 +1059,16 @@ function SocialSessionsPanel({ orgId }) {
               <KeyRound className="w-4 h-4 text-orange-400" /> Login sessions for autoposting
             </h3>
             <p className="text-xs sp-subtle leading-relaxed">
-              To autopost via Mission, upload a Playwright <code>storage_state.json</code> per platform.
-              Easiest way: install a cookies-export browser extension (e.g. <em>Get cookies.txt LOCALLY</em>)
-              while logged in on twitter.com / linkedin.com etc., then paste the JSON below.
-              We store the blob opaquely and hand it to the headless browser before a Mission runs —
-              the raw cookies never leave your org.
+              Upload one-time browser cookies per platform so agents can publish on your behalf.
+              We walk you through it — no technical skills required. Your cookies are stored opaquely
+              and never returned by the API; only the headless browser sees them when a Mission runs.
             </p>
           </div>
 
           {loading ? (
             <div className="text-xs sp-subtle">Loading sessions…</div>
           ) : sessions.length === 0 ? (
-            <div className="text-xs sp-subtle">No sessions uploaded yet.</div>
+            <div className="text-xs sp-subtle italic">No sessions uploaded yet.</div>
           ) : (
             <div className="space-y-1">
               {sessions.map((s) => (
@@ -1059,11 +1077,17 @@ function SocialSessionsPanel({ orgId }) {
                   <span className="font-medium text-white/90">{PLATFORMS[s.platform]?.label || s.platform}</span>
                   {s.label && <span className="sp-subtle">· {s.label}</span>}
                   <span className="sp-subtle">
-                    {s.cookies_count} cookie{s.cookies_count === 1 ? "" : "s"}, {s.origins_count} origin{s.origins_count === 1 ? "" : "s"}
+                    {s.cookies_count} cookie{s.cookies_count === 1 ? "" : "s"}
                   </span>
                   <span className="ml-auto sp-subtle">
                     updated {formatScheduleLocal(s.updated_at)}
                   </span>
+                  <button type="button" onClick={() => testExisting(s.platform)}
+                          title="Open this platform in a headless browser and verify cookies work"
+                          className="sp-btn sp-btn-ghost !py-0.5 !px-1.5 text-[11px]"
+                          data-testid={`session-test-${s.platform}`}>
+                    <ShieldCheck className="w-3 h-3" /> Test
+                  </button>
                   <button type="button" onClick={() => remove(s.platform)}
                           className="sp-btn sp-btn-ghost !py-0.5 !px-1.5 text-[11px] hover:!text-red-300"
                           data-testid={`session-delete-${s.platform}`}>
@@ -1074,43 +1098,313 @@ function SocialSessionsPanel({ orgId }) {
             </div>
           )}
 
-          <form onSubmit={submit} className="space-y-2 border-t border-white/10 pt-4">
-            <div className="flex items-center gap-2 flex-wrap">
-              <label className="text-xs sp-subtle">Platform</label>
-              <select value={platform} onChange={(e) => setPlatform(e.target.value)}
-                      className="rounded-lg px-2 py-1 text-sm"
-                      style={{ background: "var(--input-bg)", border: "1px solid var(--input-border)", color: "var(--fg)" }}
-                      data-testid="session-platform-select">
-                {AUTOPOST_PLATFORMS.map((p) => (
-                  <option key={p} value={p}>{PLATFORMS[p]?.label || p}</option>
-                ))}
-              </select>
-              <input value={label} onChange={(e) => setLabel(e.target.value)}
-                     placeholder="Label (optional, e.g. 'brand account')"
-                     className="flex-1 min-w-[180px] rounded-lg px-2 py-1 text-sm"
-                     style={{ background: "var(--input-bg)", border: "1px solid var(--input-border)", color: "var(--fg)" }}
-                     data-testid="session-label-input"
-              />
-            </div>
-            <textarea
-              value={raw} onChange={(e) => setRaw(e.target.value)}
-              placeholder='Paste your Playwright storage_state JSON here. It should look like {"cookies": [...], "origins": [...]}.'
-              rows={5}
-              className="w-full rounded-lg px-3 py-2 text-xs font-mono resize-y"
-              style={{ background: "var(--input-bg)", border: "1px solid var(--input-border)", color: "var(--fg)" }}
-              data-testid="session-json-input"
+          <div className="flex items-center justify-end pt-4 border-t border-white/10">
+            <button
+              type="button"
+              onClick={() => setWizardOpen(true)}
+              className="sp-btn sp-btn-primary text-xs"
+              data-testid="session-add-btn"
+            >
+              <UploadCloud className="w-3.5 h-3.5" />
+              Add a login session
+            </button>
+          </div>
+
+          {wizardOpen && (
+            <SessionWizard
+              orgId={orgId}
+              onClose={() => { setWizardOpen(false); load(); }}
             />
-            <div className="flex items-center justify-end gap-2">
-              <button type="submit" disabled={saving || !raw.trim()}
-                      className="sp-btn sp-btn-primary text-xs disabled:opacity-50"
-                      data-testid="session-save-btn">
-                {saving ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Save className="w-3.5 h-3.5" />}
-                {saving ? "Saving…" : "Save session"}
-              </button>
-            </div>
-          </form>
+          )}
         </div>
       )}
     </div>
+  );
+}
+
+
+// ── The 3-step add-session modal ──────────────────────────────────────────
+function SessionWizard({ orgId, onClose }) {
+  const [step, setStep] = useState(1);
+  const [platform, setPlatform] = useState("twitter");
+  const [label, setLabel] = useState("");
+  const [raw, setRaw] = useState("");          // uploaded file contents
+  const [fileName, setFileName] = useState("");
+  const [dragging, setDragging] = useState(false);
+  const [testing, setTesting] = useState(false);
+  const [testResult, setTestResult] = useState(null);  // {ok, message}
+  const [saving, setSaving] = useState(false);
+
+  const wiz = PLATFORM_WIZARD[platform] || PLATFORM_WIZARD.twitter;
+
+  const handleFiles = async (files) => {
+    const file = files?.[0];
+    if (!file) return;
+    // Accept anything text-ish — .txt / .json are the common ones but
+    // some browsers hand us application/octet-stream for cookies.txt.
+    if (file.size > 2 * 1024 * 1024) {
+      toast.error("That file is bigger than 2 MB — cookies files are tiny; please pick the right one.");
+      return;
+    }
+    const text = await file.text();
+    setRaw(text);
+    setFileName(file.name);
+    setTestResult(null);  // invalidate any previous test
+  };
+
+  const onDrop = (e) => {
+    e.preventDefault();
+    setDragging(false);
+    handleFiles(e.dataTransfer.files);
+  };
+
+  const runTest = async () => {
+    if (!raw.trim()) { toast.error("Upload or paste your cookies first."); return; }
+    setTesting(true);
+    setTestResult(null);
+    try {
+      const { data } = await api.post(
+        `/orgs/${orgId}/social/sessions/${platform}/test`,
+        { cookies_text: raw },
+      );
+      setTestResult(data);
+      if (!data.ok) toast.error(data.message);
+      else toast.success(data.message);
+    } catch (err) {
+      const msg = err?.response?.data?.detail || "Test failed";
+      setTestResult({ ok: false, message: msg });
+      toast.error(msg);
+    } finally { setTesting(false); }
+  };
+
+  const save = async () => {
+    if (!raw.trim()) { toast.error("Upload your cookies first."); return; }
+    setSaving(true);
+    try {
+      await api.post(`/orgs/${orgId}/social/sessions`, {
+        platform,
+        cookies_text: raw,
+        label: label.trim(),
+      });
+      toast.success(`${wiz.label} session saved`);
+      onClose();
+    } catch (err) {
+      toast.error(err?.response?.data?.detail || "Save failed");
+    } finally { setSaving(false); }
+  };
+
+  return createPortal(
+    <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm"
+         onClick={(e) => e.target === e.currentTarget && onClose()}
+         data-testid="session-wizard">
+      <div className="sp-glass-strong rounded-2xl w-full max-w-xl max-h-[90vh] overflow-y-auto p-6 space-y-5"
+           style={{ border: "1px solid rgba(255,255,255,0.12)" }}>
+        <div className="flex items-start gap-3">
+          <div className="w-9 h-9 rounded-xl bg-orange-500/15 flex items-center justify-center shrink-0">
+            <KeyRound className="w-4 h-4 text-orange-400" />
+          </div>
+          <div className="flex-1">
+            <h3 className="text-base font-medium">Add a login session</h3>
+            <p className="text-xs sp-subtle">
+              Step {step} of 3 — {step === 1 ? "pick the platform" : step === 2 ? "export your cookies" : "upload & verify"}
+            </p>
+          </div>
+          <button type="button" onClick={onClose}
+                  className="sp-btn sp-btn-ghost !p-1.5"
+                  data-testid="wizard-close">
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+
+        {/* Progress bar */}
+        <div className="flex gap-1">
+          {[1, 2, 3].map((n) => (
+            <div key={n} className={`h-1 flex-1 rounded-full transition-colors ${
+              step >= n ? "bg-orange-500" : "bg-white/10"
+            }`} />
+          ))}
+        </div>
+
+        {/* STEP 1: platform */}
+        {step === 1 && (
+          <div className="space-y-3" data-testid="wizard-step-1">
+            <label className="text-xs sp-subtle uppercase tracking-widest">Which platform?</label>
+            <div className="grid grid-cols-2 gap-2">
+              {AUTOPOST_PLATFORMS.map((p) => (
+                <button
+                  key={p}
+                  type="button"
+                  onClick={() => setPlatform(p)}
+                  className={`rounded-xl px-3 py-2.5 text-left text-sm transition border ${
+                    platform === p
+                      ? "bg-orange-500/15 border-orange-400/40 text-white"
+                      : "bg-white/[0.02] border-white/10 text-white/70 hover:bg-white/[0.05]"
+                  }`}
+                  data-testid={`wizard-platform-${p}`}
+                >
+                  <div className="font-medium">{PLATFORM_WIZARD[p]?.label || p}</div>
+                  <div className="text-[11px] sp-subtle mt-0.5">{PLATFORM_WIZARD[p]?.domain}</div>
+                </button>
+              ))}
+            </div>
+            <input value={label} onChange={(e) => setLabel(e.target.value)}
+                   placeholder={`Label (optional) — e.g. "${wiz.label} brand account"`}
+                   className="w-full rounded-lg px-3 py-2 text-sm"
+                   style={{ background: "var(--input-bg)", border: "1px solid var(--input-border)", color: "var(--fg)" }}
+                   data-testid="wizard-label-input"
+            />
+          </div>
+        )}
+
+        {/* STEP 2: export instructions */}
+        {step === 2 && (
+          <div className="space-y-3 text-sm" data-testid="wizard-step-2">
+            <div className="text-white/80">
+              You're going to export browser cookies for <b>{wiz.label}</b>. It's a 3-click process:
+            </div>
+            <ol className="space-y-2.5 text-sm list-decimal pl-5 text-white/80">
+              <li>
+                Install the free <b>Get cookies.txt LOCALLY</b> Chrome extension if you don't have it yet.
+                <div className="mt-1">
+                  <a href={COOKIES_EXTENSION_URL} target="_blank" rel="noreferrer"
+                     className="inline-flex items-center gap-1 text-[11px] px-2 py-1 rounded-md bg-white/10 hover:bg-white/20 transition"
+                     data-testid="wizard-extension-link">
+                    <ExternalLink className="w-3 h-3" /> Open in Chrome Web Store
+                  </a>
+                </div>
+              </li>
+              <li>
+                Make sure you're <b>logged in to {wiz.label}</b>. Open{" "}
+                <a href={wiz.home} target="_blank" rel="noreferrer"
+                   className="underline decoration-orange-400/60 hover:text-orange-300"
+                   data-testid="wizard-platform-link">
+                  {wiz.home}
+                </a>{" "}
+                in a new tab.
+              </li>
+              <li>
+                Click the extension icon → pick <b>Current Site</b> (or enter <code className="px-1 bg-white/10 rounded">{wiz.domain}</code>) → <b>Export</b>. A <code className="px-1 bg-white/10 rounded">.txt</code> file downloads.
+              </li>
+            </ol>
+            <div className="text-[11px] sp-subtle italic pt-2">
+              Your cookies never leave this browser until you drop them here on the next step. We never log or re-serve them.
+            </div>
+          </div>
+        )}
+
+        {/* STEP 3: drag-drop + test */}
+        {step === 3 && (
+          <div className="space-y-3" data-testid="wizard-step-3">
+            <div
+              onDragOver={(e) => { e.preventDefault(); setDragging(true); }}
+              onDragLeave={() => setDragging(false)}
+              onDrop={onDrop}
+              className={`rounded-xl border-2 border-dashed p-6 text-center transition ${
+                dragging
+                  ? "border-orange-400 bg-orange-500/10"
+                  : raw
+                    ? "border-emerald-400/40 bg-emerald-500/5"
+                    : "border-white/15 bg-white/[0.02]"
+              }`}
+              data-testid="wizard-dropzone"
+            >
+              {raw ? (
+                <div className="space-y-1">
+                  <CheckCircle2 className="w-6 h-6 mx-auto text-emerald-400" />
+                  <div className="text-sm font-medium">{fileName || "Pasted content"}</div>
+                  <div className="text-[11px] sp-subtle">
+                    {(raw.length / 1024).toFixed(1)} KB ready to upload
+                  </div>
+                  <button type="button"
+                          onClick={() => { setRaw(""); setFileName(""); setTestResult(null); }}
+                          className="sp-btn sp-btn-ghost text-xs mt-2"
+                          data-testid="wizard-clear-file">
+                    <X className="w-3 h-3" /> Remove
+                  </button>
+                </div>
+              ) : (
+                <>
+                  <UploadCloud className="w-8 h-8 mx-auto text-white/40" />
+                  <div className="text-sm mt-2 text-white/80">
+                    Drag the <code className="px-1 bg-white/10 rounded">.txt</code> file here, or
+                  </div>
+                  <label className="sp-btn sp-btn-ghost text-xs mt-2 cursor-pointer inline-flex">
+                    <UploadCloud className="w-3.5 h-3.5" /> Choose a file
+                    <input type="file" className="hidden" accept=".txt,.json,text/plain,application/json"
+                           onChange={(e) => handleFiles(e.target.files)}
+                           data-testid="wizard-file-input" />
+                  </label>
+                  <details className="mt-3 text-[11px] sp-subtle">
+                    <summary className="cursor-pointer hover:text-white/80">or paste the text manually</summary>
+                    <textarea
+                      onChange={(e) => { setRaw(e.target.value); setFileName("pasted"); setTestResult(null); }}
+                      placeholder="Paste the cookies.txt contents or a storage_state JSON here"
+                      rows={4}
+                      className="w-full rounded-lg px-2 py-1.5 text-[11px] font-mono resize-y mt-2"
+                      style={{ background: "var(--input-bg)", border: "1px solid var(--input-border)", color: "var(--fg)" }}
+                      data-testid="wizard-paste-input"
+                    />
+                  </details>
+                </>
+              )}
+            </div>
+
+            {raw && (
+              <div className="flex items-center gap-2">
+                <button type="button" onClick={runTest} disabled={testing}
+                        className="sp-btn sp-btn-ghost text-xs disabled:opacity-50"
+                        data-testid="wizard-test-btn"
+                        title="Headlessly open the platform and verify these cookies work">
+                  {testing ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <ShieldCheck className="w-3.5 h-3.5" />}
+                  {testing ? "Testing…" : "Test my session"}
+                </button>
+                {testResult && (
+                  <div className={`text-xs flex-1 ${testResult.ok ? "text-emerald-300" : "text-orange-300"}`}
+                       data-testid="wizard-test-result">
+                    {testResult.ok ? "✓" : "⚠"} {testResult.message}
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* Navigation */}
+        <div className="flex items-center justify-between pt-4 border-t border-white/10">
+          <button
+            type="button"
+            onClick={() => step > 1 ? setStep(step - 1) : onClose()}
+            className="sp-btn sp-btn-ghost text-xs"
+            data-testid="wizard-back"
+          >
+            {step === 1 ? "Cancel" : "Back"}
+          </button>
+          {step < 3 ? (
+            <button
+              type="button"
+              onClick={() => setStep(step + 1)}
+              className="sp-btn sp-btn-primary text-xs"
+              data-testid="wizard-next"
+            >
+              Next <ChevronRight className="w-3.5 h-3.5" />
+            </button>
+          ) : (
+            <button
+              type="button"
+              onClick={save}
+              disabled={saving || !raw.trim()}
+              className="sp-btn sp-btn-primary text-xs disabled:opacity-50"
+              data-testid="wizard-save"
+            >
+              {saving ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Save className="w-3.5 h-3.5" />}
+              {saving ? "Saving…"
+                : testResult && !testResult.ok ? "Save anyway"
+                : "Save session"}
+            </button>
+          )}
+        </div>
+      </div>
+    </div>,
+    document.body,
   );
 }

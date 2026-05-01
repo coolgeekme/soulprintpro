@@ -27,6 +27,7 @@ CRUD for social sessions) and a `rehydrate_autopost_jobs` startup hook.
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import uuid
 from datetime import datetime, timezone
@@ -34,7 +35,7 @@ from typing import Any, Callable, List, Optional
 
 from apscheduler.triggers.date import DateTrigger
 from bson import ObjectId
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Body, Depends, HTTPException
 from pydantic import BaseModel, Field
 
 logger = logging.getLogger(__name__)
@@ -62,6 +63,231 @@ PLATFORM_COMPOSERS = {
 
 def _schedule_job_id(post_id: str) -> str:
     return f"autopost:{post_id}"
+
+
+# ── Cookie file parsers ────────────────────────────────────────────────────
+# We accept THREE input shapes when a user uploads a session:
+#   1. A Playwright `storage_state` JSON (`{"cookies":[...],"origins":[...]}`)
+#   2. A Netscape `cookies.txt` (produced by most cookie-export extensions)
+#   3. A raw JSON array of cookie objects (some extensions export this shape)
+# Server-side normalisation lets the UI present ONE drag-and-drop zone
+# instead of making non-technical users reason about formats.
+def parse_cookies_txt(raw: str) -> List[dict]:
+    """Parse a Netscape cookies.txt file into Playwright cookie dicts.
+
+    Netscape format is 7 TAB-separated fields per line:
+        domain  include_subdomains  path  secure  expiration  name  value
+    Lines starting with `#` (except `#HttpOnly_`) or empty are ignored.
+    """
+    out: List[dict] = []
+    if not raw:
+        return out
+    for raw_line in raw.splitlines():
+        line = raw_line.strip("\r\n")
+        if not line.strip():
+            continue
+        http_only = False
+        # Some exporters prefix HttpOnly cookies with `#HttpOnly_<domain>`.
+        if line.startswith("#HttpOnly_"):
+            http_only = True
+            line = line[len("#HttpOnly_"):]
+        elif line.startswith("#"):
+            continue
+        parts = line.split("\t")
+        if len(parts) < 7:
+            continue
+        domain, include_sub, path, secure, expires, name, value = parts[:7]
+        try:
+            expires_f = float(expires)
+        except ValueError:
+            expires_f = -1.0
+        cookie: dict = {
+            "name": name,
+            "value": value,
+            "domain": domain,
+            "path": path or "/",
+            "secure": secure.upper() == "TRUE",
+            "httpOnly": http_only,
+            "sameSite": "Lax",
+        }
+        # Playwright wants -1 to mean session cookie; any number otherwise.
+        if expires_f > 0:
+            cookie["expires"] = expires_f
+        else:
+            cookie["expires"] = -1
+        out.append(cookie)
+    return out
+
+
+def _looks_like_storage_state(obj) -> bool:
+    return (
+        isinstance(obj, dict)
+        and ("cookies" in obj or "origins" in obj)
+        and isinstance(obj.get("cookies", []), list)
+        and isinstance(obj.get("origins", []), list)
+    )
+
+
+def normalise_session_upload(raw: str) -> dict:
+    """Detect format (storage_state JSON / cookies.txt / raw JSON array) and
+    return a valid Playwright storage_state dict.
+
+    Raises ``ValueError`` when the input doesn't parse in any of the three
+    supported shapes — the HTTP handler surfaces this as a 422 with the
+    message so non-technical users get a clear next step.
+    """
+    if raw is None:
+        raise ValueError("No cookies uploaded.")
+    text = raw.strip()
+    if not text:
+        raise ValueError("The uploaded file was empty.")
+    # 1. Try JSON first — accept either a storage_state dict or a raw list
+    #    of cookie dicts (some extensions emit the latter).
+    try:
+        parsed = json.loads(text)
+    except json.JSONDecodeError:
+        parsed = None
+    if _looks_like_storage_state(parsed):
+        return {
+            "cookies": parsed.get("cookies") or [],
+            "origins": parsed.get("origins") or [],
+        }
+    if isinstance(parsed, list):
+        # Accept raw cookie arrays as long as each entry has name+value+domain.
+        cookies = [
+            c for c in parsed
+            if isinstance(c, dict) and c.get("name") and c.get("domain")
+        ]
+        if cookies:
+            return {"cookies": cookies, "origins": []}
+    # 2. Fall back to Netscape cookies.txt
+    cookies = parse_cookies_txt(text)
+    if cookies:
+        return {"cookies": cookies, "origins": []}
+    raise ValueError(
+        "Couldn't read that file. Expected a Playwright storage_state JSON "
+        "({\"cookies\":[...]}), a Netscape cookies.txt, or a JSON array of "
+        "cookie objects."
+    )
+
+
+# ── Session verification (option b: "Test my session") ────────────────────
+# Domains we navigate to for the logged-in sniff per platform. If the page
+# redirects/loads content that indicates a logged-in state (profile avatar,
+# a compose textarea, etc.) the session is good. Otherwise we report FAILED
+# with a human-friendly hint.
+_PLATFORM_TEST_URLS = {
+    "twitter":  "https://x.com/home",
+    "linkedin": "https://www.linkedin.com/feed/",
+    "facebook": "https://www.facebook.com/",
+    "threads":  "https://www.threads.net/",
+    "bluesky":  "https://bsky.app/",
+    "mastodon": "https://mastodon.social/home",
+    "reddit":   "https://www.reddit.com/",
+}
+
+# Per-platform logged-IN signals. We look for BOTH:
+#   • final URL contains one of these logged-in-only path fragments, OR
+#   • at least one of these DOM markers appears in the rendered HTML.
+# The test URL (_PLATFORM_TEST_URLS) is always a logged-in-only route,
+# so if the session is valid the browser stays on it; if not, the site
+# redirects to a public landing page or login wall.
+_PLATFORM_LOGGED_IN_PATHS = {
+    "twitter":  ("/home", "/i/"),
+    "linkedin": ("/feed", "/in/", "/mynetwork"),
+    "facebook": ("/home.php", "?sk=welcome", "/me/"),
+    "threads":  ("/@", "/home"),
+    "bluesky":  ("/profile/", "/feeds"),
+    "mastodon": ("/home", "/web/"),
+    "reddit":   ("/r/popular", "/?feed=home"),
+}
+_PLATFORM_LOGGED_IN_MARKERS = {
+    "twitter":  ('aria-label="Home timeline"', 'data-testid="primaryColumn"', 'data-testid="SideNav_AccountSwitcher_Button"'),
+    "linkedin": ("global-nav__me", "feed-identity-module", '"identity"'),
+    "facebook": ('aria-label="Your profile"', 'role="feed"'),
+    "threads":  ('aria-label="Home"', 'data-pressable-container'),
+    "bluesky":  ('aria-label="Home"', '"viewer":{'),
+    "mastodon": ("compose-form", "account__header"),
+    "reddit":   ("data-click-id=\"body\"", "reddit-header-large"),
+}
+
+
+async def verify_session_logged_in(storage_state: dict, platform: str) -> dict:
+    """Load the platform's feed/home page with the supplied storage_state
+    and inspect the rendered HTML for logged-out markers. Returns
+    ``{ok: bool, message: str, final_url: str}``. Never raises — a failed
+    test is a normal outcome we surface to the user.
+    """
+    url = _PLATFORM_TEST_URLS.get(platform)
+    if not url:
+        return {"ok": False, "message": f"No test URL configured for {platform}.", "final_url": ""}
+    try:
+        from browser_tools import _ensure_browser, USER_AGENT  # type: ignore
+    except Exception as exc:
+        return {"ok": False, "message": f"Browser helper unavailable: {exc}", "final_url": ""}
+    try:
+        browser = await _ensure_browser()
+        ctx = await browser.new_context(
+            storage_state=storage_state,
+            user_agent=USER_AGENT,
+            viewport={"width": 1280, "height": 800},
+            locale="en-US",
+        )
+        page = await ctx.new_page()
+        try:
+            await page.goto(url, wait_until="domcontentloaded", timeout=25_000)
+            # Small settle so SPAs populate the DOM beyond the shell.
+            try:
+                await page.wait_for_load_state("networkidle", timeout=6_000)
+            except Exception:
+                pass
+            final_url = page.url
+            html = await page.content()
+        finally:
+            await ctx.close()
+    except Exception as exc:
+        return {"ok": False, "message": f"Couldn't open {platform}: {exc}", "final_url": ""}
+    # If the final URL redirected to a login page, cookies aren't live.
+    login_url_bits = ("/login", "/auth", "authwall", "/signin", "/sessions/new")
+    if any(bit in final_url.lower() for bit in login_url_bits):
+        return {
+            "ok": False,
+            "message": (
+                f"{platform.title()} bounced us to a login page. "
+                "Your exported cookies may be stale — re-export while "
+                "logged in and try again."
+            ),
+            "final_url": final_url,
+        }
+    # Verify the session by checking BOTH the URL and the DOM for
+    # logged-in-only signals. The test URL is always a members-only route,
+    # so a logged-in session stays on it while a missing/stale session
+    # redirects to a public landing page.
+    lowered_url = final_url.lower()
+    path_hits = _PLATFORM_LOGGED_IN_PATHS.get(platform, ())
+    url_ok = any(p in lowered_url for p in path_hits) if path_hits else False
+    dom_markers = _PLATFORM_LOGGED_IN_MARKERS.get(platform, ())
+    head = html[:200_000]
+    dom_ok = any(m in head for m in dom_markers) if dom_markers else False
+    if not (url_ok or dom_ok):
+        return {
+            "ok": False,
+            "message": (
+                f"Couldn't confirm you're logged in on {platform.title()} — "
+                f"the page redirected to {final_url} without a members-only "
+                "view. Usually means the cookies are expired or the export "
+                "missed the session cookie. Re-export while logged in and try again."
+            ),
+            "final_url": final_url,
+        }
+    return {
+        "ok": True,
+        "message": f"Session looks live on {platform} ✓",
+        "final_url": final_url,
+    }
+
+
+
 
 
 def _compose_post_body(post: dict) -> str:
@@ -150,12 +376,33 @@ class AutopostScheduleBody(BaseModel):
 
 class SocialSessionBody(BaseModel):
     platform: str = Field(..., description="Platform key, e.g. 'twitter'")
-    storage_state: dict = Field(
-        ..., description="Playwright storage_state JSON object "
-                         "(cookies + origins). Bytes are stored opaquely."
+    # EITHER provide a Playwright storage_state dict OR a raw cookies-file
+    # text blob (Netscape cookies.txt OR a JSON array of cookie objects).
+    # The server normalises whichever is sent into a valid storage_state.
+    storage_state: Optional[dict] = Field(
+        default=None,
+        description="Playwright storage_state JSON object (cookies + origins).",
+    )
+    cookies_text: Optional[str] = Field(
+        default=None,
+        description=(
+            "Raw contents of a Netscape cookies.txt file OR a JSON-array "
+            "cookies export. Server auto-converts to storage_state."
+        ),
     )
     label: str = Field("", max_length=120,
                        description="Optional human-readable label for this session")
+
+
+class SessionTestBody(BaseModel):
+    """Body for POST /orgs/{id}/social/sessions/{platform}/test.
+
+    Omit both fields to test the already-persisted session for that
+    platform. Pass one to validate an upload BEFORE saving — useful for
+    the wizard's 'Test session' button.
+    """
+    storage_state: Optional[dict] = None
+    cookies_text: Optional[str] = None
 
 
 # ── Serialization ───────────────────────────────────────────────────────────
@@ -487,22 +734,36 @@ def make_social_autopost_router(
                 422, f"Unsupported platform. Supported: "
                      f"{', '.join(SUPPORTED_AUTOPOST_PLATFORMS)}",
             )
-        if not isinstance(body.storage_state, dict):
-            raise HTTPException(422, "storage_state must be an object")
-        # Validate shape — Playwright expects either `cookies` or `origins`
-        # (or both). Reject empty payloads early so users get useful feedback.
-        cookies = body.storage_state.get("cookies") or []
-        origins = body.storage_state.get("origins") or []
+        # Resolve storage_state from whichever shape the caller sent.
+        storage_state: dict
+        if body.storage_state is not None:
+            if not isinstance(body.storage_state, dict):
+                raise HTTPException(422, "storage_state must be an object")
+            storage_state = {
+                "cookies": body.storage_state.get("cookies") or [],
+                "origins": body.storage_state.get("origins") or [],
+            }
+        elif body.cookies_text is not None:
+            try:
+                storage_state = normalise_session_upload(body.cookies_text)
+            except ValueError as exc:
+                raise HTTPException(422, str(exc)) from exc
+        else:
+            raise HTTPException(
+                422, "Provide either storage_state or cookies_text.",
+            )
+        cookies = storage_state.get("cookies") or []
+        origins = storage_state.get("origins") or []
         if not cookies and not origins:
             raise HTTPException(
-                422, "storage_state must contain 'cookies' or 'origins'",
+                422, "No cookies found in the upload — double-check the file.",
             )
         now = datetime.now(timezone.utc)
         doc = {
             "org_id": org_id,
             "platform": platform,
             "label": body.label.strip()[:120],
-            "storage_state": body.storage_state,
+            "storage_state": storage_state,
             "updated_at": now,
             "created_by": u["id"],
         }
@@ -519,6 +780,53 @@ def make_social_autopost_router(
             res = await db.social_sessions.insert_one(doc)
             fresh = await db.social_sessions.find_one({"_id": res.inserted_id})
         return _serialize_session(fresh)
+
+    @r.post("/orgs/{org_id}/social/sessions/{platform}/test")
+    async def test_session(
+        org_id: str, platform: str,
+        body: SessionTestBody = Body(default_factory=SessionTestBody),
+        u: dict = Depends(get_current_user),
+    ):
+        """Headlessly load the platform's home page with the supplied (or
+        persisted) cookies and report whether the session looks logged in.
+        Used by the wizard's "Test session" step so users can verify their
+        upload BEFORE the autoposter fires on real content.
+        """
+        await require_org_member(org_id, u["id"])
+        platform = platform.strip().lower()
+        if platform not in SUPPORTED_AUTOPOST_PLATFORMS:
+            raise HTTPException(
+                422, f"Unsupported platform. Supported: "
+                     f"{', '.join(SUPPORTED_AUTOPOST_PLATFORMS)}",
+            )
+        # Resolve storage_state: (a) body.storage_state, (b) body.cookies_text,
+        # (c) fall back to the persisted session for this platform.
+        storage_state: Optional[dict] = None
+        if body.storage_state is not None:
+            if not isinstance(body.storage_state, dict):
+                raise HTTPException(422, "storage_state must be an object")
+            storage_state = {
+                "cookies": body.storage_state.get("cookies") or [],
+                "origins": body.storage_state.get("origins") or [],
+            }
+        elif body.cookies_text:
+            try:
+                storage_state = normalise_session_upload(body.cookies_text)
+            except ValueError as exc:
+                raise HTTPException(422, str(exc)) from exc
+        if storage_state is None:
+            existing = await db.social_sessions.find_one(
+                {"org_id": org_id, "platform": platform},
+            )
+            if not existing:
+                raise HTTPException(
+                    404,
+                    "No session on file and no storage_state in the body — "
+                    "upload cookies first, or pass storage_state/cookies_text.",
+                )
+            storage_state = existing.get("storage_state") or {}
+        result = await verify_session_logged_in(storage_state, platform)
+        return result
 
     @r.delete("/orgs/{org_id}/social/sessions/{platform}")
     async def delete_session(
