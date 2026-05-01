@@ -157,28 +157,40 @@ export default function ConversationPage() {
   // auto-detects intent (keyword fast-path + LLM fallback) and either
   // renders an image, kicks off a video, or replies with text.
 
-  // Poll the message list every 5s while any video is still rendering.
-  // Kie.ai usually finishes within 60-180s so we cap at ~5 min of polling.
+  // Poll the message list every 4s while any video is still rendering.
+  // Kie.ai typically finishes within 60-180s so we cap at ~6 min of polling.
+  // We deliberately keep this interval detached from `messages` state so the
+  // timer doesn't reset every tick (which previously created a feedback loop
+  // where the effect restarted on every poll, delaying the UI update by an
+  // extra 4-5s each cycle). Instead we track "is anything pending?" via a
+  // ref that the message renderer updates, and spin a single interval while
+  // the convId is mounted.
+  const hasPendingVideoRef = useRef(false);
   useEffect(() => {
-    const hasPending = messages.some(
+    hasPendingVideoRef.current = messages.some(
       (m) => m.media_type === "video" && m.media_status === "pending"
     );
-    if (!hasPending) return;
+  }, [messages]);
+
+  useEffect(() => {
     let cancelled = false;
     let attempts = 0;
     const tick = async () => {
       if (cancelled) return;
+      if (!hasPendingVideoRef.current) return; // nothing to do right now
       attempts += 1;
       try {
         const { data } = await api.get(`/conversations/${convId}/messages`);
         if (cancelled) return;
         setMessages(data);
       } catch {/* swallow */}
-      if (attempts < 60) setTimeout(tick, 5000);
     };
-    const t = setTimeout(tick, 5000);
-    return () => { cancelled = true; clearTimeout(t); };
-  }, [messages, convId]);
+    const id = setInterval(() => {
+      if (attempts >= 90) { clearInterval(id); return; } // 90 * 4s = 6 min
+      tick();
+    }, 4000);
+    return () => { cancelled = true; clearInterval(id); };
+  }, [convId]);
 
   // Shared staging logic — used by the paperclip picker, paste handler, and
   // drag-and-drop. Validates size + count, builds previews, and appends to

@@ -2107,7 +2107,8 @@ async def send_message(conv_id: str, body: SendMessageBody, u: dict = Depends(ge
             wants_video = False
         if wants_video:
             primary = responders[0]
-            video_msg = await _kick_off_video(conv_id, primary, body.text)
+            ar = parse_video_aspect_ratio(body.text)
+            video_msg = await _kick_off_video(conv_id, primary, body.text, ar)
             responders = []  # video reply is enough — no text
         else:
             try:
@@ -2234,7 +2235,8 @@ async def smart_start(team_id: str, body: SmartStartBody, u: dict = Depends(get_
     except Exception:
         wants_video = False
     if wants_video:
-        pending = await _kick_off_video(conv_id, chosen, body.text)
+        ar = parse_video_aspect_ratio(body.text)
+        pending = await _kick_off_video(conv_id, chosen, body.text, ar)
         return {
             "conversation": serialize_conv(conv_doc),
             "routed_agent_id": chosen,
@@ -2774,6 +2776,48 @@ async def regenerate_image(
     }
 
 # ── Video generation tool (Kie.ai Veo 3.1) ──────────────────────────────────
+_VIDEO_AR_RE = re.compile(
+    r"(?<!\d)(9\s*[:xX/]\s*16|16\s*[:xX/]\s*9|1\s*[:xX/]\s*1)(?!\d)"
+)
+
+def parse_video_aspect_ratio(text: str) -> str:
+    """Extract a Kie-compatible aspect ratio from the user's prompt.
+
+    Recognises explicit ratios (9:16, 16:9, 1:1) and natural-language hints
+    (portrait / vertical / reel / tiktok / story → 9:16; square → 1:1;
+    landscape / horizontal / youtube / widescreen / cinematic → 16:9). Falls
+    back to "16:9" when no signal is present. Kie.ai only accepts 16:9 and
+    9:16 today, so 1:1 collapses to 9:16 (closest square-ish crop) rather
+    than failing the request.
+    """
+    if not text:
+        return "16:9"
+    raw = text.lower()
+    m = _VIDEO_AR_RE.search(raw)
+    if m:
+        token = re.sub(r"\s+", "", m.group(1)).replace("x", ":").replace("X", ":").replace("/", ":")
+        if token == "9:16":
+            return "9:16"
+        if token == "16:9":
+            return "16:9"
+        if token == "1:1":
+            return "9:16"  # Kie doesn't support 1:1 for video; vertical is closer
+    # Natural-language portrait / vertical signals
+    vertical_kw = (
+        "portrait", "vertical", "9x16", "9 by 16", "tiktok", "tik tok",
+        "reel", "reels", "ig story", "instagram story", "ig stories",
+        "shorts", "youtube short", "youtube shorts", "snap", "mobile-first",
+    )
+    if any(k in raw for k in vertical_kw):
+        return "9:16"
+    horizontal_kw = (
+        "landscape", "horizontal", "widescreen", "wide screen", "cinematic",
+        "16x9", "16 by 9", "youtube video", "youtube clip", "youtube ad",
+    )
+    if any(k in raw for k in horizontal_kw):
+        return "16:9"
+    return "16:9"
+
 async def _poll_and_save_video(message_id: str, prompt: str, aspect_ratio: str = "16:9") -> None:
     """Background coroutine: call Kie.ai, then update the placeholder message.
 
