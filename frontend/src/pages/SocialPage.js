@@ -717,6 +717,7 @@ const LOGO_POSITIONS = [
 function PostCoverImage({ post, onUpdate }) {
   const [generating, setGenerating] = useState(false);
   const [reposing, setReposing] = useState("");
+  const [applyingLogo, setApplyingLogo] = useState(false);
   const [showPromptEditor, setShowPromptEditor] = useState(false);
   const [promptDraft, setPromptDraft] = useState(post.image_prompt || "");
 
@@ -749,6 +750,23 @@ function PostCoverImage({ post, onUpdate }) {
     } catch (err) {
       toast.error(err?.response?.data?.detail || "Reposition failed");
     } finally { setReposing(""); }
+  };
+
+  // Apply the org's current primary_logo to an existing image without re-
+  // generating (cheap PIL paste via reposition_logo at the current position).
+  // Surfaces when the image was generated BEFORE a primary_logo existed,
+  // so the user doesn't have to burn an LLM call to get their branding on it.
+  const applyLogo = async () => {
+    if (applyingLogo) return;
+    setApplyingLogo(true);
+    try {
+      const pos = post.logo_position || "bottom-right";
+      await api.patch(`/social/posts/${post.id}/logo-position?position=${encodeURIComponent(pos)}`);
+      toast.success("Logo applied");
+      onUpdate(post.id, { status: post.status });
+    } catch (err) {
+      toast.error(err?.response?.data?.detail || "Couldn't apply logo");
+    } finally { setApplyingLogo(false); }
   };
 
   if (!post.image) {
@@ -805,9 +823,17 @@ function PostCoverImage({ post, onUpdate }) {
         <img src={url} alt="" className="w-full max-h-96 object-contain bg-black/20"
              data-testid={`post-image-${post.id}`} />
         {!post.image.with_logo && (
-          <div className="absolute top-2 left-2 sp-glass-strong rounded-full px-2.5 py-1 text-[11px]">
-            No logo overlay — upload a primary logo on the Org page
-          </div>
+          <button
+            type="button"
+            onClick={applyLogo}
+            disabled={applyingLogo}
+            title="Re-composite the org's primary logo onto this image (no LLM call)"
+            className="absolute top-2 left-2 sp-glass-strong rounded-full px-2.5 py-1 text-[11px] flex items-center gap-1.5 hover:bg-white/20 transition disabled:opacity-50"
+            data-testid={`apply-logo-${post.id}`}
+          >
+            {applyingLogo ? <Loader2 className="w-3 h-3 animate-spin" /> : <ImageIcon className="w-3 h-3" />}
+            {post.image.raw_filename ? "Apply primary logo" : "Upload a primary logo on the Org page"}
+          </button>
         )}
         {/* Hover overlay: quick-access Edit prompt + Download directly on the image */}
         <div className="absolute top-2 right-2 flex items-center gap-1.5 opacity-0 group-hover/img:opacity-100 transition">

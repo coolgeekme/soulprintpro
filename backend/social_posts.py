@@ -618,7 +618,6 @@ def make_social_router(*, db, AGENTS, EMERGENT_LLM_KEY, LlmChat, UserMessage,
         await require_org_member(post["org_id"], u["id"])
         org = await db.organizations.find_one({"_id": _OID(post["org_id"])})
         override = (body.prompt or "").strip()
-        logger.info("generate-image post_id=%s override=%r", post_id, override[:60])
         # Fall back to the persisted image_prompt from a previous edit
         effective_prompt = override or (post.get("image_prompt") or "")
         img = await _generate_post_image(post, org or {}, effective_prompt)
