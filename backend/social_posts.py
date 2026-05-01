@@ -26,7 +26,7 @@ from datetime import datetime, timezone
 from typing import List, Literal, Optional
 
 from bson import ObjectId
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Body, Depends, HTTPException
 from pydantic import BaseModel, Field
 
 logger = logging.getLogger(__name__)
@@ -71,6 +71,17 @@ class SocialPostUpdateBody(BaseModel):
     status: Optional[Literal["draft", "queued", "published", "skipped"]] = None
     hashtags: Optional[List[str]] = None
     link_url: Optional[str] = None
+
+
+class GenerateImageBody(BaseModel):
+    """Body for POST /social/posts/{id}/generate-image.
+
+    Optional. If `prompt` is provided, replaces the default "post text" body
+    in the image prompt — so users can hand-author or tweak what the image
+    depicts without changing the post copy. The org's Soul + visual style
+    still get prepended automatically.
+    """
+    prompt: str = Field("", max_length=2000)
 
 
 # ── Serialization ───────────────────────────────────────────────────────────
@@ -307,15 +318,33 @@ def make_social_router(*, db, AGENTS, EMERGENT_LLM_KEY, LlmChat, UserMessage,
             logger.warning("Social image generation failed: %s", exc)
             return None
         # Composite the primary logo onto the freshly-generated image.
+        # We ALWAYS try to re-apply the logo on every (re)generation so users
+        # don't see naked images after editing their prompt. The only time
+        # with_logo=False is when the org has no primary logo uploaded OR
+        # the compose step raised an exception (logged below).
         primary = (ba.get("primary_logo") or {}) if ba else {}
         logo_filename = (primary or {}).get("filename") or ""
         with_logo = False
         final_filename = fname
-        if logo_filename and compose_logo_on_image:
+        if not logo_filename:
+            logger.info(
+                "Social image: org %s has no primary_logo — returning raw image",
+                org_doc.get("_id") if org_doc else "?",
+            )
+        elif compose_logo_on_image is None:
+            logger.warning("Social image: compose_logo_on_image helper missing — skipping overlay")
+        else:
             try:
                 base_path = _Path(upload_dir) / fname
                 logo_path = _Path(upload_dir) / logo_filename
-                if base_path.is_file() and logo_path.is_file():
+                if not base_path.is_file():
+                    logger.warning("Social image: base file %s missing on disk", base_path)
+                elif not logo_path.is_file():
+                    logger.warning(
+                        "Social image: logo file %s missing on disk (org has stale brand_assets?)",
+                        logo_path,
+                    )
+                else:
                     composed = compose_logo_on_image(
                         base_path, logo_path,
                         position=post.get("logo_position") or "bottom-right",
@@ -323,6 +352,10 @@ def make_social_router(*, db, AGENTS, EMERGENT_LLM_KEY, LlmChat, UserMessage,
                     )
                     final_filename = composed.name
                     with_logo = True
+                    logger.info(
+                        "Social image: composed logo onto %s → %s",
+                        fname, final_filename,
+                    )
             except Exception as exc:
                 logger.warning("Logo composite failed (using raw image): %s", exc)
         return {
@@ -564,17 +597,10 @@ def make_social_router(*, db, AGENTS, EMERGENT_LLM_KEY, LlmChat, UserMessage,
         doc["_id"] = res.inserted_id
         return serialize_social_post(doc)
 
-    class GenerateImageBody(BaseModel):
-        # Optional. If provided, replaces the default "post text" body in
-        # the image prompt — so users can hand-author or tweak what the
-        # image depicts without changing the post copy. The org's Soul +
-        # visual style still get prepended automatically.
-        prompt: str = Field("", max_length=2000)
-
     @r.post("/social/posts/{post_id}/generate-image")
     async def generate_post_image(
         post_id: str,
-        body: GenerateImageBody = GenerateImageBody(),
+        body: GenerateImageBody = Body(default_factory=GenerateImageBody),
         u: dict = Depends(get_current_user),
     ):
         """On-demand cover image generation. Optional `prompt` body lets
@@ -592,6 +618,7 @@ def make_social_router(*, db, AGENTS, EMERGENT_LLM_KEY, LlmChat, UserMessage,
         await require_org_member(post["org_id"], u["id"])
         org = await db.organizations.find_one({"_id": _OID(post["org_id"])})
         override = (body.prompt or "").strip()
+        logger.info("generate-image post_id=%s override=%r", post_id, override[:60])
         # Fall back to the persisted image_prompt from a previous edit
         effective_prompt = override or (post.get("image_prompt") or "")
         img = await _generate_post_image(post, org or {}, effective_prompt)

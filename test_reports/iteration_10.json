@@ -1,0 +1,37 @@
+{
+  "summary": "Verified the cover-image regen fixes end-to-end: (1) GenerateImageBody body-parsing regression FIXED — sending {prompt:'X'} now persists image_prompt='X' on the post (Pydantic ForwardRef bug from nested-class default is resolved by moving to module-level + Body(default_factory=...)); (2) Logo re-compositing works on EVERY generation path (first-time, regenerate-with-override, regenerate-empty-body) — composed-*.png files emitted with with_logo=True; (3) Frontend hover overlays (Pencil + Download) render top-right of post cover image with opacity 0→1 on hover, action-row Download button uses post.text slug filename (not UUID); (4) rehydrate_autopost_jobs no longer crashes on tz-naive datetimes — backend log shows 'Rehydrated 1 autopost jobs' clean. 7/7 backend pytest passing.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "Social Queue cover image", "issues": ["Posts created BEFORE the primary_logo was uploaded still show the 'No logo overlay — upload a primary logo on the Org page' hint badge even after the org now has a primary_logo. The new generate-image flow correctly composites the logo, but this badge only re-evaluates when the user clicks Regenerate. Consider auto-regenerating-or-only re-anchoring (cheap PIL paste via reposition_logo) when the image has raw_filename set and the org now has a primary_logo. Cosmetic / low priority."]}
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_social_image_logo.py",
+    "/app/test_reports/pytest/iter10_image_logo.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "social_posts.py line 76 GenerateImageBody is now module-level and line 603 uses Body(default_factory=GenerateImageBody) — both fixes verified; the prior ForwardRef PydanticUserError tracebacks in backend.err.log are stale (pre-fix) and no new occurrences after my test run.",
+    "social_posts.py _generate_post_image always re-composites primary_logo on every call (lines 320–360); INFO log 'Social image: composed logo onto X.jpg → composed-Y.png' confirms it for both empty-body and override-prompt paths in my test run.",
+    "social_posts.py line 628–629: image_prompt is only persisted when override is non-empty; empty-body regen falls back to post.image_prompt via line 623. Correct behaviour — verified by test_regenerate_empty_body_reuses_persisted_prompt.",
+    "social_autopost.py line 552–553 normalises tz-naive Mongo datetimes to UTC before subtracting from now() — backend log shows clean 'Rehydrated 1 autopost jobs' without offset-naive errors.",
+    "SocialPage.js PostCoverImage (line 802–836): hover overlay uses `group/img` + `group-hover/img:opacity-100` Tailwind variant — works correctly (opacity transitions 0→1 on hover, both Pencil + Download visible). Slug filename derived from post.text first 40 chars is sensible (line 798–801).",
+    "Existing UX gap (low pri): when an org uploads a primary_logo AFTER posts already exist with images, those old posts keep `with_logo=False` and show the 'No logo overlay' hint until the user manually clicks Regenerate. Could auto-recompose using the existing reposition_logo path (raw_filename on disk → cheap PIL paste, no LLM cost)."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_social_image_logo.py (new — 7 tests, all pass)"
+  ],
+  "success_rate": {"backend": "100% (7/7)", "frontend": "100% (overlays + slug download + editor open all verified)"},
+  "test_credentials": "Backend: TEST_imglogo_<uuid>@example.com fresh-registered + primary_logo uploaded inline. Frontend smoke: standing autopost-test-1777661963@example.com / testtest123 / org_id=69f4f8199304a5a0df27f750.",
+  "seed_data_creation": "Each backend run registers a fresh user, creates a TEST_LogoOrg, uploads a 128x128 PNG primary_logo, and drafts 1 post via /social/draft (LLM-backed, ~10s). Several composed-*.png files left under /app/backend/uploads from the 4 generate-image calls — keep for traceability or prune as part of routine cleanup.",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "The new test_social_image_logo.py registers a fresh user + uploads its OWN primary_logo each run, so it doesn't depend on the standing smoke account's logo state. Total runtime ~2.5 min (LLM calls dominate). On LLM budget exhaustion, tests gracefully pytest.skip rather than fail — re-run when budget refills if any skips appear. Do NOT need to retest autopost scheduling — that was fully covered in iteration_9 with no regressions and this iteration only touched the generate-image + image-overlay paths.",
+  "rca of the issue": "Original bug RCA: GenerateImageBody was defined as a nested class inside the registration function and the endpoint used `body: GenerateImageBody = GenerateImageBody()` as default. Pydantic resolved this annotation as ForwardRef('GenerateImageBody') in the FastAPI dependency-injection layer, but the inner class wasn't visible at the point of resolution → TypeAdapter failed with 'not fully defined' OR (worse) silently bound an empty default, dropping the JSON body. Fix: hoist GenerateImageBody to module scope (line 76) + use FastAPI's Body(default_factory=GenerateImageBody) so default is constructed lazily by the framework. Verified by test_custom_prompt_persists_image_prompt — image_prompt now correctly round-trips."
+}

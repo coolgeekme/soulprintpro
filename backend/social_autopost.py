@@ -547,6 +547,10 @@ async def rehydrate_autopost_jobs(*, db, router) -> int:
         when = post.get("scheduled_for")
         if not when:
             continue
+        # Mongo returns naive datetimes — normalise to UTC so the subtraction
+        # below doesn't raise.
+        if isinstance(when, datetime) and when.tzinfo is None:
+            when = when.replace(tzinfo=timezone.utc)
         # Missed by > 1 hour? Mark as failed so the UI surfaces it.
         if isinstance(when, datetime) and (now - when).total_seconds() > 3600:
             await db.social_posts.update_one(
