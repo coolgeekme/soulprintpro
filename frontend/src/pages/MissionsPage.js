@@ -297,6 +297,24 @@ function MissionDetail({ orgId, missionId }) {
     }
   };
 
+  // Continue a finished/cancelled/failed mission with new instructions.
+  // Most common use: "go deeper, browse each app's site and add pricing."
+  const [continueOpen, setContinueOpen] = useState(false);
+  const [continueText, setContinueText] = useState("");
+  const [continueBusy, setContinueBusy] = useState(false);
+  const continueRun = async () => {
+    setContinueBusy(true);
+    try {
+      await api.post(`/missions/${missionId}/continue`, { instructions: continueText.trim() });
+      setContinueText("");
+      setContinueOpen(false);
+      toast.success("Picking up where the mission left off…");
+      await load();
+    } catch (err) {
+      toast.error(err?.response?.data?.detail || "Continue failed");
+    } finally { setContinueBusy(false); }
+  };
+
   const sendAnswer = async () => {
     const a = answer.trim();
     if (!a) return;
@@ -346,6 +364,11 @@ function MissionDetail({ orgId, missionId }) {
               {isLive && (
                 <button onClick={cancel} className="sp-btn sp-btn-ghost text-xs" data-testid="mission-cancel-btn">
                   <X className="w-3.5 h-3.5" /> Cancel
+                </button>
+              )}
+              {!isLive && mission?.status && ["finished", "cancelled", "failed"].includes(mission.status) && (
+                <button onClick={() => setContinueOpen(true)} className="sp-btn sp-btn-primary text-xs" data-testid="mission-continue-btn" title="Run again with more direction">
+                  <Play className="w-3.5 h-3.5" /> Continue
                 </button>
               )}
               <button onClick={remove} className="sp-btn sp-btn-ghost text-xs hover:!text-red-300" data-testid="mission-delete-btn" title="Delete this mission">
@@ -434,6 +457,42 @@ function MissionDetail({ orgId, missionId }) {
             <div className="sp-subtle text-center py-4">Thinking…</div>
           ) : events.map((e) => <EventRow key={e.id} e={e} />)}
         </div>
+
+        {continueOpen && (
+          <div
+            className="fixed inset-0 z-40 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm"
+            onClick={() => !continueBusy && setContinueOpen(false)}
+            data-testid="mission-continue-dialog"
+          >
+            <div className="sp-glass-strong rounded-2xl w-full max-w-lg p-6 sp-fade-up" onClick={(e) => e.stopPropagation()}>
+              <div className="flex items-center justify-between mb-4">
+                <div>
+                  <h3 className="sp-display text-2xl">Continue the mission</h3>
+                  <div className="text-xs sp-subtle mt-1">Tell the agent how to deepen, refine, or extend this run. The original work log is preserved.</div>
+                </div>
+                <button onClick={() => setContinueOpen(false)} className="text-white/60 hover:text-white"><X className="w-4 h-4" /></button>
+              </div>
+              <textarea
+                value={continueText}
+                onChange={(e) => setContinueText(e.target.value)}
+                rows={4}
+                disabled={continueBusy}
+                placeholder={`Examples:\n• Use browse_url on each of the 5 apps' websites and add real pricing.\n• Add a comparison table with feature checkmarks.\n• Generate a hero image for the brief.`}
+                className="w-full sp-glass rounded-xl px-3 py-2 text-sm focus:outline-none resize-none"
+                style={{ background: "var(--input-bg)", color: "var(--fg)" }}
+                data-testid="mission-continue-input"
+                onKeyDown={(e) => { if ((e.ctrlKey || e.metaKey) && e.key === "Enter") continueRun(); }}
+              />
+              <div className="flex justify-end gap-2 mt-4">
+                <button onClick={() => setContinueOpen(false)} disabled={continueBusy} className="sp-btn sp-btn-ghost text-xs">Cancel</button>
+                <button onClick={continueRun} disabled={continueBusy} className="sp-btn sp-btn-primary text-xs disabled:opacity-50" data-testid="mission-continue-submit">
+                  {continueBusy ? <><Loader2 className="w-3.5 h-3.5 animate-spin" /> Continuing…</> : <><Play className="w-3.5 h-3.5" /> Continue</>}
+                </button>
+              </div>
+              <div className="text-[10px] sp-subtle mt-2 text-right">⌘/Ctrl + Enter to submit</div>
+            </div>
+          </div>
+        )}
       </main>
     </div>
   );

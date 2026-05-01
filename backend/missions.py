@@ -227,13 +227,31 @@ async def run_mission_loop(
             history = await db.mission_events.find(
                 {"mission_id": mission_id}
             ).sort("ts", 1).to_list(MAX_EVENTS_IN_CONTEXT)
-            # Loop-detection: if the last 4 tool calls have all been
-            # web_search (i.e. we're spinning on retries), prepend a hard
-            # nudge so the LLM stops repeating itself.
-            recent_calls = [e for e in history if e.get("kind") == "tool_call"][-4:]
+            # Loop-detection: catch any tool getting hammered with the same
+            # args over and over (LLMs frequently spin on browse_url or
+            # web_search). If the last 3 tool calls are identical (same
+            # tool, same args), inject a hard stop on the next turn.
+            recent_calls = [e for e in history if e.get("kind") == "tool_call"][-3:]
+            spinning_on_call = False
+            spinning_tool = ""
+            if len(recent_calls) >= 3:
+                first = recent_calls[0]
+                if all(
+                    c.get("tool") == first.get("tool")
+                    and json.dumps(c.get("args") or {}, sort_keys=True)
+                        == json.dumps(first.get("args") or {}, sort_keys=True)
+                    for c in recent_calls[1:]
+                ):
+                    spinning_on_call = True
+                    spinning_tool = first.get("tool", "")
+            # Original web_search-specific check (gentler, kept for cases
+            # where the agent retries with slightly different queries — we
+            # want to escalate once it's clearly fruitless).
+            web_calls = [e for e in history if e.get("kind") == "tool_call"
+                         and e.get("tool") == "web_search"][-4:]
             spinning_on_search = (
-                len(recent_calls) >= 4
-                and all(c.get("tool") == "web_search" for c in recent_calls)
+                len(web_calls) >= 4 and all(c.get("tool") == "web_search"
+                                            for c in web_calls)
             )
             memory_lines: List[str] = []
             for e in history[-MAX_EVENTS_IN_CONTEXT:]:
@@ -253,6 +271,15 @@ async def run_mission_loop(
             user_turn = (
                 f"MISSION GOAL:\n{mission['goal']}\n\n"
                 f"WORK LOG (most-recent last):\n" + ("\n".join(memory_lines) or "(empty)")
+                + (
+                    f"\n\nIMPORTANT: You just called {spinning_tool} 3 times "
+                    "in a row with IDENTICAL arguments. The result is the "
+                    "same each time — re-calling won't change it. STOP "
+                    "repeating. Use the data you already have to call "
+                    "write_artifact, or move on to a different tool / URL, "
+                    "or call finish."
+                    if spinning_on_call else ""
+                )
                 + (
                     "\n\nIMPORTANT: You have already called web_search 4 times "
                     "in a row with no useful results. STOP retrying. Either "
@@ -600,6 +627,32 @@ def build_tools(
         url = (args.get("url") or "").strip()
         if not url:
             return {"error": "url is required"}
+        # Per-mission cache: if the same URL has already been fetched in
+        # this mission's recent events, return the cached result with a
+        # nudge so the LLM stops re-calling. Saves Playwright cycles AND
+        # helps the loop-detector kick in faster.
+        try:
+            mid = ctx.get("mission_id", "")
+            if mid:
+                prev_cur = db.mission_events.find(
+                    {"mission_id": mid, "kind": "tool_result", "tool": "browse_url"},
+                    {"_id": 0, "result_preview": 1, "args": 1},
+                ).sort("ts", -1).limit(20)
+                async for prev in prev_cur:
+                    prev_url = ""
+                    # We don't store args on tool_result, so peek at the
+                    # paired tool_call. Cheap heuristic: look for matching
+                    # URL substring in the result_preview.
+                    if url in (prev.get("result_preview") or ""):
+                        return {
+                            "cached": True,
+                            "note": ("You already browsed this URL earlier "
+                                     "in this mission. Use the prior text "
+                                     "to write an artifact or move on."),
+                            "url": url,
+                        }
+        except Exception:
+            pass
         # Off-load to the browser_tools module — handles SSRF, JS render,
         # screenshot, text cleanup, and 30s timeout.
         result = await _browse_url(url, take_screenshot=True, upload_dir=UPLOAD_DIR)
@@ -834,6 +887,61 @@ def make_missions_router(
             {"$set": {"status": "running", "question": ""}},
         )
 
+        tools = build_tools_factory()
+        ctx = {
+            "org_id": m["org_id"],
+            "mission_id": mission_id,
+            "lead_agent_id": m.get("lead_agent_id"),
+            "lead_agent_name": m.get("lead_agent_name"),
+            "created_by": u["id"],
+        }
+        fresh = await db.missions.find_one({"id": mission_id})
+        task = asyncio.create_task(run_mission_loop(
+            db=db, mission=fresh, tools=tools, ctx=ctx,
+            LlmChat=LlmChat, UserMessage=UserMessage,
+            EMERGENT_LLM_KEY=EMERGENT_LLM_KEY,
+            build_lead_system_prompt=build_lead_system_prompt,
+        ))
+        _RUNNING[mission_id] = task
+        return {"ok": True}
+
+    class ContinueBody(BaseModel):
+        instructions: str = Field("", max_length=2000)
+
+    @r.post("/missions/{mission_id}/continue")
+    async def continue_mission(mission_id: str, body: ContinueBody,
+                               u: dict = Depends(get_current_user)):
+        """Resume a *finished* mission with new instructions. The original
+        work log is preserved (so the agent has context); the new
+        instructions are appended as a system event and the loop kicks back
+        on. Useful when the agent finished too shallowly and you want to
+        say 'go deeper — browse each app's site and add pricing details'.
+        """
+        m = await db.missions.find_one({"id": mission_id})
+        if not m:
+            raise HTTPException(404, "Mission not found")
+        await require_org_member(m["org_id"], u["id"])
+        if m.get("status") not in {"finished", "cancelled", "failed"}:
+            raise HTTPException(400, "Mission is still running — wait or cancel first.")
+
+        more = (body.instructions or "").strip() or "Continue and add more depth to the existing deliverable."
+        await _append_event(db, mission_id, kind="system",
+                            text=f"User asked to continue: {more[:400]}",
+                            iteration=m.get("iteration_count", 0))
+        # Reset status + finish marker, but keep the iteration counter so
+        # the cap still applies in aggregate (we don't want infinite-resume
+        # loops eating budget).
+        await db.missions.update_one(
+            {"id": mission_id},
+            {"$set": {
+                "status": "running",
+                "summary": "",
+                "finished_at": None,
+                "error": "",
+                "question": "",
+                "goal": m["goal"] + f"\n\n[Continuation request: {more[:400]}]",
+            }},
+        )
         tools = build_tools_factory()
         ctx = {
             "org_id": m["org_id"],
