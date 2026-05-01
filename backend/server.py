@@ -2137,6 +2137,9 @@ async def send_message(conv_id: str, body: SendMessageBody, u: dict = Depends(ge
                         "media_type": "image",
                         "media_filename": fname,
                         "media_url": f"/api/files/{fname}",
+                        "media_prompt": body.text,
+                        "media_system": sys_msg,
+                        "media_model": "nano-banana",
                         "timestamp": datetime.now(timezone.utc),
                     }
                     await db.messages.insert_one({**image_msg})
@@ -2266,6 +2269,9 @@ async def smart_start(team_id: str, body: SmartStartBody, u: dict = Depends(get_
                 "media_type": "image",
                 "media_filename": fname,
                 "media_url": f"/api/files/{fname}",
+                "media_prompt": body.text,
+                "media_system": sys_msg,
+                "media_model": "nano-banana",
                 "timestamp": datetime.now(timezone.utc),
             }
             await db.messages.insert_one({**agent_msg})
@@ -2451,6 +2457,75 @@ async def remove_conv_agent(conv_id: str, agent_id: str, u: dict = Depends(get_c
 
 # ── Image generation tool (Nano Banana via Emergent LLM key) ─────────────────
 NANO_BANANA_MODEL = "gemini-3.1-flash-image-preview"
+OPENAI_IMAGE_MODEL = "gpt-image-1"
+
+
+async def generate_image_via_openai(
+    prompt: str,
+    system_message: str = "",
+) -> tuple[str, str]:
+    """Text-to-image via OpenAI GPT Image 1. Returns (filename, caption).
+
+    OpenAI's image endpoint doesn't take a separate system message — we fold
+    it into the prompt so the model still honours brand/Soul direction.
+    Image-to-image editing isn't supported here (Nano Banana covers that).
+    """
+    from emergentintegrations.llm.openai.image_generation import OpenAIImageGeneration
+    gen = OpenAIImageGeneration(api_key=EMERGENT_LLM_KEY)
+    full_prompt = prompt
+    if system_message:
+        full_prompt = f"{system_message.strip()}\n\n{prompt.strip()}"
+    images = await gen.generate_images(
+        prompt=full_prompt[:3800],
+        model=OPENAI_IMAGE_MODEL,
+        number_of_images=1,
+    )
+    if not images:
+        raise RuntimeError("No image returned by OpenAI")
+    img_bytes = images[0]
+    filename = f"{uuid.uuid4().hex}.png"
+    (UPLOAD_DIR / filename).write_bytes(img_bytes)
+    return filename, ""
+
+
+async def generate_image_for(
+    prompt: str, system_message: str, *,
+    model: str = "nano-banana",
+    input_image_paths: Optional[List[Path]] = None,
+) -> tuple[str, str, str]:
+    """Single entry-point that dispatches to Nano Banana or GPT Image 1.
+
+    Returns `(filename, caption, model_used)`. Falls back to Nano Banana if
+    OpenAI image gen fails for any reason (budget, API outage, etc.) so the
+    user always gets *something* instead of an error page.
+    """
+    m = (model or "nano-banana").strip().lower().replace("_", "-")
+    # Normalise alternative spellings
+    if m in {"openai", "gpt-image", "gpt-image-1", "openai-image"}:
+        m = "gpt-image-1"
+    elif m in {"gemini", "gemini-image", "nano-banana", "nano"}:
+        m = "nano-banana"
+    else:
+        m = "nano-banana"
+
+    # GPT Image 1 can't take source images — if the caller passed inputs,
+    # silently route through Nano Banana which handles image editing.
+    if m == "gpt-image-1" and input_image_paths:
+        m = "nano-banana"
+
+    if m == "gpt-image-1":
+        try:
+            fname, caption = await generate_image_via_openai(prompt, system_message)
+            return fname, caption, "gpt-image-1"
+        except Exception as exc:
+            logger.warning("OpenAI image gen failed, falling back to Nano Banana: %s", exc)
+            m = "nano-banana"
+
+    fname, caption = await generate_image_via_nano_banana(
+        prompt, system_message, input_image_paths=input_image_paths,
+    )
+    return fname, caption, "nano-banana"
+
 
 async def generate_image_via_nano_banana(
     prompt: str,
@@ -2594,12 +2669,103 @@ async def generate_image(conv_id: str, body: GenerateImageBody, u: dict = Depend
         "media_type": "image",
         "media_filename": filename,
         "media_url": f"/api/files/{filename}",
+        "media_prompt": body.prompt,
+        "media_system": system_msg,
+        "media_model": "nano-banana",
         "timestamp": datetime.now(timezone.utc),
     }
     await db.messages.insert_one({**agent_msg})
     return {
         "user_message": {k: v for k, v in user_msg.items() if k != "_id"},
         "agent_message": {k: v for k, v in agent_msg.items() if k != "_id"},
+        "ok": True,
+    }
+
+
+class RegenerateImageBody(BaseModel):
+    prompt: Optional[str] = None       # if blank, reuse the original prompt
+    model: Optional[str] = None        # "nano-banana" (default) | "gpt-image-1"
+
+
+@conv_r.post("/conversations/{conv_id}/messages/{msg_id}/regenerate-image")
+async def regenerate_image(
+    conv_id: str, msg_id: str,
+    body: RegenerateImageBody,
+    u: dict = Depends(get_current_user),
+):
+    """Produce a new variant of an existing image message.
+
+    - Reuses the original message's saved `media_prompt` / `media_system`
+      unless the caller overrides them (body.prompt).
+    - `body.model` lets the user pick between Nano Banana (Gemini, default)
+      and GPT Image 1 (OpenAI). Silently falls back to Nano Banana if the
+      requested model fails.
+    - Posts a NEW agent message with the regenerated image so the original
+      stays visible for A/B comparison.
+    """
+    conv = await load_conv_or_403(conv_id, u["id"])
+    orig = await db.messages.find_one({"id": msg_id, "conversation_id": conv_id})
+    if not orig:
+        raise HTTPException(404, "Source image message not found")
+    if orig.get("media_type") != "image":
+        raise HTTPException(400, "Only image messages can be regenerated")
+
+    agent_id = orig.get("agent_id") or (conv.get("agent_ids") or [None])[0]
+    if not agent_id or agent_id not in AGENTS:
+        raise HTTPException(400, "Could not resolve the agent for this image")
+
+    new_prompt = (body.prompt or "").strip() or (orig.get("media_prompt") or "").strip()
+    if not new_prompt:
+        # Older messages pre-dating the media_prompt field — fall back to
+        # the agent's text caption so we don't regenerate from nothing.
+        new_prompt = (orig.get("text") or "").strip()
+    if not new_prompt:
+        raise HTTPException(422, "No prompt to regenerate from — please type one")
+
+    # Rebuild a system message if we don't have the saved one
+    system_msg = orig.get("media_system") or ""
+    if not system_msg:
+        team = await db.teams.find_one({"_id": ObjectId(conv["team_id"])})
+        sp = (team or {}).get("soulprint") or {}
+        sp_lines = [f"{k.capitalize()}: {sp[k]}"
+                    for k in ("mission", "tone", "audience", "values") if sp.get(k)]
+        system_msg = (
+            f"You are {AGENTS[agent_id]['name']}, generating an image on behalf of "
+            f"the team. Honor the team's voice and aesthetics. Render any text "
+            f"crisply." + (("\n" + "\n".join(sp_lines)) if sp_lines else "")
+        )
+
+    try:
+        fname, caption, used_model = await generate_image_for(
+            new_prompt, system_msg, model=(body.model or "nano-banana"),
+        )
+    except Exception as exc:
+        logger.exception("Image regeneration failed: %s", exc)
+        raise HTTPException(502, f"Couldn't regenerate the image: {exc}") from exc
+
+    edit_note = "edit" if body.prompt and body.prompt.strip() != (orig.get("media_prompt") or "").strip() else "variant"
+    new_msg = {
+        "id": str(uuid.uuid4()),
+        "conversation_id": conv_id,
+        "sender_type": "agent",
+        "sender_id": agent_id,
+        "sender_name": AGENTS[agent_id]["name"],
+        "agent_id": agent_id,
+        "text": (caption or f"Here's a fresh {edit_note}.").strip(),
+        "media_type": "image",
+        "media_filename": fname,
+        "media_url": f"/api/files/{fname}",
+        "media_prompt": new_prompt,
+        "media_system": system_msg,
+        "media_model": used_model,
+        "regenerated_from": msg_id,
+        "intent": "image_regenerate",
+        "timestamp": datetime.now(timezone.utc),
+    }
+    await db.messages.insert_one({**new_msg})
+    return {
+        "agent_message": {k: v for k, v in new_msg.items() if k != "_id"},
+        "model_used": used_model,
         "ok": True,
     }
 

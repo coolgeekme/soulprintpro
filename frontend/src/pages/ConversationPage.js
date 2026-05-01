@@ -4,7 +4,7 @@ import api, { BACKEND_URL } from "../lib/api";
 import TopBar from "../components/TopBar";
 import { toast } from "sonner";
 import { useAuth } from "../context/AuthContext";
-import { Send, Trash2, AtSign, Users, Repeat, Search, X, Lock, Film, Globe, ArrowUp, ArrowDown, UserPlus, Paperclip, FileText, File as FileIcon, Download, CornerDownRight, Megaphone } from "lucide-react";
+import { Send, Trash2, AtSign, Users, Repeat, Search, X, Lock, Film, Globe, ArrowUp, ArrowDown, UserPlus, Paperclip, FileText, File as FileIcon, Download, CornerDownRight, Megaphone, Pencil, Sparkles, Loader2 } from "lucide-react";
 import LinkPreviewCard from "../components/LinkPreviewCard";
 
 const formatTime = (ts) => {
@@ -22,6 +22,9 @@ export default function ConversationPage() {
   const [messages, setMessages] = useState([]);
   const [text, setText] = useState("");
   const [sending, setSending] = useState(false);
+  // Image regeneration dialog — opened when the user clicks "Edit prompt"
+  // on any agent-generated image. Shape: {messageId, prompt, lastModel}.
+  const [editingImage, setEditingImage] = useState(null);
   const [loading, setLoading] = useState(true);
   const [showMentions, setShowMentions] = useState(false);
   const scrollerRef = useRef(null);
@@ -844,7 +847,7 @@ export default function ConversationPage() {
                     </div>
                   )}
                   {m.media_type === "image" && m.media_url && (
-                    <div className="mt-3 relative group/media" data-testid={`message-image-${m.id}`}>
+                    <div className="mt-3" data-testid={`message-image-${m.id}`}>
                       <a
                         href={m.media_url.startsWith("http") ? m.media_url : `${BACKEND_URL}${m.media_url}`}
                         target="_blank" rel="noreferrer"
@@ -858,15 +861,38 @@ export default function ConversationPage() {
                           loading="lazy"
                         />
                       </a>
-                      <a
-                        href={m.media_url.startsWith("http") ? m.media_url : `${BACKEND_URL}${m.media_url}`}
-                        download
-                        className="absolute top-2 right-2 sp-glass-strong rounded-full p-2 opacity-0 group-hover/media:opacity-100 hover:scale-105 transition shadow-lg"
-                        data-testid={`download-image-${m.id}`}
-                        title="Download image"
-                      >
-                        <Download className="w-3.5 h-3.5" />
-                      </a>
+                      {/* Always-visible toolbar — no more hidden-on-hover
+                          UX that disappears on mobile. Download saves the
+                          file to disk; Edit opens the regenerate dialog. */}
+                      <div className="mt-2 flex items-center gap-1.5 flex-wrap">
+                        <a
+                          href={m.media_url.startsWith("http") ? m.media_url : `${BACKEND_URL}${m.media_url}`}
+                          download={m.media_filename || undefined}
+                          className="sp-btn sp-btn-ghost text-[11px]"
+                          data-testid={`download-image-${m.id}`}
+                          title="Download image"
+                        >
+                          <Download className="w-3 h-3" /> Download
+                        </a>
+                        <button
+                          type="button"
+                          onClick={() => setEditingImage({
+                            messageId: m.id,
+                            prompt: m.media_prompt || m.text || "",
+                            lastModel: m.media_model || "nano-banana",
+                          })}
+                          className="sp-btn sp-btn-ghost text-[11px]"
+                          data-testid={`edit-image-${m.id}`}
+                          title="Edit prompt & regenerate"
+                        >
+                          <Pencil className="w-3 h-3" /> Edit prompt
+                        </button>
+                        {m.media_model && (
+                          <span className="sp-chip text-[10px] opacity-80">
+                            {m.media_model === "gpt-image-1" ? "GPT Image 1" : "Nano Banana"}
+                          </span>
+                        )}
+                      </div>
                     </div>
                   )}
                   {m.media_type === "video" && m.media_status === "pending" && (
@@ -1268,6 +1294,147 @@ export default function ConversationPage() {
           </div>
         </div>
       )}
+      {editingImage && (
+        <RegenerateImageDialog
+          editingImage={editingImage}
+          convId={convId}
+          onClose={() => setEditingImage(null)}
+          onDone={(newMsg) => {
+            setEditingImage(null);
+            if (newMsg) setMessages((prev) => [...prev, newMsg]);
+          }}
+        />
+      )}
+    </div>
+  );
+}
+
+// ── Regenerate-image dialog ────────────────────────────────────────────────
+// Lets the user edit the original image prompt and pick a model (Nano
+// Banana / GPT Image 1). Calls POST /conversations/{cid}/messages/{mid}/
+// regenerate-image which always posts a NEW agent message (the original
+// stays visible for A/B compare).
+function RegenerateImageDialog({ editingImage, convId, onClose, onDone }) {
+  const [prompt, setPrompt] = useState(editingImage.prompt || "");
+  const [model, setModel] = useState(editingImage.lastModel || "nano-banana");
+  const [busy, setBusy] = useState(false);
+  const taRef = useRef(null);
+  useEffect(() => { taRef.current?.focus(); }, []);
+
+  const canSubmit = !!prompt.trim() && !busy;
+  const submit = async () => {
+    if (!canSubmit) return;
+    setBusy(true);
+    try {
+      const { data } = await api.post(
+        `/conversations/${convId}/messages/${editingImage.messageId}/regenerate-image`,
+        { prompt: prompt.trim(), model },
+      );
+      const newMsg = data?.agent_message;
+      if (newMsg) {
+        toast.success(`New image generated (${data.model_used === "gpt-image-1" ? "GPT Image 1" : "Nano Banana"})`);
+        onDone(newMsg);
+      } else {
+        toast.error("Image generated but not returned — refresh to see it");
+        onClose();
+      }
+    } catch (err) {
+      toast.error(err?.response?.data?.detail || "Regeneration failed");
+    } finally { setBusy(false); }
+  };
+
+  return (
+    <div
+      className="fixed inset-0 z-40 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm"
+      onClick={onClose}
+      data-testid="regenerate-image-modal"
+    >
+      <div
+        className="sp-glass-strong rounded-2xl w-full max-w-xl p-6 sp-fade-up"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="flex items-center justify-between mb-4">
+          <div className="min-w-0">
+            <h3 className="sp-display text-2xl">Edit prompt & regenerate</h3>
+            <div className="text-xs sp-subtle mt-1">
+              Tweak the prompt, pick a model, and we'll generate a new variant. Your original image stays above for comparison.
+            </div>
+          </div>
+          <button onClick={onClose} className="text-white/60 hover:text-white p-1">
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+
+        <label className="text-[10px] uppercase tracking-widest sp-subtle">Prompt</label>
+        <textarea
+          ref={taRef}
+          value={prompt}
+          onChange={(e) => setPrompt(e.target.value)}
+          rows={5}
+          disabled={busy}
+          className="w-full sp-glass rounded-xl px-3 py-2 text-sm mt-1 mb-4 focus:outline-none resize-none"
+          style={{ background: "var(--input-bg)", color: "var(--fg)" }}
+          placeholder="Describe the image you want…"
+          data-testid="regenerate-prompt-input"
+          onKeyDown={(e) => {
+            if ((e.ctrlKey || e.metaKey) && e.key === "Enter") submit();
+          }}
+        />
+
+        <label className="text-[10px] uppercase tracking-widest sp-subtle">Image model</label>
+        <div className="grid grid-cols-2 gap-2 mt-1 mb-5">
+          <button
+            type="button"
+            onClick={() => setModel("nano-banana")}
+            disabled={busy}
+            className={`sp-glass rounded-xl p-3 text-left transition ${model === "nano-banana" ? "!border-orange-400/50 !bg-white/[0.08]" : ""}`}
+            data-testid="regenerate-model-nano"
+          >
+            <div className="flex items-center gap-2 mb-0.5">
+              <Sparkles className="w-3.5 h-3.5" />
+              <div className="text-sm font-medium">Nano Banana</div>
+            </div>
+            <div className="text-[11px] sp-subtle leading-snug">
+              Gemini. Photorealistic, fast, great at edits. Default.
+            </div>
+          </button>
+          <button
+            type="button"
+            onClick={() => setModel("gpt-image-1")}
+            disabled={busy}
+            className={`sp-glass rounded-xl p-3 text-left transition ${model === "gpt-image-1" ? "!border-emerald-400/50 !bg-white/[0.08]" : ""}`}
+            data-testid="regenerate-model-gpt"
+          >
+            <div className="flex items-center gap-2 mb-0.5">
+              <Sparkles className="w-3.5 h-3.5" />
+              <div className="text-sm font-medium">GPT Image 1</div>
+            </div>
+            <div className="text-[11px] sp-subtle leading-snug">
+              OpenAI. Crisp typography, polished illustration, slower.
+            </div>
+          </button>
+        </div>
+
+        <div className="flex items-center justify-end gap-2">
+          <button
+            onClick={onClose}
+            disabled={busy}
+            className="sp-btn sp-btn-ghost text-xs"
+            data-testid="regenerate-cancel"
+          >Cancel</button>
+          <button
+            onClick={submit}
+            disabled={!canSubmit}
+            className="sp-btn sp-btn-primary text-xs disabled:opacity-50"
+            data-testid="regenerate-submit"
+          >
+            {busy
+              ? <><Loader2 className="w-3.5 h-3.5 animate-spin" /> Generating…</>
+              : <><Sparkles className="w-3.5 h-3.5" /> Regenerate</>}
+          </button>
+        </div>
+        <div className="text-[10px] sp-subtle mt-3 text-right">⌘/Ctrl + Enter to submit</div>
+      </div>
     </div>
   );
 }
