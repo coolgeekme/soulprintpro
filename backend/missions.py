@@ -1203,7 +1203,7 @@ def make_missions_router(
                 "agent_id": lead,
                 "kind": "mission_card",
                 "mission_id": mission["id"],
-                "text": f"🚀 Mission started: {mission['goal'][:200]}",
+                "text": f"🚀 Mission started: {body.goal.strip()[:200]}",
                 "timestamp": now,
             }
             await db.messages.insert_one({**card_msg})

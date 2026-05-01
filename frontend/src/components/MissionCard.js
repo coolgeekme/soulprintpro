@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from "react";
-import api, { BACKEND_URL } from "../lib/api";
+import api, { BACKEND_URL, displayMissionGoal } from "../lib/api";
 import { Link } from "react-router-dom";
 import {
   Loader2, Rocket, Check, AlertTriangle, ChevronDown, ChevronUp,
@@ -124,7 +124,7 @@ export function MissionCard({ orgId, missionId }) {
           </div>
           <div className="text-sm font-medium leading-snug" data-testid={`mission-card-goal-${missionId}`}>
             <Rocket className="w-3.5 h-3.5 inline mr-1.5 -mt-0.5 opacity-70" />
-            {mission.goal}
+            {displayMissionGoal(mission.goal)}
           </div>
           {isLive && lastEventLabel && (
             <div className="text-xs sp-subtle mt-1.5 flex items-center gap-1.5"

@@ -24,6 +24,16 @@ export const setCachedLocation = (loc) => {
   } catch {/* ignore */}
 };
 
+/** Strip internal [SYSTEM CONTEXT — DO NOT IGNORE] coaching blocks that the
+ * backend appends to mission goals for social-posting intent. Users see
+ * only the ask they actually typed — the coaching stays in the LLM's prompt.
+ */
+export const displayMissionGoal = (goal) => {
+  if (!goal) return "";
+  const idx = goal.indexOf("\n\n[SYSTEM CONTEXT");
+  return idx === -1 ? goal : goal.slice(0, idx).trim();
+};
+
 /** Resolve (and cache) a friendly "City, Country" string from the browser's
  * geolocation API. Resolves to "" silently if denied/unavailable. */
 export const captureUserLocation = () => new Promise((resolve) => {

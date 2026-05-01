@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { useParams, Link, useNavigate } from "react-router-dom";
-import api, { BACKEND_URL } from "../lib/api";
+import api, { BACKEND_URL, displayMissionGoal } from "../lib/api";
 import TopBar from "../components/TopBar";
 import { toast } from "sonner";
 import {
@@ -145,7 +145,7 @@ function MissionList({ orgId }) {
                           <span className={`sp-chip text-[10px] ${s.cls}`}>{s.label}</span>
                           <span className="text-[10px] sp-subtle">{m.iteration_count || 0} steps</span>
                         </div>
-                        <div className="text-sm font-medium line-clamp-2">{m.goal}</div>
+                        <div className="text-sm font-medium line-clamp-2">{displayMissionGoal(m.goal)}</div>
                         <div className="text-[11px] sp-subtle mt-1 truncate">
                           {m.lead_agent_name || "Lead"} · {relTime(m.started_at)}
                           {m.artifacts?.length ? ` · ${m.artifacts.length} artifact${m.artifacts.length === 1 ? "" : "s"}` : ""}
@@ -381,7 +381,7 @@ function MissionDetail({ orgId, missionId }) {
                     {mission.lead_agent_name} · {mission.iteration_count || 0}/{25} steps
                   </span>
                 </div>
-                <div className="text-base font-medium leading-snug">{mission.goal}</div>
+                <div className="text-base font-medium leading-snug">{displayMissionGoal(mission.goal)}</div>
                 {mission.conversation_id && (
                   <ConvBacklink convId={mission.conversation_id} />
                 )}
