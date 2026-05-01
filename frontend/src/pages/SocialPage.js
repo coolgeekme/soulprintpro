@@ -793,16 +793,46 @@ function PostCoverImage({ post, onUpdate }) {
   }
 
   const url = post.image.url?.startsWith("http") ? post.image.url : `${BACKEND_URL}${post.image.url}`;
+  // Pick a sensible filename for the download so users don't get
+  // "84f2..jpeg" — use the post's first 40 chars of text as a slug.
+  const slug = (post.text || "social-cover")
+    .toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 40) || "social-cover";
+  const ext = (post.image.filename || "").split(".").pop() || "png";
+  const downloadName = `${slug}.${ext}`;
   return (
     <div className="space-y-2 mt-2">
       <div className="relative rounded-xl overflow-hidden border border-white/10 group/img">
         <img src={url} alt="" className="w-full max-h-96 object-contain bg-black/20"
              data-testid={`post-image-${post.id}`} />
         {!post.image.with_logo && (
-          <div className="absolute top-2 right-2 sp-glass-strong rounded-full px-2.5 py-1 text-[11px]">
+          <div className="absolute top-2 left-2 sp-glass-strong rounded-full px-2.5 py-1 text-[11px]">
             No logo overlay — upload a primary logo on the Org page
           </div>
         )}
+        {/* Hover overlay: quick-access Edit prompt + Download directly on the image */}
+        <div className="absolute top-2 right-2 flex items-center gap-1.5 opacity-0 group-hover/img:opacity-100 transition">
+          <button
+            type="button"
+            onClick={() => setShowPromptEditor(true)}
+            disabled={generating}
+            title="Edit the prompt used to render this image"
+            className="sp-glass-strong rounded-full w-8 h-8 flex items-center justify-center hover:bg-white/20 transition disabled:opacity-50"
+            data-testid={`edit-image-prompt-overlay-${post.id}`}
+          >
+            <Pencil className="w-3.5 h-3.5" />
+          </button>
+          <a
+            href={url}
+            download={downloadName}
+            target="_blank"
+            rel="noreferrer"
+            title="Download this image"
+            className="sp-glass-strong rounded-full w-8 h-8 flex items-center justify-center hover:bg-white/20 transition"
+            data-testid={`download-image-overlay-${post.id}`}
+          >
+            <Download className="w-3.5 h-3.5" />
+          </a>
+        </div>
       </div>
       <div className="flex items-center gap-2 flex-wrap">
         <span className="text-[11px] sp-subtle uppercase tracking-widest">Logo position</span>
@@ -825,8 +855,14 @@ function PostCoverImage({ post, onUpdate }) {
             </button>
           ))}
         </div>
+        <a href={url} download={downloadName} target="_blank" rel="noreferrer"
+           className="sp-btn sp-btn-ghost text-xs ml-auto"
+           data-testid={`download-image-${post.id}`}
+           title="Download the generated cover image">
+          <Download className="w-3.5 h-3.5" /> Download
+        </a>
         <button type="button" onClick={() => setShowPromptEditor(true)} disabled={generating}
-                className="sp-btn sp-btn-ghost text-xs ml-auto disabled:opacity-50"
+                className="sp-btn sp-btn-ghost text-xs disabled:opacity-50"
                 data-testid={`edit-image-prompt-${post.id}`}
                 title="Edit the prompt used to render this image">
           <Pencil className="w-3.5 h-3.5" /> Edit prompt
