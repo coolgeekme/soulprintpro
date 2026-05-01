@@ -28,6 +28,7 @@ export default function ConversationPage() {
   const [loading, setLoading] = useState(true);
   const [showMentions, setShowMentions] = useState(false);
   const scrollerRef = useRef(null);
+  const bottomSentinelRef = useRef(null);
   const inputRef = useRef(null);
   const fileInputRef = useRef(null);
   const [uploading, setUploading] = useState(false);
@@ -88,70 +89,103 @@ export default function ConversationPage() {
   // re-triggers the initial snap. Without this gate, a user who scrolled up
   // would get yanked back down on every poll/render — annoying UX.
   const initialSnapDoneRef = useRef(false);
+  const snapWindowActiveRef = useRef(false);
   useEffect(() => {
     initialSnapDoneRef.current = false;
+    snapWindowActiveRef.current = false;
   }, [convId]);
 
+  // Helper that drives the scroller to the bottom. Uses both scrollTop and
+  // scrollIntoView on a sentinel element so it works even when the
+  // scroller's measured scrollHeight is stale (Safari occasionally lags
+  // here when images are still decoding).
+  const snapToBottom = () => {
+    const node = scrollerRef.current;
+    if (!node) return;
+    node.scrollTop = node.scrollHeight;
+    const sentinel = bottomSentinelRef.current;
+    if (sentinel) {
+      try { sentinel.scrollIntoView({ block: "end" }); }
+      catch { /* old browsers — scrollTop fallback above already ran */ }
+    }
+    onScrollerScroll();
+  };
+
+  // ── Initial snap-to-latest on conversation open ─────────────────────────
+  // Runs ONCE per convId after messages are loaded. We schedule a flurry of
+  // re-snaps over the first 4 seconds + a ResizeObserver — together they
+  // cover lazy-loaded images, link-preview cards, video thumbnails, and
+  // any other late-layout content that would otherwise leave the user
+  // stranded above the latest message.
+  //
+  // Critically, we do NOT register these timers via the effect's return
+  // function. Earlier versions did, and any re-render during the 4s
+  // window (poll updates, sending toggle, attachment changes) cancelled
+  // the pending re-snaps. Now they live as plain setTimeouts — fire-and-
+  // forget — and just no-op if the convId / state has since invalidated.
   useEffect(() => {
+    if (initialSnapDoneRef.current) return;
+    if (loading) return;
+    if (!messages.length) return;
     const el = scrollerRef.current;
     if (!el) return;
-    const snap = () => {
-      const node = scrollerRef.current;
-      if (!node) return;
-      node.scrollTop = node.scrollHeight;
-      onScrollerScroll();
+
+    initialSnapDoneRef.current = true;
+    snapWindowActiveRef.current = true;
+    const startedConvId = convId;
+
+    // Immediate + rAF + staggered re-snaps. The 1800ms / 3500ms tail covers
+    // images and embeds that decode after the initial paint.
+    const safeSnap = () => {
+      if (startedConvId !== convId) return;
+      snapToBottom();
     };
-    // On the *first* settle for this conversation (loading just finished and
-    // we have messages), pin to the latest message. Use rAF + a couple of
-    // staggered timeouts so lazy-loaded images, link previews, and any other
-    // late-layout content can't leave us stranded above the bottom.
-    // We also attach a ResizeObserver for the first ~4 seconds so that any
-    // image / iframe that decodes late re-triggers a snap — the LCP of a
-    // chat full of generated covers or social embeds is often well past the
-    // 400ms mark and without this the user ends up mid-conversation.
-    if (!initialSnapDoneRef.current && !loading && messages.length > 0) {
-      snap();
-      const r = requestAnimationFrame(snap);
-      const t1 = setTimeout(snap, 120);
-      const t2 = setTimeout(snap, 400);
-      const t3 = setTimeout(snap, 1200);
-      // Watch the inner messages container for height growth — if anything
-      // pushes the scrollHeight up during the initial window, re-snap. We
-      // tear the observer down after 4s (by which point everything has
-      // decoded) to avoid fighting manual scrolling later.
-      let ro = null;
-      try {
-        const inner = el.firstElementChild;  // the max-w-5xl wrapper
-        if (inner && typeof ResizeObserver !== "undefined") {
-          ro = new ResizeObserver(() => {
-            // Only re-snap if we're still close to the bottom — once the
-            // user has scrolled up to read, we respect their position.
-            const n = scrollerRef.current;
-            if (!n) return;
-            const nearBottom = n.scrollHeight - (n.scrollTop + n.clientHeight) < 240;
-            if (nearBottom) snap();
-          });
-          ro.observe(inner);
-        }
-      } catch { /* no-op — browsers without RO just use the timeouts above */ }
-      const tStop = setTimeout(() => { if (ro) ro.disconnect(); }, 4000);
-      initialSnapDoneRef.current = true;
-      return () => {
-        cancelAnimationFrame(r);
-        clearTimeout(t1); clearTimeout(t2); clearTimeout(t3); clearTimeout(tStop);
-        if (ro) ro.disconnect();
-      };
-    }
-    // After the initial snap, keep snapping when the user is sending or new
-    // messages arrive *and* the user is already near the bottom — don't yank
-    // them back if they've scrolled up to read history.
-    const nearBottom = el.scrollHeight - (el.scrollTop + el.clientHeight) < 160;
+    safeSnap();
+    requestAnimationFrame(safeSnap);
+    [60, 150, 350, 700, 1400, 2500, 3800].forEach((ms) => setTimeout(safeSnap, ms));
+
+    // ResizeObserver: while the snap window is active, ALWAYS re-snap on
+    // any height growth. Earlier versions gated this on a 240px nearBottom
+    // check, which was exactly wrong: when a lazy-loaded image decoded
+    // below the freshly-snapped position, scrollHeight grew by ~400px
+    // and the gate suppressed the re-snap, leaving the user stranded.
+    let ro = null;
+    try {
+      const inner = el.firstElementChild;
+      if (inner && typeof ResizeObserver !== "undefined") {
+        ro = new ResizeObserver(() => {
+          if (!snapWindowActiveRef.current) return;
+          if (startedConvId !== convId) return;
+          snapToBottom();
+        });
+        ro.observe(inner);
+      }
+    } catch { /* RO not available — staggered timeouts above suffice */ }
+
+    // Tear the observer + window flag down after 4s so manual scrolling
+    // afterwards is respected.
+    setTimeout(() => {
+      snapWindowActiveRef.current = false;
+      if (ro) { try { ro.disconnect(); } catch { /* no-op */ } }
+    }, 4000);
+  }, [convId, loading, messages.length]);
+
+  // ── Post-initial follow-along ───────────────────────────────────────────
+  // After the initial snap window closes, only auto-scroll when the user
+  // is already near the bottom (so we don't yank them back when they've
+  // scrolled up to read history) OR when the user has just sent a
+  // message — in that case we always snap so they see the agent reply.
+  useEffect(() => {
+    if (!initialSnapDoneRef.current) return;
+    const el = scrollerRef.current;
+    if (!el) return;
+    const nearBottom = el.scrollHeight - (el.scrollTop + el.clientHeight) < 200;
     if (nearBottom || sending) {
-      snap();
+      snapToBottom();
     } else {
       onScrollerScroll();
     }
-  }, [messages, sending, loading]);
+  }, [messages, sending]);
 
   // Pure "just type" composer: no manual image/video toggles. Backend
   // auto-detects intent (keyword fast-path + LLM fallback) and either
@@ -986,6 +1020,11 @@ export default function ConversationPage() {
               </div>
             </div>
           )}
+          {/* Sentinel for scrollIntoView({block: "end"}). Sits at the very
+              bottom of the messages container so snap-to-latest targets
+              the right point even when scrollHeight measurements lag
+              behind image / embed decoding. */}
+          <div ref={bottomSentinelRef} aria-hidden data-testid="messages-bottom-sentinel" />
         </div>
       </main>
 
