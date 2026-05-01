@@ -90,104 +90,102 @@ export default function ConversationPage() {
   // Reset whenever the route's convId changes so opening a different chat
   // re-triggers the initial snap. Without this gate, a user who scrolled up
   // would get yanked back down on every poll/render — annoying UX.
-  const initialSnapDoneRef = useRef(false);
-  const snapWindowActiveRef = useRef(false);
+  const userScrolledUpRef = useRef(false);
   useEffect(() => {
-    initialSnapDoneRef.current = false;
-    snapWindowActiveRef.current = false;
+    userScrolledUpRef.current = false;
   }, [convId]);
 
-  // Helper that drives the scroller to the bottom. Uses both scrollTop and
-  // scrollIntoView on a sentinel element so it works even when the
-  // scroller's measured scrollHeight is stale (Safari occasionally lags
-  // here when images are still decoding).
+  // Helper that drives the scroller to the bottom via the sentinel element.
+  // Using sentinel.scrollIntoView({block:"end"}) is the most reliable way
+  // to hit the true bottom of a flex container — setting scrollTop=
+  // scrollHeight alone doesn't work when late-rendered children shift
+  // the layout after the snap, and the browser's clamping interacts
+  // badly with bottom padding. The sentinel is always the last child of
+  // the inner wrapper so scrolling it into view hits the real bottom.
   const snapToBottom = () => {
-    const node = scrollerRef.current;
-    if (!node) return;
-    node.scrollTop = node.scrollHeight;
     const sentinel = bottomSentinelRef.current;
     if (sentinel) {
-      try { sentinel.scrollIntoView({ block: "end" }); }
-      catch { /* old browsers — scrollTop fallback above already ran */ }
+      try { sentinel.scrollIntoView({ block: "end", behavior: "auto" }); }
+      catch {
+        const node = scrollerRef.current;
+        if (node) node.scrollTop = node.scrollHeight;
+      }
+    } else {
+      const node = scrollerRef.current;
+      if (node) node.scrollTop = node.scrollHeight;
     }
     onScrollerScroll();
   };
 
-  // ── Initial snap-to-latest on conversation open ─────────────────────────
-  // Runs ONCE per convId after messages are loaded. We schedule a flurry of
-  // re-snaps over the first 4 seconds + a ResizeObserver — together they
-  // cover lazy-loaded images, link-preview cards, video thumbnails, and
-  // any other late-layout content that would otherwise leave the user
-  // stranded above the latest message.
-  //
-  // Critically, we do NOT register these timers via the effect's return
-  // function. Earlier versions did, and any re-render during the 4s
-  // window (poll updates, sending toggle, attachment changes) cancelled
-  // the pending re-snaps. Now they live as plain setTimeouts — fire-and-
-  // forget — and just no-op if the convId / state has since invalidated.
+  // ── Persistent snap observer ───────────────────────────────────────────
+  // One ResizeObserver + scroll listener lives for the component's
+  // lifetime, re-snapping whenever content grows and the user hasn't
+  // deliberately scrolled up. This catches ALL the late-render edge
+  // cases (lazy images, link previews, video thumbs, markdown re-layout,
+  // even content that decodes 10+ seconds after mount) — there's no
+  // arbitrary 4-second window that can drop events. Re-snap is cheap:
+  // it's a no-op if we're already at the bottom.
   useEffect(() => {
-    if (initialSnapDoneRef.current) return;
-    if (loading) return;
-    if (!messages.length) return;
     const el = scrollerRef.current;
     if (!el) return;
 
-    initialSnapDoneRef.current = true;
-    snapWindowActiveRef.current = true;
-    const startedConvId = convId;
-
-    // Immediate + rAF + staggered re-snaps. The 1800ms / 3500ms tail covers
-    // images and embeds that decode after the initial paint.
-    const safeSnap = () => {
-      if (startedConvId !== convId) return;
-      snapToBottom();
+    // User-scrolled-up detector: once the distance from bottom exceeds
+    // 400px we assume they're reading history and stop auto-snapping
+    // until they come back down themselves.
+    const onScroll = () => {
+      const dist = el.scrollHeight - (el.scrollTop + el.clientHeight);
+      userScrolledUpRef.current = dist > 400;
     };
-    safeSnap();
-    requestAnimationFrame(safeSnap);
-    [60, 150, 350, 700, 1400, 2500, 3800].forEach((ms) => setTimeout(safeSnap, ms));
+    el.addEventListener("scroll", onScroll, { passive: true });
 
-    // ResizeObserver: while the snap window is active, ALWAYS re-snap on
-    // any height growth. Earlier versions gated this on a 240px nearBottom
-    // check, which was exactly wrong: when a lazy-loaded image decoded
-    // below the freshly-snapped position, scrollHeight grew by ~400px
-    // and the gate suppressed the re-snap, leaving the user stranded.
     let ro = null;
     try {
       const inner = el.firstElementChild;
       if (inner && typeof ResizeObserver !== "undefined") {
         ro = new ResizeObserver(() => {
-          if (!snapWindowActiveRef.current) return;
-          if (startedConvId !== convId) return;
+          if (userScrolledUpRef.current) return;
           snapToBottom();
         });
         ro.observe(inner);
       }
-    } catch { /* RO not available — staggered timeouts above suffice */ }
+    } catch { /* RO unavailable — messages-change effect still fires */ }
 
-    // Tear the observer + window flag down after 4s so manual scrolling
-    // afterwards is respected.
-    setTimeout(() => {
-      snapWindowActiveRef.current = false;
+    return () => {
+      el.removeEventListener("scroll", onScroll);
       if (ro) { try { ro.disconnect(); } catch { /* no-op */ } }
-    }, 4000);
-  }, [convId, loading, messages.length]);
+    };
+  }, [convId]);
 
-  // ── Post-initial follow-along ───────────────────────────────────────────
-  // After the initial snap window closes, only auto-scroll when the user
-  // is already near the bottom (so we don't yank them back when they've
-  // scrolled up to read history) OR when the user has just sent a
-  // message — in that case we always snap so they see the agent reply.
+  // ── Initial snap-to-latest on conversation open ─────────────────────────
+  // Fires whenever convId changes or messages first populate. Uses a rAF
+  // + a couple of staggered re-snaps so the initial paint (before the
+  // ResizeObserver has had a chance to observe any growth) lands at
+  // bottom. Fire-and-forget — no cleanup needed.
   useEffect(() => {
-    if (!initialSnapDoneRef.current) return;
-    const el = scrollerRef.current;
-    if (!el) return;
-    const nearBottom = el.scrollHeight - (el.scrollTop + el.clientHeight) < 200;
-    if (nearBottom || sending) {
+    if (loading) return;
+    if (!messages.length) return;
+    const startedConvId = convId;
+    const safeSnap = () => {
+      if (startedConvId !== convId) return;
+      if (userScrolledUpRef.current) return;
       snapToBottom();
-    } else {
-      onScrollerScroll();
-    }
-  }, [messages, sending]);
+    };
+    safeSnap();
+    requestAnimationFrame(safeSnap);
+    [50, 150, 350, 800].forEach((ms) => setTimeout(safeSnap, ms));
+  }, [convId, loading]);  // deliberately NOT depending on messages.length
+
+  // ── Follow-along on new message / sending toggle ────────────────────────
+  // When messages change (new arrival or after sending), snap to bottom
+  // UNLESS the user has scrolled up to read history. This is the only
+  // effect that reads `messages`; others key off convId so they don't
+  // re-run constantly.
+  useEffect(() => {
+    if (loading) return;
+    if (userScrolledUpRef.current && !sending) return;
+    // rAF so React has committed the new layout before we measure
+    requestAnimationFrame(snapToBottom);
+  }, [messages.length, sending]);
 
   // Pure "just type" composer: no manual image/video toggles. Backend
   // auto-detects intent (keyword fast-path + LLM fallback) and either
@@ -750,7 +748,7 @@ export default function ConversationPage() {
 
       {/* Messages */}
       <main ref={scrollerRef} onScroll={onScrollerScroll} className="flex-1 overflow-y-auto relative">
-        <div className="max-w-5xl mx-auto px-3 sm:px-6 py-6 sm:py-10 flex flex-col gap-4" data-testid="messages-container">
+        <div className="max-w-5xl mx-auto px-3 sm:px-6 pt-6 sm:pt-10 pb-3 flex flex-col gap-4" data-testid="messages-container">
           {messages.length === 0 && (
             <div className="sp-glass rounded-2xl p-8 text-center">
               <div className="mb-1 text-lg">You're in.</div>
