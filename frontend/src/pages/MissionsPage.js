@@ -378,7 +378,7 @@ function MissionDetail({ orgId, missionId }) {
                     </span>
                   )}
                   <span className="text-[11px] sp-subtle">
-                    {mission.lead_agent_name} · {mission.iteration_count || 0}/{18} steps
+                    {mission.lead_agent_name} · {mission.iteration_count || 0}/{25} steps
                   </span>
                 </div>
                 <div className="text-base font-medium leading-snug">{mission.goal}</div>

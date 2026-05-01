@@ -112,7 +112,7 @@ export function MissionCard({ orgId, missionId }) {
               {STATUS_LABEL[mission.status] || mission.status}
             </span>
             <span className="text-[11px] sp-subtle">
-              {mission.lead_agent_name} · step {mission.iteration_count || 0}/18
+              {mission.lead_agent_name} · step {mission.iteration_count || 0}/25
             </span>
             <Link
               to={`/app/org/${orgId}/missions/${missionId}`}

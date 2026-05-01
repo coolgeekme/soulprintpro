@@ -39,10 +39,12 @@ from pydantic import BaseModel, Field
 
 logger = logging.getLogger(__name__)
 
-MAX_ITERATIONS = 18            # hard safety cap per mission
+MAX_ITERATIONS = 25            # hard safety cap per mission
 MAX_EVENTS_IN_CONTEXT = 40     # truncation window for the loop's memory
 LLM_CALL_TIMEOUT_S = 90        # hard ceiling on a single LLM round-trip
 TOOL_CALL_TIMEOUT_S = 60       # hard ceiling on any single tool execution
+DUPLICATE_CALL_SOFT_LIMIT = 2  # 2nd identical call: warning injected
+DUPLICATE_CALL_HARD_LIMIT = 3  # 3rd identical call: auto-aborted with error
 
 # Active mission Tasks keyed by mission_id — for cancel / pause signalling.
 _RUNNING: Dict[str, asyncio.Task] = {}
@@ -400,6 +402,42 @@ async def run_mission_loop(
 
             await _append_event(db, mission_id, kind="tool_call",
                                 tool=tool_name, args=args, iteration=iteration)
+
+            # ── Server-enforced duplicate-call guard ───────────────────────
+            # The system prompt begs the LLM not to re-call the same tool
+            # with the same args, and the user_turn injects a warning once
+            # we detect 3 identical calls — but LLMs still ignore it and
+            # waste iterations. So: enforce it in code. If this exact
+            # (tool_name, args) combo was already called once earlier in
+            # this mission, short-circuit and return a synthetic error
+            # that forces the LLM to pivot. We allow the first call to
+            # execute fully; only exact re-runs are blocked.
+            args_key = json.dumps(args or {}, sort_keys=True, default=str)
+            prior_identical = [
+                e for e in history
+                if e.get("kind") == "tool_call"
+                and e.get("tool") == tool_name
+                and json.dumps(e.get("args") or {}, sort_keys=True, default=str) == args_key
+            ]
+            # `prior_identical` is the history BEFORE this turn; the
+            # current call has already been appended but isn't in `history`.
+            if prior_identical:
+                block_msg = (
+                    f"BLOCKED: you already called `{tool_name}` with these "
+                    f"exact arguments earlier in this mission. The result "
+                    f"won't change. Your next action MUST be one of: "
+                    f"(a) call a different tool, (b) call `{tool_name}` "
+                    f"with DIFFERENT arguments, (c) call write_artifact "
+                    f"with what you have, or (d) call finish. Stop retrying."
+                )
+                result = {"error": block_msg}
+                preview = json.dumps(result)[:1500]
+                await _append_event(
+                    db, mission_id, kind="tool_result",
+                    tool=tool_name, result_preview=preview,
+                    iteration=iteration,
+                )
+                continue
             try:
                 result = await asyncio.wait_for(
                     t(ctx, args), timeout=TOOL_CALL_TIMEOUT_S,
