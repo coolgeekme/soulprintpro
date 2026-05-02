@@ -4132,6 +4132,23 @@ base_r = APIRouter(prefix="/api")
 async def health():
     return {"status": "ok"}
 
+
+# ── About / marketing copy ────────────────────────────────────────────────
+# Single-source-of-truth markdown lives at /app/memory/ABOUT.md so it can
+# be updated without redeploying. Read on every request — file is tiny.
+_ABOUT_MD_PATH = Path(__file__).resolve().parent.parent / "memory" / "ABOUT.md"
+
+
+@base_r.get("/about")
+async def get_about():
+    """Marketing-grade overview of the platform. Rendered in-app on /about
+    and reused for marketing material. Public — no auth required."""
+    try:
+        md = _ABOUT_MD_PATH.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        md = "# SoulPrint Engine\n\nAbout content not configured."
+    return {"markdown": md}
+
 app.include_router(base_r)
 app.include_router(auth_r)
 app.include_router(org_r)

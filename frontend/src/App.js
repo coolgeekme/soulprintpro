@@ -13,6 +13,7 @@ import ConversationPage from "./pages/ConversationPage";
 import AcceptInvitePage from "./pages/AcceptInvitePage";
 import SocialPage from "./pages/SocialPage";
 import MissionsPage from "./pages/MissionsPage";
+import AboutPage from "./pages/AboutPage";
 
 const Loader = () => (
   <div className="flex items-center justify-center h-screen">
@@ -43,6 +44,7 @@ function App() {
           <BrowserRouter>
             <Routes>
               <Route path="/" element={<PublicOnly><LandingPage /></PublicOnly>} />
+              <Route path="/about" element={<AboutPage />} />
               <Route path="/auth" element={<PublicOnly><AuthPage /></PublicOnly>} />
               <Route path="/invite/:code" element={<Protected><AcceptInvitePage /></Protected>} />
               <Route path="/app" element={<Protected><AppHome /></Protected>} />
