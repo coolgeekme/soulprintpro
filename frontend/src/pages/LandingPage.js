@@ -35,6 +35,7 @@ export default function LandingPage() {
           <a href="#features" className="hover:text-white transition-colors">How it works</a>
           <a href="#agents" className="hover:text-white transition-colors">Agents</a>
           <a href="#teams" className="hover:text-white transition-colors">Teams</a>
+          <Link to="/about" className="hover:text-white transition-colors" data-testid="nav-about">What is SoulPrint Engine?</Link>
         </nav>
         <div className="flex items-center gap-2">
           <Link to="/auth" className="sp-btn sp-btn-ghost text-sm" data-testid="nav-signin">Sign in</Link>

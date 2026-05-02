@@ -2,10 +2,18 @@ import React, { useState, useEffect } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { useAuth } from "../context/AuthContext";
 import { useTheme } from "../context/ThemeContext";
-import { LogOut, Sun, Moon, MapPin } from "lucide-react";
+import { LogOut, Sun, Moon, MapPin, ChevronDown, HelpCircle } from "lucide-react";
 import Logo from "./Logo";
 import { captureUserLocation, getCachedLocation, setCachedLocation } from "../lib/api";
 import { toast } from "sonner";
+import {
+  DropdownMenu,
+  DropdownMenuTrigger,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuSeparator,
+} from "./ui/dropdown-menu";
 
 export default function TopBar({ children, right = null }) {
   const { user, logout } = useAuth();
@@ -80,19 +88,57 @@ export default function TopBar({ children, right = null }) {
             >
               {mode === "dark" ? <Sun className="w-4 h-4" /> : <Moon className="w-4 h-4" />}
             </button>
-            <div className="hidden md:flex items-center gap-2 px-3 py-1.5 rounded-full sp-glass text-xs">
-              <span className="w-2 h-2 rounded-full bg-emerald-400/80" />
-              <span>{user?.name || user?.email}</span>
-            </div>
-            <button
-              onClick={async () => { await logout(); nav("/"); }}
-              className="sp-btn sp-btn-ghost text-xs"
-              data-testid="topbar-logout"
-              title="Sign out"
-            >
-              <LogOut className="w-4 h-4" />
-              <span className="hidden sm:inline">Sign out</span>
-            </button>
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <button
+                  className="sp-btn sp-btn-ghost text-xs"
+                  data-testid="topbar-user-menu"
+                  title="Account menu"
+                >
+                  <span className="hidden md:inline-flex items-center gap-2">
+                    <span className="w-2 h-2 rounded-full bg-emerald-400/80" />
+                    <span className="truncate max-w-[140px]">{user?.name || user?.email}</span>
+                    <ChevronDown className="w-3.5 h-3.5 opacity-60" />
+                  </span>
+                  <span className="md:hidden inline-flex items-center gap-1">
+                    <span className="w-2 h-2 rounded-full bg-emerald-400/80" />
+                    <ChevronDown className="w-3.5 h-3.5 opacity-60" />
+                  </span>
+                </button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent
+                align="end"
+                className="min-w-[220px]"
+                data-testid="topbar-user-menu-content"
+              >
+                <DropdownMenuLabel className="font-normal">
+                  <div className="flex flex-col gap-0.5">
+                    <span className="text-sm">{user?.name || "Signed in"}</span>
+                    {user?.email && (
+                      <span className="text-xs sp-subtle truncate">{user.email}</span>
+                    )}
+                  </div>
+                </DropdownMenuLabel>
+                <DropdownMenuSeparator />
+                <DropdownMenuItem
+                  onSelect={() => nav("/about")}
+                  data-testid="topbar-menu-about"
+                  className="cursor-pointer"
+                >
+                  <HelpCircle className="w-4 h-4 mr-2" />
+                  What is SoulPrint Engine?
+                </DropdownMenuItem>
+                <DropdownMenuSeparator />
+                <DropdownMenuItem
+                  onSelect={async () => { await logout(); nav("/"); }}
+                  data-testid="topbar-menu-logout"
+                  className="cursor-pointer"
+                >
+                  <LogOut className="w-4 h-4 mr-2" />
+                  Sign out
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
           </div>
         </div>
       </div>
