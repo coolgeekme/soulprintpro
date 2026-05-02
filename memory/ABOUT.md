@@ -26,7 +26,7 @@ If you've ever pasted a paragraph about your company into ChatGPT for the tenth 
 1. **Create your Organization.** Tell us your mission, your audience, your tone, your values, and what you stand against. (Or skip it — we'll draft it from your website and you can edit.) This becomes your **Soul** — the brand DNA every agent reads before doing anything.
 2. **Build a Team.** Pick from 150+ specialized agents — Brand Strategist, Conversion Copywriter, Social Media Autopilot, Competitive Researcher, Pricing Analyst, Email Sequencer, Frontend Designer, and more. Or just type what you need and the platform routes you to the right one automatically.
 3. **Just type.** Ask for a deliverable — *"draft a launch announcement"*, *"design 5 hero images for our landing page"*, *"research the top 3 competitors and tell me what we're missing"*. Agents work in real time, show their reasoning, and ship a finished file.
-4. **Ship.** Download as markdown, CSV, image, calendar invite, or have an agent autonomously publish it to your social accounts on a schedule.
+4. **Ship.** Download as markdown, CSV, image, or calendar invite — or queue social posts to publish later (autonomous publishing in beta).
 
 ---
 
@@ -44,11 +44,11 @@ You can:
 - Cancel any time, force-stop a stuck mission, or chain missions together
 
 ### 3. **Social Queue — content that runs itself**
-A single page where you draft, schedule, and publish to X, LinkedIn, Facebook, Threads, Bluesky, Mastodon, and Reddit.
+A single page where you draft, schedule, and prepare posts for X, LinkedIn, Facebook, Threads, Bluesky, Mastodon, and Reddit.
 
 - Type *"draft 5 LinkedIn posts about our Q1 launch, lean into the engineering-team angle"* — it produces 5 platform-ready drafts in your voice with hashtags, cover images, and your logo composited in the corner.
 - Don't know what to post? Click **Suggest topics** and the platform fuses your brand soul with this week's news in your space and proposes 6 specific, postable ideas with citations.
-- Click **Auto-post via Mission** on any draft. Pick a date. At that exact moment, an AI agent opens the platform's composer in a real headless browser, pastes your post, and clicks Publish. While you're in a meeting.
+- *Coming soon* — Click **Auto-post via Mission** on any draft. Pick a date. At that exact moment, an AI agent opens the platform's composer in a real headless browser, pastes your post, and clicks Publish. While you're in a meeting.
 - Want to edit the cover image? Hit the pencil. Custom prompt, regenerate, swap the logo to any corner with one click.
 
 ### 4. **Brand-aware image and video generation**
@@ -82,7 +82,7 @@ Drag in PDFs, brand guides, customer interviews, financial data, product specs �
 | Specialist depth | One model, generalist | 150+ specialists with role-specific prompts |
 | Live web | Often dated by months | Real headless browser + live news search |
 | Autonomous tasks | One turn, one answer | Multi-step missions with real tools and verifiable outcomes |
-| Publishes for you | No — you copy-paste output | Yes — agents post to your accounts on a schedule |
+| Publishes for you | No — you copy-paste output | *Coming soon* — agents will post to your accounts on a schedule |
 | Memory of your work | None — every chat is fresh | Org Documents library carries forward |
 | Image generation | Per-prompt, off-brand by default | Logo + style guide auto-composited every render |
 | Group reasoning | No | Multi-agent group chats |
@@ -97,14 +97,14 @@ Drag in PDFs, brand guides, customer interviews, financial data, product specs �
 - **"I ran a competitor teardown in 6 minutes that would've taken me half a day."**
 - **"My LinkedIn finally sounds like me, not like every other founder on LinkedIn."**
 - **"I gave the platform my brand guide and stopped having to re-correct visual output."**
-- **"I scheduled a week of social in 20 minutes and an agent literally posted them while I was asleep."**
+- **"I drafted a week of social posts in 20 minutes and had them queued up ready to ship."**
 
 ---
 
 ## Privacy and ownership
 
 - Your Soul, your documents, your generated artifacts — all live inside your Organization. We don't train models on them.
-- Login cookies you upload for autoposting are stored opaquely, used only by your own headless browser sessions, and never leave your org.
+- When autoposting ships, any login cookies you upload will be stored opaquely, used only by your own headless browser sessions, and never leave your org.
 - Cancel anytime. Export your Documents library as a single download.
 
 ---
