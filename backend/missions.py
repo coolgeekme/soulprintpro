@@ -665,9 +665,28 @@ def build_tools(
             return {"error": "name is required"}
         if not content.strip():
             return {"error": "content is empty"}
-        # Use the same artifact pipeline that chat uses — parsed block would
-        # have these exact fields, so we synthesize one.
-        from artifacts import _safe_filename, DEFAULT_MIME
+        # Reject binary extensions BEFORE writing so we don't persist a
+        # gibberish text-as-png that confuses the user. The agent should
+        # use `generate_image` (or the dedicated video tool) instead.
+        from artifacts import _safe_filename, DEFAULT_MIME, BINARY_EXTS
+        req_ext = name.rsplit(".", 1)[-1].lower() if "." in name else ""
+        if req_ext in BINARY_EXTS:
+            img_exts = {"png", "jpg", "jpeg", "gif", "webp", "bmp", "tiff",
+                        "svg", "ico", "heic", "heif", "avif"}
+            if req_ext in img_exts:
+                return {"error": (
+                    f"write_artifact is TEXT-ONLY and cannot emit .{req_ext} files. "
+                    "Use the `generate_image` tool for images — it produces a "
+                    "real PNG and saves it to the Documents library. "
+                    "Example: {\"tool\":\"generate_image\",\"args\":{\"prompt\":\"…\"}}"
+                )}
+            return {"error": (
+                f"write_artifact cannot emit binary .{req_ext} files. "
+                "Allowed text formats: .md, .csv, .json, .html, .ics, .vcf, "
+                ".eml, .sh, .py, .js, .sql, .txt. For images use "
+                "`generate_image`; video/audio generation is not yet exposed "
+                "as a mission tool."
+            )}
         clean, ext = _safe_filename(name)
         if not mime:
             mime = DEFAULT_MIME.get(ext, "application/octet-stream")
@@ -1007,12 +1026,12 @@ def build_tools(
              "Read a previously-generated artifact from the Org Documents library. Call with no args to list, or pass document_id / name.",
              '{"document_id": "...", "name": "substring"}', read_org_document),
         Tool("write_artifact",
-             "Save a new file (markdown brief, CSV, .ics invite, email, script) to the Documents library. Users download these.",
-             '{"name": "file.md", "mime": "text/markdown", "title": "Human title", "content": "raw file body"}',
+             "Save a TEXT file (markdown brief, CSV, .ics invite, email, script, JSON, HTML) to the Documents library. Users download these. ALLOWED extensions: .md .csv .tsv .json .html .ics .vcf .eml .sh .py .js .ts .sql .txt .xml .yaml. NOT for images — if you need an image, use `generate_image` instead; the artifact pipeline rejects binary extensions.",
+             '{"name": "brief.md", "mime": "text/markdown", "title": "Human title", "content": "raw file body"}',
              write_artifact, side_effect=True),
         Tool("generate_image",
-             "Render a new image (Nano Banana default, or GPT Image 1) and save it.",
-             '{"prompt": "...", "model": "nano-banana"|"gpt-image-1"}',
+             "Render a new image (PNG) with Nano Banana (default) or GPT Image 1 and save it to the Documents library. Use this for ANY image deliverable — do NOT try to emit .png via write_artifact.",
+             '{"prompt": "A flat-design infographic...", "model": "nano-banana"}',
              generate_image, side_effect=True),
         Tool("browse_url",
              "Load a real web page in a headless Chromium (handles JavaScript / SPA / cookie walls). Returns rendered text, a screenshot, AND a structured page-map: `forms` (with field labels & types), `buttons` and `links` (with their visible text). ALWAYS read the `affordances_summary` field first — it tells you what's clickable on this page. The first step in any form-fill or multi-hop navigation goal.",

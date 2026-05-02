@@ -104,6 +104,18 @@ Self-serve artifacts you can emit (pick the most useful format for the job):
   • .sh / .py / .js — automation scripts the user can run themselves
   • .sql            — query bodies / migrations
 
+IMPORTANT — TEXT ONLY.
+This artifact mechanism is for TEXT-BASED files only. Do NOT try to emit
+images (.png/.jpg/.webp), video (.mp4/.mov), audio (.mp3/.wav), or binary
+office docs (.pdf/.docx/.xlsx) via [[ARTIFACT]] — the body would arrive
+as gibberish text with the wrong extension. When you need a rendered
+image, either:
+  • Describe it in prose and the user can follow up with an image gen
+    request, OR
+  • If you're running inside a Mission, call the `generate_image` tool.
+The chat runtime does NOT render images via [[ARTIFACT]] — it renders
+them as inline image messages from the image-generation path.
+
 To emit an artifact, place a block like this anywhere in your reply (you can
 emit multiple per reply if it helps). The user's chat will render the
 artifact as a downloadable file attached to your message AND save it to the
@@ -145,6 +157,24 @@ ALLOWED_EXTS = {
     "ics", "vcf", "eml", "csv", "tsv", "json", "md", "txt",
     "html", "htm", "sh", "py", "js", "ts", "yaml", "yml", "sql",
     "xml", "rtf", "log", "ini", "toml", "env",
+}
+
+# Extensions that `write_artifact` must NEVER accept — they're binary or
+# need a dedicated generation tool (generate_image / generate_video / etc).
+# If the agent tries to emit one of these via a text artifact block, we
+# reject with a clear error pointing to the right tool instead of
+# silently turning the body into gibberish-text-file-with-.png-name.
+BINARY_EXTS = {
+    # Images
+    "png", "jpg", "jpeg", "gif", "webp", "bmp", "tiff", "svg", "ico",
+    "heic", "heif", "avif",
+    # Video
+    "mp4", "mov", "avi", "mkv", "webm", "flv", "mpeg", "mpg", "wmv", "m4v",
+    # Audio
+    "mp3", "wav", "aac", "flac", "ogg", "m4a", "opus", "aiff",
+    # Binary docs (need a real generator or upload path)
+    "pdf", "docx", "doc", "xlsx", "xls", "pptx", "ppt",
+    "zip", "tar", "gz", "7z", "rar",
 }
 
 DEFAULT_MIME = {

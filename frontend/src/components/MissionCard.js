@@ -3,7 +3,7 @@ import api, { BACKEND_URL, displayMissionGoal } from "../lib/api";
 import { Link } from "react-router-dom";
 import {
   Loader2, Rocket, Check, AlertTriangle, ChevronDown, ChevronUp,
-  ExternalLink, Wrench, FileText, Image as ImageIcon, X as XIcon,
+  ExternalLink, FileText, Image as ImageIcon, X as XIcon,
 } from "lucide-react";
 import { toast } from "sonner";
 
@@ -85,15 +85,48 @@ export function MissionCard({ orgId, missionId }) {
   const isDone = mission.status === "finished";
   const isFailed = ["failed", "cancelled"].includes(mission.status);
   const lastEvent = events.length ? events[events.length - 1] : null;
+
+  // Friendlier, verb-forward status phrases — makes the card feel alive
+  // instead of "Loading…". We key the phrasing off the tool_call so the
+  // user gets real "what's happening right now" feedback.
+  const PRETTY_TOOL = {
+    browse_url:        "Reading the web",
+    browse_click:      "Clicking on a page",
+    browse_fill:       "Filling out a form",
+    browse_submit:     "Submitting a form",
+    screenshot_url:    "Taking a screenshot",
+    web_search:        "Searching the web",
+    generate_image:    "Rendering an image",
+    write_artifact:    "Saving a file",
+    read_org_document: "Reading your docs",
+    compose_email:     "Drafting an email",
+  };
   const lastEventLabel = (() => {
-    if (!lastEvent) return "";
-    if (lastEvent.kind === "think") return `Thinking: ${(lastEvent.text || "").slice(0, 90)}`;
-    if (lastEvent.kind === "tool_call") return `Calling ${lastEvent.tool}`;
-    if (lastEvent.kind === "tool_result") return `${lastEvent.tool} → done`;
-    if (lastEvent.kind === "artifact") return `Saved ${lastEvent.artifact?.original_name || "artifact"}`;
+    if (!lastEvent) return "Booting up…";
+    if (lastEvent.kind === "think") {
+      const txt = (lastEvent.text || "").slice(0, 110);
+      return txt ? `Thinking: ${txt}${(lastEvent.text || "").length > 110 ? "…" : ""}` : "Thinking…";
+    }
+    if (lastEvent.kind === "tool_call") {
+      const pretty = PRETTY_TOOL[lastEvent.tool] || `Running ${lastEvent.tool}`;
+      const url = lastEvent.args?.url;
+      if (url && lastEvent.tool === "browse_url") {
+        try {
+          return `${pretty} — ${new URL(url).hostname}`;
+        } catch { /* ignore */ }
+      }
+      const q = lastEvent.args?.query;
+      if (q && lastEvent.tool === "web_search") return `${pretty} — "${String(q).slice(0, 60)}"`;
+      return pretty + "…";
+    }
+    if (lastEvent.kind === "tool_result") {
+      const pretty = PRETTY_TOOL[lastEvent.tool] || lastEvent.tool;
+      return `${pretty} done — deciding next step…`;
+    }
+    if (lastEvent.kind === "artifact") return `Saved ${lastEvent.artifact?.original_name || "a file"}`;
     if (lastEvent.kind === "question") return "Awaiting your reply";
-    if (lastEvent.kind === "system") return (lastEvent.text || "").slice(0, 90);
-    return lastEvent.kind;
+    if (lastEvent.kind === "system") return (lastEvent.text || "").slice(0, 110);
+    return "Working…";
   })();
 
   return (
@@ -126,10 +159,20 @@ export function MissionCard({ orgId, missionId }) {
             <Rocket className="w-3.5 h-3.5 inline mr-1.5 -mt-0.5 opacity-70" />
             {displayMissionGoal(mission.goal)}
           </div>
-          {isLive && lastEventLabel && (
-            <div className="text-xs sp-subtle mt-1.5 flex items-center gap-1.5"
-                 data-testid={`mission-card-last-event-${missionId}`}>
-              <Wrench className="w-3 h-3" /> {lastEventLabel}
+          {isLive && (
+            <div className="mt-2 flex items-start gap-2 text-xs" data-testid={`mission-card-last-event-${missionId}`}>
+              <span className="inline-flex items-center gap-1 pt-0.5 shrink-0">
+                <span className="relative flex h-2 w-2">
+                  <span className="absolute inline-flex h-full w-full rounded-full bg-sky-400 opacity-60 animate-ping"></span>
+                  <span className="relative inline-flex h-2 w-2 rounded-full bg-sky-300"></span>
+                </span>
+              </span>
+              <div className="flex-1 min-w-0">
+                <div className="sp-subtle leading-snug">
+                  {lastEventLabel}
+                  <span className="mission-dots" aria-hidden="true"><span>.</span><span>.</span><span>.</span></span>
+                </div>
+              </div>
             </div>
           )}
           {isDone && mission.summary && (

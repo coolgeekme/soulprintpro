@@ -1,0 +1,45 @@
+{
+  "summary": "Phase A Mission-UX hardening verified: write_artifact binary-extension rejection, updated tool descriptions, new ASK_USER 'no acknowledgement / no status update' rules in lead system prompt, ARTIFACTS TEXT-ONLY section, and MissionCard pulsing-dot + mission-dots animation. 28/28 new backend tests pass. Frontend bundle ships the new .mission-dots CSS rule + sp-bounce keyframe.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {
+        "endpoint": "_build_lead_mission_system_prompt (server.py:4163-4168)",
+        "issue": "Banned-phrase examples have whitespace artifacts from multi-line Python string concat. Compiled prompt contains 'Want me to      proceed?' (5 extra spaces) and 'Let me know if this      looks good' (5 extra spaces) instead of the natural phrasing. Agents are unlikely to literal-match these exact strings, weakening the deterrent. Minor — the surrounding paragraph still conveys intent. Fix: rewrite the lines so quoted phrases live on a single source line, e.g. \"'Shall I continue?', 'Want me to proceed?', 'Ready for the next step?', 'Let me know if this looks good' are BANNED.\""
+      }
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_mission_artifact_guards.py",
+    "/app/test_reports/pytest/iteration_15_artifact_guards.xml"
+  ],
+  "action_items": [
+    "(Optional, minor) De-fluff the banned-phrase quoting in _build_lead_mission_system_prompt so 'Want me to proceed?' and 'Let me know if this looks good' appear without internal multi-space artifacts."
+  ],
+  "critical_code_review_comments": [
+    "missions.py write_artifact (lines 659-716): handler correctly short-circuits on BINARY_EXTS BEFORE save_artifacts is called — verified via stub-DB unit tests. Image-specific path returns 'TEXT-ONLY' + 'generate_image' tool pointer; non-image binary path returns generic message that lists allowed text exts. Both confirmed.",
+    "artifacts.py BINARY_EXTS (42 entries) is disjoint from ALLOWED_EXTS — verified set-intersection test passes.",
+    "Tool registry write_artifact description says 'NOT for images' + 'pipeline rejects binary extensions'; generate_image description says 'Render a new image (PNG)' + 'do NOT try to emit .png via write_artifact'. Both pass keyword assertions.",
+    "MissionCard.js: live-status row at lines 162-177 replaces Wrench with ping-dot (sky-300 + sky-400/60 ping) and uses .mission-dots span trio. data-testid=mission-card-last-event-${missionId} present. lastEventLabel switches on event.kind (think/tool_call/tool_result/artifact/question/system) with PRETTY_TOOL map and URL-aware phrasing for browse_url + web_search.",
+    "index.css lines 305-312: .mission-dots rule + nth-child delays 0.2s/0.4s using existing sp-bounce keyframe (lines 298-303). Confirmed shipped to browser via runtime CSSOM inspection on the public URL.",
+    "Pre-existing flakiness: tests/test_web_search.py TestSmartStartWebSources + TestGroupConvWebSources fail when run alongside other suites but pass in isolation — test isolation issue (likely shared Brave/Perplexity stub state). Unrelated to Phase A. Worth flagging for future cleanup."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_mission_artifact_guards.py (new)"
+  ],
+  "success_rate": {
+    "backend": "100% (28/28 Phase A tests; existing tool/page-map suites pass)",
+    "frontend": "100% (compiled CSS asset + DOM structure verified, no console errors on landing)"
+  },
+  "test_credentials": "autopost-test-1777661963@example.com / testtest123 / org_id=69f4f8199304a5a0df27f750 — not used (no live mission spin-up needed; static + unit verification was sufficient per test brief).",
+  "seed_data_creation": "None — handler tested with stub DB / stub save_artifacts / stub generate_image, no real persistence touched.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Phase B (user-uploaded files to Missions) and Phase C (Media autopost) still pending — explicitly out of this iteration's scope. test_mission_artifact_guards.py is the canonical regression for the TEXT-ONLY guard; reuse it any time write_artifact, BINARY_EXTS, or the lead system prompt is touched. No live mission needs to be started to validate Phase A — handler-level + system-prompt regex is enough. The MissionCard .mission-dots animation lives only in the live-status row (status ∈ {running, awaiting_user}) — to eyeball it you'd need to either start a real mission with the standing autopost account or stub the GET /missions/:id and GET /missions/:id/events responses.",
+  "rca of the issue": "Original user complaint was that agents emitted .png filenames through the text-artifact pipeline; _safe_filename silently coerced the extension to .txt and persisted base64-as-text-file = unusable garbage. Fix: introduce BINARY_EXTS sentinel set in artifacts.py + a pre-write guard in missions.write_artifact that returns a tool-pointer error before save_artifacts runs. Reproduction (now blocked): tools['write_artifact'].handler(ctx, {'name':'x.png','content':'…'}) → {'error': 'write_artifact is TEXT-ONLY … Use the generate_image tool …'}. Verified via 13 parametrized rejection tests + 12 parametrized accept tests."
+}

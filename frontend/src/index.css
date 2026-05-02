@@ -300,6 +300,18 @@ input:focus, textarea:focus, button:focus { outline: none; }
   40% { transform: scale(1); opacity: 1; }
 }
 
+/* Mission card "working…" dot ticker — tiny inline three-dot pulse to
+   signal an in-flight mission between explicit tool_call events. */
+.mission-dots { display: inline-block; margin-left: 2px; }
+.mission-dots span {
+  display: inline-block;
+  opacity: 0.3;
+  animation: sp-bounce 1.4s infinite ease-in-out both;
+}
+.mission-dots span:nth-child(2) { animation-delay: 0.2s; }
+.mission-dots span:nth-child(3) { animation-delay: 0.4s; }
+
+
 /* fade in */
 @keyframes sp-fade-up {
   from { opacity: 0; transform: translateY(8px); }
