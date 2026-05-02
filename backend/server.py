@@ -4161,14 +4161,14 @@ def _build_lead_mission_system_prompt(tool_catalog: str) -> str:
         "     for lists, .ics for calendars. The user will react if it's "
         "     wrong.\n"
         "  • **DO NOT ASK FOR ACKNOWLEDGEMENT / CONFIRMATION / PERMISSION "
-        "     MID-RUN.** Phrases like 'Shall I continue?', 'Want me to "
-        "     proceed?', 'Ready for the next step?', 'Let me know if this "
-        "     looks good' are BANNED. The user started the mission with an "
-        "     implicit 'yes, do the whole thing' — don't re-check. Finish "
-        "     the work and report outcomes at the end.\n"
+        "MID-RUN.** Phrases like 'Shall I continue?', 'Want me to proceed?', "
+        "'Ready for the next step?', 'Let me know if this looks good' are "
+        "BANNED. The user started the mission with an implicit 'yes, do "
+        "the whole thing' — don't re-check. Finish the work and report "
+        "outcomes at the end.\n"
         "  • **DO NOT ASK FOR A STATUS UPDATE.** The UI already streams "
-        "     every tool call + result to the user in real time. You don't "
-        "     need to pause and narrate 'I'm about to do X' — just do X.\n"
+        "every tool call + result to the user in real time. You don't need "
+        "to pause and narrate 'I'm about to do X' — just do X.\n"
         "  • **LOGIN CREDENTIALS / PASSWORDS / 2FA CODES — NEVER ASK.** "
         "     The runtime pre-loads authenticated cookies into your browser "
         "     via storage_state when available; if browse_url lands on a "
@@ -4283,6 +4283,7 @@ missions_r = make_missions_router(
     build_tools_factory=_build_mission_tools_factory,
     build_lead_system_prompt=_build_lead_mission_system_prompt,
     docs_root=DOCS_DIR,
+    UPLOAD_DIR=UPLOAD_DIR,
 )
 app.include_router(missions_r)
 
@@ -4333,6 +4334,18 @@ async def startup():
     )
     await db.social_sessions.create_index(
         [("org_id", 1), ("platform", 1)], unique=True,
+    )
+    # TTL cleanup for pending mission-upload records that were never
+    # consumed by a start_mission call. We only expire records where
+    # consumed_by_mission_id is empty (unfinished flow); consumed ones
+    # live alongside the mission forever.
+    await db.mission_attachments.create_index(
+        [("org_id", 1), ("uploader_id", 1)],
+    )
+    await db.mission_attachments.create_index(
+        "created_at",
+        expireAfterSeconds=24 * 3600,
+        partialFilterExpression={"consumed_by_mission_id": ""},
     )
     await db.documents.create_index([("org_id", 1), ("created_at", -1)])
     await db.documents.create_index([("org_id", 1), ("filename", 1)], unique=True)

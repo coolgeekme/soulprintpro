@@ -6,7 +6,7 @@ import { toast } from "sonner";
 import {
   Rocket, Play, X, Loader2, ArrowLeft, Search, FileText, Wrench,
   ChevronRight, Check, AlertTriangle, HelpCircle, Send, Download, Image as ImageIcon,
-  Trash2, CornerDownRight,
+  Trash2, CornerDownRight, UploadCloud,
 } from "lucide-react";
 
 /**
@@ -59,9 +59,11 @@ function MissionList({ orgId }) {
   };
   useEffect(() => { load(); /* eslint-disable-next-line */ }, [orgId]);
 
-  const startMission = async (goal) => {
+  const startMission = async (goal, attachmentIds = []) => {
     try {
-      const { data } = await api.post(`/orgs/${orgId}/missions`, { goal });
+      const { data } = await api.post(`/orgs/${orgId}/missions`, {
+        goal, attachment_ids: attachmentIds,
+      });
       setStartOpen(false);
       nav(`/app/org/${orgId}/missions/${data.id}`);
     } catch (err) {
@@ -160,34 +162,82 @@ function MissionList({ orgId }) {
           </ul>
         )}
       </main>
-      {startOpen && <StartMissionDialog onClose={() => setStartOpen(false)} onSubmit={startMission} />}
+      {startOpen && <StartMissionDialog orgId={orgId} onClose={() => setStartOpen(false)} onSubmit={startMission} />}
     </div>
   );
 }
 
 // ────────────────────────────────────────────────────────────────────────────
-function StartMissionDialog({ onClose, onSubmit }) {
+function StartMissionDialog({ orgId, onClose, onSubmit }) {
   const [goal, setGoal] = useState("");
   const [busy, setBusy] = useState(false);
+  const [attachments, setAttachments] = useState([]);  // uploaded records
+  const [uploading, setUploading] = useState(false);
+  const [dragging, setDragging] = useState(false);
   const taRef = useRef(null);
+  const fileRef = useRef(null);
   useEffect(() => { taRef.current?.focus(); }, []);
+
+  const addFiles = async (files) => {
+    if (!files || !files.length) return;
+    if (attachments.length + files.length > 6) {
+      toast.error("Up to 6 files per mission.");
+      return;
+    }
+    setUploading(true);
+    try {
+      const fd = new FormData();
+      Array.from(files).forEach((f) => fd.append("files", f));
+      const { data } = await api.post(`/orgs/${orgId}/missions/uploads`, fd, {
+        headers: { "Content-Type": "multipart/form-data" },
+      });
+      setAttachments((prev) => [...prev, ...(data.attachments || [])]);
+    } catch (err) {
+      toast.error(err?.response?.data?.detail || "Upload failed");
+    } finally { setUploading(false); }
+  };
+
+  const removeAttachment = async (attId) => {
+    try {
+      await api.delete(`/orgs/${orgId}/missions/uploads/${attId}`);
+    } catch {/* best effort — even if delete fails, drop from UI */}
+    setAttachments((prev) => prev.filter((a) => a.id !== attId));
+  };
+
+  // Clean up any uploaded-but-not-used attachments when the dialog closes
+  // without starting a mission. Prevents orphaned disk space.
+  const cleanupAndClose = async () => {
+    for (const a of attachments) {
+      try { await api.delete(`/orgs/${orgId}/missions/uploads/${a.id}`); }
+      catch {/* ignore */}
+    }
+    onClose();
+  };
+
   const submit = async () => {
     const g = goal.trim();
     if (g.length < 6) { toast.error("Describe the goal in a sentence or two."); return; }
     setBusy(true);
-    await onSubmit(g);
+    await onSubmit(g, attachments.map((a) => a.id));
     setBusy(false);
   };
+
+  const onDrop = (e) => {
+    e.preventDefault();
+    setDragging(false);
+    addFiles(e.dataTransfer.files);
+  };
+
   return (
     <div
       className="fixed inset-0 z-40 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm"
-      onClick={onClose}
+      onClick={cleanupAndClose}
       data-testid="start-mission-dialog"
     >
-      <div className="sp-glass-strong rounded-2xl w-full max-w-lg p-6 sp-fade-up" onClick={(e) => e.stopPropagation()}>
+      <div className="sp-glass-strong rounded-2xl w-full max-w-lg p-6 sp-fade-up max-h-[90vh] overflow-y-auto" onClick={(e) => e.stopPropagation()}>
         <div className="flex items-center justify-between mb-4">
           <h3 className="sp-display text-2xl">Start a mission</h3>
-          <button onClick={onClose} className="text-white/60 hover:text-white"><X className="w-4 h-4" /></button>
+          <button onClick={cleanupAndClose} className="text-white/60 hover:text-white"><X className="w-4 h-4" /></button>
         </div>
         <p className="text-xs sp-subtle mb-3">
           Describe a goal in plain English. The lead agent will pick tools, iterate, and ship a deliverable when done.
@@ -198,15 +248,69 @@ function StartMissionDialog({ onClose, onSubmit }) {
           onChange={(e) => setGoal(e.target.value)}
           rows={5}
           disabled={busy}
-          placeholder={`Examples:\n• Research the top 10 competitors and write a one-page teardown.\n• Draft 5 LinkedIn posts about our Q1 launch and save each as markdown.\n• Read our brand guide and generate 3 hero images for the landing page.\n• Go to acme.com/contact, fill the form (name, email, message), and submit it.`}
+          placeholder={`Examples:\n• Research the top 10 competitors and write a one-page teardown.\n• Draft 5 LinkedIn posts about our Q1 launch and save each as markdown.\n• Read the attached brief and produce a 3-page summary deck.\n• Read our brand guide and generate 3 hero images for the landing page.`}
           className="w-full sp-glass rounded-xl px-3 py-2 text-sm focus:outline-none resize-none"
           style={{ background: "var(--input-bg)", color: "var(--fg)" }}
           data-testid="mission-goal-input"
           onKeyDown={(e) => { if ((e.ctrlKey || e.metaKey) && e.key === "Enter") submit(); }}
         />
+
+        {/* Drag-drop attachment zone */}
+        <div
+          onDragOver={(e) => { e.preventDefault(); setDragging(true); }}
+          onDragLeave={() => setDragging(false)}
+          onDrop={onDrop}
+          className={`mt-3 rounded-xl border-2 border-dashed p-3 transition ${
+            dragging ? "border-orange-400 bg-orange-500/10" : "border-white/10 bg-white/[0.02]"
+          }`}
+          data-testid="mission-dropzone"
+        >
+          {attachments.length === 0 ? (
+            <div className="flex items-center gap-3 text-xs sp-subtle">
+              <UploadCloud className="w-4 h-4 text-white/40" />
+              <span>Drag files here to attach (images, PDFs, docs — up to 6, 25 MB each)</span>
+              <button type="button" onClick={() => fileRef.current?.click()}
+                      className="sp-btn sp-btn-ghost !py-0.5 !px-2 text-[11px] ml-auto">
+                Browse
+              </button>
+            </div>
+          ) : (
+            <div className="space-y-1.5">
+              {attachments.map((a) => (
+                <div key={a.id} className="flex items-center gap-2 text-xs py-0.5"
+                     data-testid={`attachment-row-${a.id}`}>
+                  <FileText className="w-3 h-3 text-white/50 shrink-0" />
+                  <span className="truncate text-white/85">{a.original_name}</span>
+                  <span className="sp-subtle shrink-0">({Math.round(a.size / 1024)} KB)</span>
+                  <button type="button" onClick={() => removeAttachment(a.id)}
+                          className="ml-auto text-white/40 hover:text-red-300 shrink-0"
+                          data-testid={`attachment-remove-${a.id}`}>
+                    <X className="w-3 h-3" />
+                  </button>
+                </div>
+              ))}
+              {attachments.length < 6 && (
+                <button type="button" onClick={() => fileRef.current?.click()}
+                        className="sp-btn sp-btn-ghost !py-0.5 !px-2 text-[11px] mt-1"
+                        data-testid="add-more-attachments">
+                  <UploadCloud className="w-3 h-3" /> Add more
+                </button>
+              )}
+            </div>
+          )}
+          {uploading && (
+            <div className="flex items-center gap-2 text-[11px] text-sky-200 mt-2">
+              <Loader2 className="w-3 h-3 animate-spin" /> Uploading…
+            </div>
+          )}
+          <input type="file" ref={fileRef} multiple className="hidden"
+                 onChange={(e) => { addFiles(e.target.files); e.target.value = ""; }}
+                 data-testid="mission-file-input" />
+        </div>
+
         <div className="flex justify-end gap-2 mt-4">
-          <button onClick={onClose} disabled={busy} className="sp-btn sp-btn-ghost text-xs">Cancel</button>
-          <button onClick={submit} disabled={busy || goal.trim().length < 6}
+          <button onClick={cleanupAndClose} disabled={busy} className="sp-btn sp-btn-ghost text-xs">Cancel</button>
+          <button onClick={submit} disabled={busy || goal.trim().length < 6 || uploading}
                   className="sp-btn sp-btn-primary text-xs disabled:opacity-50"
                   data-testid="mission-submit-btn">
             {busy ? <><Loader2 className="w-3.5 h-3.5 animate-spin" /> Starting…</>
@@ -382,6 +486,24 @@ function MissionDetail({ orgId, missionId }) {
                   </span>
                 </div>
                 <div className="text-base font-medium leading-snug">{displayMissionGoal(mission.goal)}</div>
+                {(mission.attachments || []).length > 0 && (
+                  <div className="mt-2 flex flex-wrap items-center gap-1.5" data-testid="mission-attachments-strip">
+                    <span className="text-[10px] uppercase tracking-widest sp-subtle mr-1">Attached</span>
+                    {mission.attachments.map((a) => (
+                      <a key={a.id}
+                         href={`${BACKEND_URL}${a.url}`}
+                         target="_blank" rel="noreferrer"
+                         title={`${a.original_name} (${Math.round((a.size || 0) / 1024)} KB)`}
+                         className="inline-flex items-center gap-1 text-[11px] px-2 py-0.5 rounded-full bg-white/5 border border-white/10 text-white/75 hover:text-white hover:bg-white/10"
+                         data-testid={`mission-attachment-${a.id}`}>
+                        {a.kind === "image"
+                          ? <ImageIcon className="w-3 h-3" />
+                          : <FileText className="w-3 h-3" />}
+                        <span className="truncate max-w-[160px]">{a.original_name}</span>
+                      </a>
+                    ))}
+                  </div>
+                )}
                 {mission.conversation_id && (
                   <ConvBacklink convId={mission.conversation_id} />
                 )}

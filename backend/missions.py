@@ -34,7 +34,7 @@ from typing import Any, Callable, Dict, List, Optional
 from urllib.parse import urlparse
 
 from bson import ObjectId
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Body, Depends, File, Form, HTTPException, UploadFile
 from pydantic import BaseModel, Field
 
 logger = logging.getLogger(__name__)
@@ -86,6 +86,10 @@ class StartMissionBody(BaseModel):
     lead_agent_id: Optional[str] = None
     conversation_id: Optional[str] = None  # set when started from a chat
     model: Optional[str] = None  # reserved (we use Sonnet by default)
+    # IDs of files previously uploaded via POST /orgs/{id}/missions/uploads.
+    # The attachments get injected into the mission's system prompt and
+    # become accessible via the `read_attachment` tool at runtime.
+    attachment_ids: List[str] = Field(default_factory=list)
 
 
 class AnswerMissionBody(BaseModel):
@@ -119,6 +123,19 @@ def serialize_mission(m: dict) -> dict:
         # CTA when a post-mission fails because no session was on file.
         "social_platform": m.get("social_platform", ""),
         "has_social_session": bool(m.get("has_social_session", False)),
+        # User-uploaded attachments available to the mission at runtime.
+        # We don't leak the filesystem path — only browser-reachable URLs.
+        "attachments": [
+            {
+                "id": a.get("id"),
+                "original_name": a.get("original_name"),
+                "kind": a.get("kind"),
+                "mime": a.get("mime"),
+                "size": a.get("size"),
+                "url": a.get("url"),
+            }
+            for a in (m.get("attachments") or [])
+        ],
     }
 
 
@@ -1017,6 +1034,62 @@ def build_tools(
             "artifact": artifact,
         }
 
+    async def read_attachment(ctx, args):
+        """Read a user-uploaded mission attachment. Call with no args to
+        list all attachments on this mission, or pass `name` (substring
+        match against original_name) or `attachment_id` to get the full
+        extracted text of one."""
+        mission_id = ctx.get("mission_id") or ""
+        if not mission_id:
+            return {"error": "No mission context — read_attachment is only available inside a running mission."}
+        mission = await db.missions.find_one({"id": mission_id}, {"_id": 0, "attachments": 1})
+        attachments = (mission or {}).get("attachments") or []
+        if not attachments:
+            return {"error": "The user didn't attach any files to this mission."}
+        att_id = (args.get("attachment_id") or "").strip()
+        name_q = (args.get("name") or "").strip().lower()
+        if not att_id and not name_q:
+            # Return a compact listing
+            return {"listing": [
+                {
+                    "attachment_id": a.get("id"),
+                    "name": a.get("original_name"),
+                    "kind": a.get("kind"),
+                    "size": a.get("size"),
+                    "preview": (a.get("text_excerpt") or "")[:200],
+                }
+                for a in attachments
+            ], "hint": "Pass name (substring) or attachment_id to read full content."}
+        match = None
+        if att_id:
+            match = next((a for a in attachments if a.get("id") == att_id), None)
+        if match is None and name_q:
+            match = next((a for a in attachments
+                          if name_q in (a.get("original_name") or "").lower()), None)
+        if not match:
+            return {"error": "No matching attachment. Call read_attachment() with no args to list them."}
+        # Return the already-persisted text_excerpt (trimmed at save time) OR,
+        # if the file is short enough, re-read it from disk.
+        text = match.get("text_excerpt") or ""
+        kind = match.get("kind") or ""
+        path = UPLOAD_DIR / (match.get("filename") or "")
+        if kind in {"text", "doc", "pdf"} and path.is_file() and len(text) < 4000:
+            try:
+                from assets import extract_text, trim  # type: ignore
+                ext = (match.get("original_name") or "").rsplit(".", 1)[-1].lower()
+                text = trim(extract_text(path, ext), limit=12000)
+            except Exception as exc:
+                logger.info("read_attachment extract failed: %s", exc)
+        return {
+            "attachment_id": match.get("id"),
+            "name": match.get("original_name"),
+            "kind": kind,
+            "mime": match.get("mime"),
+            "size": match.get("size"),
+            "url": match.get("url"),
+            "content": text or "(no extractable text — binary asset)",
+        }
+
     return [
         Tool("web_search",
              "Search the LIVE web (Brave + Perplexity fallback). Always use this for anything involving current events, recent launches, dates, prices, or 'latest'. Pass freshness='day'|'week'|'month'|'year' for time-sensitive queries — defaults to 'month' when the query mentions 'latest', 'this year', or a recent quarter. If results come back empty, DO NOT guess from your training data — retry with a refined query or ask_user.",
@@ -1025,6 +1098,9 @@ def build_tools(
         Tool("read_org_document",
              "Read a previously-generated artifact from the Org Documents library. Call with no args to list, or pass document_id / name.",
              '{"document_id": "...", "name": "substring"}', read_org_document),
+        Tool("read_attachment",
+             "Read a file the user attached when starting this mission. Call with no args to list attachments; pass `name` (substring) or `attachment_id` to read the full text. Use this when the mission goal references 'the uploaded file' / 'the PDF I attached' / etc.",
+             '{"name": "substring"}', read_attachment),
         Tool("write_artifact",
              "Save a TEXT file (markdown brief, CSV, .ics invite, email, script, JSON, HTML) to the Documents library. Users download these. ALLOWED extensions: .md .csv .tsv .json .html .ics .vcf .eml .sh .py .js .ts .sql .txt .xml .yaml. NOT for images — if you need an image, use `generate_image` instead; the artifact pipeline rejects binary extensions.",
              '{"name": "brief.md", "mime": "text/markdown", "title": "Human title", "content": "raw file body"}',
@@ -1064,8 +1140,142 @@ def make_missions_router(
     build_tools_factory: Callable[[], List[Tool]],
     build_lead_system_prompt: Callable[[str], str],
     docs_root: Path,
+    UPLOAD_DIR: Path,
 ):
     r = APIRouter(prefix="/api")
+
+    # ── Mission attachments — files the user uploads BEFORE starting ────
+    # Endpoint shape matches /conversations/{id}/upload. Files are saved
+    # to UPLOAD_DIR under a `mission-attach/` prefix; a pending record is
+    # inserted into db.mission_attachments and returned to the caller.
+    # The caller passes the record's `id` back in StartMissionBody.
+    # Pending records are consumed (and deleted) when a mission actually
+    # starts; stale ones are cleaned up by a 24h TTL index on created_at.
+    MISSION_ATTACH_PREFIX = "mission-attach"
+    MAX_MISSION_ATTACH_SIZE = 25 * 1024 * 1024  # 25 MB per file
+    # Accept the same broad allowlist we use for conversation uploads —
+    # images, docs, audio, video, text. The full set lives in server.py as
+    # ALLOWED_ATTACH_EXTS; inline here to avoid a circular import.
+    ALLOWED_MISSION_ATTACH_EXTS = {
+        # images
+        "png", "jpg", "jpeg", "webp", "gif", "bmp", "heic", "heif", "avif",
+        # docs
+        "pdf", "docx", "doc", "xlsx", "pptx", "rtf",
+        # text
+        "txt", "md", "csv", "tsv", "json", "xml", "yaml", "yml", "html", "log",
+        # audio
+        "mp3", "wav", "m4a", "ogg", "flac", "aac",
+        # video
+        "mp4", "mov", "webm", "avi", "mkv",
+    }
+
+    def _attach_kind(ext: str) -> str:
+        e = ext.lower().lstrip(".")
+        if e in {"png", "jpg", "jpeg", "webp", "gif", "bmp", "heic", "heif", "avif"}:
+            return "image"
+        if e == "pdf":
+            return "pdf"
+        if e in {"docx", "doc", "xlsx", "pptx", "rtf"}:
+            return "doc"
+        if e in {"txt", "md", "csv", "tsv", "json", "xml", "yaml", "yml", "html", "log"}:
+            return "text"
+        if e in {"mp3", "wav", "m4a", "ogg", "flac", "aac"}:
+            return "audio"
+        if e in {"mp4", "mov", "webm", "avi", "mkv"}:
+            return "video"
+        return "file"
+
+    @r.post("/orgs/{org_id}/missions/uploads")
+    async def upload_mission_attachments(
+        org_id: str,
+        files: List[UploadFile] = File(...),
+        u: dict = Depends(get_current_user),
+    ):
+        """Upload files that will be consumed by a mission started via
+        POST /orgs/{id}/missions. Returns a list of attachment records —
+        the caller stashes their `id` values and passes them back in
+        StartMissionBody.attachment_ids.
+
+        Max 6 files, 25 MB each. Files outlive their pending record for
+        the mission lifetime; pending records are auto-deleted after 24h
+        via a TTL index if the caller never starts the mission.
+        """
+        await require_org_member(org_id, u["id"])
+        if not files:
+            raise HTTPException(400, "At least one file is required")
+        if len(files) > 6:
+            raise HTTPException(400, "Up to 6 files per mission")
+        attach_dir = UPLOAD_DIR / MISSION_ATTACH_PREFIX
+        attach_dir.mkdir(parents=True, exist_ok=True)
+        out: List[dict] = []
+        now = datetime.now(timezone.utc)
+        for upload in files:
+            original = (upload.filename or "file").strip().replace("/", "_").replace("\\", "_")
+            ext = original.rsplit(".", 1)[-1].lower() if "." in original else ""
+            if ext not in ALLOWED_MISSION_ATTACH_EXTS:
+                raise HTTPException(400, f"Unsupported file type: .{ext or '?'}")
+            blob = await upload.read()
+            if not blob:
+                raise HTTPException(400, f"Empty file: {original}")
+            if len(blob) > MAX_MISSION_ATTACH_SIZE:
+                raise HTTPException(400,
+                    f"'{original}' is too large (max {MAX_MISSION_ATTACH_SIZE // (1024 * 1024)} MB each).")
+            fname = f"{MISSION_ATTACH_PREFIX}-{uuid.uuid4().hex}.{ext}"
+            fpath = UPLOAD_DIR / fname
+            fpath.write_bytes(blob)
+            kind = _attach_kind(ext)
+            # Extract a text preview for the system prompt so the agent
+            # has immediate visibility without burning a tool call.
+            text_excerpt = ""
+            try:
+                from assets import is_text_extractable, extract_text, trim  # type: ignore
+                if is_text_extractable(ext):
+                    text_excerpt = trim(extract_text(fpath, ext), limit=2000)
+            except Exception as exc:
+                logger.info("mission upload extract failed for %s: %s", original, exc)
+            attach_id = str(uuid.uuid4())
+            record = {
+                "id": attach_id,
+                "org_id": org_id,
+                "uploader_id": u["id"],
+                "filename": fname,
+                "original_name": original,
+                "kind": kind,
+                "mime": upload.content_type or "",
+                "size": len(blob),
+                "url": f"/api/files/{fname}",
+                "text_excerpt": text_excerpt,
+                "created_at": now,
+                "consumed_by_mission_id": "",  # filled at mission start
+            }
+            await db.mission_attachments.insert_one({**record})
+            out.append(record)
+        return {"attachments": out}
+
+    @r.delete("/orgs/{org_id}/missions/uploads/{attachment_id}")
+    async def delete_pending_attachment(
+        org_id: str, attachment_id: str,
+        u: dict = Depends(get_current_user),
+    ):
+        """Drop a pending attachment (user changed their mind before
+        starting the mission). Only the uploader can delete. Consumed
+        attachments (attached to a running/finished mission) are NOT
+        deletable via this endpoint — they stay with the mission.
+        """
+        await require_org_member(org_id, u["id"])
+        rec = await db.mission_attachments.find_one({
+            "id": attachment_id, "org_id": org_id, "uploader_id": u["id"],
+        })
+        if not rec:
+            raise HTTPException(404, "Attachment not found")
+        if rec.get("consumed_by_mission_id"):
+            raise HTTPException(409, "This attachment is already attached to a mission.")
+        try:
+            (UPLOAD_DIR / rec["filename"]).unlink(missing_ok=True)
+        except Exception:
+            pass
+        await db.mission_attachments.delete_one({"_id": rec["_id"]})
+        return {"ok": True}
 
     @r.get("/orgs/{org_id}/missions")
     async def list_missions(org_id: str, u: dict = Depends(get_current_user)):
@@ -1186,6 +1396,49 @@ def make_missions_router(
                     f"user must upload a session at the org's Social Queue page "
                     f"(Manage login sessions) before this mission can run.'\n"
                 )
+        # Resolve user-uploaded attachments. Validate owner + org, embed
+        # them in the mission doc, and mark the pending records as
+        # consumed so they're no longer deletable.
+        resolved_attachments: List[dict] = []
+        if body.attachment_ids:
+            for att_id in body.attachment_ids[:6]:  # hard cap 6
+                rec = await db.mission_attachments.find_one({
+                    "id": att_id, "org_id": org_id, "uploader_id": u["id"],
+                })
+                if not rec:
+                    raise HTTPException(400, f"Attachment {att_id} not found or already consumed.")
+                if rec.get("consumed_by_mission_id"):
+                    raise HTTPException(400, f"Attachment {att_id} was already used by another mission.")
+                resolved_attachments.append({
+                    "id": rec["id"],
+                    "filename": rec["filename"],
+                    "original_name": rec["original_name"],
+                    "kind": rec["kind"],
+                    "mime": rec.get("mime", ""),
+                    "size": rec["size"],
+                    "url": rec["url"],
+                    "text_excerpt": rec.get("text_excerpt", ""),
+                })
+        # Append an ATTACHMENTS block to the goal so the agent knows what
+        # the user dropped in + sees a preview of the text content. Full
+        # text access is available via the `read_attachment` tool.
+        if resolved_attachments:
+            lines = [
+                "\n\n[USER ATTACHMENTS — {} file(s) the user dropped onto this mission]".format(
+                    len(resolved_attachments)
+                ),
+                "Use the `read_attachment` tool to get the FULL contents of any "
+                "of these. Previews are truncated at 2000 chars.",
+            ]
+            for a in resolved_attachments:
+                lines.append(
+                    f"\n• {a['original_name']} ({a['kind']}, {a['size']} bytes) "
+                    f"— id={a['id']}"
+                )
+                excerpt = a.get("text_excerpt", "")
+                if excerpt:
+                    lines.append(f"  preview: {excerpt[:600]}")
+            goal_with_context += "\n".join(lines)
         mission = {
             "id": str(uuid.uuid4()),
             "org_id": org_id,
@@ -1205,8 +1458,17 @@ def make_missions_router(
             "created_by": u["id"],
             "social_platform": detected_platform or "",
             "has_social_session": has_session_for_detected,
+            "attachments": resolved_attachments,
         }
         await db.missions.insert_one({**mission})
+        # Mark the pending attachment records as consumed so they can't be
+        # double-used by another mission and so the TTL doesn't garbage-
+        # collect their files.
+        if resolved_attachments:
+            await db.mission_attachments.update_many(
+                {"id": {"$in": [a["id"] for a in resolved_attachments]}},
+                {"$set": {"consumed_by_mission_id": mission["id"]}},
+            )
 
         # When started from a conversation, drop a special `mission_card`
         # message into that conv so the user can watch progress inline. The
