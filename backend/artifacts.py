@@ -285,8 +285,7 @@ def extract_artifact_blocks(text: str) -> Tuple[str, List[dict]]:
             "Ask me to **generate an image** and I'll use the image tool, "
             "which actually produces a real PNG._"
         )
-    return cleaned, blocks
-    # Tidy up double-blank-lines we created
+    # Tidy up double-blank-lines we created when removing inline blocks.
     cleaned = re.sub(r"\n{3,}", "\n\n", cleaned).strip()
     return cleaned, blocks
 
