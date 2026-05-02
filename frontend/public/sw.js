@@ -1,11 +1,16 @@
-/* SoulPrint Engine — minimal install-only service worker.
+/* SoulPrint Engine Pro — minimal install-only service worker.
  *
  * Goal: make the app installable as a PWA without inadvertently caching
  * user-specific API responses. We let the browser handle network fetches
  * normally and only intercept navigation requests with a tiny offline
  * fallback so the app still resolves an installable shell.
+ *
+ * IMPORTANT: bump VERSION whenever you ship visible changes to the app
+ * shell (brand name, navigation, hero copy, etc) so existing PWA / browser
+ * installs purge stale caches on the next activation and pick up the new
+ * UI immediately instead of stickying the old build.
  */
-const VERSION = "soulprint-v2";
+const VERSION = "soulprint-v3-pro";
 const CORE = ["/", "/index.html", "/favicon-32.png", "/favicon-192.png", "/favicon-512.png", "/soulprint-logo.png", "/manifest.json"];
 
 self.addEventListener("install", (event) => {
