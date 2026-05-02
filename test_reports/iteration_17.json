@@ -1,0 +1,33 @@
+{
+  "summary": "Backend-only verification of iteration 17 — bulk-image fix + binary-artifact rejection. Wrote 38 unit + integration tests (mocked nano-banana) covering _safe_filename(), extract_artifact_blocks(), detect_image_count(), and _generate_bulk_images(). All 38 passed. Re-ran iter15 + iter16 regression suites (45 tests) — all passed.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "artifacts.py::extract_artifact_blocks", "issue": "Dead code after return at lines 290-291 (re.sub + second return are unreachable). Harmless but dead — remove for clarity."}
+    ]
+  },
+  "frontend_issues": {"ui_bugs": [], "integration_issues": [], "design_issues": []},
+  "test_report_links": [
+    "/app/backend/tests/test_iter17_bulk_images.py",
+    "/app/test_reports/pytest/iter17_bulk_images.xml"
+  ],
+  "action_items": [
+    "(Optional/non-blocking) Drop the unreachable lines 289-291 in artifacts.py — extract_artifact_blocks already returned at line 288, so the re.sub for triple-newlines + the second return never run.",
+    "(Optional) Install pytest-asyncio in backend/requirements.txt — I had to pip-install it ad-hoc for the bulk-image integration tests; future runs need it pinned. (Already installed in this env.)"
+  ],
+  "critical_code_review_comments": [
+    "artifacts.py:288-291 — return statement at line 288 makes lines 289-291 unreachable dead code. Functionality is correct, but the cleanup re.sub for triple-newlines never runs (cleaned text may have extra blank lines if the original prose between artifact blocks was already separated by blank lines). Low priority but worth a 1-line fix.",
+    "server.py _generate_bulk_images correctly persists each image as its own message with media_type=image, media_filename, media_url. Variant hints (Variation A..H) appended cleanly when count>1.",
+    "server.py detect_image_count regex is well-bounded: cap at MAX_BULK_IMAGES=8 prevents budget drain from typos like 'create 100 images'. Confirmed via test parametrization."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_iter17_bulk_images.py (new)"
+  ],
+  "success_rate": {"backend": "100% (38/38 new + 45/45 regression)", "frontend": "not tested (per request)"},
+  "test_credentials": "Not used — direct unit/integration tests, no HTTP auth needed.",
+  "seed_data_creation": "Test conversations prefixed with TEST_conv_ created in db.messages and cleaned up in finally blocks of each async test.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Iter17 covered backend bulk-image fix and binary-artifact guard. The /api chat HTTP layer wiring was NOT exercised end-to-end — only the helper functions and the real-MongoDB persistence path (with nano-banana mocked). If next iteration touches /api/conversations/{id}/messages or smart_start, run a real HTTP-level test against the public REACT_APP_BACKEND_URL with the standing smoke account. Tests use a fresh AsyncIOMotorClient per test (fixture: fresh_db) because server.db's import-time loop is closed by pytest-asyncio between tests.",
+  "rca of the issue": "Original user report: 'I'm only getting .txt files for bulk images.' Two compounding bugs: (1) _safe_filename() in artifacts.py used to silently coerce ANY non-allowed extension (including binary like .png/.mp4/.pdf) to .txt, persisting base64 garbage as text-with-wrong-name. Now returns ('','') for any BINARY_EXTS member, the caller drops the block, and a user-visible '⚠️ I tried to emit binary file(s)…' notice is appended. (2) The chat flow only generated 1 image even when user asked for 5; agent's only fallback was to emit ARTIFACT blocks with .png names which the broken sanitizer turned into .txt. Now detect_image_count() parses 'create 5 hero images' → 5 (capped at 8), and _generate_bulk_images() renders N distinct images each as its own agent message with variant hints. Verified end-to-end via direct unit tests + mocked nano-banana integration tests."
+}

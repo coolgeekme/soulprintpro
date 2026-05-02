@@ -192,7 +192,13 @@ _SAFE_NAME_RE = re.compile(r"[^a-zA-Z0-9._\-]")
 
 
 def _safe_filename(raw: str) -> Tuple[str, str]:
-    """Sanitise a user-supplied filename. Returns (clean_name, ext_lower)."""
+    """Sanitise a user-supplied filename. Returns (clean_name, ext_lower).
+
+    Returns ``("", "")`` when the requested extension is binary (image,
+    video, audio, PDF, etc.) so the caller can drop the block — never
+    silently coerce binary content to .txt because the body would be
+    base64 gibberish saved with a useless extension.
+    """
     name = (raw or "").strip().replace("/", "_").replace("\\", "_")
     name = _SAFE_NAME_RE.sub("_", name)
     if not name or name.startswith("."):
@@ -200,8 +206,13 @@ def _safe_filename(raw: str) -> Tuple[str, str]:
     if "." not in name:
         name += ".txt"
     ext = name.rsplit(".", 1)[-1].lower()
+    if ext in BINARY_EXTS:
+        # Refuse — the caller will drop the block and surface the issue.
+        return "", ""
     if ext not in ALLOWED_EXTS:
-        # Coerce unsupported extensions to .txt so we never lose the content
+        # Unknown but plausibly text — coerce to .txt so we never lose
+        # the body. (Same legacy behaviour as before for genuinely
+        # unrecognised text-ish extensions.)
         name = name.rsplit(".", 1)[0] + ".txt"
         ext = "txt"
     return name[:120], ext
@@ -224,11 +235,18 @@ def extract_artifact_blocks(text: str) -> Tuple[str, List[dict]]:
 
     The cleaned_text has the [[ARTIFACT...]]...[[/ARTIFACT]] blocks removed
     and replaced with a thin placeholder so the prose stays readable.
+
+    If an agent tries to emit a binary extension (.png, .mp4, .pdf, etc.)
+    via this block — base64 or otherwise — we DROP the block entirely
+    rather than save garbage-as-.txt. A small notice is appended to the
+    cleaned text so the user sees that the agent took an unsupported
+    shortcut and the right path is the image-generation tool.
     """
     if not text or "[[ARTIFACT" not in text.upper():
         return text or "", []
 
     blocks: List[dict] = []
+    rejected: List[str] = []  # list of original requested filenames
 
     def _swap(match: re.Match) -> str:
         attrs = _parse_attrs(match.group(1) or "")
@@ -237,6 +255,11 @@ def extract_artifact_blocks(text: str) -> Tuple[str, List[dict]]:
         if not raw_name:
             return ""  # malformed — drop entirely
         name, ext = _safe_filename(raw_name)
+        if not name:
+            # Binary extension — agent took the wrong route. Drop the
+            # block (we don't save the body) and flag it to the user.
+            rejected.append(raw_name)
+            return ""
         mime = attrs.get("mime") or DEFAULT_MIME.get(ext, "application/octet-stream")
         title = (attrs.get("title") or "").strip() or name
         blocks.append({
@@ -248,6 +271,21 @@ def extract_artifact_blocks(text: str) -> Tuple[str, List[dict]]:
         return ""
 
     cleaned = _ARTIFACT_RE.sub(_swap, text)
+    if rejected:
+        # Build a short, user-visible notice listing the dropped requests
+        # so the user understands why an expected image / PDF didn't show
+        # up. We only show this once per turn, regardless of how many
+        # blocks were rejected.
+        names = ", ".join(rejected[:5])
+        more = f" (+{len(rejected) - 5} more)" if len(rejected) > 5 else ""
+        cleaned = (
+            (cleaned or "").rstrip()
+            + f"\n\n_⚠️ I tried to emit binary file(s) ({names}{more}) via "
+            "the wrong channel — the chat artifact pipeline is text-only. "
+            "Ask me to **generate an image** and I'll use the image tool, "
+            "which actually produces a real PNG._"
+        )
+    return cleaned, blocks
     # Tidy up double-blank-lines we created
     cleaned = re.sub(r"\n{3,}", "\n\n", cleaned).strip()
     return cleaned, blocks

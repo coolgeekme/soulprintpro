@@ -1570,6 +1570,44 @@ def _quick_image_intent(text: str) -> Optional[bool]:
         return True
     return None
 
+
+# Bulk image count parser. When the user says "create 5 hero images" or
+# "design 10 thumbnails", we want to render that many distinct outputs
+# (each with a slightly different creative twist) instead of a single
+# image. We cap at 8 to bound LLM/budget exposure.
+_BULK_COUNT_RE = re.compile(
+    r"\b(?:make|create|generate|design|render|draft|give|produce|"
+    r"want|need|whip\s+up)(?:\s+(?:me|us|them))?\s+(\d{1,3})\s+"
+    r"(?:different\s+|unique\s+|variation[s]?\s+of\s+)?"
+    r"(?:image|photo|picture|graphic|illustration|poster|banner|"
+    r"thumbnail|hero|cover|asset|design|render|variation)s?\b",
+    re.IGNORECASE,
+)
+_BULK_VARIATIONS_RE = re.compile(
+    r"\b(\d{1,3})\s+(?:variation[s]?|version[s]?|option[s]?|alternative[s]?)\b",
+    re.IGNORECASE,
+)
+MAX_BULK_IMAGES = 8
+
+
+def detect_image_count(text: str) -> int:
+    """Return how many images the user is asking for. Defaults to 1.
+
+    Matches patterns like "create 5 thumbnails", "give me 4 hero images",
+    "render 3 variations", "design 10 banner options". Cap at MAX_BULK_IMAGES
+    so a typo like "create 100 images" doesn't drain the budget.
+    """
+    if not text:
+        return 1
+    m = _BULK_COUNT_RE.search(text) or _BULK_VARIATIONS_RE.search(text)
+    if not m:
+        return 1
+    try:
+        n = int(m.group(1))
+    except (TypeError, ValueError):
+        return 1
+    return max(1, min(n, MAX_BULK_IMAGES))
+
 def _quick_video_intent(text: str) -> Optional[bool]:
     if _VIDEO_KEYWORDS_RE.search(text) and _VERB_HINTS_RE.search(text):
         return True
@@ -1595,6 +1633,74 @@ def _quick_image_edit_intent(text: str, has_image: bool) -> bool:
     if not has_image or not text:
         return False
     return bool(_EDIT_VERBS_RE.search(text))
+
+async def _generate_bulk_images(
+    *, db, conv_id: str, primary_agent_id: str, primary_agent_name: str,
+    user_text: str, sys_msg: str, count: int,
+) -> int:
+    """Generate `count` distinct images for a single user request.
+
+    Each image is persisted as its own agent message so the chat UI shows
+    them as a sequence (which is also how the user wants to share / save
+    individual ones). We add a tiny variant tag to each prompt so the
+    image model produces meaningful diversity instead of N near-duplicates.
+
+    Returns the number of images that successfully rendered. Failures
+    don't bubble — we degrade gracefully (e.g. budget runs out after the
+    first 3 of 5).
+    """
+    if count <= 0:
+        return 0
+    # Variation hints — light, generic, model-agnostic. They nudge
+    # different compositions / lighting / colour palettes per image.
+    variants = [
+        "Variation A — bold + saturated palette",
+        "Variation B — minimalist + airy whitespace",
+        "Variation C — high-contrast cinematic lighting",
+        "Variation D — playful + asymmetric composition",
+        "Variation E — flat illustration, vector aesthetic",
+        "Variation F — photorealistic, golden-hour lighting",
+        "Variation G — moody + monochromatic",
+        "Variation H — vibrant gradient + soft glow",
+    ]
+    rendered = 0
+    for i in range(min(count, MAX_BULK_IMAGES)):
+        variant_hint = variants[i] if i < len(variants) else f"Variation {i + 1}"
+        # Append the variant ONLY when count > 1 — single asks should keep
+        # the user's prompt verbatim.
+        prompt = (
+            f"{user_text}\n\n[Render this as image {i + 1} of {count}. "
+            f"{variant_hint}.]"
+            if count > 1 else user_text
+        )
+        try:
+            fname, caption = await generate_image_via_nano_banana(prompt, sys_msg)
+        except Exception as exc:
+            logger.warning("bulk image %d/%d failed: %s", i + 1, count, exc)
+            continue
+        msg = {
+            "id": str(uuid.uuid4()),
+            "conversation_id": conv_id,
+            "sender_type": "agent",
+            "sender_id": primary_agent_id,
+            "sender_name": primary_agent_name,
+            "agent_id": primary_agent_id,
+            "text": (
+                (caption or "Here's a draft.").strip()
+                + (f"\n\n_({i + 1} of {count})_" if count > 1 else "")
+            ),
+            "media_type": "image",
+            "media_filename": fname,
+            "media_url": f"/api/files/{fname}",
+            "media_prompt": prompt,
+            "media_system": sys_msg,
+            "media_model": "nano-banana",
+            "timestamp": datetime.now(timezone.utc),
+        }
+        await db.messages.insert_one({**msg})
+        rendered += 1
+    return rendered
+
 
 async def detect_image_intent(message: str) -> bool:
     """Quick LLM classifier: does this message want an image generated?
@@ -2159,25 +2265,16 @@ async def send_message(conv_id: str, body: SendMessageBody, u: dict = Depends(ge
                     + (("\n" + "\n".join(sp_lines)) if sp_lines else "")
                 )
                 try:
-                    fname, caption = await generate_image_via_nano_banana(body.text, sys_msg)
-                    image_msg = {
-                        "id": str(uuid.uuid4()),
-                        "conversation_id": conv_id,
-                        "sender_type": "agent",
-                        "sender_id": primary,
-                        "sender_name": AGENTS[primary]["name"],
-                        "agent_id": primary,
-                        "text": (caption or "Here's a draft.").strip(),
-                        "media_type": "image",
-                        "media_filename": fname,
-                        "media_url": f"/api/files/{fname}",
-                        "media_prompt": body.text,
-                        "media_system": sys_msg,
-                        "media_model": "nano-banana",
-                        "timestamp": datetime.now(timezone.utc),
-                    }
-                    await db.messages.insert_one({**image_msg})
-                    responders = []  # Image alone is enough
+                    requested_count = detect_image_count(body.text)
+                    rendered = await _generate_bulk_images(
+                        db=db, conv_id=conv_id,
+                        primary_agent_id=primary,
+                        primary_agent_name=AGENTS[primary]["name"],
+                        user_text=body.text, sys_msg=sys_msg,
+                        count=requested_count,
+                    )
+                    if rendered > 0:
+                        responders = []  # Image(s) alone are enough
                 except Exception as exc:
                     logger.warning("auto image generation failed: %s", exc)
 
@@ -2292,6 +2389,22 @@ async def smart_start(team_id: str, body: SmartStartBody, u: dict = Depends(get_
             + (("\n" + "\n".join(sp_lines)) if sp_lines else "")
         )
         try:
+            requested_count = detect_image_count(body.text)
+            if requested_count > 1:
+                rendered = await _generate_bulk_images(
+                    db=db, conv_id=conv_id,
+                    primary_agent_id=chosen,
+                    primary_agent_name=AGENTS[chosen]["name"],
+                    user_text=body.text, sys_msg=sys_msg,
+                    count=requested_count,
+                )
+                if rendered > 0:
+                    return {
+                        "conversation": serialize_conv(conv_doc),
+                        "routed_agent_id": chosen,
+                        "user_message": {k: v for k, v in user_doc.items() if k != "_id"},
+                        "agent_message": {"bulk": True, "rendered": rendered, "requested": requested_count},
+                    }
             fname, caption = await generate_image_via_nano_banana(body.text, sys_msg)
             agent_msg = {
                 "id": str(uuid.uuid4()),
