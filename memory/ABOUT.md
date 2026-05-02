@@ -52,7 +52,7 @@ A single page where you draft, schedule, and publish to X, LinkedIn, Facebook, T
 - Want to edit the cover image? Hit the pencil. Custom prompt, regenerate, swap the logo to any corner with one click.
 
 ### 4. **Brand-aware image and video generation**
-Built-in image generation (Nano Banana, GPT Image 1) and video generation (Kie.ai). Every render gets your Soul, your visual style guide, and your primary logo composited automatically.
+Built-in image and video generation. Every render gets your Soul, your visual style guide, and your primary logo composited automatically — so a freshly generated cover image looks like it came out of your brand kit, not out of a stock AI gallery.
 
 - Need 5 cover images for a campaign? Type *"create 5 hero images of our coffee subscription box for the holidays."* You get 5 distinct variations — bold, airy, cinematic, playful, photorealistic — each on-brand and download-ready.
 - Need a 30-second product video? Same flow. Same brand fidelity.
@@ -76,7 +76,7 @@ Drag in PDFs, brand guides, customer interviews, financial data, product specs �
 
 ## What makes this different from "just ChatGPT"
 
-| | Generic AI chat | SoulPrint Engine Pro |
+| Capability | Generic AI chat | SoulPrint Engine Pro |
 |---|---|---|
 | Knows your brand | You re-explain every conversation | Soul + brand assets injected on every call |
 | Specialist depth | One model, generalist | 150+ specialists with role-specific prompts |

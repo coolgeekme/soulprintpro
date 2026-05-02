@@ -453,3 +453,64 @@ input[type="text"], input[type="email"], input[type="password"], textarea {
 .sp-prose pre code {
   padding: 0; background: transparent; border: 0; font-size: 0.9rem;
 }
+
+/* GFM tables — comparison-style render for the About page.
+   Three-column layout (capability / them / us) gets the nicest spacing
+   when "them" stays muted and "us" is the eye-catcher. */
+.sp-prose table {
+  width: 100%;
+  border-collapse: separate;
+  border-spacing: 0;
+  font-size: 0.95rem;
+  margin: 1.5em 0;
+  border: 1px solid var(--border-soft);
+  border-radius: 14px;
+  overflow: hidden;
+  background: color-mix(in srgb, var(--bg) 60%, transparent);
+}
+.sp-prose thead {
+  background: var(--chip-bg);
+}
+.sp-prose th {
+  text-align: left;
+  font-weight: 600;
+  font-size: 0.78rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--fg-soft);
+  padding: 0.85em 1em;
+  border-bottom: 1px solid var(--border-soft);
+}
+/* Make the right-most "us" column visually pop. */
+.sp-prose th:last-child {
+  color: var(--fg);
+  background: color-mix(in srgb, var(--primary-bg) 12%, transparent);
+}
+.sp-prose td {
+  padding: 0.85em 1em;
+  border-bottom: 1px solid var(--border-soft);
+  vertical-align: top;
+  line-height: 1.5;
+}
+.sp-prose tbody tr:last-child td { border-bottom: 0; }
+.sp-prose tbody tr:hover { background: color-mix(in srgb, var(--chip-bg) 60%, transparent); }
+.sp-prose td:first-child {
+  font-weight: 600;
+  color: var(--fg);
+  width: 22%;
+  min-width: 130px;
+}
+.sp-prose td:nth-child(2) {
+  color: var(--fg-soft);
+  width: 36%;
+}
+.sp-prose td:last-child {
+  width: 42%;
+  background: color-mix(in srgb, var(--primary-bg) 6%, transparent);
+}
+@media (max-width: 640px) {
+  .sp-prose table { font-size: 0.85rem; }
+  .sp-prose th, .sp-prose td { padding: 0.65em 0.7em; }
+  .sp-prose td:first-child { min-width: 90px; width: 26%; }
+}
+

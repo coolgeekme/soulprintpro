@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 import api from "../lib/api";
 import { ArrowLeft, Loader2, Download } from "lucide-react";
 
@@ -73,7 +74,7 @@ export default function AboutPage() {
           </div>
         ) : (
           <article className="sp-prose" data-testid="about-content">
-            <ReactMarkdown>{md}</ReactMarkdown>
+            <ReactMarkdown remarkPlugins={[remarkGfm]}>{md}</ReactMarkdown>
           </article>
         )}
       </div>
