@@ -1,9 +1,9 @@
 import React, { useEffect, useState } from "react";
-import api, { BACKEND_URL, displayMissionGoal } from "../lib/api";
+import api, { BACKEND_URL, displayMissionGoal, downloadFile } from "../lib/api";
 import { Link } from "react-router-dom";
 import {
   Loader2, Rocket, Check, AlertTriangle, ChevronDown, ChevronUp,
-  ExternalLink, FileText, Image as ImageIcon, X as XIcon,
+  ExternalLink, FileText, Image as ImageIcon, X as XIcon, Download,
 } from "lucide-react";
 import { toast } from "sonner";
 
@@ -210,6 +210,17 @@ export function MissionCard({ orgId, missionId }) {
               {mission.artifacts.map((a, i) => {
                 const url = a.url?.startsWith("http") ? a.url : `${BACKEND_URL}${a.url}`;
                 const isImg = (a.mime || "").startsWith("image/");
+                const name = a.original_name || a.name || "deliverable";
+                const onDownload = async (ev) => {
+                  // Prevent the surrounding <a> from also navigating.
+                  ev.preventDefault();
+                  ev.stopPropagation();
+                  try {
+                    await downloadFile(a.url || url, name);
+                  } catch (err) {
+                    toast.error(err?.message || "Download failed");
+                  }
+                };
                 return (
                   <li key={i} className="sp-glass rounded-lg p-2.5 flex items-center gap-2.5">
                     <div className="w-7 h-7 rounded-md sp-glass-strong flex items-center justify-center shrink-0">
@@ -217,9 +228,19 @@ export function MissionCard({ orgId, missionId }) {
                     </div>
                     <a href={url} target="_blank" rel="noreferrer"
                        className="text-xs truncate hover:underline flex-1"
+                       title={isImg ? "Open in a new tab" : "Open in a new tab — use the download button to save the file"}
                        data-testid={`mission-card-artifact-${missionId}-${i}`}>
-                      {a.original_name || a.name || "deliverable"}
+                      {name}
                     </a>
+                    <button
+                      type="button"
+                      onClick={onDownload}
+                      className="sp-btn sp-btn-ghost text-[11px] !px-2 !py-1 shrink-0"
+                      title={`Download ${name}`}
+                      data-testid={`mission-card-artifact-download-${missionId}-${i}`}
+                    >
+                      <Download className="w-3 h-3" />
+                    </button>
                   </li>
                 );
               })}

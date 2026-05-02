@@ -94,10 +94,17 @@ def verify_password(p: str, h: str) -> bool:
     except Exception:
         return False
 
+# Sessions persist for 30 days so users don't get punted back to the login
+# screen on every deploy / browser-restart. We re-issue a fresh token on
+# every successful request via `slide_session_cookie` so an active user's
+# expiry keeps rolling forward — long absences (>30d) still re-auth.
+JWT_LIFETIME_DAYS = 30
+JWT_LIFETIME_SECONDS = JWT_LIFETIME_DAYS * 24 * 60 * 60
+
 def create_access_token(user_id: str, email: str) -> str:
     return jwt.encode({
         "sub": user_id, "email": email, "type": "access",
-        "exp": datetime.now(timezone.utc) + timedelta(hours=24),
+        "exp": datetime.now(timezone.utc) + timedelta(days=JWT_LIFETIME_DAYS),
     }, JWT_SECRET, algorithm=JWT_ALGO)
 
 def set_auth_cookies(resp: Response, access: str):
@@ -109,7 +116,7 @@ def set_auth_cookies(resp: Response, access: str):
         httponly=True,
         secure=True,
         samesite="lax",
-        max_age=86400,
+        max_age=JWT_LIFETIME_SECONDS,
         path="/",
     )
 

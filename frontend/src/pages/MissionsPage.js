@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { useParams, Link, useNavigate } from "react-router-dom";
-import api, { BACKEND_URL, displayMissionGoal } from "../lib/api";
+import api, { BACKEND_URL, displayMissionGoal, downloadFile } from "../lib/api";
 import TopBar from "../components/TopBar";
 import { toast } from "sonner";
 import {
@@ -554,7 +554,12 @@ function MissionDetail({ orgId, missionId }) {
                         <div className="text-sm font-medium truncate">{a.original_name}</div>
                         <div className="text-[11px] sp-subtle truncate">{a.mime}</div>
                       </div>
-                      <a href={url} download={a.original_name} className="sp-btn sp-btn-ghost text-[11px]">
+                      <a href={url} download={a.original_name} className="sp-btn sp-btn-ghost text-[11px]"
+                         onClick={async (ev) => {
+                           ev.preventDefault();
+                           try { await downloadFile(a.url || url, a.original_name || "deliverable"); }
+                           catch (err) { toast.error(err?.message || "Download failed"); }
+                         }}>
                         <Download className="w-3 h-3" /> Get
                       </a>
                     </div>

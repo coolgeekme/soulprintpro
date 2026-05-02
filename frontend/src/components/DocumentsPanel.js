@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from "react";
-import api, { BACKEND_URL } from "../lib/api";
+import api, { BACKEND_URL, downloadFile } from "../lib/api";
 import { toast } from "sonner";
 import {
   FileText, FileCode2, FileSpreadsheet, Calendar, Mail, User as UserIcon,
@@ -202,16 +202,19 @@ export default function DocumentsPanel({ orgId }) {
                   </div>
                 </button>
                 <div className="flex items-center gap-1 shrink-0 opacity-60 group-hover:opacity-100 transition">
-                  <a
-                    href={url}
-                    download={d.original_name}
-                    target="_blank" rel="noreferrer"
+                  <button
+                    type="button"
+                    onClick={async (ev) => {
+                      ev.stopPropagation();
+                      try { await downloadFile(d.url || url, d.original_name || "document"); }
+                      catch (err) { toast.error(err?.message || "Download failed"); }
+                    }}
                     className="p-1.5 rounded hover:bg-white/10"
                     data-testid={`document-download-${d.id}`}
                     title="Download"
                   >
                     <Download className="w-3.5 h-3.5" />
-                  </a>
+                  </button>
                   <button
                     onClick={() => removeDoc(d.id)}
                     className="p-1.5 rounded hover:bg-white/10 hover:text-red-300"
@@ -246,15 +249,17 @@ export default function DocumentsPanel({ orgId }) {
                   {preview.doc.agent_name ? ` · ${preview.doc.agent_name}` : ""}
                 </div>
               </div>
-              <a
-                href={preview.doc.url?.startsWith("http") ? preview.doc.url : `${BACKEND_URL}${preview.doc.url}`}
-                download={preview.doc.original_name}
-                target="_blank" rel="noreferrer"
+              <button
+                type="button"
+                onClick={async () => {
+                  try { await downloadFile(preview.doc.url, preview.doc.original_name || "document"); }
+                  catch (err) { toast.error(err?.message || "Download failed"); }
+                }}
                 className="sp-btn sp-btn-ghost text-xs"
                 data-testid="document-modal-download"
               >
                 <Download className="w-3.5 h-3.5" /> Download
-              </a>
+              </button>
               <button
                 onClick={() => setPreview(null)}
                 className="text-white/60 hover:text-white p-1"

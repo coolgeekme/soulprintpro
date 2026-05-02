@@ -107,3 +107,39 @@ api.interceptors.request.use((config) => {
 
 export default api;
 export { BACKEND_URL };
+
+/**
+ * downloadFile — bulletproof download for capability-URL artifacts.
+ *
+ * `<a href="…" download>` is unreliable cross-origin: Chrome / Safari often
+ * navigate to the URL and ignore the `download` attribute when the link
+ * points to a different origin (which our `/api/files/docs/...` always
+ * does in production). Even our backend `Content-Disposition: attachment`
+ * header doesn't always win — popup blockers, mobile Safari, and PWA
+ * installs sometimes still render markdown / JSON inline.
+ *
+ * This helper fetches the bytes via fetch() (same-origin Bearer if needed)
+ * and triggers a fully-programmatic download via a Blob URL, which every
+ * browser honours.
+ */
+export async function downloadFile(url, suggestedName = "download") {
+  const absolute = url.startsWith("http") ? url : `${BACKEND_URL}${url}`;
+  const t = getToken();
+  const headers = {};
+  // Capability URLs (random uuid filenames) don't require auth, but adding
+  // the Bearer never hurts and keeps the helper usable for protected docs.
+  if (t) headers.Authorization = `Bearer ${t}`;
+  const res = await fetch(absolute, { headers, credentials: "include" });
+  if (!res.ok) throw new Error(`Download failed (${res.status})`);
+  const blob = await res.blob();
+  const objectUrl = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = objectUrl;
+  a.download = suggestedName;
+  // Anchor must be in DOM for Firefox to honour the click programmatically.
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  // Revoke after a tick so Safari finishes the download first.
+  setTimeout(() => URL.revokeObjectURL(objectUrl), 1000);
+}
