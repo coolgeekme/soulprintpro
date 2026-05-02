@@ -14,6 +14,7 @@ import AcceptInvitePage from "./pages/AcceptInvitePage";
 import SocialPage from "./pages/SocialPage";
 import MissionsPage from "./pages/MissionsPage";
 import AboutPage from "./pages/AboutPage";
+import ErrorBoundary from "./components/ErrorBoundary";
 
 const Loader = () => (
   <div className="flex items-center justify-center h-screen">
@@ -42,20 +43,22 @@ function App() {
       <div className="App sp-grain min-h-screen">
         <AuthProvider>
           <BrowserRouter>
-            <Routes>
-              <Route path="/" element={<PublicOnly><LandingPage /></PublicOnly>} />
-              <Route path="/about" element={<AboutPage />} />
-              <Route path="/auth" element={<PublicOnly><AuthPage /></PublicOnly>} />
-              <Route path="/invite/:code" element={<Protected><AcceptInvitePage /></Protected>} />
-              <Route path="/app" element={<Protected><AppHome /></Protected>} />
-              <Route path="/app/org/:orgId" element={<Protected><OrgPage /></Protected>} />
-              <Route path="/app/org/:orgId/social" element={<Protected><SocialPage /></Protected>} />
-              <Route path="/app/org/:orgId/missions" element={<Protected><MissionsPage /></Protected>} />
-              <Route path="/app/org/:orgId/missions/:missionId" element={<Protected><MissionsPage /></Protected>} />
-              <Route path="/app/team/:teamId" element={<Protected><TeamPage /></Protected>} />
-              <Route path="/app/team/:teamId/c/:convId" element={<Protected><ConversationPage /></Protected>} />
-              <Route path="*" element={<Navigate to="/" replace />} />
-            </Routes>
+            <ErrorBoundary>
+              <Routes>
+                <Route path="/" element={<PublicOnly><LandingPage /></PublicOnly>} />
+                <Route path="/about" element={<AboutPage />} />
+                <Route path="/auth" element={<PublicOnly><AuthPage /></PublicOnly>} />
+                <Route path="/invite/:code" element={<Protected><AcceptInvitePage /></Protected>} />
+                <Route path="/app" element={<Protected><AppHome /></Protected>} />
+                <Route path="/app/org/:orgId" element={<Protected><OrgPage /></Protected>} />
+                <Route path="/app/org/:orgId/social" element={<Protected><SocialPage /></Protected>} />
+                <Route path="/app/org/:orgId/missions" element={<Protected><MissionsPage /></Protected>} />
+                <Route path="/app/org/:orgId/missions/:missionId" element={<Protected><MissionsPage /></Protected>} />
+                <Route path="/app/team/:teamId" element={<Protected><TeamPage /></Protected>} />
+                <Route path="/app/team/:teamId/c/:convId" element={<Protected><ConversationPage /></Protected>} />
+                <Route path="*" element={<Navigate to="/" replace />} />
+              </Routes>
+            </ErrorBoundary>
           </BrowserRouter>
           <Toaster theme="dark" />
         </AuthProvider>

@@ -96,6 +96,14 @@ class AnswerMissionBody(BaseModel):
     answer: str = Field(..., min_length=1, max_length=4000)
 
 
+class ContinueMissionBody(BaseModel):
+    """Payload for resuming a finished/cancelled/failed mission with
+    extra instructions. Keep this at module scope — FastAPI needs to
+    introspect it at route-registration time to recognise it as a
+    request body rather than a query parameter."""
+    instructions: str = Field("", max_length=2000)
+
+
 # ── Serialisers ────────────────────────────────────────────────────────────
 def _iso(d):
     return d.isoformat() if isinstance(d, datetime) else d
@@ -1619,11 +1627,8 @@ def make_missions_router(
         _RUNNING[mission_id] = task
         return {"ok": True}
 
-    class ContinueBody(BaseModel):
-        instructions: str = Field("", max_length=2000)
-
     @r.post("/missions/{mission_id}/continue")
-    async def continue_mission(mission_id: str, body: ContinueBody,
+    async def continue_mission(mission_id: str, body: ContinueMissionBody,
                                u: dict = Depends(get_current_user)):
         """Resume a *finished* mission with new instructions. The original
         work log is preserved (so the agent has context); the new

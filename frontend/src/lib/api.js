@@ -32,9 +32,11 @@ export const displayMissionGoal = (goal) => {
   if (!goal) return "";
   const idxSys = goal.indexOf("\n\n[SYSTEM CONTEXT");
   const idxAtt = goal.indexOf("\n\n[USER ATTACHMENTS");
+  const idxCont = goal.indexOf("\n\n[Continuation request");
   let cut = goal.length;
   if (idxSys !== -1) cut = Math.min(cut, idxSys);
   if (idxAtt !== -1) cut = Math.min(cut, idxAtt);
+  if (idxCont !== -1) cut = Math.min(cut, idxCont);
   return goal.slice(0, cut).trim();
 };
 
@@ -105,8 +107,53 @@ api.interceptors.request.use((config) => {
   return config;
 });
 
+// Response interceptor — flatten FastAPI/Pydantic validation errors into a
+// plain string on `err.response.data.detail` before user code ever sees it.
+// Otherwise `toast.error(err.response.data.detail)` would pass an array of
+// objects to sonner, which tries to render it as a React child and throws
+// "Objects are not valid as a React child" — killing the whole page.
+api.interceptors.response.use(
+  (resp) => resp,
+  (err) => {
+    const d = err?.response?.data?.detail;
+    if (Array.isArray(d) || (d && typeof d === "object" && !Array.isArray(d))) {
+      err.response.data.detail = errorMessage(err, "Request failed");
+    }
+    return Promise.reject(err);
+  },
+);
+
 export default api;
 export { BACKEND_URL };
+
+/**
+ * errorMessage — safely extract a user-facing string from an axios error.
+ *
+ * Axios surfaces FastAPI validation errors as
+ * ``{ detail: [ {type, loc, msg, input, url}, ... ] }``. Calling
+ * ``toast.error(err.response.data.detail)`` with that payload passes an
+ * array-of-objects to sonner, which tries to render it as a React child
+ * and throws "Objects are not valid as a React child" — killing the whole
+ * page. Use this helper instead for any error toast / banner.
+ */
+export function errorMessage(err, fallback = "Something went wrong") {
+  const d = err?.response?.data?.detail;
+  if (typeof d === "string" && d.trim()) return d;
+  if (Array.isArray(d) && d.length > 0) {
+    // Stringify each Pydantic error object — keep the first two to stay short.
+    return d.slice(0, 2)
+      .map((e) => {
+        if (!e || typeof e !== "object") return String(e);
+        const loc = Array.isArray(e.loc) ? e.loc.slice(1).join(".") : "";
+        const m = e.msg || e.message || "";
+        return loc ? `${loc}: ${m}` : m;
+      })
+      .filter(Boolean)
+      .join(" · ") || fallback;
+  }
+  if (d && typeof d === "object") return d.msg || d.message || fallback;
+  return err?.message || fallback;
+}
 
 /**
  * downloadFile — bulletproof download for capability-URL artifacts.

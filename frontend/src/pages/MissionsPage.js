@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { useParams, Link, useNavigate } from "react-router-dom";
-import api, { BACKEND_URL, displayMissionGoal, downloadFile } from "../lib/api";
+import api, { BACKEND_URL, displayMissionGoal, downloadFile, errorMessage } from "../lib/api";
 import TopBar from "../components/TopBar";
 import { toast } from "sonner";
 import {
@@ -54,7 +54,7 @@ function MissionList({ orgId }) {
       setMissions(data || []);
     } catch (err) {
       setMissions([]);
-      toast.error(err?.response?.data?.detail || "Failed to load missions");
+      toast.error(errorMessage(err, "Failed to load missions"));
     }
   };
   useEffect(() => { load(); /* eslint-disable-next-line */ }, [orgId]);
@@ -67,7 +67,7 @@ function MissionList({ orgId }) {
       setStartOpen(false);
       nav(`/app/org/${orgId}/missions/${data.id}`);
     } catch (err) {
-      toast.error(err?.response?.data?.detail || "Couldn't start mission");
+      toast.error(errorMessage(err, "Couldn't start mission"));
     }
   };
 
@@ -79,7 +79,7 @@ function MissionList({ orgId }) {
       setMissions((prev) => (prev || []).filter((m) => m.id !== id));
       toast.success("Mission deleted");
     } catch (err) {
-      toast.error(err?.response?.data?.detail || "Delete failed");
+      toast.error(errorMessage(err, "Delete failed"));
     }
   };
 
@@ -193,7 +193,7 @@ function StartMissionDialog({ orgId, onClose, onSubmit }) {
       });
       setAttachments((prev) => [...prev, ...(data.attachments || [])]);
     } catch (err) {
-      toast.error(err?.response?.data?.detail || "Upload failed");
+      toast.error(errorMessage(err, "Upload failed"));
     } finally { setUploading(false); }
   };
 
@@ -340,7 +340,7 @@ function MissionDetail({ orgId, missionId }) {
       setMission(m);
       setEvents(ev || []);
     } catch (err) {
-      toast.error(err?.response?.data?.detail || "Couldn't load mission");
+      toast.error(errorMessage(err, "Couldn't load mission"));
     }
   };
   useEffect(() => { load(); /* eslint-disable-next-line */ }, [missionId]);
@@ -408,7 +408,7 @@ function MissionDetail({ orgId, missionId }) {
       await load();
       toast.success("Mission cancelled");
     } catch (err) {
-      toast.error(err?.response?.data?.detail || "Cancel failed");
+      toast.error(errorMessage(err, "Cancel failed"));
     }
   };
 
@@ -420,7 +420,7 @@ function MissionDetail({ orgId, missionId }) {
       toast.success("Mission deleted");
       nav(`/app/org/${orgId}/missions`);
     } catch (err) {
-      toast.error(err?.response?.data?.detail || "Delete failed");
+      toast.error(errorMessage(err, "Delete failed"));
     }
   };
 
@@ -438,7 +438,7 @@ function MissionDetail({ orgId, missionId }) {
       toast.success("Picking up where the mission left off…");
       await load();
     } catch (err) {
-      toast.error(err?.response?.data?.detail || "Continue failed");
+      toast.error(errorMessage(err, "Continue failed"));
     } finally { setContinueBusy(false); }
   };
 
@@ -451,7 +451,7 @@ function MissionDetail({ orgId, missionId }) {
       setAnswer("");
       await load();
     } catch (err) {
-      toast.error(err?.response?.data?.detail || "Couldn't send answer");
+      toast.error(errorMessage(err, "Couldn't send answer"));
     } finally { setBusy(false); }
   };
 
