@@ -4146,7 +4146,7 @@ async def get_about():
     try:
         md = _ABOUT_MD_PATH.read_text(encoding="utf-8")
     except FileNotFoundError:
-        md = "# SoulPrint Engine\n\nAbout content not configured."
+        md = "# SoulPrint Engine Pro\n\nAbout content not configured."
     return {"markdown": md}
 
 app.include_router(base_r)

@@ -1,8 +1,8 @@
-# SoulPrint Engine
+# SoulPrint Engine Pro
 
 ### The AI workforce that knows your business — and ships work that sounds like you wrote it.
 
-SoulPrint Engine is a B2B platform that gives a business owner **a 169-agent AI workforce** trained on the soul of their company. You drop in a paragraph about who you are and what you stand for, and from that moment every agent — researcher, copywriter, designer, social media manager, salesperson, web automator — produces work that fits your brand voice without you having to keep correcting it.
+SoulPrint Engine Pro is a B2B platform that gives a business owner **a 150+ agent AI workforce** trained on the soul of their company. You drop in a paragraph about who you are and what you stand for, and from that moment every agent — researcher, copywriter, designer, social media manager, salesperson, web automator — produces work that fits your brand voice without you having to keep correcting it.
 
 Think of it as the difference between hiring a freelancer who needs three weeks of onboarding, and hiring one who already read every internal doc, knows your customers, mirrors your tone, and shows up the next morning ready to ship.
 
@@ -10,7 +10,7 @@ Think of it as the difference between hiring a freelancer who needs three weeks 
 
 ## Who it's for
 
-SoulPrint Engine is built for **founders and operators of small-to-mid-sized businesses** who:
+SoulPrint Engine Pro is built for **founders and operators of small-to-mid-sized businesses** who:
 
 - Wear ten hats and don't want to add "prompt engineer" to the list
 - Are tired of generic AI output that sounds like everyone else's
@@ -24,7 +24,7 @@ If you've ever pasted a paragraph about your company into ChatGPT for the tenth 
 ## How it works in 30 seconds
 
 1. **Create your Organization.** Tell us your mission, your audience, your tone, your values, and what you stand against. (Or skip it — we'll draft it from your website and you can edit.) This becomes your **Soul** — the brand DNA every agent reads before doing anything.
-2. **Build a Team.** Pick from 169 specialized agents — Brand Strategist, Conversion Copywriter, Social Media Autopilot, Competitive Researcher, Pricing Analyst, Email Sequencer, Frontend Designer, and more. Or just type what you need and the platform routes you to the right one automatically.
+2. **Build a Team.** Pick from 150+ specialized agents — Brand Strategist, Conversion Copywriter, Social Media Autopilot, Competitive Researcher, Pricing Analyst, Email Sequencer, Frontend Designer, and more. Or just type what you need and the platform routes you to the right one automatically.
 3. **Just type.** Ask for a deliverable — *"draft a launch announcement"*, *"design 5 hero images for our landing page"*, *"research the top 3 competitors and tell me what we're missing"*. Agents work in real time, show their reasoning, and ship a finished file.
 4. **Ship.** Download as markdown, CSV, image, calendar invite, or have an agent autonomously publish it to your social accounts on a schedule.
 
@@ -76,10 +76,10 @@ Drag in PDFs, brand guides, customer interviews, financial data, product specs �
 
 ## What makes this different from "just ChatGPT"
 
-| | Generic AI chat | SoulPrint Engine |
+| | Generic AI chat | SoulPrint Engine Pro |
 |---|---|---|
 | Knows your brand | You re-explain every conversation | Soul + brand assets injected on every call |
-| Specialist depth | One model, generalist | 169 specialists with role-specific prompts |
+| Specialist depth | One model, generalist | 150+ specialists with role-specific prompts |
 | Live web | Often dated by months | Real headless browser + live news search |
 | Autonomous tasks | One turn, one answer | Multi-step missions with real tools and verifiable outcomes |
 | Publishes for you | No — you copy-paste output | Yes — agents post to your accounts on a schedule |
@@ -111,10 +111,10 @@ Drag in PDFs, brand guides, customer interviews, financial data, product specs �
 
 ## Try it
 
-The fastest way to understand what SoulPrint Engine actually feels like: spend 5 minutes setting up your Org and ask one of the 169 agents to do something you'd normally pay a freelancer to do. The bar we set for ourselves: by the end of that 5 minutes, you should have a finished deliverable in your hands, saved to your Documents library, that you'd be comfortable shipping.
+The fastest way to understand what SoulPrint Engine Pro actually feels like: spend 5 minutes setting up your Org and ask one of the 150+ agents to do something you'd normally pay a freelancer to do. The bar we set for ourselves: by the end of that 5 minutes, you should have a finished deliverable in your hands, saved to your Documents library, that you'd be comfortable shipping.
 
 If you don't, tell us what didn't land — we'll fix it.
 
 ---
 
-*SoulPrint Engine — the AI workforce that knows your business.*
+*SoulPrint Engine Pro — the AI workforce that knows your business.*

@@ -43,7 +43,7 @@ export default function AuthPage() {
           <div className="w-9 h-9 rounded-lg sp-glass-strong flex items-center justify-center p-0.5">
             <Logo className="w-full h-full" />
           </div>
-          <span className="font-medium tracking-tight text-white">SoulPrint Engine</span>
+          <span className="font-medium tracking-tight text-white">SoulPrint Engine Pro</span>
         </div>
 
         <h1 className="sp-display text-3xl mb-1">

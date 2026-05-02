@@ -29,13 +29,13 @@ export default function LandingPage() {
           <div className="w-9 h-9 rounded-lg sp-glass-strong flex items-center justify-center p-0.5">
             <Logo className="w-full h-full" />
           </div>
-          <span className="font-medium tracking-tight text-white/95">SoulPrint Engine</span>
+          <span className="font-medium tracking-tight text-white/95">SoulPrint Engine Pro</span>
         </Link>
         <nav className="hidden md:flex items-center gap-8 text-sm sp-subtle">
           <a href="#features" className="hover:text-white transition-colors">How it works</a>
           <a href="#agents" className="hover:text-white transition-colors">Agents</a>
           <a href="#teams" className="hover:text-white transition-colors">Teams</a>
-          <Link to="/about" className="hover:text-white transition-colors" data-testid="nav-about">What is SoulPrint Engine?</Link>
+          <Link to="/about" className="hover:text-white transition-colors" data-testid="nav-about">What is SoulPrint Engine Pro?</Link>
         </nav>
         <div className="flex items-center gap-2">
           <Link to="/auth" className="sp-btn sp-btn-ghost text-sm" data-testid="nav-signin">Sign in</Link>
@@ -55,7 +55,7 @@ export default function LandingPage() {
             <span className="italic text-white/75">Teach it to your AI.</span>
           </h1>
           <p className="sp-subtle text-base md:text-lg max-w-2xl leading-relaxed">
-            SoulPrint Engine gives your team a working crew of specialised AI agents that know your mission,
+            SoulPrint Engine Pro gives your team a working crew of specialised AI agents that know your mission,
             your tone, and your people. Spin up org-wide teams, brief them once, and collaborate in direct
             and group chats that actually feel like yours.
           </p>
@@ -88,7 +88,7 @@ export default function LandingPage() {
             body="Define your team's mission, tone, audience, and values once — every agent on the team is briefed automatically." />
           <FeatureCard icon={Users} title="Group + direct conversations"
             body="Work 1:1 with an agent or pull multiple humans and agents into a single thread. @mention to steer, or let the room respond." />
-          <FeatureCard icon={Radio} title="169 specialised agents"
+          <FeatureCard icon={Radio} title="150+ specialised agents"
             body="Engineers, strategists, copywriters, researchers, ops, finance, legal, product, XR, game dev — the full agency roster, tuned to your team." />
           <FeatureCard icon={ShieldCheck} title="Org-first architecture"
             body="Invite your company by link, spin up teams per product, brand, or squad. Keep contexts clean and conversations private." />
@@ -103,7 +103,7 @@ export default function LandingPage() {
         <div className="flex flex-col items-start gap-4 mb-12">
           <Pill>The crew</Pill>
           <h2 className="sp-display text-4xl sm:text-5xl max-w-3xl">
-            169 specialists. 14 divisions. <em className="italic">One voice — yours.</em>
+            150+ specialists. 14 divisions. <em className="italic">One voice — yours.</em>
           </h2>
           <p className="sp-subtle max-w-2xl">
             Frontend wizards, brand guardians, deal coaches, privacy architects, narrative designers —
@@ -151,7 +151,7 @@ export default function LandingPage() {
       </section>
 
       <footer className="relative z-10 max-w-6xl mx-auto px-6 md:px-10 py-10 flex items-center justify-between text-xs sp-subtle">
-        <div>© {new Date().getFullYear()} SoulPrint Engine</div>
+        <div>© {new Date().getFullYear()} SoulPrint Engine Pro</div>
         <div className="flex items-center gap-4"><span>Built for teams</span></div>
       </footer>
     </div>

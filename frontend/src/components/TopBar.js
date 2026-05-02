@@ -63,7 +63,7 @@ export default function TopBar({ children, right = null }) {
               <div className="w-9 h-9 rounded-lg sp-glass-strong flex items-center justify-center p-0.5">
                 <Logo className="w-full h-full" />
               </div>
-              <span className="text-base font-medium tracking-tight hidden sm:block">SoulPrint</span>
+              <span className="text-base font-medium tracking-tight hidden sm:block">SoulPrint Engine Pro</span>
             </Link>
             <div className="h-5 w-px mx-1 hidden sm:block" style={{ background: "var(--border-soft)" }} />
             <div className="truncate text-sm sp-subtle">{children}</div>
@@ -126,7 +126,7 @@ export default function TopBar({ children, right = null }) {
                   className="cursor-pointer"
                 >
                   <HelpCircle className="w-4 h-4 mr-2" />
-                  What is SoulPrint Engine?
+                  What is SoulPrint Engine Pro?
                 </DropdownMenuItem>
                 <DropdownMenuSeparator />
                 <DropdownMenuItem
