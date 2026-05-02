@@ -12,6 +12,7 @@ import RecentConversations from "../components/RecentConversations";
 import CollapsibleSection from "../components/CollapsibleSection";
 import Logo from "../components/Logo";
 import SchedulesPanel from "../components/SchedulesPanel";
+import SoulSuggestionsPanel from "../components/SoulSuggestionsPanel";
 
 const formatBytes = (n) => {
   if (!n) return "0 B";
@@ -48,6 +49,7 @@ export default function OrgPage() {
   const [regenSoul, setRegenSoul] = useState(false);
   const canEdit = org && (org.role === "owner" || org.role === "admin");
   const canDelete = org && org.role === "owner";
+  const isOwner = org && org.role === "owner";
 
   const openEdit = () => {
     setEditName(org.name);
@@ -60,15 +62,21 @@ export default function OrgPage() {
     e.preventDefault();
     setSavingOrg(true);
     try {
-      const { data } = await api.patch(`/orgs/${orgId}`, {
+      const body = {
         name: editName.trim(),
         website_url: editUrl.trim(),
-        soul_description: editSoul.trim(),
-        regenerate_soul: regenSoul,
-      });
+      };
+      // Soul fields are owner-only — backend enforces this too. Don't even
+      // send them for admins so we don't trigger a 403 on otherwise-valid
+      // name / website edits.
+      if (isOwner) {
+        body.soul_description = editSoul.trim();
+        body.regenerate_soul = regenSoul;
+      }
+      const { data } = await api.patch(`/orgs/${orgId}`, body);
       setOrg(data);
       setEditOpen(false);
-      toast.success(regenSoul ? "Saved — Soul re-synthesised" : "Saved");
+      toast.success(isOwner && regenSoul ? "Saved — Soul re-synthesised" : "Saved");
     } catch (err) {
       toast.error(err?.response?.data?.detail || "Save failed");
     } finally { setSavingOrg(false); }
@@ -278,13 +286,22 @@ export default function OrgPage() {
               onChange={(e) => setEditSoul(e.target.value)}
               placeholder="Soul description / founder hint (optional)"
               rows={3}
-              className="w-full rounded-xl px-4 py-3 text-sm resize-none focus:sp-focus"
+              className="w-full rounded-xl px-4 py-3 text-sm resize-none focus:sp-focus disabled:opacity-50 disabled:cursor-not-allowed"
               style={{ background: "var(--input-bg)", border: "1px solid var(--input-border)", color: "var(--fg)" }}
+              disabled={!isOwner}
+              title={isOwner ? "" : "Only the org owner can change the company Soul. Submit a suggestion via the Soul change-requests panel below."}
             />
-            <label className="flex items-center gap-2 text-xs sp-subtle cursor-pointer">
-              <input type="checkbox" checked={regenSoul} onChange={(e) => setRegenSoul(e.target.checked)} className="accent-orange-500" data-testid="edit-org-regen" />
-              <RefreshCw className="w-3 h-3" /> Re-synthesise the company Soul from these inputs
-            </label>
+            {!isOwner && (
+              <p className="text-[11px] sp-subtle italic -mt-1">
+                Soul changes are owner-only. Use the <strong>Soul change requests</strong> panel below to propose updates.
+              </p>
+            )}
+            {isOwner && (
+              <label className="flex items-center gap-2 text-xs sp-subtle cursor-pointer">
+                <input type="checkbox" checked={regenSoul} onChange={(e) => setRegenSoul(e.target.checked)} className="accent-orange-500" data-testid="edit-org-regen" />
+                <RefreshCw className="w-3 h-3" /> Re-synthesise the company Soul from these inputs
+              </label>
+            )}
             <div className="flex items-center justify-end gap-2 pt-1">
               <button type="button" onClick={() => setEditOpen(false)} className="sp-btn sp-btn-ghost text-xs">Cancel</button>
               <button type="submit" disabled={savingOrg || !editName.trim()} className="sp-btn sp-btn-primary text-xs disabled:opacity-50" data-testid="save-org-btn">
@@ -510,6 +527,15 @@ export default function OrgPage() {
                   </div>
                 </div>
               )}
+
+              {/* Soul change requests — anyone can suggest, only owner can
+                  directly mutate. Owner/admins can approve/reject here. */}
+              <SoulSuggestionsPanel
+                orgId={orgId}
+                role={org.role}
+                currentSoul={org.soul || {}}
+                onSoulApplied={load}
+              />
 
               {/* Social Style Guide */}
               <SocialStyleGuidePanel orgId={orgId} />

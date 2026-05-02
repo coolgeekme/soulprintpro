@@ -796,6 +796,16 @@ async def update_org(org_id: str, body: OrgUpdateBody, u: dict = Depends(get_cur
     ctx = await require_org_member(org_id, u["id"])
     if ctx["member"]["role"] not in ("owner", "admin"):
         raise HTTPException(403, "Only owners/admins can edit the org")
+    # Per-business policy: Soul changes are owner-only. Admins can edit other
+    # org settings (name, website) but cannot directly mutate the company Soul.
+    # (Members route through soul-suggestions instead — see endpoints below.)
+    soul_touched = body.soul_description is not None or body.regenerate_soul
+    if soul_touched and ctx["member"]["role"] != "owner":
+        raise HTTPException(
+            403,
+            "Only the org owner can change the company Soul. Submit a suggestion via "
+            "POST /api/orgs/{org_id}/soul-suggestions and the owner will review it.",
+        )
     update: dict = {}
     if body.name is not None:
         n = body.name.strip()
@@ -4159,6 +4169,13 @@ app.include_router(assets_r)
 app.include_router(files_r)
 app.include_router(unfurl_r)
 app.include_router(schedules_r)
+
+from soul_suggestions import make_soul_suggestions_router  # noqa: E402
+app.include_router(make_soul_suggestions_router(
+    db=db,
+    require_org_member=require_org_member,
+    get_current_user=get_current_user,
+))
 
 from social_posts import make_social_router  # noqa: E402
 from brand import compose_logo_on_image as _compose_logo  # noqa: E402

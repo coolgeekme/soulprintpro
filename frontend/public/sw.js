@@ -10,7 +10,7 @@
  * installs purge stale caches on the next activation and pick up the new
  * UI immediately instead of stickying the old build.
  */
-const VERSION = "soulprint-v4-pro";
+const VERSION = "soulprint-v5-pro";
 const CORE = ["/", "/index.html", "/favicon-32.png", "/favicon-192.png", "/favicon-512.png", "/soulprint-logo.png", "/manifest.json"];
 
 self.addEventListener("install", (event) => {

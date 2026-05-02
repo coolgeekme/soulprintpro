@@ -597,9 +597,21 @@ function PostCard({ post, onUpdate, onDelete }) {
                 />
                 <Zap className="w-3.5 h-3.5 text-orange-400" />
                 <span className="text-white/90 font-medium">Auto-post via Mission</span>
+                <span
+                  className="ml-1 px-1.5 py-0.5 rounded-full text-[9px] uppercase tracking-wider font-semibold"
+                  style={{
+                    background: "color-mix(in srgb, var(--primary-bg) 18%, transparent)",
+                    color: "var(--primary-bg)",
+                    border: "1px solid color-mix(in srgb, var(--primary-bg) 30%, transparent)",
+                  }}
+                  title="Autoposting is in beta — your post may not always go through. Always check the platform after."
+                  data-testid={`autopost-beta-pill-${post.id}`}
+                >
+                  Beta
+                </span>
               </label>
               <span className="text-[11px] sp-subtle">
-                An agent will open the platform and publish this for you.
+                An agent will open the platform and try to publish this for you.
               </span>
               {autopostEnabled && (
                 <div className="flex items-center gap-1.5 ml-auto">
@@ -616,6 +628,13 @@ function PostCard({ post, onUpdate, onDelete }) {
                     ))}
                   </select>
                 </div>
+              )}
+              {autopostEnabled && (
+                <p className="basis-full text-[11px] sp-subtle italic mt-1">
+                  Beta — autoposting can fail if the platform updates its UI or your login session
+                  expires. We'll mark the post as failed if that happens, but please verify the
+                  post landed by checking the platform afterwards.
+                </p>
               )}
             </div>
           )}
@@ -1232,17 +1251,42 @@ function SocialSessionsPanel({ orgId }) {
       >
         <KeyRound className="w-3.5 h-3.5" />
         {open ? "Hide" : "Manage"} login sessions ({sessions.length || 0})
+        <span
+          className="ml-1.5 px-1.5 py-0.5 rounded-full text-[9px] uppercase tracking-wider font-semibold"
+          style={{
+            background: "color-mix(in srgb, var(--primary-bg) 18%, transparent)",
+            color: "var(--primary-bg)",
+            border: "1px solid color-mix(in srgb, var(--primary-bg) 30%, transparent)",
+          }}
+          title="Login sessions power autoposting, which is in beta."
+        >
+          Beta
+        </span>
       </button>
       {open && (
         <div className="sp-glass rounded-2xl p-5 mt-3 space-y-4">
           <div>
             <h3 className="text-sm font-medium mb-1 flex items-center gap-2">
               <KeyRound className="w-4 h-4 text-orange-400" /> Login sessions for autoposting
+              <span
+                className="px-1.5 py-0.5 rounded-full text-[9px] uppercase tracking-wider font-semibold"
+                style={{
+                  background: "color-mix(in srgb, var(--primary-bg) 18%, transparent)",
+                  color: "var(--primary-bg)",
+                  border: "1px solid color-mix(in srgb, var(--primary-bg) 30%, transparent)",
+                }}
+              >
+                Beta
+              </span>
             </h3>
             <p className="text-xs sp-subtle leading-relaxed">
               Upload one-time browser cookies per platform so agents can publish on your behalf.
               We walk you through it — no technical skills required. Your cookies are stored opaquely
               and never returned by the API; only the headless browser sees them when a Mission runs.
+              <br />
+              <strong className="text-[var(--fg)]">Heads up — autoposting is in beta.</strong>{" "}
+              Sessions can expire, platforms can change their UI, and a post may occasionally
+              fail to publish. Always verify on the platform after a scheduled autopost.
             </p>
           </div>
 
