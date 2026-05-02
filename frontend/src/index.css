@@ -365,3 +365,91 @@ input[type="text"], input[type="email"], input[type="password"], textarea {
   font-size: 1rem;
   line-height: 1.5;
 }
+
+
+/* sp-prose — typography for long-form markdown content (e.g. About page).
+   Mirrors the brand's serif display + body palette. Scoped narrowly so it
+   never bleeds into chat / dashboard surfaces. */
+.sp-prose { color: var(--fg); line-height: 1.7; font-size: 1.0625rem; }
+.sp-prose > * + * { margin-top: 1.1em; }
+.sp-prose h1 {
+  font-family: 'Instrument Serif', 'Times New Roman', serif;
+  font-weight: 400;
+  font-size: 2.75rem;
+  line-height: 1.05;
+  letter-spacing: -0.02em;
+  margin-top: 0.25em;
+  margin-bottom: 0.35em;
+}
+.sp-prose h2 {
+  font-family: 'Instrument Serif', 'Times New Roman', serif;
+  font-weight: 400;
+  font-size: 2rem;
+  line-height: 1.15;
+  letter-spacing: -0.015em;
+  margin-top: 2em;
+  margin-bottom: 0.35em;
+  padding-top: 1em;
+  border-top: 1px solid var(--border-soft);
+}
+.sp-prose h2:first-child { border-top: 0; padding-top: 0; margin-top: 0; }
+.sp-prose h3 {
+  font-weight: 600;
+  font-size: 1.05rem;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  color: var(--fg-soft);
+  margin-top: 1.6em;
+  margin-bottom: 0.4em;
+}
+.sp-prose h4 {
+  font-weight: 600;
+  font-size: 1rem;
+  margin-top: 1.4em;
+  margin-bottom: 0.3em;
+}
+.sp-prose p { margin: 0; }
+.sp-prose strong { color: var(--fg); font-weight: 600; }
+.sp-prose em { color: var(--fg-soft); }
+.sp-prose a {
+  color: var(--fg);
+  text-decoration: underline;
+  text-decoration-color: var(--border-strong);
+  text-underline-offset: 3px;
+  transition: text-decoration-color 180ms ease;
+}
+.sp-prose a:hover { text-decoration-color: var(--fg); }
+.sp-prose ul, .sp-prose ol { padding-left: 1.4em; margin: 0.4em 0 0.4em; }
+.sp-prose ul { list-style: disc; }
+.sp-prose ol { list-style: decimal; }
+.sp-prose li { margin: 0.35em 0; }
+.sp-prose li > p { display: inline; }
+.sp-prose blockquote {
+  border-left: 3px solid var(--border-strong);
+  padding: 0.1em 0 0.1em 1em;
+  color: var(--fg-soft);
+  font-style: italic;
+}
+.sp-prose hr {
+  border: 0;
+  border-top: 1px solid var(--border-soft);
+  margin: 2.2em 0;
+}
+.sp-prose code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.9em;
+  padding: 0.15em 0.4em;
+  border-radius: 6px;
+  background: var(--chip-bg);
+  border: 1px solid var(--border-soft);
+}
+.sp-prose pre {
+  padding: 1em 1.1em;
+  border-radius: 12px;
+  background: var(--chip-bg);
+  border: 1px solid var(--border-soft);
+  overflow-x: auto;
+}
+.sp-prose pre code {
+  padding: 0; background: transparent; border: 0; font-size: 0.9rem;
+}
