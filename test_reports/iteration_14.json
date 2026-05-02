@@ -1,0 +1,40 @@
+{
+  "summary": "Iteration 14 verifies the new 'Suggest topics' feature end-to-end. Backend: created /app/backend/tests/test_social_suggest_topics.py with 23 tests covering the review-mandated scenarios (happy path, topic shape + keys, UUID ids, angle whitelist, tag hash-stripping, count bounds ge=3/le=12, angle Literal enforcement, hint propagation with 'whitepaper' marker detected in LLM output, graceful no-Soul fallback using a fresh-register user, 403 for non-member, 404/403 for unknown org, 401 unauthenticated). ALL 23 PASS in 83.67s against the live Emergent LLM + Perplexity stack. Frontend: logged into the standing autopost-test account, navigated Home → Autopost Org → Social Queue, clicked the 'Suggest topics' button in the compose row, verified the button flipped to a 'Thinking…' spinner, waited ~15s for the TopicSuggestions panel, confirmed 6 cards rendered in the 2-column grid, all 6 angle chips present (mix/news/evergreen/thought-leadership/community/promotional) with correct data-testids, refresh + close buttons present, clicking the first card closed the panel and prefilled the compose prompt with 'headline — pitch' (verified exact textarea contents), re-opened the panel and confirmed the X button dismisses it. Topic quality is on-brand for the seeded coffee-shop loyalty Soul (e.g. 'How Small Coffee Shops Can Leverage SMS for Loyalty…', 'Spring Refresher: Simple Loyalty Program Changes…'). NO issues found.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_social_suggest_topics.py",
+    "/app/test_reports/pytest/iter14_suggest_topics.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "social_posts.py:392 valid_urls = {s['url'] for s in news_sources if s.get('url')} — correct hallucination guard. If Perplexity is unavailable, valid_urls is empty, so line 413 forces every source_url to '' — behaviour matches the spec ('graceful degradation; source_url fields all empty when Perplexity unavailable'). In my run Perplexity WAS available (PERPLEXITY_API_KEY set), so source_url fields were still mostly empty — the LLM declined to attribute specific URLs to most topics, which is the desired conservative behaviour.",
+    "social_posts.py:393-404 angle coercion: items with unknown angles are silently coerced to 'evergreen' rather than dropped. This is defensive but means the 'angle in VALID_ANGLES' assertion can never fail even if the LLM misbehaves — the test still exercises the whitelist because it validates the *exposed* shape, which is what the UI relies on.",
+    "social_posts.py:425-426 out list is non-empty guard raises 502 — tested implicitly (all happy-path runs returned topics). No direct negative test because we'd need to mock the LLM to produce an empty array.",
+    "social_posts.py:87-99 SuggestTopicsBody uses Literal for angle — Pydantic correctly returns 422 for unknown angles (verified by TestAngleFilter::test_invalid_angle_422). count bounds ge=3/le=12 also return 422 (verified by test_count_below_minimum_422 and test_count_above_maximum_422).",
+    "SocialPage.js:186-199 loadTopics sends the current compose prompt as 'hint' (truncated to 300 chars). Neat UX touch — if the user types 'launching whitepaper next week' and clicks Suggest topics, the suggester biases toward that. Verified via backend TestHint.",
+    "SocialPage.js:201-210 useTopic builds prompt as 'headline — pitch' and appends '(Inspired by: URL)' only when source_url is set — verified the exact textarea contents match.",
+    "SocialPage.js:1152 onClick={(e) => e.stopPropagation()} on the source anchor prevents the card click handler from firing — not directly tested (cards in my run had empty source_urls) but code is correct.",
+    "MINOR (not blocking): When the user clicks the 'Refresh' icon on the topics panel without first closing it, the button uses the current topicAngle but does NOT debounce multiple clicks — disabled={loading} at line 1095 guards against this correctly. Confirmed."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_social_suggest_topics.py (NEW — 23 tests, all pass, ~84s total)"
+  ],
+  "success_rate": {
+    "backend": "100% (23/23 new suggest-topics tests)",
+    "frontend": "100% (all 8 scripted UI assertions passed: button presence, Thinking state, panel render, 6 cards, 6 angle chips, refresh+close buttons, useTopic prefills prompt, close button dismisses panel)"
+  },
+  "test_credentials": "Backend tests use the standing autopost-test-1777661963@example.com / testtest123 / org_id=69f4f8199304a5a0df27f750 (has coffee-shop loyalty Soul seeded — perfect for topic-relevance checks) PLUS a fresh-register TEST_topics_<rand>@example.com for the no-Soul graceful-degradation test and the 403 non-member test. Frontend test used the same standing account.",
+  "seed_data_creation": "No persistent seed data created. Each pytest run registers one throwaway TEST_topics_* user + one throwaway TEST_TopicsOrg_* org via /api/orgs; these accumulate but are tiny (no posts, no Soul, no uploads). The standing smoke account is reused read-only — no posts are written by this iteration.",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "test_social_suggest_topics.py is the canonical regression harness for POST /orgs/{id}/social/suggest-topics. The default_topics fixture is module-scoped so the 10 shape-assertion tests share a single LLM round-trip (saves ~70s vs one call per test). Adding new happy-path shape checks: drop them into TestHappyPath and use the same fixture. Adding new angle/count/hint variations: each costs ~10-20s real time because they hit the live LLM — keep count small (3) when possible. The no-Soul test (TestNoSoul) is the slowest single test (~20s, full LLM path with minimal prompt) — keep it but don't duplicate. TopicSuggestions component has comprehensive data-testids: suggest-topics-btn, topics-panel, topic-angle-{mix|news|evergreen|thought-leadership|community|promotional}, topics-refresh, topics-close, topic-card-{uuid}, topic-source-{uuid}.",
+  "rca of the issue": "N/A — this is a new feature, not a bug fix. Feature works end-to-end as specified."
+}

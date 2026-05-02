@@ -84,6 +84,21 @@ class GenerateImageBody(BaseModel):
     prompt: str = Field("", max_length=2000)
 
 
+class SuggestTopicsBody(BaseModel):
+    """Body for POST /orgs/{id}/social/suggest-topics.
+
+    Produces a batch of topic IDEAS (not drafts) calibrated to the org's
+    Soul + current news in their space. Users pick one and it prefills
+    the draft composer.
+    """
+    count: int = Field(6, ge=3, le=12)
+    # Optional nudge toward a particular content angle. Left blank = mix.
+    angle: Literal["", "news", "evergreen", "promotional", "community", "thought-leadership"] = ""
+    # Optional free-text hint (e.g. "launching our annual whitepaper next
+    # week, lean into that"). The suggester will bias toward it.
+    hint: str = Field("", max_length=500)
+
+
 # ── Serialization ───────────────────────────────────────────────────────────
 def serialize_social_post(p: dict) -> dict:
     def _iso(v):
@@ -244,6 +259,171 @@ async def _draft_via_agent(
             hashtags = [h.strip() for h in re.split(r"[\s,]+", hashtags) if h.strip()]
         hashtags = [str(h)[:60] for h in hashtags if isinstance(h, (str, int))][:15]
         out.append({"platform": platform, "text": text, "hashtags": hashtags})
+    return out
+
+
+# ── Topic suggester ───────────────────────────────────────────────────────
+async def _suggest_social_topics(
+    *, org: dict, count: int, angle: str, hint: str,
+    LlmChat, UserMessage, EMERGENT_LLM_KEY: str,
+) -> List[dict]:
+    """Return a list of topic ideas tailored to the org's Soul + current news.
+
+    Strategy:
+      1. Pull the org's Soul (mission/audience/tone/values) so topics feel
+         on-brand and relevant to what the business actually cares about.
+      2. Query Perplexity for recent (pw = past week) news in whatever
+         space the Soul implies. Perplexity output feeds back in with
+         citations, giving the suggester live grounding.
+      3. Ask GPT-4.1-mini to synthesise N specific topic ideas as JSON —
+         each a headline + 1-sentence pitch + angle tag + optional source
+         URL so the user can click through and verify before drafting.
+
+    Output shape (per topic):
+        {headline, pitch, angle, tags: [], source_url, source_title}
+    """
+    soul = org.get("soul") or {}
+    name = (org.get("name") or "").strip() or "the company"
+    mission = (soul.get("mission") or "").strip()
+    audience = (soul.get("audience") or "").strip()
+    tone = (soul.get("tone") or "").strip()
+    values = (soul.get("values") or "").strip()
+    summary = (soul.get("summary") or "").strip()
+
+    # Build a search query from whatever Soul we have. Prefer the richest
+    # signal — mission usually contains the industry vertical.
+    seed = mission or summary or audience or name
+    news_query = (
+        f"Latest news, trends, and launches in the space relevant to "
+        f"'{seed[:200]}'. Focus on developments in the past week."
+    )
+
+    # Live-news grounding via Perplexity. Gracefully degrade to "" when
+    # the integration is unavailable (same pattern as mission mode).
+    news_blurb = ""
+    news_sources: List[dict] = []
+    try:
+        from perplexity_client import perplexity_web_search, is_available as _p_avail  # type: ignore
+        if _p_avail():
+            results = await perplexity_web_search(
+                news_query, count=6, freshness="pw",
+            )
+            if results:
+                news_sources = [
+                    {"title": r.get("title") or "", "url": r.get("url") or ""}
+                    for r in results if r.get("url")
+                ][:6]
+                news_blurb = "\n".join(
+                    f"- {r.get('title') or r.get('url')}: {(r.get('description') or r.get('snippet') or '')[:200]}"
+                    for r in results[:6]
+                )
+    except Exception as exc:
+        logger.info("Topic suggester: news grounding skipped (%s)", exc)
+
+    angle_line = (
+        f"Bias roughly 60% of topics toward the '{angle}' angle; the rest "
+        f"can be any angle that fits."
+        if angle else
+        "Mix angles across the set — some news-reactive, some evergreen "
+        "thought-leadership, at least one community-oriented or behind-the-scenes."
+    )
+    hint_line = f"\nAdditional user direction: {hint}" if hint else ""
+
+    sys_msg = (
+        "You are a senior social media strategist. Your job is to propose "
+        f"{count} distinct, actually-postable topic IDEAS for a company to "
+        "share on social, tailored to its Soul and current news in its "
+        "space. Output ONLY a single JSON array of objects on one line, "
+        "no markdown, no prose outside the array. Each object MUST have "
+        "keys: headline (6-14 words, concrete, avoids clickbait), pitch "
+        "(1 sentence, ~25 words, explains the angle), angle (one of: "
+        "news, evergreen, promotional, community, thought-leadership), "
+        "tags (array of 2-4 short tags, no # prefix), source_url (string, "
+        "the URL the topic is inspired by — empty string if not tied to "
+        "a specific article), source_title (string, matching the URL's "
+        "article title — empty string if source_url is empty).\n"
+        "Constraints:\n"
+        "  • Headlines must read like something the company would ACTUALLY "
+        "    post — specific, grounded, no hype words like 'game-changing'.\n"
+        "  • Do NOT invent URLs. If you reference a source, it MUST be one "
+        "    of the URLs from the news brief; otherwise leave source_url "
+        "    empty.\n"
+        "  • Align the tone with the Soul: if tone is 'warm and practical', "
+        "    don't propose corporate-speak topics.\n"
+        f"  • {angle_line}"
+    )
+    user_payload = (
+        f"COMPANY: {name}\n"
+        f"MISSION: {mission or '(not captured)'}\n"
+        f"AUDIENCE: {audience or '(not captured)'}\n"
+        f"TONE: {tone or '(not captured)'}\n"
+        f"VALUES: {values or '(not captured)'}\n"
+        f"{('SUMMARY: ' + summary + chr(10)) if summary else ''}"
+        f"{hint_line}\n\n"
+        f"CURRENT NEWS BRIEF (past week, use as optional grounding — "
+        f"do NOT force every topic to be news-pegged):\n"
+        f"{news_blurb or '(no live news available — lean on evergreen angles)'}\n\n"
+        f"Produce the JSON array of {count} topic ideas now."
+    )
+    try:
+        chat = LlmChat(
+            api_key=EMERGENT_LLM_KEY,
+            session_id=f"topic-suggest:{uuid.uuid4()}",
+            system_message=sys_msg,
+        ).with_model("openai", "gpt-4.1-mini")
+        raw = (await chat.send_message(UserMessage(text=user_payload))) or ""
+    except Exception as exc:
+        logger.warning("Topic suggester LLM error: %s", exc)
+        raise HTTPException(502, "Topic suggester temporarily unavailable. Try again in a moment.") from exc
+
+    # Parse the JSON array out of the raw response. Models sometimes wrap
+    # in markdown fences or prose — be forgiving.
+    m = re.search(r"\[.*\]", raw, re.DOTALL)
+    if not m:
+        logger.info("Topic suggester returned no JSON array; raw=%r", raw[:300])
+        raise HTTPException(502, "Topic suggester returned an unexpected response. Try again.")
+    try:
+        data = json.loads(m.group(0))
+    except json.JSONDecodeError as exc:
+        raise HTTPException(502, "Topic suggester returned malformed JSON. Try again.") from exc
+    if not isinstance(data, list):
+        raise HTTPException(502, "Topic suggester returned the wrong shape.")
+
+    valid_urls = {s["url"] for s in news_sources if s.get("url")}
+    valid_angles = {"news", "evergreen", "promotional", "community", "thought-leadership"}
+    out: List[dict] = []
+    for item in data[:count]:
+        if not isinstance(item, dict):
+            continue
+        headline = (item.get("headline") or "").strip()[:180]
+        if not headline:
+            continue
+        pitch = (item.get("pitch") or "").strip()[:400]
+        item_angle = (item.get("angle") or "").strip().lower()
+        if item_angle not in valid_angles:
+            item_angle = "evergreen"
+        tags_raw = item.get("tags") or []
+        if isinstance(tags_raw, str):
+            tags_raw = [t.strip() for t in re.split(r"[\s,]+", tags_raw) if t.strip()]
+        tags = [str(t).lstrip("#").strip()[:40] for t in tags_raw if isinstance(t, (str, int))][:6]
+        src_url = (item.get("source_url") or "").strip()
+        src_title = (item.get("source_title") or "").strip()[:200]
+        # Model-hallucinated URLs get dropped — we only keep ones we can
+        # verify came back from Perplexity's citation set.
+        if src_url and src_url not in valid_urls:
+            src_url = ""
+            src_title = ""
+        out.append({
+            "id": str(uuid.uuid4()),
+            "headline": headline,
+            "pitch": pitch,
+            "angle": item_angle,
+            "tags": tags,
+            "source_url": src_url,
+            "source_title": src_title,
+        })
+    if not out:
+        raise HTTPException(502, "Topic suggester returned no usable topics. Try again.")
     return out
 
 
@@ -456,6 +636,30 @@ def make_social_router(*, db, AGENTS, EMERGENT_LLM_KEY, LlmChat, UserMessage,
             doc["_id"] = res.inserted_id
             docs.append(doc)
         return {"posts": [serialize_social_post(d) for d in docs]}
+
+    @r.post("/orgs/{org_id}/social/suggest-topics")
+    async def suggest_social_topics(
+        org_id: str,
+        body: SuggestTopicsBody = Body(default_factory=SuggestTopicsBody),
+        u: dict = Depends(get_current_user),
+    ):
+        """Suggest a batch of on-brand topic IDEAS (not full drafts) based
+        on the org's Soul + current news. Users pick one and it prefills
+        the draft composer. Cheap — one Perplexity call + one LLM call,
+        no image generation."""
+        await require_org_member(org_id, u["id"])
+        org = await db.organizations.find_one({"_id": _OID(org_id)})
+        if not org:
+            raise HTTPException(404, "Org not found")
+        topics = await _suggest_social_topics(
+            org=org,
+            count=body.count,
+            angle=body.angle,
+            hint=body.hint.strip(),
+            LlmChat=LlmChat, UserMessage=UserMessage,
+            EMERGENT_LLM_KEY=EMERGENT_LLM_KEY,
+        )
+        return {"topics": topics}
 
     @r.get("/orgs/{org_id}/social/posts")
     async def list_social_posts(

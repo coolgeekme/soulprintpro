@@ -8,7 +8,7 @@ import {
   Send, Sparkles, Calendar, CheckCircle2, Trash2, Copy, ExternalLink,
   Download, Save, X, Loader2, Megaphone, Image as ImageIcon, Wand2,
   Zap, KeyRound, AlertTriangle, Rocket, Pencil,
-  UploadCloud, ShieldCheck, ChevronRight,
+  UploadCloud, ShieldCheck, ChevronRight, Lightbulb, RefreshCcw,
 } from "lucide-react";
 
 // ── Platform metadata ─────────────────────────────────────────────────────
@@ -123,6 +123,12 @@ export default function SocialPage() {
   const [count, setCount] = useState(3);
   const [composePlatforms, setComposePlatforms] = useState(["twitter", "linkedin"]);
   const [composing, setComposing] = useState(false);
+  // Topic suggestions — "what should I post about?"-style helper. Cached in
+  // local state so a user can scroll through the list without regenerating.
+  const [topics, setTopics] = useState([]);
+  const [topicsOpen, setTopicsOpen] = useState(false);
+  const [topicsLoading, setTopicsLoading] = useState(false);
+  const [topicAngle, setTopicAngle] = useState("");  // "" = mix
 
   const reload = async () => {
     try {
@@ -173,6 +179,34 @@ export default function SocialPage() {
     } catch (err) {
       toast.error(err?.response?.data?.detail || "Could not draft posts");
     } finally { setComposing(false); }
+  };
+
+  // Ask the backend to synthesise 6 on-brand topic ideas from the org's
+  // Soul + live news. User clicks a topic to prefill the compose prompt.
+  const loadTopics = async () => {
+    setTopicsLoading(true);
+    try {
+      const { data } = await api.post(`/orgs/${orgId}/social/suggest-topics`, {
+        count: 6,
+        angle: topicAngle || "",
+        hint: prompt.trim().slice(0, 300),  // reuse whatever the user typed as a hint
+      });
+      setTopics(data.topics || []);
+      setTopicsOpen(true);
+    } catch (err) {
+      toast.error(err?.response?.data?.detail || "Could not suggest topics");
+    } finally { setTopicsLoading(false); }
+  };
+
+  const useTopic = (topic) => {
+    // Build a composer prompt that preserves the topic's angle + pitch so
+    // the downstream draft agent has enough context to produce real copy.
+    const parts = [topic.headline];
+    if (topic.pitch) parts.push(topic.pitch);
+    if (topic.source_url) parts.push(`(Inspired by: ${topic.source_url})`);
+    setPrompt(parts.join(" — "));
+    setTopicsOpen(false);
+    toast.success("Topic loaded — tweak the prompt and hit Draft posts.");
   };
 
   const updatePost = async (id, patch) => {
@@ -260,6 +294,17 @@ export default function SocialPage() {
               />
             </label>
             <button
+              type="button"
+              onClick={loadTopics}
+              disabled={topicsLoading}
+              data-testid="suggest-topics-btn"
+              title="Have an agent suggest on-brand topic ideas using current news + your org's Soul"
+              className="sp-btn sp-btn-ghost text-xs disabled:opacity-50"
+            >
+              {topicsLoading ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Lightbulb className="w-3.5 h-3.5" />}
+              {topicsLoading ? "Thinking…" : "Suggest topics"}
+            </button>
+            <button
               type="submit"
               disabled={composing || !prompt.trim()}
               data-testid="compose-submit"
@@ -270,6 +315,19 @@ export default function SocialPage() {
             </button>
           </div>
         </form>
+
+        {/* Topic suggestions panel — shown after 'Suggest topics' is clicked */}
+        {topicsOpen && (
+          <TopicSuggestions
+            topics={topics}
+            loading={topicsLoading}
+            angle={topicAngle}
+            setAngle={setTopicAngle}
+            onRefresh={loadTopics}
+            onUse={useTopic}
+            onClose={() => setTopicsOpen(false)}
+          />
+        )}
 
         {/* Social sessions — cookies per platform so autopost Missions can log in */}
         <SocialSessionsPanel orgId={orgId} />
@@ -987,6 +1045,129 @@ const PLATFORM_WIZARD = {
 };
 const COOKIES_EXTENSION_URL =
   "https://chromewebstore.google.com/detail/get-cookiestxt-locally/cclelndahbckbenkjhflpdbgdldlbecc";
+
+
+// ── Topic suggestions panel ───────────────────────────────────────────────
+// Shows up after the user clicks "Suggest topics". Compact list of 6 topic
+// ideas — each click loads the topic into the compose prompt so the draft
+// agent can spin it into N platform-specific posts.
+const ANGLE_OPTIONS = [
+  { id: "",                  label: "Mix"              },
+  { id: "news",              label: "News-reactive"    },
+  { id: "evergreen",         label: "Evergreen"        },
+  { id: "thought-leadership",label: "Thought-leader"   },
+  { id: "community",         label: "Community"        },
+  { id: "promotional",       label: "Promotional"      },
+];
+const ANGLE_STYLE = {
+  "news":              { bg: "bg-sky-500/15",     border: "border-sky-400/30",     text: "text-sky-200"     },
+  "evergreen":         { bg: "bg-emerald-500/15", border: "border-emerald-400/30", text: "text-emerald-200" },
+  "thought-leadership":{ bg: "bg-violet-500/15",  border: "border-violet-400/30",  text: "text-violet-200"  },
+  "community":         { bg: "bg-pink-500/15",    border: "border-pink-400/30",    text: "text-pink-200"    },
+  "promotional":       { bg: "bg-orange-500/15",  border: "border-orange-400/30",  text: "text-orange-200"  },
+};
+function TopicSuggestions({ topics, loading, angle, setAngle, onRefresh, onUse, onClose }) {
+  return (
+    <div className="sp-glass rounded-2xl p-5 mb-6" data-testid="topics-panel">
+      <div className="flex items-center gap-2 mb-3 flex-wrap">
+        <Lightbulb className="w-4 h-4 text-orange-400" />
+        <h3 className="text-sm font-medium">Topic ideas</h3>
+        <span className="text-[11px] sp-subtle">tuned to your Soul + this week's news</span>
+        <div className="ml-auto flex items-center gap-1">
+          {ANGLE_OPTIONS.map((a) => (
+            <button
+              key={a.id || "mix"}
+              type="button"
+              onClick={() => setAngle(a.id)}
+              className={`text-[11px] px-2 py-1 rounded-full border transition ${
+                angle === a.id
+                  ? "bg-white/10 border-white/25 text-white"
+                  : "border-white/10 sp-subtle hover:text-white hover:border-white/20"
+              }`}
+              data-testid={`topic-angle-${a.id || "mix"}`}
+            >
+              {a.label}
+            </button>
+          ))}
+          <button
+            type="button"
+            onClick={onRefresh}
+            disabled={loading}
+            title="Regenerate the topic list"
+            className="sp-btn sp-btn-ghost !py-1 !px-2 text-[11px] disabled:opacity-50"
+            data-testid="topics-refresh"
+          >
+            {loading ? <Loader2 className="w-3 h-3 animate-spin" /> : <RefreshCcw className="w-3 h-3" />}
+          </button>
+          <button
+            type="button"
+            onClick={onClose}
+            className="sp-btn sp-btn-ghost !py-1 !px-2 text-[11px]"
+            data-testid="topics-close"
+          >
+            <X className="w-3 h-3" />
+          </button>
+        </div>
+      </div>
+      {loading && topics.length === 0 ? (
+        <div className="text-xs sp-subtle italic">Researching current events + pulling from your Soul…</div>
+      ) : topics.length === 0 ? (
+        <div className="text-xs sp-subtle italic">No topics yet — click refresh.</div>
+      ) : (
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+          {topics.map((t) => {
+            const sty = ANGLE_STYLE[t.angle] || ANGLE_STYLE.evergreen;
+            return (
+              <button
+                key={t.id}
+                type="button"
+                onClick={() => onUse(t)}
+                className="text-left rounded-xl p-3 transition bg-white/[0.02] border border-white/10 hover:bg-white/[0.06] hover:border-orange-400/30 group"
+                data-testid={`topic-card-${t.id}`}
+              >
+                <div className="flex items-start gap-2">
+                  <div className="flex-1">
+                    <div className="text-sm font-medium leading-snug text-white/90 group-hover:text-white">
+                      {t.headline}
+                    </div>
+                    {t.pitch && (
+                      <div className="text-xs sp-subtle mt-1.5 leading-relaxed">
+                        {t.pitch}
+                      </div>
+                    )}
+                    <div className="flex items-center gap-1.5 mt-2 flex-wrap">
+                      <span className={`text-[10px] px-1.5 py-0.5 rounded-full border ${sty.bg} ${sty.border} ${sty.text}`}>
+                        {t.angle}
+                      </span>
+                      {(t.tags || []).slice(0, 3).map((tag) => (
+                        <span key={tag} className="text-[10px] px-1.5 py-0.5 rounded-full bg-white/5 text-white/60">
+                          #{tag}
+                        </span>
+                      ))}
+                      {t.source_url && (
+                        <a
+                          href={t.source_url}
+                          target="_blank"
+                          rel="noreferrer"
+                          onClick={(e) => e.stopPropagation()}
+                          className="ml-auto text-[10px] sp-subtle inline-flex items-center gap-1 hover:text-white"
+                          title={t.source_title || t.source_url}
+                          data-testid={`topic-source-${t.id}`}
+                        >
+                          <ExternalLink className="w-2.5 h-2.5" /> source
+                        </a>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              </button>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
 
 
 // ── Social Sessions wizard ────────────────────────────────────────────────
