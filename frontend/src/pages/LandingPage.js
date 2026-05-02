@@ -1,6 +1,6 @@
 import React from "react";
 import { Link } from "react-router-dom";
-import { ArrowRight, Users, Network, ShieldCheck, Radio } from "lucide-react";
+import { ArrowRight, Users, Network, ShieldCheck, Radio, HelpCircle } from "lucide-react";
 import Logo from "../components/Logo";
 
 const Pill = ({ children }) => <span className="sp-chip">{children}</span>;
@@ -38,6 +38,15 @@ export default function LandingPage() {
           <Link to="/about" className="hover:text-white transition-colors" data-testid="nav-about">What is SoulPrint Engine Pro?</Link>
         </nav>
         <div className="flex items-center gap-2">
+          <Link
+            to="/about"
+            className="sp-btn sp-btn-ghost text-sm md:hidden"
+            data-testid="nav-about-mobile"
+            title="What is SoulPrint Engine Pro?"
+            aria-label="What is SoulPrint Engine Pro?"
+          >
+            <HelpCircle className="w-4 h-4" />
+          </Link>
           <Link to="/auth" className="sp-btn sp-btn-ghost text-sm" data-testid="nav-signin">Sign in</Link>
           <Link to="/auth?mode=register" className="sp-btn sp-btn-primary text-sm" data-testid="nav-getstarted">
             Get started <ArrowRight className="w-4 h-4" />

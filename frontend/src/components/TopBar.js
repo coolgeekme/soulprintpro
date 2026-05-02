@@ -88,6 +88,16 @@ export default function TopBar({ children, right = null }) {
             >
               {mode === "dark" ? <Sun className="w-4 h-4" /> : <Moon className="w-4 h-4" />}
             </button>
+            <Link
+              to="/about"
+              className="sp-btn sp-btn-ghost text-xs"
+              data-testid="topbar-about"
+              aria-label="What is SoulPrint Engine Pro?"
+              title="What is SoulPrint Engine Pro?"
+            >
+              <HelpCircle className="w-4 h-4" />
+              <span className="hidden lg:inline">About</span>
+            </Link>
             <DropdownMenu>
               <DropdownMenuTrigger asChild>
                 <button
