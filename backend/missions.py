@@ -793,6 +793,9 @@ def build_tools(
                 # Friendly name from the URL host
                 host = urlparse(result["final_url"]).hostname or "screenshot"
                 friendly = f"{host.replace('.', '_')}.png"
+                # Mirror to GridFS so the file survives container redeploys.
+                from file_storage import save_blob_to_gridfs as _save_gfs  # noqa: E402
+                _gridfs_id = await _save_gfs(db, shot_bytes, friendly, "image/png")
                 doc = {
                     "id": str(uuid.uuid4()),
                     "org_id": ctx["org_id"],
@@ -802,6 +805,7 @@ def build_tools(
                     "agent_name": ctx.get("lead_agent_name", "Mission"),
                     "created_by": ctx.get("created_by", ""),
                     "filename": doc_filename,
+                    "gridfs_id": _gridfs_id,
                     "original_name": friendly,
                     "title": f"Screenshot of {result.get('title') or host}",
                     "mime": "image/png",
@@ -930,6 +934,8 @@ def build_tools(
             (org_folder / doc_filename).write_bytes(shot_bytes)
             host = urlparse(result.get("final_url") or "").hostname or "page"
             friendly = f"{host.replace('.', '_')}.png"
+            from file_storage import save_blob_to_gridfs as _save_gfs  # noqa: E402
+            _gridfs_id = await _save_gfs(db, shot_bytes, friendly, "image/png")
             doc = {
                 "id": str(uuid.uuid4()),
                 "org_id": ctx["org_id"],
@@ -939,6 +945,7 @@ def build_tools(
                 "agent_name": ctx.get("lead_agent_name", "Mission"),
                 "created_by": ctx.get("created_by", ""),
                 "filename": doc_filename,
+                "gridfs_id": _gridfs_id,
                 "original_name": friendly,
                 "title": f"Screenshot of {result.get('title') or host}",
                 "mime": "image/png",

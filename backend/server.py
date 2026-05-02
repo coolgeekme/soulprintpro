@@ -77,6 +77,63 @@ logger = logging.getLogger("soulprint")
 client = AsyncIOMotorClient(os.environ["MONGO_URL"])
 db = client[os.environ["DB_NAME"]]
 
+from file_storage import save_blob_to_gridfs, read_blob_from_gridfs  # noqa: E402
+
+async def persist_bytes(disk_path: Path, content: bytes,
+                        original_name: str = "", mime: str = "") -> Optional[str]:
+    """Write ``content`` to ``disk_path`` AND mirror to MongoDB GridFS.
+
+    Disk stays primary for fast local serving. The returned ``gridfs_id``
+    (str or None) should be stored alongside the on-disk filename in the
+    owning collection so that, if the container is redeployed and the
+    disk file vanishes, the serve handler can recover the bytes from
+    GridFS and rehydrate the disk copy. See file_storage.py for details.
+
+    A row is also written to ``media_files`` keyed by the on-disk
+    basename, so the global serve handlers can recover bytes for ANY
+    file written through this helper without each owning collection
+    having to remember the gridfs_id.
+    """
+    disk_path.parent.mkdir(parents=True, exist_ok=True)
+    disk_path.write_bytes(content)
+    gridfs_id = await save_blob_to_gridfs(
+        db, content, original_name or disk_path.name, mime,
+    )
+    if gridfs_id:
+        try:
+            await db.media_files.update_one(
+                {"filename": disk_path.name},
+                {"$set": {
+                    "filename": disk_path.name,
+                    "gridfs_id": gridfs_id,
+                    "mime": mime,
+                    "original_name": original_name or disk_path.name,
+                    "size": len(content),
+                    "created_at": datetime.now(timezone.utc),
+                }},
+                upsert=True,
+            )
+        except Exception:
+            pass
+    return gridfs_id
+
+
+async def recover_bytes_from_gridfs(filename: str) -> tuple[Optional[bytes], Optional[str], Optional[str]]:
+    """Look up filename → gridfs_id in ``media_files`` and read bytes.
+
+    Returns (bytes, mime, original_name) or (None, None, None) on miss.
+    """
+    rec = await db.media_files.find_one({"filename": filename})
+    if not rec:
+        return None, None, None
+    gid = rec.get("gridfs_id")
+    if not gid:
+        return None, None, None
+    blob = await read_blob_from_gridfs(db, gid)
+    if blob is None:
+        return None, None, None
+    return blob, rec.get("mime") or None, rec.get("original_name") or filename
+
 # ── App ──────────────────────────────────────────────────────────────────────
 app = FastAPI(title="SoulPrint Engine API")
 
@@ -2649,7 +2706,8 @@ async def generate_image_via_openai(
         raise RuntimeError("No image returned by OpenAI")
     img_bytes = images[0]
     filename = f"{uuid.uuid4().hex}.png"
-    (UPLOAD_DIR / filename).write_bytes(img_bytes)
+    await persist_bytes(UPLOAD_DIR / filename, img_bytes,
+                        original_name=filename, mime="image/png")
     return filename, ""
 
 
@@ -2748,7 +2806,8 @@ async def generate_image_via_nano_banana(
     else:
         ext = "png"
     filename = f"{uuid.uuid4().hex}.{ext}"
-    (UPLOAD_DIR / filename).write_bytes(img_bytes)
+    await persist_bytes(UPLOAD_DIR / filename, img_bytes,
+                        original_name=filename, mime=mime or f"image/{ext}")
     # Strip any markdown image references (`![...](...)`) the model snuck into
     # the caption — we render the image inline ourselves, so leaving them in
     # the text would make the same image look like it appeared multiple times.
@@ -3280,7 +3339,8 @@ async def upload_to_conversation(
 
         fname = f"{uuid.uuid4().hex}.{ext}"
         fpath = folder / fname
-        fpath.write_bytes(blob)
+        await persist_bytes(fpath, blob, original_name=original,
+                            mime=upload.content_type or "")
         file_paths.append(fpath)
 
         kind = _attachment_kind(ext)
@@ -3731,16 +3791,29 @@ async def serve_org_asset(filename: str):
     Same capability-URL pattern as `serve_file`: the random filename is the
     cap. Auth is dropped so `<img>` tags can render asset thumbnails inline
     in the org page (they cannot send Bearer tokens). The DB lookup keeps
-    this from being a generic file dump."""
+    this from being a generic file dump. Falls back to GridFS on missing
+    disk file (redeploy survival, Feb 2026)."""
     if not ASSET_FILENAME_RE.match(filename):
         raise HTTPException(400, "Invalid filename")
     asset = await db.assets.find_one({"filename": filename})
     if not asset:
         raise HTTPException(404, "Asset not found")
     path = ASSETS_DIR / asset["org_id"] / asset["filename"]
-    if not path.is_file():
-        raise HTTPException(404, "File missing on disk")
-    return FileResponse(path, filename=asset.get("original_name") or filename, media_type=asset.get("mime"))
+    original = asset.get("original_name") or filename
+    mime = asset.get("mime")
+    if path.is_file():
+        return FileResponse(path, filename=original, media_type=mime)
+    blob, m2, o2 = await recover_bytes_from_gridfs(filename)
+    if blob is not None:
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(blob)
+        except Exception:
+            pass
+        from fastapi.responses import Response  # noqa: E402
+        headers = {"Content-Disposition": f'attachment; filename="{o2 or original}"'}
+        return Response(content=blob, media_type=m2 or mime or "application/octet-stream", headers=headers)
+    raise HTTPException(404, "File missing on disk")
 
 CONV_ATTACH_FILENAME_RE = re.compile(r"^[a-f0-9]{16,}\.[a-z0-9]{1,8}$", re.IGNORECASE)
 
@@ -3750,7 +3823,8 @@ async def serve_conv_attachment(conv_id: str, filename: str):
 
     Capability-URL pattern (random uuid filename inside a random conv id),
     no auth so `<img>` / `<video>` can render inline. Defensive lookup
-    confirms the message exists before serving."""
+    confirms the message exists before serving. Falls back to GridFS when
+    the on-disk file vanishes after a redeploy."""
     if not CONV_ATTACH_FILENAME_RE.match(filename):
         raise HTTPException(400, "Invalid filename")
     msg = await db.messages.find_one({
@@ -3760,11 +3834,21 @@ async def serve_conv_attachment(conv_id: str, filename: str):
     if not msg:
         raise HTTPException(404, "Not linked to any message")
     path = CONV_UPLOAD_DIR / conv_id / filename
-    if not path.is_file():
-        raise HTTPException(404, "File missing on disk")
-    return FileResponse(path,
-                        filename=msg.get("attachment_original_name") or filename,
-                        media_type=msg.get("attachment_mime") or None)
+    original = msg.get("attachment_original_name") or filename
+    mime = msg.get("attachment_mime") or None
+    if path.is_file():
+        return FileResponse(path, filename=original, media_type=mime)
+    blob, m2, o2 = await recover_bytes_from_gridfs(filename)
+    if blob is not None:
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(blob)
+        except Exception:
+            pass
+        from fastapi.responses import Response  # noqa: E402
+        headers = {"Content-Disposition": f'attachment; filename="{o2 or original}"'}
+        return Response(content=blob, media_type=m2 or mime or "application/octet-stream", headers=headers)
+    raise HTTPException(404, "File missing on disk")
 
 @files_r.get("/{filename}")
 async def serve_file(filename: str):
@@ -3774,37 +3858,49 @@ async def serve_file(filename: str):
     conversations the user is a member of, so the URL itself is the
     capability. Auth is intentionally NOT enforced here so that <img> tags
     (which cannot send Bearer tokens and may have their cookies dropped by
-    third-party browsers) can render images inline."""
+    third-party browsers) can render images inline.
+
+    Falls back to MongoDB GridFS via the global ``media_files`` map when
+    the on-disk file is missing — the most common cause is a production
+    redeploy wiping ephemeral container storage (Feb 2026)."""
     if not ALLOWED_FILENAME_RE.match(filename):
         raise HTTPException(400, "Invalid filename")
     path = UPLOAD_DIR / filename
-    if not path.is_file():
-        raise HTTPException(404, "File not found")
-    # Confirm it was actually persisted by an agent reply OR a brand/social
-    # asset (defensive — keeps the upload dir from being treated as a public
-    # dump if anything ever writes to it directly).
+
+    # Defensive ownership check — confirm this filename was actually
+    # written by an agent reply, brand asset, or social post.
     msg = await db.messages.find_one({"media_filename": filename})
-    if msg:
+    if not msg:
+        org = await db.organizations.find_one({
+            "$or": [
+                {"brand_assets.primary_logo.filename": filename},
+                {"brand_assets.alt_logo.filename": filename},
+            ]
+        })
+        if not org:
+            sp = await db.social_posts.find_one({
+                "$or": [
+                    {"image.filename": filename},
+                    {"image.raw_filename": filename},
+                ]
+            })
+            if not sp:
+                raise HTTPException(404, "Not linked to any message")
+
+    if path.is_file():
         return FileResponse(path)
-    # Brand logos
-    org = await db.organizations.find_one({
-        "$or": [
-            {"brand_assets.primary_logo.filename": filename},
-            {"brand_assets.alt_logo.filename": filename},
-        ]
-    })
-    if org:
-        return FileResponse(path)
-    # Social-post cover images (composited or raw)
-    sp = await db.social_posts.find_one({
-        "$or": [
-            {"image.filename": filename},
-            {"image.raw_filename": filename},
-        ]
-    })
-    if sp:
-        return FileResponse(path)
-    raise HTTPException(404, "Not linked to any message")
+
+    # Disk gone — try GridFS via the global map.
+    blob, mime, _orig = await recover_bytes_from_gridfs(filename)
+    if blob is not None:
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(blob)
+        except Exception:
+            pass
+        from fastapi.responses import Response  # noqa: E402
+        return Response(content=blob, media_type=mime or "application/octet-stream")
+    raise HTTPException(404, "File not found")
 
 # ── Schedules — cron-style automation for prompts/agents ───────────────────
 from apscheduler.schedulers.asyncio import AsyncIOScheduler  # noqa: E402

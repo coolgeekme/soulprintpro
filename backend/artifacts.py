@@ -327,6 +327,30 @@ async def save_artifacts(
             fpath = folder / disk_name
             fpath.write_bytes(data)
 
+            # Mirror to GridFS for redeploy-survival. Disk path stays
+            # primary (faster + zero-overhead in dev), GridFS is the
+            # fallback when the on-disk file disappears after a redeploy.
+            from file_storage import save_blob_to_gridfs  # noqa: E402
+            gridfs_id = await save_blob_to_gridfs(db, data, b["name"], b["mime"])
+            # Also register in the global media_files map so the universal
+            # serve handler can recover bytes by filename alone.
+            if gridfs_id:
+                try:
+                    await db.media_files.update_one(
+                        {"filename": disk_name},
+                        {"$set": {
+                            "filename": disk_name,
+                            "gridfs_id": gridfs_id,
+                            "mime": b["mime"],
+                            "original_name": b["name"],
+                            "size": len(data),
+                            "created_at": now,
+                        }},
+                        upsert=True,
+                    )
+                except Exception:
+                    pass
+
             doc = {
                 "id": str(uuid.uuid4()),
                 "org_id": org_id,
@@ -336,6 +360,7 @@ async def save_artifacts(
                 "agent_name": agent_name,
                 "created_by": created_by,
                 "filename": disk_name,           # on-disk
+                "gridfs_id": gridfs_id,          # persistent fallback
                 "original_name": b["name"],      # human-friendly
                 "title": b.get("title") or b["name"],
                 "mime": b["mime"],
@@ -454,20 +479,40 @@ def make_documents_router(*, db, docs_root: Path,
         """Capability-URL serving — the random filename is the capability,
         so no Bearer required (mirrors how `/api/files/conv/...` works for
         chat attachments). DB lookup confirms the file is real before
-        handing it out, so this isn't a generic file dump."""
+        handing it out, so this isn't a generic file dump.
+
+        Falls back to GridFS when the on-disk file is missing — the most
+        common cause is the production container being redeployed since
+        the file was first written. GridFS lives inside MongoDB and
+        survives every redeploy."""
         if not DOC_FILENAME_RE.match(filename):
             raise HTTPException(400, "Invalid filename")
         d = await db.documents.find_one({"org_id": org_id, "filename": filename})
         if not d:
             raise HTTPException(404, "Document not found")
         path = docs_root / org_id / filename
-        if not path.is_file():
-            raise HTTPException(404, "File missing on disk")
-        return FileResponse(
-            path,
-            filename=d.get("original_name") or filename,
-            media_type=d.get("mime") or None,
-        )
+        original = d.get("original_name") or filename
+        media = d.get("mime") or None
+        if path.is_file():
+            return FileResponse(path, filename=original, media_type=media)
+
+        # Disk gone — try GridFS (write-mirror added Feb 2026).
+        gridfs_id = d.get("gridfs_id")
+        if gridfs_id:
+            from file_storage import read_blob_from_gridfs  # noqa: E402
+            from fastapi.responses import Response  # noqa: E402
+            blob = await read_blob_from_gridfs(db, gridfs_id)
+            if blob is not None:
+                # Best-effort: rehydrate the disk copy so subsequent
+                # requests are zero-overhead until the next redeploy.
+                try:
+                    path.parent.mkdir(parents=True, exist_ok=True)
+                    path.write_bytes(blob)
+                except Exception:
+                    pass
+                headers = {"Content-Disposition": f'attachment; filename="{original}"'}
+                return Response(content=blob, media_type=media or "application/octet-stream", headers=headers)
+        raise HTTPException(404, "File missing on disk")
 
     return r
 
