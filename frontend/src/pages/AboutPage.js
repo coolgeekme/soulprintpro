@@ -3,7 +3,7 @@ import { Link } from "react-router-dom";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import api from "../lib/api";
-import { ArrowLeft, Loader2, Download } from "lucide-react";
+import { ArrowLeft, Loader2 } from "lucide-react";
 
 /**
  * AboutPage — renders /app/memory/ABOUT.md.
@@ -13,9 +13,9 @@ import { ArrowLeft, Loader2, Download } from "lucide-react";
  * surface that wants the canonical copy. Updating the markdown updates
  * both — no redeploy required.
  *
- * Design choice: render server-side markdown as-is (no remark plugins, no
- * sanitization beyond react-markdown defaults) — the source is trusted
- * and authored by us, not user-submitted.
+ * Design choice: render server-side markdown as-is (no remark plugins beyond
+ * GFM, no sanitization beyond react-markdown defaults) — the source is
+ * trusted and authored by us, not user-submitted.
  */
 export default function AboutPage() {
   const [md, setMd] = useState("");
@@ -34,16 +34,6 @@ export default function AboutPage() {
     return () => { alive = false; };
   }, []);
 
-  const downloadMd = () => {
-    const blob = new Blob([md], { type: "text/markdown" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = "soulprint-engine-overview.md";
-    a.click();
-    URL.revokeObjectURL(url);
-  };
-
   return (
     <div className="min-h-screen" data-testid="about-page">
       <div className="max-w-3xl mx-auto px-6 py-10">
@@ -55,17 +45,6 @@ export default function AboutPage() {
           >
             <ArrowLeft className="w-3.5 h-3.5" /> Back
           </Link>
-          {md && (
-            <button
-              type="button"
-              onClick={downloadMd}
-              className="sp-btn sp-btn-ghost text-xs"
-              title="Download this overview as Markdown — useful for marketing material"
-              data-testid="about-download"
-            >
-              <Download className="w-3.5 h-3.5" /> Download as .md
-            </button>
-          )}
         </div>
 
         {loading ? (
