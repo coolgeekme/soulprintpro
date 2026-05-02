@@ -1,62 +1,42 @@
-/* SoulPrint Engine Pro — minimal install-only service worker.
+/* SoulPrint Engine Pro — self-unregistering service worker.
  *
- * Goal: make the app installable as a PWA without inadvertently caching
- * user-specific API responses. We let the browser handle network fetches
- * normally and only intercept navigation requests with a tiny offline
- * fallback so the app still resolves an installable shell.
+ * Why this exists as a stub:
+ *   We previously shipped a network-first SW that cached the app shell. As
+ *   the app evolves quickly, stuck SW installs produced "blank page after
+ *   login" / "white screen on /about" reports because old shells were
+ *   served while new bundle hashes 404'd.
  *
- * IMPORTANT: bump VERSION whenever you ship visible changes to the app
- * shell (brand name, navigation, hero copy, etc) so existing PWA / browser
- * installs purge stale caches on the next activation and pick up the new
- * UI immediately instead of stickying the old build.
+ * What this does instead:
+ *   On install, this SW immediately unregisters itself and deletes every
+ *   cache it owns. After the user's next reload the SW is gone and the
+ *   app behaves like any normal SPA.
+ *
+ * Registration in index.html is intentionally retained so users on the
+ * old buggy SW automatically pick this up and self-heal on their next
+ * page load. After this SW unregisters, future navigations re-register
+ * a fresh copy that simply unregisters again — there is no caching,
+ * intercept, or reload loop.
+ *
+ * If we want PWA install + offline support back, we'll re-introduce a
+ * versioned SW once the app's release cadence stabilizes.
  */
-const VERSION = "soulprint-v5-pro";
-const CORE = ["/", "/index.html", "/favicon-32.png", "/favicon-192.png", "/favicon-512.png", "/soulprint-logo.png", "/manifest.json"];
-
-self.addEventListener("install", (event) => {
-  event.waitUntil(
-    caches.open(VERSION).then((cache) => cache.addAll(CORE)).catch(() => {})
-  );
+self.addEventListener("install", () => {
   self.skipWaiting();
 });
 
 self.addEventListener("activate", (event) => {
-  event.waitUntil(
-    caches.keys().then((keys) =>
-      Promise.all(keys.filter((k) => k !== VERSION).map((k) => caches.delete(k)))
-    )
-  );
-  self.clients.claim();
+  event.waitUntil((async () => {
+    try {
+      const keys = await caches.keys();
+      await Promise.all(keys.map((k) => caches.delete(k)));
+    } catch (_) { /* ignore */ }
+    try {
+      await self.registration.unregister();
+    } catch (_) { /* ignore */ }
+    // Deliberately NOT calling clients.navigate here — that would create a
+    // reload loop with index.html's unconditional register() on load.
+  })());
 });
 
-self.addEventListener("fetch", (event) => {
-  const req = event.request;
-  if (req.method !== "GET") return;
-  const url = new URL(req.url);
-  // Don't cache API or auth — always go to network.
-  if (url.pathname.startsWith("/api/") || url.hostname !== self.location.hostname) {
-    return;
-  }
-  // For navigations, serve cached shell on offline; otherwise network-first.
-  if (req.mode === "navigate") {
-    event.respondWith(
-      fetch(req).catch(() => caches.match("/") || caches.match("/index.html"))
-    );
-    return;
-  }
-  // For static same-origin assets, cache-first with network fallback.
-  event.respondWith(
-    caches.match(req).then((cached) =>
-      cached ||
-      fetch(req)
-        .then((res) => {
-          if (res && res.status === 200 && res.type === "basic") {
-            const copy = res.clone();
-            caches.open(VERSION).then((cache) => cache.put(req, copy));
-          }
-          return res;
-        })
-        .catch(() => cached)
-    )
-  );
-});
+// Pass every fetch straight to the network. No caching, no shell fallback.
+self.addEventListener("fetch", () => { /* default network behaviour */ });
