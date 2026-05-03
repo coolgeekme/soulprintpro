@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useState } from "react";
 import api, { BACKEND_URL, errorMessage } from "../lib/api";
 import { toast } from "sonner";
 import { Loader2, X, Wand2, Check, Image as ImageIcon } from "lucide-react";
+import WorkingIndicator from "./WorkingIndicator";
 
 /**
  * AssetPickerModal — browse the org's Media Library and either:
@@ -210,6 +211,17 @@ export default function AssetPickerModal({ orgId, postId, onClose, onPicked }) {
               style={{ background: "var(--input-bg)", border: "1px solid var(--input-border)", color: "var(--fg)" }}
               data-testid="asset-remix-prompt"
             />
+            {busy === "remix" && (
+              <WorkingIndicator
+                label="Remixing your photo"
+                hints={[
+                  "Sending your photo + direction to Nano Banana…",
+                  "Compositing — image-to-image takes 10-30s for most prompts.",
+                  "Almost there — final pass adds your logo if one's set.",
+                ]}
+                testId="asset-remix-working"
+              />
+            )}
           </div>
         )}
 

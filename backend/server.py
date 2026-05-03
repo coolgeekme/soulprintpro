@@ -2883,16 +2883,32 @@ async def generate_image_via_nano_banana(
     img = images[0]
     img_bytes = base64.b64decode(img["data"])
     mime = (img.get("mime_type") or "image/png").lower()
-    # Pick a file extension that ALLOWED_FILENAME_RE accepts so the served
-    # URL doesn't 400. Default to png for unknown bytes (browsers sniff content).
-    if "webp" in mime:
-        ext = "webp"
-    elif "gif" in mime:
-        ext = "gif"
-    elif "jpeg" in mime or "jpg" in mime:
-        ext = "jpg"
-    else:
-        ext = "png"
+    # Always normalize to PNG. PNG preserves alpha (so users can later
+    # remove backgrounds, paste logos, etc.), is universally accepted by
+    # social composers / browsers, and avoids JPEG re-compression artifacts
+    # bleeding into the brand. Transcoding via Pillow is cheap (ms-scale)
+    # for typical 1024px social-post outputs. Falls back to the raw bytes
+    # if Pillow isn't available or the bytes can't be decoded.
+    if "png" not in mime:
+        try:
+            from PIL import Image as _PILImage  # noqa: WPS433
+            from io import BytesIO as _BytesIO
+            with _PILImage.open(_BytesIO(img_bytes)) as _im:
+                # Preserve alpha if the source had it; otherwise PNG with RGB.
+                if _im.mode not in ("RGB", "RGBA"):
+                    _im = _im.convert("RGBA" if "A" in _im.getbands() else "RGB")
+                buf = _BytesIO()
+                _im.save(buf, format="PNG", optimize=True)
+                img_bytes = buf.getvalue()
+                mime = "image/png"
+        except Exception as exc:
+            logger.warning("PNG transcode failed, keeping original mime %s: %s", mime, exc)
+    ext = "png" if "png" in mime else (
+        "webp" if "webp" in mime else
+        "gif"  if "gif"  in mime else
+        "jpg"  if ("jpeg" in mime or "jpg" in mime) else
+        "png"
+    )
     filename = f"{uuid.uuid4().hex}.{ext}"
     await persist_bytes(UPLOAD_DIR / filename, img_bytes,
                         original_name=filename, mime=mime or f"image/{ext}")

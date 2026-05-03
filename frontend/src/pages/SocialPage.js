@@ -9,7 +9,10 @@ import {
   Download, Save, X, Loader2, Megaphone, Image as ImageIcon, Wand2,
   Zap, KeyRound, AlertTriangle, Rocket, Pencil,
   UploadCloud, ShieldCheck, ChevronRight, Lightbulb, RefreshCcw,
+  FolderOpen,
 } from "lucide-react";
+import AssetPickerModal from "../components/AssetPickerModal";
+import WorkingIndicator from "../components/WorkingIndicator";
 
 // ── Platform metadata ─────────────────────────────────────────────────────
 // Each platform: a friendly label, the colour we tint pills with, and a
@@ -220,6 +223,14 @@ export default function SocialPage() {
     }
   };
 
+  // Replace a post in local state with a fresh server-returned doc — used
+  // by the Asset Picker (use-asset / remix-asset) so the new cover image
+  // and image_prompt show up immediately without a wasted PATCH round-trip.
+  const replacePost = (data) => {
+    if (!data?.id) return;
+    setPosts((prev) => prev.map((p) => (p.id === data.id ? data : p)));
+  };
+
   const deletePost = async (id) => {
     if (!window.confirm("Delete this post?")) return;
     try {
@@ -362,7 +373,7 @@ export default function SocialPage() {
         ) : (
           <div className="space-y-3">
             {visible.map((p) => (
-              <PostCard key={p.id} post={p} onUpdate={updatePost} onDelete={deletePost} />
+              <PostCard key={p.id} post={p} orgId={orgId} onUpdate={updatePost} onReplace={replacePost} onDelete={deletePost} />
             ))}
           </div>
         )}
@@ -372,7 +383,7 @@ export default function SocialPage() {
 }
 
 // ── Post card ─────────────────────────────────────────────────────────────
-function PostCard({ post, onUpdate, onDelete }) {
+function PostCard({ post, orgId, onUpdate, onReplace, onDelete }) {
   const [editing, setEditing] = useState(false);
   const [text, setText] = useState(post.text);
   const [hashtags, setHashtags] = useState((post.hashtags || []).join(" "));
@@ -659,7 +670,7 @@ function PostCard({ post, onUpdate, onDelete }) {
           )}
 
           {/* Auto-generated cover image with logo overlay + 5-corner picker. */}
-          <PostCoverImage post={post} onUpdate={onUpdate} />
+          <PostCoverImage post={post} orgId={orgId} onUpdate={onUpdate} onReplace={onReplace} />
 
           <div className="flex flex-wrap items-center gap-2 pt-1">
             {post.platforms.map((id) => {
@@ -793,11 +804,12 @@ const LOGO_POSITIONS = [
   { id: "bottom-right", label: "BR" },
 ];
 
-function PostCoverImage({ post, onUpdate }) {
+function PostCoverImage({ post, orgId, onUpdate, onReplace }) {
   const [generating, setGenerating] = useState(false);
   const [reposing, setReposing] = useState("");
   const [applyingLogo, setApplyingLogo] = useState(false);
   const [showPromptEditor, setShowPromptEditor] = useState(false);
+  const [showAssetPicker, setShowAssetPicker] = useState(false);
   const [promptDraft, setPromptDraft] = useState(post.image_prompt || "");
 
   // Keep the local draft in sync if the parent re-fetches and the
@@ -851,12 +863,22 @@ function PostCoverImage({ post, onUpdate }) {
   if (!post.image) {
     return (
       <div className="mt-2">
-        <div className="flex items-center justify-between sp-glass rounded-xl px-4 py-2.5 border border-white/10">
+        <div className="flex items-center justify-between sp-glass rounded-xl px-4 py-2.5 border border-white/10 gap-2 flex-wrap">
           <div className="flex items-center gap-2 text-xs sp-subtle">
             <ImageIcon className="w-3.5 h-3.5" />
             No cover image yet
           </div>
-          <div className="flex items-center gap-1.5 shrink-0">
+          <div className="flex items-center gap-1.5 shrink-0 flex-wrap">
+            <button
+              type="button"
+              onClick={() => setShowAssetPicker(true)}
+              disabled={generating}
+              className="sp-btn sp-btn-ghost text-xs disabled:opacity-50"
+              data-testid={`use-asset-${post.id}`}
+              title="Pick an existing photo from your Media Library, or remix one with AI"
+            >
+              <FolderOpen className="w-3.5 h-3.5" /> Use a photo
+            </button>
             <button
               type="button"
               onClick={() => setShowPromptEditor(true)}
@@ -875,6 +897,13 @@ function PostCoverImage({ post, onUpdate }) {
             </button>
           </div>
         </div>
+        {generating && (
+          <WorkingIndicator label="Generating cover image" hints={[
+            "Briefing Nano Banana with your post + brand voice…",
+            "Composing — Nano Banana usually takes 8-25s for social covers.",
+            "Almost there… complex scenes can take up to a minute.",
+          ]} />
+        )}
         {showPromptEditor && (
           <SocialPromptEditor
             initial={promptDraft}
@@ -883,6 +912,14 @@ function PostCoverImage({ post, onUpdate }) {
             onCancel={() => setShowPromptEditor(false)}
             generating={generating}
             postId={post.id}
+          />
+        )}
+        {showAssetPicker && (
+          <AssetPickerModal
+            orgId={orgId}
+            postId={post.id}
+            onClose={() => setShowAssetPicker(false)}
+            onPicked={(data) => onReplace?.(data)}
           />
         )}
       </div>
@@ -966,6 +1003,12 @@ function PostCoverImage({ post, onUpdate }) {
            title="Download the generated cover image">
           <Download className="w-3.5 h-3.5" /> Download
         </a>
+        <button type="button" onClick={() => setShowAssetPicker(true)} disabled={generating}
+                className="sp-btn sp-btn-ghost text-xs disabled:opacity-50"
+                data-testid={`use-asset-${post.id}`}
+                title="Replace with an existing photo from your Media Library — or remix one with AI">
+          <FolderOpen className="w-3.5 h-3.5" /> Use a photo
+        </button>
         <button type="button" onClick={() => setShowPromptEditor(true)} disabled={generating}
                 className="sp-btn sp-btn-ghost text-xs disabled:opacity-50"
                 data-testid={`edit-image-prompt-${post.id}`}
@@ -979,6 +1022,13 @@ function PostCoverImage({ post, onUpdate }) {
           {generating ? "Generating…" : "Regenerate"}
         </button>
       </div>
+      {generating && (
+        <WorkingIndicator label="Working on a new cover" hints={[
+          "Briefing Nano Banana with your post + brand voice…",
+          "Composing — Nano Banana usually takes 8-25s for social covers.",
+          "Almost there… complex scenes can take up to a minute.",
+        ]} />
+      )}
       {showPromptEditor && (
         <SocialPromptEditor
           initial={promptDraft}
@@ -987,6 +1037,14 @@ function PostCoverImage({ post, onUpdate }) {
           onCancel={() => setShowPromptEditor(false)}
           generating={generating}
           postId={post.id}
+        />
+      )}
+      {showAssetPicker && (
+        <AssetPickerModal
+          orgId={orgId}
+          postId={post.id}
+          onClose={() => setShowAssetPicker(false)}
+          onPicked={(data) => onReplace?.(data)}
         />
       )}
     </div>

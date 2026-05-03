@@ -8,6 +8,7 @@ import { Send, Trash2, AtSign, Users, Repeat, Search, X, Lock, Film, Globe, Arro
 import LinkPreviewCard from "../components/LinkPreviewCard";
 import { MissionCard } from "../components/MissionCard";
 import { MessageActions } from "../components/MessageActions";
+import WorkingIndicator from "../components/WorkingIndicator";
 
 const formatTime = (ts) => {
   try { return new Date(ts).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }); }
@@ -1125,10 +1126,23 @@ export default function ConversationPage() {
               </div>
             );
           })}
-          {sending && (
+          {(sending || uploading) && (
             <div className="flex justify-start">
-              <div className="sp-bubble-agent rounded-2xl px-4 py-3">
-                <div className="sp-typing"><span/><span/><span/></div>
+              <div className="max-w-[min(560px,90%)] w-full">
+                <WorkingIndicator
+                  label={uploading ? "Uploading & briefing your agents" : "Your agents are working"}
+                  hints={uploading ? [
+                    "Streaming files to the agents…",
+                    "Reading attachments and lining up the right specialist…",
+                    "Almost there — large files sometimes need a few seconds more.",
+                  ] : [
+                    "Thinking…",
+                    "Drafting a careful answer — complex asks like PDFs / CSVs / images can take 15-45 seconds.",
+                    "Generating artifacts (PDF, CSV, image, etc.) — files will land in the chat as soon as they're ready.",
+                    "Almost there — the bigger the deliverable, the longer the final pass.",
+                  ]}
+                  testId="agent-working-indicator"
+                />
               </div>
             </div>
           )}
