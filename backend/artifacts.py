@@ -225,6 +225,67 @@ DEFAULT_MIME = {
 
 _SAFE_NAME_RE = re.compile(r"[^a-zA-Z0-9._\-]")
 
+# Image extensions an agent might try to embed via base64 in an [[ARTIFACT]]
+# block. We accept these (decode + save as a real image attachment) when the
+# body decodes to bytes whose magic number matches the requested format.
+# Otherwise we drop the block silently — the user shouldn't see broken
+# base64 in chat regardless of what the agent did.
+_IMG_EXTS_FROM_B64 = {"png", "jpg", "jpeg", "gif", "webp", "bmp"}
+
+# First-N-bytes signatures we trust as "real" image bytes. We don't care
+# about every edge case — just enough to reject obvious gibberish that an
+# LLM hallucinated as base64.
+_IMG_MAGIC = {
+    "png":  b"\x89PNG\r\n\x1a\n",
+    "jpg":  b"\xff\xd8\xff",
+    "jpeg": b"\xff\xd8\xff",
+    "gif":  (b"GIF87a", b"GIF89a"),
+    "webp": (b"RIFF",),  # full check needs WEBP at offset 8
+    "bmp":  b"BM",
+}
+
+
+def _decode_b64_image(body: str, ext: str) -> Optional[bytes]:
+    """Try to decode `body` as base64 image bytes for `ext`. Returns the
+    decoded bytes IF the magic number matches the requested format,
+    otherwise None. We're permissive about whitespace / line wraps in the
+    base64 (LLMs often add them), and tolerate a `data:image/...` prefix."""
+    import base64
+    if not body:
+        return None
+    s = body.strip()
+    # Strip a data: URI prefix if present
+    if s.startswith("data:"):
+        comma = s.find(",")
+        if comma > 0:
+            s = s[comma + 1:]
+    # Drop any whitespace / newlines the LLM injected
+    s = "".join(s.split())
+    # Must be at least a kilobyte to be plausibly real (a 1px PNG ~70 bytes
+    # but real generated images are >5KB; reject the trivial cases).
+    if len(s) < 64:
+        return None
+    try:
+        data = base64.b64decode(s, validate=False)
+    except Exception:
+        return None
+    expected = _IMG_MAGIC.get(ext)
+    if expected is None:
+        return None
+    if isinstance(expected, tuple):
+        if not any(data.startswith(sig) for sig in expected):
+            return None
+        # Extra check for WebP: bytes 8..12 must be 'WEBP'
+        if ext == "webp" and not (len(data) > 12 and data[8:12] == b"WEBP"):
+            return None
+    elif not data.startswith(expected):
+        return None
+    # Sanity: real images are at least ~64 bytes; reject truncated bytes.
+    if len(data) < 64:
+        return None
+    return data
+
+
 
 def _safe_filename(raw: str) -> Tuple[str, str]:
     """Sanitise a user-supplied filename. Returns (clean_name, ext_lower).
@@ -281,7 +342,6 @@ def extract_artifact_blocks(text: str) -> Tuple[str, List[dict]]:
         return text or "", []
 
     blocks: List[dict] = []
-    rejected: List[str] = []  # list of original requested filenames
 
     def _swap(match: re.Match) -> str:
         attrs = _parse_attrs(match.group(1) or "")
@@ -289,11 +349,35 @@ def extract_artifact_blocks(text: str) -> Tuple[str, List[dict]]:
         raw_name = attrs.get("name") or attrs.get("filename") or ""
         if not raw_name:
             return ""  # malformed — drop entirely
+        # Detect requested ext upfront so we can route base64 image bodies
+        # before the binary-rejection check fires.
+        req_ext = (raw_name.rsplit(".", 1)[-1] if "." in raw_name else "").lower()
+        if req_ext in _IMG_EXTS_FROM_B64:
+            decoded = _decode_b64_image(body, req_ext)
+            if decoded is not None:
+                # Real image bytes! Save as a binary attachment by routing
+                # through the same block list with a `_raw_bytes` payload
+                # the save step will detect and write directly.
+                clean_name = _SAFE_NAME_RE.sub("_", raw_name).strip("_") or f"image.{req_ext}"
+                if not clean_name.lower().endswith(f".{req_ext}"):
+                    clean_name = f"{clean_name}.{req_ext}"
+                mime = attrs.get("mime") or f"image/{'jpeg' if req_ext == 'jpg' else req_ext}"
+                blocks.append({
+                    "name": clean_name[:120],
+                    "ext": req_ext,
+                    "mime": mime,
+                    "title": (attrs.get("title") or "").strip() or clean_name,
+                    "_raw_bytes": decoded,
+                })
+                return ""
+            # Body wasn't real image bytes (LLM hallucination) — drop the
+            # block silently. Users should never see raw base64 in chat.
+            return ""
         name, ext = _safe_filename(raw_name)
         if not name:
-            # Binary extension — agent took the wrong route. Drop the
-            # block (we don't save the body) and flag it to the user.
-            rejected.append(raw_name)
+            # Binary extension we don't synthesize — drop the block
+            # silently (no scary notice; the agent's prose around it is
+            # usually enough context).
             return ""
         mime = attrs.get("mime") or DEFAULT_MIME.get(ext, "application/octet-stream")
         title = (attrs.get("title") or "").strip() or name
@@ -306,20 +390,6 @@ def extract_artifact_blocks(text: str) -> Tuple[str, List[dict]]:
         return ""
 
     cleaned = _ARTIFACT_RE.sub(_swap, text)
-    if rejected:
-        # Build a short, user-visible notice listing the dropped requests
-        # so the user understands why an expected image / PDF didn't show
-        # up. We only show this once per turn, regardless of how many
-        # blocks were rejected.
-        names = ", ".join(rejected[:5])
-        more = f" (+{len(rejected) - 5} more)" if len(rejected) > 5 else ""
-        cleaned = (
-            (cleaned or "").rstrip()
-            + f"\n\n_⚠️ I tried to emit binary file(s) ({names}{more}) via "
-            "the wrong channel — the chat artifact pipeline is text-only. "
-            "Ask me to **generate an image** and I'll use the image tool, "
-            "which actually produces a real PNG._"
-        )
     # Tidy up double-blank-lines we created when removing inline blocks.
     cleaned = re.sub(r"\n{3,}", "\n\n", cleaned).strip()
     return cleaned, blocks
@@ -357,13 +427,20 @@ async def save_artifacts(
         try:
             content = (b.get("content") or "")
             ext = b["ext"]
-            # PDF / DOCX paths: the body is Markdown and we synthesize
-            # real binary bytes here. Everything downstream (GridFS,
-            # /api/files/docs, Download button) just sees bytes + mime so
-            # nothing else changes for the frontend. If synthesis fails we
-            # fall back to saving the raw Markdown with a `.md` extension
-            # so the user still gets the content — never a broken file.
-            if ext in SYNTHESIZED_BINARY_EXTS:
+            raw_bytes = b.get("_raw_bytes")
+            if raw_bytes is not None:
+                # Pre-decoded binary path (base64 image body that we
+                # successfully validated against its magic number). Skip
+                # the Markdown→bytes synthesis and write the bytes
+                # straight through.
+                data = raw_bytes
+            elif ext in SYNTHESIZED_BINARY_EXTS:
+                # PDF / DOCX paths: the body is Markdown and we synthesize
+                # real binary bytes here. Everything downstream (GridFS,
+                # /api/files/docs, Download button) just sees bytes + mime so
+                # nothing else changes for the frontend. If synthesis fails we
+                # fall back to saving the raw Markdown with a `.md` extension
+                # so the user still gets the content — never a broken file.
                 try:
                     from artifact_synthesis import synthesize as _synth
                     data, mime_override = _synth(content, ext, title=b.get("title") or b["name"])
@@ -423,7 +500,7 @@ async def save_artifacts(
                 "kind": _kind_for_ext(ext),
                 "ext": ext,
                 "size": len(data),
-                "preview": content[:600],
+                "preview": "" if raw_bytes is not None else content[:600],
                 "tags": [],
                 "created_at": now,
             }
@@ -456,6 +533,7 @@ def _kind_for_ext(ext: str) -> str:
     if ext in {"ics"}: return "calendar"
     if ext in {"vcf"}: return "contact"
     if ext in {"eml"}: return "email"
+    if ext in {"png", "jpg", "jpeg", "gif", "webp", "bmp"}: return "image"
     if ext in {"pdf"}: return "pdf"
     if ext in {"docx"}: return "doc"
     return "file"
