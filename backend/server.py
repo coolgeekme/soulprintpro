@@ -989,7 +989,8 @@ from brand import (
     BrandUpdateBody as _BrandUpdateBody,
     DEFAULT_LOGO_POSITION as _DEFAULT_LOGO_POS,
     LOGO_POSITION as _LOGO_POSITION_TYPE,  # noqa: F401 (used for typing only)
-    save_logo_bytes as _save_logo_bytes,
+    save_logo_bytes as _save_logo_bytes,  # noqa: F401 (kept for back-compat)
+    prepare_logo_blob as _prepare_logo_blob,
     serialize_brand as _serialize_brand,
     normalise_colors as _normalise_colors,
 )
@@ -1017,10 +1018,25 @@ async def upload_brand_logo(
     content = await file.read()
     if len(content) > 8 * 1024 * 1024:
         raise HTTPException(413, "Logo must be 8 MB or smaller")
+    # Re-encode the upload as a 1024-cap RGBA PNG, then persist the bytes
+    # via ``persist_bytes`` so they're mirrored to GridFS in addition to
+    # disk. This is the fix for "brand logo assets randomly disappear" —
+    # before, logos were disk-only and the file got wiped on every
+    # Kubernetes pod redeploy while the org doc still pointed at the
+    # missing filename.
     try:
-        doc = _save_logo_bytes(UPLOAD_DIR, file.filename or "logo", content)
+        blob, fname = _prepare_logo_blob(content)
     except ValueError as exc:
         raise HTTPException(422, str(exc)) from exc
+    await persist_bytes(
+        UPLOAD_DIR / fname, blob,
+        original_name=file.filename or fname, mime="image/png",
+    )
+    doc = {
+        "filename": fname,
+        "url": f"/api/files/{fname}",
+        "original_name": (file.filename or "logo")[:200],
+    }
     field = "primary_logo" if kind == "primary" else "alt_logo"
     await db.organizations.update_one(
         {"_id": ObjectId(org_id)},
@@ -4800,6 +4816,43 @@ async def startup():
         await rehydrate_autopost_jobs(db=db, router=social_autopost_r)
     except Exception as exc:
         logger.warning("Autopost rehydrate failed: %s", exc)
+    # ── Brand-logo GridFS backfill ───────────────────────────────────────
+    # Older logos were saved to disk only and vanish on pod redeploys
+    # (the ephemeral container fs gets wiped). Mirror any logo that's
+    # still on disk but missing from `media_files` into GridFS so the
+    # next redeploy doesn't lose them. One-shot per process; cheap when
+    # the backfill is empty.
+    try:
+        backfilled = 0
+        async for o in db.organizations.find(
+            {}, {"brand_assets.primary_logo": 1, "brand_assets.alt_logo": 1},
+        ):
+            ba = o.get("brand_assets") or {}
+            for kind in ("primary_logo", "alt_logo"):
+                doc = (ba.get(kind) or {}) if isinstance(ba.get(kind), dict) else {}
+                fn = doc.get("filename") if isinstance(doc, dict) else None
+                if not fn:
+                    continue
+                disk_path = UPLOAD_DIR / fn
+                if not disk_path.is_file():
+                    continue  # already gone — nothing to back up
+                existing = await db.media_files.find_one({"filename": fn})
+                if existing and existing.get("gridfs_id"):
+                    continue  # already mirrored
+                try:
+                    blob = disk_path.read_bytes()
+                except Exception:
+                    continue
+                await persist_bytes(
+                    disk_path, blob,
+                    original_name=doc.get("original_name") or fn,
+                    mime="image/png",
+                )
+                backfilled += 1
+        if backfilled:
+            logger.info("GridFS backfill: mirrored %d existing brand logo(s).", backfilled)
+    except Exception as exc:
+        logger.warning("Brand-logo GridFS backfill skipped: %s", exc)
     logger.info("SoulPrint API ready.")
 
 @app.on_event("shutdown")

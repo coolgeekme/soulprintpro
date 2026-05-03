@@ -20,7 +20,7 @@ import logging
 import re
 import uuid
 from pathlib import Path
-from typing import Literal, Optional
+from typing import Literal, Optional, Tuple
 
 from PIL import Image
 from pydantic import BaseModel, Field
@@ -78,6 +78,30 @@ def save_logo_bytes(
     Re-encodes via Pillow so we get a sensible PNG even when users paste in
     huge JPGs or sketchy WEBPs. Output is RGBA so transparency carries through
     to the social-image overlay.
+
+    NOTE: this writes to DISK ONLY. Production deploys on Emergent run in
+    containers whose local fs is wiped on every redeploy, so logos saved
+    via this path silently disappeared once the next release shipped.
+    Prefer ``prepare_logo_blob`` + ``server.persist_bytes`` to also mirror
+    the bytes to GridFS. This function is kept for backward compatibility
+    with any caller that doesn't have access to the async DB handle.
+    """
+    blob, fname = prepare_logo_blob(content)
+    (upload_dir / fname).write_bytes(blob)
+    return {
+        "filename": fname,
+        "url": f"/api/files/{fname}",
+        "original_name": (original_name or "logo")[:200],
+    }
+
+
+def prepare_logo_blob(content: bytes) -> Tuple[bytes, str]:
+    """Re-encode an uploaded logo as a sensible RGBA PNG and pick a fresh
+    on-disk filename. Returns ``(png_bytes, filename)``.
+
+    Use this when you want to write the bytes via the GridFS-mirroring
+    ``persist_bytes`` helper instead of the disk-only ``save_logo_bytes``.
+    Raises ``ValueError`` if the bytes can't be decoded as an image.
     """
     if not content:
         raise ValueError("Empty file")
@@ -92,14 +116,8 @@ def save_logo_bytes(
             blob = buf.getvalue()
     except Exception as exc:
         raise ValueError(f"Couldn't decode the image: {exc}") from exc
-
     fname = f"logo-{uuid.uuid4().hex}.png"
-    (upload_dir / fname).write_bytes(blob)
-    return {
-        "filename": fname,
-        "url": f"/api/files/{fname}",
-        "original_name": (original_name or "logo")[:200],
-    }
+    return blob, fname
 
 
 def compose_logo_on_image(
