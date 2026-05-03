@@ -104,7 +104,8 @@ code, pre {
 
 /* Shadcn design tokens (mapped to theme vars) */
 @layer base {
-  :root {
+  :root,
+  :root[data-theme="dark"] {
     --background: 232 25% 4%;
     --foreground: 220 15% 92%;
     --card: 232 20% 8%;
@@ -125,6 +126,31 @@ code, pre {
     --input: 232 14% 16%;
     --ring: 252 80% 68%;
     --radius: 0.75rem;
+  }
+  /* Light-mode shadcn tokens — keeps Radix-built primitives (DropdownMenu,
+     Dialog, Popover, Sheet, Select, Command, Tooltip, etc.) readable in light
+     mode. Without this they inherit the dark-only defaults above and render
+     dark surfaces on a beige page. */
+  :root[data-theme="light"] {
+    --background: 40 18% 96%;        /* near-page bg, warm cream */
+    --foreground: 240 14% 12%;       /* near body --fg */
+    --card: 0 0% 100%;
+    --card-foreground: 240 14% 12%;
+    --popover: 0 0% 100%;
+    --popover-foreground: 240 14% 12%;
+    --primary: 240 14% 12%;
+    --primary-foreground: 0 0% 100%;
+    --secondary: 240 10% 92%;
+    --secondary-foreground: 240 14% 12%;
+    --muted: 240 10% 92%;
+    --muted-foreground: 240 8% 38%;  /* readable secondary text on light bg */
+    --accent: 15 100% 48%;
+    --accent-foreground: 0 0% 100%;
+    --destructive: 0 72% 48%;
+    --destructive-foreground: 0 0% 100%;
+    --border: 240 10% 86%;
+    --input: 240 10% 86%;
+    --ring: 15 100% 48%;
   }
 }
 @layer base {
@@ -331,17 +357,73 @@ input[type="text"], input[type="email"], input[type="password"], textarea {
 :root[data-theme="light"] .text-white,
 :root[data-theme="light"] .text-white\/95,
 :root[data-theme="light"] .text-white\/90,
+:root[data-theme="light"] .text-white\/85,
 :root[data-theme="light"] .text-white\/80,
+:root[data-theme="light"] .text-white\/75,
 :root[data-theme="light"] .text-white\/70 {
   color: var(--fg) !important;
 }
+:root[data-theme="light"] .text-white\/65,
 :root[data-theme="light"] .text-white\/60,
+:root[data-theme="light"] .text-white\/55,
 :root[data-theme="light"] .text-white\/50,
+:root[data-theme="light"] .text-white\/45,
 :root[data-theme="light"] .text-white\/40,
-:root[data-theme="light"] .text-white\/30 {
+:root[data-theme="light"] .text-white\/35,
+:root[data-theme="light"] .text-white\/30,
+:root[data-theme="light"] .text-white\/25,
+:root[data-theme="light"] .text-white\/20,
+:root[data-theme="light"] .text-white\/15 {
   color: var(--fg-soft) !important;
 }
-:root[data-theme="light"] .placeholder\:text-white\/30::placeholder { color: var(--fg-soft); }
+:root[data-theme="light"] .placeholder\:text-white\/30::placeholder,
+:root[data-theme="light"] .placeholder\:text-white\/40::placeholder,
+:root[data-theme="light"] .placeholder\:text-white\/50::placeholder { color: var(--fg-soft); }
+
+/* Pale status-pill tints (200/300) are designed for dark glass surfaces.
+   In light mode they all-but-vanish on white cards — remap to the 700-step
+   variants which are designed for light backgrounds. Covers the common
+   patterns used across status chips, agent badges, and category pills. */
+:root[data-theme="light"] [class*="text-emerald-200"],
+:root[data-theme="light"] [class*="text-emerald-300"] { color: #047857 !important; }
+:root[data-theme="light"] [class*="text-sky-200"],
+:root[data-theme="light"] [class*="text-sky-300"]     { color: #0369a1 !important; }
+:root[data-theme="light"] [class*="text-blue-200"],
+:root[data-theme="light"] [class*="text-blue-300"]    { color: #1d4ed8 !important; }
+:root[data-theme="light"] [class*="text-cyan-200"],
+:root[data-theme="light"] [class*="text-cyan-300"]    { color: #0e7490 !important; }
+:root[data-theme="light"] [class*="text-violet-200"],
+:root[data-theme="light"] [class*="text-violet-300"]  { color: #6d28d9 !important; }
+:root[data-theme="light"] [class*="text-purple-200"],
+:root[data-theme="light"] [class*="text-purple-300"]  { color: #7e22ce !important; }
+:root[data-theme="light"] [class*="text-fuchsia-200"],
+:root[data-theme="light"] [class*="text-fuchsia-300"] { color: #a21caf !important; }
+:root[data-theme="light"] [class*="text-pink-200"],
+:root[data-theme="light"] [class*="text-pink-300"]    { color: #be185d !important; }
+:root[data-theme="light"] [class*="text-rose-200"],
+:root[data-theme="light"] [class*="text-rose-300"]    { color: #be123c !important; }
+:root[data-theme="light"] [class*="text-orange-200"],
+:root[data-theme="light"] [class*="text-orange-300"]  { color: #c2410c !important; }
+:root[data-theme="light"] [class*="text-amber-200"],
+:root[data-theme="light"] [class*="text-amber-300"]   { color: #b45309 !important; }
+:root[data-theme="light"] [class*="text-red-200"],
+:root[data-theme="light"] [class*="text-red-300"]     { color: #b91c1c !important; }
+:root[data-theme="light"] [class*="text-yellow-200"],
+:root[data-theme="light"] [class*="text-yellow-300"]  { color: #a16207 !important; }
+:root[data-theme="light"] [class*="text-lime-200"],
+:root[data-theme="light"] [class*="text-lime-300"]    { color: #4d7c0f !important; }
+:root[data-theme="light"] [class*="text-teal-200"],
+:root[data-theme="light"] [class*="text-teal-300"]    { color: #0f766e !important; }
+:root[data-theme="light"] [class*="text-indigo-200"],
+:root[data-theme="light"] [class*="text-indigo-300"]  { color: #4338ca !important; }
+:root[data-theme="light"] [class*="text-slate-300"],
+:root[data-theme="light"] [class*="text-slate-400"]   { color: var(--fg-soft) !important; }
+:root[data-theme="light"] [class*="text-gray-300"],
+:root[data-theme="light"] [class*="text-gray-400"]    { color: var(--fg-soft) !important; }
+:root[data-theme="light"] [class*="text-zinc-300"],
+:root[data-theme="light"] [class*="text-zinc-400"]    { color: var(--fg-soft) !important; }
+:root[data-theme="light"] [class*="text-neutral-300"],
+:root[data-theme="light"] [class*="text-neutral-400"] { color: var(--fg-soft) !important; }
 :root[data-theme="light"] .bg-white\/\[0\.03\],
 :root[data-theme="light"] .bg-white\/5,
 :root[data-theme="light"] .bg-white\/\[0\.05\] { background-color: var(--input-bg) !important; }
