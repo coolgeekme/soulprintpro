@@ -14,6 +14,7 @@ import AcceptInvitePage from "./pages/AcceptInvitePage";
 import SocialPage from "./pages/SocialPage";
 import MissionsPage from "./pages/MissionsPage";
 import AboutPage from "./pages/AboutPage";
+import AdminDashboard from "./pages/AdminDashboard";
 import ErrorBoundary from "./components/ErrorBoundary";
 
 const Loader = () => (
@@ -56,6 +57,7 @@ function App() {
                 <Route path="/app/org/:orgId/missions/:missionId" element={<Protected><MissionsPage /></Protected>} />
                 <Route path="/app/team/:teamId" element={<Protected><TeamPage /></Protected>} />
                 <Route path="/app/team/:teamId/c/:convId" element={<Protected><ConversationPage /></Protected>} />
+                <Route path="/admin" element={<Protected><AdminDashboard /></Protected>} />
                 <Route path="*" element={<Navigate to="/" replace />} />
               </Routes>
             </ErrorBoundary>

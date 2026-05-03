@@ -2,7 +2,7 @@ import React, { useState, useEffect } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { useAuth } from "../context/AuthContext";
 import { useTheme } from "../context/ThemeContext";
-import { LogOut, Sun, Moon, MapPin, ChevronDown, HelpCircle } from "lucide-react";
+import { LogOut, Sun, Moon, MapPin, ChevronDown, HelpCircle, ShieldCheck } from "lucide-react";
 import Logo from "./Logo";
 import { captureUserLocation, getCachedLocation, setCachedLocation } from "../lib/api";
 import { toast } from "sonner";
@@ -130,6 +130,19 @@ export default function TopBar({ children, right = null }) {
                   </div>
                 </DropdownMenuLabel>
                 <DropdownMenuSeparator />
+                {user?.is_superadmin && (
+                  <>
+                    <DropdownMenuItem
+                      onSelect={() => nav("/admin")}
+                      data-testid="topbar-menu-admin"
+                      className="cursor-pointer"
+                    >
+                      <ShieldCheck className="w-4 h-4 mr-2 text-emerald-400" />
+                      Admin dashboard
+                    </DropdownMenuItem>
+                    <DropdownMenuSeparator />
+                  </>
+                )}
                 <DropdownMenuItem
                   onSelect={() => nav("/about")}
                   data-testid="topbar-menu-about"

@@ -247,6 +247,17 @@ async def run_mission_loop(
     pause_flag = _PAUSE_FLAGS.setdefault(mission_id, asyncio.Event())
     pause_flag.clear()
 
+    # Tag every LLM call this loop makes with mission/org/user metadata
+    # so the admin dashboard can attribute spend correctly.
+    from llm_logging import with_call_context, reset_call_context  # noqa: E402
+    _ctx_token = with_call_context(
+        org_id=ctx.get("org_id"),
+        mission_id=mission_id,
+        user_id=ctx.get("created_by"),
+        agent_id=ctx.get("lead_agent_id"),
+        kind_label="mission_lead",
+    )
+
     tool_map = {t.name: t for t in tools}
     catalog = build_tool_catalog(tools)
     sys_prompt = build_lead_system_prompt(catalog)
@@ -537,6 +548,10 @@ async def run_mission_loop(
             await cleanup_mission_page(mission_id)
         except Exception as exc:
             logger.warning("mission %s browser cleanup failed: %s", mission_id, exc)
+        try:
+            reset_call_context(_ctx_token)
+        except Exception:
+            pass
 
 
 async def _fail_mission(db, mission_id: str, err: str) -> None:

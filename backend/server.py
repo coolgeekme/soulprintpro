@@ -30,6 +30,15 @@ from emergentintegrations.llm.chat import LlmChat, UserMessage
 from llm_fallback import install_fallback as _install_llm_fallback
 _install_llm_fallback()  # patches LlmChat.send_message to use OPENAI_API_KEY on budget errors
 
+# Superadmin gate — these emails get the admin dashboard. List is
+# environment-configurable so we can extend without a code change. The
+# seed runs on startup (idempotent) and registration auto-promotes.
+SUPERADMIN_EMAILS = [
+    e.strip().lower() for e in os.environ.get(
+        "SUPERADMIN_EMAILS", "reggie@coolgeek.me",
+    ).split(",") if e.strip()
+]
+
 from brave_search import brave_web_search, format_results_for_prompt
 from perplexity_client import (
     perplexity_company_summary,
@@ -199,7 +208,12 @@ async def get_current_user(request: Request) -> dict:
     tz = (request.headers.get("X-User-Timezone") or "").strip()[:80]
     loc = (request.headers.get("X-User-Location") or "").strip()[:200]
     _USER_CTX.set({"timezone": tz, "location": loc})
-    return {"id": str(user["_id"]), "email": user["email"], "name": user["name"]}
+    return {
+        "id": str(user["_id"]),
+        "email": user["email"],
+        "name": user["name"],
+        "is_superadmin": bool(user.get("is_superadmin")),
+    }
 
 # ── Per-request user context (timezone + approximate location) ──────────────
 # Set in `get_current_user` from the X-User-Timezone / X-User-Location headers
@@ -445,11 +459,17 @@ async def register(body: RegisterBody, resp: Response):
         "password_hash": hash_password(body.password),
         "created_at": datetime.now(timezone.utc),
     }
+    # Auto-promote configured superadmin emails on first sign-up so they
+    # don't need a manual DB poke after registering.
+    if email in {e.lower().strip() for e in SUPERADMIN_EMAILS}:
+        doc["is_superadmin"] = True
     res = await db.users.insert_one(doc)
     uid = str(res.inserted_id)
     token = create_access_token(uid, email)
     set_auth_cookies(resp, token)
-    return {"id": uid, "name": doc["name"], "email": email, "access_token": token}
+    return {"id": uid, "name": doc["name"], "email": email,
+            "is_superadmin": bool(doc.get("is_superadmin")),
+            "access_token": token}
 
 @auth_r.post("/login")
 async def login(body: LoginBody, resp: Response):
@@ -460,7 +480,9 @@ async def login(body: LoginBody, resp: Response):
     uid = str(user["_id"])
     token = create_access_token(uid, email)
     set_auth_cookies(resp, token)
-    return {"id": uid, "name": user["name"], "email": email, "access_token": token}
+    return {"id": uid, "name": user["name"], "email": email,
+            "is_superadmin": bool(user.get("is_superadmin")),
+            "access_token": token}
 
 @auth_r.post("/logout")
 async def logout(resp: Response):
@@ -2187,6 +2209,16 @@ async def send_message(conv_id: str, body: SendMessageBody, u: dict = Depends(ge
     team = await db.teams.find_one({"_id": ObjectId(conv["team_id"])})
     if not team:
         raise HTTPException(404, "Team not found")
+
+    # Tag any LLM call this request triggers with org/conv/user metadata
+    # so the admin dashboard attributes spend correctly.
+    from llm_logging import with_call_context  # noqa: E402
+    with_call_context(
+        org_id=str(team.get("org_id") or "") or None,
+        conversation_id=conv_id,
+        user_id=u["id"],
+        kind_label="agent_reply",
+    )
 
     now = datetime.now(timezone.utc)
     user_doc = {
@@ -4302,6 +4334,29 @@ activity_r = make_activity_router(
     get_current_user=get_current_user,
 )
 app.include_router(activity_r)
+
+# Admin dashboard — superadmin-only. Logging hook is installed BEFORE we
+# include the router so any LLM call made during request handling already
+# emits telemetry to db.llm_calls.
+from llm_logging import install_logging as _install_llm_logging  # noqa: E402
+_install_llm_logging(db)
+
+from admin import make_admin_router, ensure_superadmin_seed  # noqa: E402
+app.include_router(make_admin_router(db=db, get_current_user=get_current_user))
+
+@app.on_event("startup")
+async def _seed_superadmins():
+    """Stamp configured emails as superadmin if their accounts already
+    exist. New sign-ups with these emails are promoted in the register
+    handler. Idempotent — safe to run on every boot."""
+    await ensure_superadmin_seed(db, SUPERADMIN_EMAILS)
+    # Helpful index for the LLM telemetry queries.
+    try:
+        await db.llm_calls.create_index([("created_at", -1)])
+        await db.llm_calls.create_index([("org_id", 1), ("created_at", -1)])
+        await db.llm_calls.create_index([("model", 1), ("created_at", -1)])
+    except Exception:
+        pass
 
 # Org Documents library — populated automatically when agents emit
 # [[ARTIFACT]] blocks in their replies. See artifacts.py.
