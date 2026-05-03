@@ -4,7 +4,7 @@ import api, { BACKEND_URL } from "../lib/api";
 import TopBar from "../components/TopBar";
 import { toast } from "sonner";
 import { useAuth } from "../context/AuthContext";
-import { Send, Trash2, AtSign, Users, Repeat, Search, X, Lock, Film, Globe, ArrowUp, ArrowDown, UserPlus, Paperclip, FileText, File as FileIcon, Download, CornerDownRight, Megaphone, Pencil, Sparkles, Loader2, Rocket } from "lucide-react";
+import { Send, Trash2, AtSign, Users, Repeat, Search, X, Lock, Film, Globe, ArrowUp, ArrowDown, UserPlus, Paperclip, FileText, File as FileIcon, Download, CornerDownRight, Megaphone, Pencil, Sparkles, Loader2, Rocket, Square } from "lucide-react";
 import LinkPreviewCard from "../components/LinkPreviewCard";
 import { MissionCard } from "../components/MissionCard";
 import { MessageActions } from "../components/MessageActions";
@@ -33,6 +33,10 @@ export default function ConversationPage() {
   const bottomSentinelRef = useRef(null);
   const inputRef = useRef(null);
   const fileInputRef = useRef(null);
+  // AbortController for the in-flight send/upload request, so the user
+  // can hit "Stop" to cancel an agent reply mid-generation. Cleared on
+  // success, abort, or error.
+  const sendAbortRef = useRef(null);
   const [uploading, setUploading] = useState(false);
   // Multi-file staging tray. Files picked via the paperclip button accumulate
   // here as { file: File, previewUrl: string, kind: 'image'|'video'|'file', id }
@@ -441,14 +445,31 @@ export default function ConversationPage() {
     setMessages((prev) => [...prev, optimistic]);
     const toSend = text;
     setText("");
+    const controller = new AbortController();
+    sendAbortRef.current = controller;
     try {
-      const { data } = await api.post(`/conversations/${convId}/messages`, { text: toSend });
+      const { data } = await api.post(
+        `/conversations/${convId}/messages`,
+        { text: toSend },
+        { signal: controller.signal },
+      );
       setMessages((prev) => {
         const withoutOptim = prev.filter(m => m.id !== optimistic.id);
         return [...withoutOptim, data.user_message, ...data.agent_messages];
       });
+      if (data.cancelled) {
+        toast("Stopped — no agent reply was saved.", { icon: "🛑" });
+      }
       if (data.conversation) setConv(data.conversation);
     } catch (err) {
+      // User clicked Stop — silently end. The optimistic user message
+      // stays visible (the backend already persisted it), and we tell
+      // the backend to skip persisting any agent reply still in flight.
+      if (err?.name === "CanceledError" || err?.code === "ERR_CANCELED" || err?.message === "canceled") {
+        // fire-and-forget: tell the server to drop any remaining agent reply
+        api.post(`/conversations/${convId}/cancel`).catch(() => {});
+        return;
+      }
       // Surface the actual reason instead of a generic toast so the user
       // can act on it (top up budget, retry, etc.). Special-case the
       // Emergent LLM "Budget has been exceeded" error since the fix is a
@@ -467,7 +488,23 @@ export default function ConversationPage() {
       }
       setMessages((prev) => prev.filter(m => m.id !== optimistic.id));
       setText(toSend);
-    } finally { setSending(false); }
+    } finally {
+      sendAbortRef.current = null;
+      setSending(false);
+    }
+  };
+
+  // Stop the agent's in-flight reply. Aborts the axios request
+  // (immediate UX feedback) AND tells the backend to drop any remaining
+  // agent reply before persisting it (so the conversation history stays
+  // clean). Safe to call when nothing is in flight.
+  const stopSending = () => {
+    const c = sendAbortRef.current;
+    if (c) {
+      try { c.abort(); } catch { /* ignore */ }
+    }
+    // Best-effort cancel signal so the server skips persisting too.
+    api.post(`/conversations/${convId}/cancel`).catch(() => {});
   };
 
   const slugForMention = (a) => {
@@ -1305,12 +1342,19 @@ export default function ConversationPage() {
               <Rocket className="w-3.5 h-3.5" />
             </button>
             <button
-              type="submit"
-              disabled={sending || uploading || (!text.trim() && staged.length === 0)}
-              className="sp-btn sp-btn-primary text-sm disabled:opacity-50 shrink-0"
-              data-testid="send-message-btn"
+              type={sending ? "button" : "submit"}
+              onClick={sending ? stopSending : undefined}
+              disabled={uploading || (!sending && !text.trim() && staged.length === 0)}
+              className={`sp-btn text-sm shrink-0 disabled:opacity-50 ${sending ? "" : "sp-btn-primary"}`}
+              data-testid={sending ? "stop-message-btn" : "send-message-btn"}
+              title={sending ? "Stop the agent reply" : "Send"}
+              style={sending ? {
+                background: "linear-gradient(180deg, #ef4444 0%, #b91c1c 100%)",
+                color: "#fff",
+                border: "1px solid rgba(220,38,38,0.55)",
+              } : undefined}
             >
-              <Send className="w-3.5 h-3.5" />
+              {sending ? <Square className="w-3.5 h-3.5 fill-current" /> : <Send className="w-3.5 h-3.5" />}
             </button>
           </div>
         </form>

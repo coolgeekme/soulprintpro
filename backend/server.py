@@ -1283,6 +1283,24 @@ async def list_divisions(u: dict = Depends(get_current_user)):
 # ── Conversation + messaging ─────────────────────────────────────────────────
 conv_r = APIRouter(prefix="/api")
 
+# ── Conversation reply cancellation ────────────────────────────────────────
+# Maps `conv_id` to the wall-clock timestamp at which the user clicked
+# "Stop" in the UI. The send-message handler captures its own `started_at`
+# at request entry; any cancel timestamp >= that started_at means the
+# cancel was requested AFTER (or simultaneously with) the request, so the
+# handler bails before persisting / returning agent replies. We use a plain
+# in-process dict because the backend is single-process; if we ever scale
+# horizontally this should move to Redis.
+import time as _time  # noqa: E402  (named to avoid colliding with local `time`)
+_cancel_requests: dict = {}
+
+def _should_cancel(conv_id: str, started_at: float) -> bool:
+    """True iff a cancel for this conversation was requested at or after
+    the handler started. Stale entries are pruned opportunistically by the
+    cancel endpoint."""
+    ts = _cancel_requests.get(conv_id, 0.0)
+    return ts >= started_at
+
 def build_system_prompt(agent_id: str, team: dict, current_user_name: Optional[str] = None,
                         org_assets: Optional[List[dict]] = None,
                         org: Optional[dict] = None) -> str:
@@ -2201,6 +2219,22 @@ async def _find_last_image_in_conv(conv_id: str) -> Optional[Path]:
                 return p
     return None
 
+@conv_r.post("/conversations/{conv_id}/cancel")
+async def cancel_conversation_reply(conv_id: str, u: dict = Depends(get_current_user)):
+    """Mark this conversation's currently-running reply as cancelled. The
+    send-message handler checks the registry between agent turns / before
+    persisting expensive image-gen results, so the user gets an immediate
+    UI stop AND we avoid persisting orphan replies. Member-gated."""
+    await load_conv_or_403(conv_id, u["id"])
+    _cancel_requests[conv_id] = _time.time()
+    # Opportunistic prune: drop any entries older than 10 minutes so the
+    # registry doesn't grow unbounded across long-lived processes.
+    cutoff = _time.time() - 600
+    stale = [k for k, v in _cancel_requests.items() if v < cutoff]
+    for k in stale:
+        _cancel_requests.pop(k, None)
+    return {"ok": True}
+
 @conv_r.post("/conversations/{conv_id}/messages")
 async def send_message(conv_id: str, body: SendMessageBody, u: dict = Depends(get_current_user)):
     if not body.text.strip():
@@ -2209,6 +2243,13 @@ async def send_message(conv_id: str, body: SendMessageBody, u: dict = Depends(ge
     team = await db.teams.find_one({"_id": ObjectId(conv["team_id"])})
     if not team:
         raise HTTPException(404, "Team not found")
+
+    # Capture wall-clock entry time so the user's "Stop" button (which
+    # calls /cancel) can mark cancels that arrive AFTER this — anything
+    # older is a stale registry entry from a previous request and is
+    # ignored. Also clear any stale entry for this conv before we start.
+    started_at = _time.time()
+    _cancel_requests.pop(conv_id, None)
 
     # Tag any LLM call this request triggers with org/conv/user metadata
     # so the admin dashboard attributes spend correctly.
@@ -2386,7 +2427,15 @@ async def send_message(conv_id: str, body: SendMessageBody, u: dict = Depends(ge
 
     agent_messages = []
     for aid in responders:
+        # Bail if the user clicked Stop on the client. We skip the LLM
+        # call AND the persist so the conversation history doesn't show
+        # orphan replies the user never wanted.
+        if _should_cancel(conv_id, started_at):
+            break
         reply, web_sources = await generate_agent_reply(conv, team, aid, body.text, u["name"])
+        # Re-check after the (potentially long) LLM call before we persist.
+        if _should_cancel(conv_id, started_at):
+            break
         msg_id = str(uuid.uuid4())
         clean_reply, artifacts = await process_agent_artifacts(
             reply, conv=conv, agent_id=aid, message_id=msg_id, created_by=u["id"],
@@ -2415,10 +2464,17 @@ async def send_message(conv_id: str, body: SendMessageBody, u: dict = Depends(ge
         agent_messages.insert(0, {k: v for k, v in image_msg.items() if k != "_id"})
     if video_msg is not None:
         agent_messages.insert(0, video_msg)
+    # Surface cancel state to the client so the UI can display a small
+    # "Stopped" hint instead of treating an empty reply list as a silent
+    # router failure.
+    cancelled = _should_cancel(conv_id, started_at)
+    if cancelled:
+        _cancel_requests.pop(conv_id, None)
     return {
         "user_message": user_doc_resp,
         "agent_messages": agent_messages,
         "conversation": serialize_conv(fresh_conv) if fresh_conv else None,
+        "cancelled": cancelled,
     }
 
 # ── Smart start: route → create direct conv → post first message ──────────
