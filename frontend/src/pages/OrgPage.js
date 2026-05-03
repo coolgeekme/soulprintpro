@@ -732,10 +732,24 @@ export default function OrgPage() {
 function GeneralChatCard({ orgId, teamId, convId }) {
   const nav = useNavigate();
   const fileInputRef = useRef(null);
+  const taRef = useRef(null);
   const [staged, setStaged] = useState([]);
   const [text, setText] = useState("");
   const [uploading, setUploading] = useState(false);
   const [isDragging, setIsDragging] = useState(false);
+
+  // Auto-grow the inline composer textarea as the user types. Caps at ~30dvh
+  // so the org page stays usable; past the cap the textarea scrolls
+  // internally so users can swipe/scroll up and down to edit a long message.
+  useEffect(() => {
+    const ta = taRef.current;
+    if (!ta) return;
+    ta.style.height = "auto";
+    const max = Math.max(120, Math.round(window.innerHeight * 0.30));
+    const next = Math.min(ta.scrollHeight, max);
+    ta.style.height = `${next}px`;
+    ta.style.overflowY = ta.scrollHeight > max ? "auto" : "hidden";
+  }, [text]);
 
   const stageFiles = (incoming) => {
     const picked = Array.from(incoming || []).filter(Boolean);
@@ -895,16 +909,20 @@ function GeneralChatCard({ orgId, teamId, convId }) {
           >
             <Paperclip className="w-3.5 h-3.5" />
           </button>
-          <input
-            type="text"
+          <textarea
+            ref={taRef}
+            rows={1}
             value={text}
             onChange={(e) => setText(e.target.value)}
             onPaste={onPaste}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); submit(e); }
+            }}
             placeholder={staged.length > 0
               ? `Optional — what should the agents do with ${staged.length === 1 ? "this file" : "these files"}?`
               : "Drop, paste, or pick files to send to General — add an optional prompt"}
-            className="flex-1 rounded-xl px-4 py-2.5 text-sm focus:sp-focus"
-            style={{ background: "var(--input-bg)", border: "1px solid var(--input-border)", color: "var(--fg)" }}
+            className="flex-1 rounded-xl px-4 py-2.5 text-sm focus:sp-focus resize-none leading-relaxed"
+            style={{ background: "var(--input-bg)", border: "1px solid var(--input-border)", color: "var(--fg)", minHeight: "42px" }}
             data-testid="general-prompt-input"
           />
           <button

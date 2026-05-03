@@ -309,6 +309,19 @@ export default function ConversationPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // Auto-grow the composer textarea as the user types. Caps at ~40dvh so
+  // the input never crowds the chat; past the cap the textarea scrolls
+  // internally so the user can swipe/scroll up and down to edit.
+  useEffect(() => {
+    const ta = inputRef.current;
+    if (!ta) return;
+    ta.style.height = "auto";
+    const max = Math.max(120, Math.round(window.innerHeight * 0.40));
+    const next = Math.min(ta.scrollHeight, max);
+    ta.style.height = `${next}px`;
+    ta.style.overflowY = ta.scrollHeight > max ? "auto" : "hidden";
+  }, [text]);
+
   // Spin up a mission tied to this conversation. The backend returns a
   // mission_card chat-message that we drop into the local message list so
   // the user sees it immediately without waiting for the next poll.
@@ -1269,8 +1282,8 @@ export default function ConversationPage() {
                   ? "Message the room… use @name to ping an agent. Ask for an image or a video and they'll just make it."
                   : `Message ${convAgents[0]?.name || "your agent"} — ask for posts, logos, or videos and they'll just make them.`)}
               rows={1}
-              className="flex-1 sp-glass rounded-2xl px-4 py-3.5 text-[16px] leading-relaxed placeholder:opacity-50 focus:sp-focus resize-none max-h-44"
-              style={{ background: "var(--input-bg)", borderColor: "var(--input-border)", color: "var(--fg)" }}
+              className="flex-1 sp-glass rounded-2xl px-4 py-3.5 text-[16px] leading-relaxed placeholder:opacity-50 focus:sp-focus resize-none"
+              style={{ background: "var(--input-bg)", borderColor: "var(--input-border)", color: "var(--fg)", minHeight: "52px" }}
             />
             <button
               type="button"
