@@ -46,9 +46,11 @@ function StatCard({ icon: Icon, label, value, sub }) {
 
 function OverviewPanel() {
   const [data, setData] = useState(null);
+  const [excludeTest, setExcludeTest] = useState(true);
   useEffect(() => {
-    api.get("/admin/overview").then((r) => setData(r.data)).catch(() => setData({}));
-  }, []);
+    setData(null);
+    api.get(`/admin/overview?exclude_test=${excludeTest}`).then((r) => setData(r.data)).catch(() => setData({}));
+  }, [excludeTest]);
   if (!data) return <div className="sp-subtle text-sm flex items-center gap-2"><Loader2 className="w-4 h-4 animate-spin" /> Loading…</div>;
   const t = data.totals || {};
   const d = data.deltas || {};
@@ -57,6 +59,23 @@ function OverviewPanel() {
   const fmt = (n) => Number(n || 0).toLocaleString();
   return (
     <div className="space-y-6">
+      <div className="flex items-center gap-3 flex-wrap">
+        <label className="flex items-center gap-2 text-xs cursor-pointer sp-subtle">
+          <input
+            type="checkbox"
+            checked={excludeTest}
+            onChange={(e) => setExcludeTest(e.target.checked)}
+            className="accent-orange-500"
+            data-testid="admin-exclude-test"
+          />
+          Exclude obvious test accounts
+        </label>
+        <span className="text-[11px] sp-subtle italic">
+          {excludeTest
+            ? "Filter on: hides @test.com / @example.com / synthetic emails. Reflects real adoption."
+            : "Filter off: counts include all automated test accounts ever registered."}
+        </span>
+      </div>
       <div className="grid sm:grid-cols-2 lg:grid-cols-4 gap-3">
         <StatCard icon={Users} label="Users" value={fmt(t.users)} sub={`+${d.new_users_7d || 0} last 7d · +${d.new_users_30d || 0} last 30d`} />
         <StatCard icon={Building2} label="Organizations" value={fmt(t.orgs)} sub={`+${d.new_orgs_7d || 0} last 7d · +${d.new_orgs_30d || 0} last 30d`} />

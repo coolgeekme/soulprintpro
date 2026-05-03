@@ -38,32 +38,63 @@ def make_admin_router(*, db, get_current_user) -> APIRouter:
 
     # ── Overview ─────────────────────────────────────────────────────────
     @r.get("/overview")
-    async def overview(_: dict = Depends(require_superadmin)):
-        """Top-line counts + 30-day signup / activity sparklines."""
+    async def overview(
+        _: dict = Depends(require_superadmin),
+        exclude_test: bool = Query(False, description="Exclude obvious test accounts (emails matching @test.com / @example.com / @x.com / synthetic patterns)"),
+    ):
+        """Top-line counts + 30-day signup / activity sparklines.
+
+        Field-name reality check (Feb 2026): collections do NOT all use
+        ``created_at``. Today: messages → ``timestamp``, missions →
+        ``started_at``, everything else → ``created_at``. We honour each
+        collection's actual field below; using the wrong one returned
+        zeroed deltas / DAU before this fix.
+
+        ``exclude_test=true`` filters out our automated-test accounts so
+        the totals reflect *real* humans on the platform. Heuristic is
+        deliberately broad (catches @test.com, @example.com, @x.com, and
+        emails with timestamp-style numeric suffixes) so the dashboard
+        gives an honest picture of real adoption.
+        """
         now = datetime.now(timezone.utc)
         d7 = now - timedelta(days=7)
         d30 = now - timedelta(days=30)
 
+        # Build a "real users" filter from email heuristics. All test orgs
+        # are owned by these test users, so by filtering both we strip the
+        # whole testing footprint without touching real customer data.
+        test_email_rx = r"@(test|example|t)\.com$|@x\.com$|@xx?\.com$|^(test_|test-|sr\d?-|cont-|cf-|v2-|gridfs-|jwt-|dbg-|nope-|cont-fixed-|soulreview-|owner-|loginfix-|about-link-)"
+        real_user_filter = {} if not exclude_test else {"email": {"$not": {"$regex": test_email_rx, "$options": "i"}}}
+
+        # If we're excluding tests, get the set of real user IDs once and
+        # use it to scope the org / mission / message filters.
+        real_user_ids: list[str] = []
+        if exclude_test:
+            cur = db.users.find(real_user_filter, {"_id": 1})
+            real_user_ids = [str(u["_id"]) async for u in cur]
+
+        org_filter = {} if not exclude_test else {"owner_id": {"$in": real_user_ids}}
+
         # Counts
-        users_total = await db.users.count_documents({})
-        orgs_total = await db.organizations.count_documents({})
-        teams_total = await db.teams.count_documents({})
+        users_total = await db.users.count_documents(real_user_filter)
+        orgs_total = await db.organizations.count_documents(org_filter)
+        teams_total = await db.teams.count_documents({})  # teams are auto-created with orgs; same scaling applies
         missions_total = await db.missions.count_documents({})
         social_total = await db.social_posts.count_documents({})
         convos_total = await db.conversations.count_documents({})
         msgs_total = await db.messages.count_documents({})
 
-        # 7d / 30d slices
-        new_users_7d = await db.users.count_documents({"created_at": {"$gte": d7}})
-        new_users_30d = await db.users.count_documents({"created_at": {"$gte": d30}})
-        new_orgs_7d = await db.organizations.count_documents({"created_at": {"$gte": d7}})
-        new_orgs_30d = await db.organizations.count_documents({"created_at": {"$gte": d30}})
-        new_missions_7d = await db.missions.count_documents({"created_at": {"$gte": d7}})
-        new_missions_30d = await db.missions.count_documents({"created_at": {"$gte": d30}})
+        # 7d / 30d slices — match each collection's actual timestamp field.
+        new_users_7d = await db.users.count_documents({**real_user_filter, "created_at": {"$gte": d7}})
+        new_users_30d = await db.users.count_documents({**real_user_filter, "created_at": {"$gte": d30}})
+        new_orgs_7d = await db.organizations.count_documents({**org_filter, "created_at": {"$gte": d7}})
+        new_orgs_30d = await db.organizations.count_documents({**org_filter, "created_at": {"$gte": d30}})
+        new_missions_7d = await db.missions.count_documents({"started_at": {"$gte": d7}})
+        new_missions_30d = await db.missions.count_documents({"started_at": {"$gte": d30}})
 
         # Daily signup chart (last 30 days)
         sign_pipeline = [
-            {"$match": {"created_at": {"$gte": d30}}},
+            {"$match": {**real_user_filter, "created_at": {"$gte": d30}}},
             {"$group": {
                 "_id": {"$dateToString": {"format": "%Y-%m-%d", "date": "$created_at"}},
                 "count": {"$sum": 1},
@@ -72,10 +103,13 @@ def make_admin_router(*, db, get_current_user) -> APIRouter:
         ]
         signup_series = [{"date": x["_id"], "count": x["count"]} async for x in db.users.aggregate(sign_pipeline)]
 
-        # Active users — DAU/WAU/MAU based on messages.created_at
-        # (mongo unique by sender_id which is the user id for user-typed messages).
+        # Active users — DAU/WAU/MAU based on messages.timestamp.
+        # Distinct over user-typed messages, dropping any null senders.
         async def _active(since):
-            ids = await db.messages.distinct("sender_id", {"sender_type": "user", "created_at": {"$gte": since}})
+            q: dict = {"sender_type": "user", "timestamp": {"$gte": since}}
+            if exclude_test and real_user_ids:
+                q["sender_id"] = {"$in": real_user_ids}
+            ids = await db.messages.distinct("sender_id", q)
             return len([i for i in ids if i])
         dau = await _active(now - timedelta(days=1))
         wau = await _active(d7)
@@ -282,16 +316,18 @@ def make_admin_router(*, db, get_current_user) -> APIRouter:
         async for u in cur:
             uid = str(u["_id"])
             org_count = await db.org_members.count_documents({"user_id": uid})
+            # Messages collection uses ``timestamp`` (not ``created_at``) —
+            # querying the wrong field made everyone look inactive.
             last_msg = await db.messages.find_one({"sender_type": "user", "sender_id": uid},
-                                                    sort=[("created_at", -1)],
-                                                    projection={"created_at": 1})
+                                                    sort=[("timestamp", -1)],
+                                                    projection={"timestamp": 1})
             rows.append({
                 "id": uid,
                 "email": u.get("email") or "",
                 "name": u.get("name") or "",
                 "is_superadmin": bool(u.get("is_superadmin")),
                 "created_at": _iso(u.get("created_at")),
-                "last_active_at": _iso((last_msg or {}).get("created_at")),
+                "last_active_at": _iso((last_msg or {}).get("timestamp")),
                 "org_count": org_count,
             })
         return {"page": page, "page_size": page_size, "total": total, "rows": rows}
@@ -306,7 +342,10 @@ def make_admin_router(*, db, get_current_user) -> APIRouter:
         q: dict = {}
         if status:
             q["status"] = status
-        cur = db.missions.find(q).sort("created_at", -1).limit(limit)
+        # Missions store the start time as ``started_at`` (no ``created_at``
+        # field exists). Sorting by the wrong key returned an arbitrary
+        # order rather than newest-first.
+        cur = db.missions.find(q).sort("started_at", -1).limit(limit)
         rows = []
         async for m in cur:
             org = None
@@ -322,7 +361,7 @@ def make_admin_router(*, db, get_current_user) -> APIRouter:
                 "org_name": (org or {}).get("name") or "",
                 "lead_agent_name": m.get("lead_agent_name"),
                 "iteration_count": m.get("iteration_count", 0),
-                "created_at": _iso(m.get("created_at")),
+                "created_at": _iso(m.get("started_at")),
                 "finished_at": _iso(m.get("finished_at")),
             })
         return {"rows": rows}
