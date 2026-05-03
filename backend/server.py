@@ -1008,8 +1008,12 @@ async def upload_brand_logo(
     if kind not in ("primary", "alt"):
         raise HTTPException(422, "kind must be 'primary' or 'alt'")
     ctx = await require_org_member(org_id, u["id"])
-    if ctx["member"]["role"] not in ("owner", "admin"):
-        raise HTTPException(403, "Only owners/admins can upload brand assets")
+    if ctx["member"]["role"] != "owner":
+        raise HTTPException(
+            403,
+            "Only the organization owner can change brand logos. "
+            "Ask the owner — or message them in chat — to update the logo.",
+        )
     content = await file.read()
     if len(content) > 8 * 1024 * 1024:
         raise HTTPException(413, "Logo must be 8 MB or smaller")
@@ -1033,8 +1037,11 @@ async def delete_brand_logo(
     if kind not in ("primary", "alt"):
         raise HTTPException(422, "kind must be 'primary' or 'alt'")
     ctx = await require_org_member(org_id, u["id"])
-    if ctx["member"]["role"] not in ("owner", "admin"):
-        raise HTTPException(403, "Only owners/admins can edit brand assets")
+    if ctx["member"]["role"] != "owner":
+        raise HTTPException(
+            403,
+            "Only the organization owner can remove brand logos.",
+        )
     field = "primary_logo" if kind == "primary" else "alt_logo"
     await db.organizations.update_one(
         {"_id": ObjectId(org_id)},
@@ -1052,8 +1059,12 @@ async def update_brand_meta(
     multipart endpoint above so they don't get split across two calls.
     """
     ctx = await require_org_member(org_id, u["id"])
-    if ctx["member"]["role"] not in ("owner", "admin"):
-        raise HTTPException(403, "Only owners/admins can edit brand assets")
+    if ctx["member"]["role"] != "owner":
+        raise HTTPException(
+            403,
+            "Only the organization owner can change brand colors, tagline, "
+            "or visual style. Ask the owner to update these for the team.",
+        )
     update: dict = {}
     if body.brand_colors is not None:
         update["brand_assets.brand_colors"] = _normalise_colors(body.brand_colors)

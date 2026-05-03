@@ -13,6 +13,7 @@ import CollapsibleSection from "../components/CollapsibleSection";
 import Logo from "../components/Logo";
 import SchedulesPanel from "../components/SchedulesPanel";
 import SoulSuggestionsPanel from "../components/SoulSuggestionsPanel";
+import WorkingIndicator from "../components/WorkingIndicator";
 
 const formatBytes = (n) => {
   if (!n) return "0 B";
@@ -313,6 +314,18 @@ export default function OrgPage() {
                 <Save className="w-3.5 h-3.5" /> {savingOrg ? "Saving…" : "Save"}
               </button>
             </div>
+            {savingOrg && isOwner && regenSoul && (
+              <WorkingIndicator
+                label="Re-synthesising your company Soul"
+                hints={[
+                  "Reading your website, description, and any uploaded assets…",
+                  "Distilling mission, audience, tone, and north-star — usually 12-25s.",
+                  "Aligning every agent's brain with the new Soul…",
+                  "Almost there — saving the Soul so all 169 agents stay on-brand.",
+                ]}
+                testId="soul-resynth-working-indicator"
+              />
+            )}
           </form>
         )}
 
@@ -493,8 +506,9 @@ export default function OrgPage() {
               badge={!isSetUp ? `${unconfiguredCount} to go` : null}
               testId="org-admin-section"
             >
-              {/* Brand Assets */}
-              <BrandAssetsPanel orgId={orgId} initial={org.brand_assets} onChange={(ba) => setOrg((prev) => prev ? { ...prev, brand_assets: ba } : prev)} />
+              {/* Brand Assets — owner-only edits. Members get a read-only
+                  view + a clear notice telling them to ask the owner. */}
+              <BrandAssetsPanel orgId={orgId} initial={org.brand_assets} isOwner={isOwner} onChange={(ba) => setOrg((prev) => prev ? { ...prev, brand_assets: ba } : prev)} />
 
               {/* Company Soul — read-only display when populated */}
               {(org.soul && (org.soul.mission || org.soul.summary)) && (

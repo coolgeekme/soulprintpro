@@ -5,6 +5,7 @@ import {
   Sparkles, Plus, Trash2, RefreshCw, ExternalLink, Save, Pencil, X as XIcon,
   Wand2, Loader2, AlertTriangle, Eye, EyeOff,
 } from "lucide-react";
+import WorkingIndicator from "./WorkingIndicator";
 
 const PLATFORMS = [
   { key: "twitter", label: "X / Twitter" },
@@ -182,6 +183,19 @@ export default function SocialStyleGuidePanel({ orgId }) {
           </button>
         </div>
       </div>
+
+      {synthing && (
+        <WorkingIndicator
+          label="Synthesizing your brand voice"
+          hints={[
+            "Reading your connected profiles & sample posts…",
+            "Asking Perplexity to find recent posts and themes — usually 10-25s.",
+            "Distilling tone, vocabulary, and visual cues into a guide…",
+            "Almost there — finalizing the style guide your agents will follow.",
+          ]}
+          testId="style-guide-working-indicator"
+        />
+      )}
 
       {loading ? (
         <div className="sp-subtle text-sm py-6 text-center">Loading style guide…</div>
