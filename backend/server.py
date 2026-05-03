@@ -1675,11 +1675,31 @@ _VERB_HINTS_RE = re.compile(
     re.IGNORECASE,
 )
 
+# Hard-veto keywords — when the user explicitly asks for a document-style
+# artifact, never shortcut to image generation even if the message also
+# contains an ambiguous verb like "create" or "design".
+_DOC_INTENT_RE = re.compile(
+    r"\b(?:\.pdf|\.docx|\.doc|\.txt|\.md|\.csv|\.tsv|\.json|\.html|\.ics|\.vcf|\.eml|\.sh|\.py|\.js|\.ts|\.sql|\.yaml|\.yml|\.xml|\.rtf|"
+    r"pdf|docx|word\s+doc(?:ument)?|markdown|"
+    r"brief|report|memo|whitepaper|white\s+paper|plan|proposal|spec(?:ification)?|"
+    r"checklist|outline|agenda|meeting\s+notes?|transcript|"
+    r"invoice|receipt|contract|sop|"
+    r"spreadsheet|csv|tsv|table|"
+    r"calendar\s+invite|\.ics\b|vcard|contact\s+card)\b",
+    re.IGNORECASE,
+)
+
+
 def _quick_image_intent(text: str) -> Optional[bool]:
     """Cheap deterministic pre-classifier. Returns True/False if confident,
     None if we should ask the LLM. Saves a roundtrip on the obvious cases."""
     if _VIDEO_KEYWORDS_RE.search(text):
         return False  # video request — don't shortcut to image
+    # Document requests ALWAYS win — "write a PDF brief" mentions "brief"
+    # which is ambiguous, but ".pdf" / "brief" / "report" are the user's
+    # explicit deliverable. Never route these through image gen.
+    if _DOC_INTENT_RE.search(text):
+        return False
     if _IMAGE_KEYWORDS_RE.search(text) and _VERB_HINTS_RE.search(text):
         return True
     return None
@@ -1834,11 +1854,17 @@ async def detect_image_intent(message: str) -> bool:
         return fast
     system = (
         "You are a binary classifier. Decide whether the user's latest message is "
-        "asking the assistant to GENERATE an image. Lean YES for: 'create/make/design "
-        "an image / poster / graphic / logo / illustration / banner / thumbnail / "
-        "Instagram or LinkedIn or Twitter post / story / cover photo'. Lean NO for: "
-        "describing an existing image, asking for image-related advice, mere mentions, "
-        "or any request that involves motion / animation / video. "
+        "asking the assistant to GENERATE a visual image (picture / photo / graphic / "
+        "logo / illustration / banner / thumbnail / Instagram or LinkedIn or Twitter "
+        "post / story / cover photo). "
+        "Lean STRONG NO whenever the user asks for a DOCUMENT / PDF / DOCX / WORD DOC / "
+        "Word / brief / report / memo / plan / proposal / spec / whitepaper / "
+        "checklist / outline / SOP / invoice / receipt / contract / agenda / "
+        "meeting notes / transcript / CSV / spreadsheet / table / calendar invite / "
+        ".ics / .vcf / .eml — those are text artifacts, not images. "
+        "Also lean NO for: describing an existing image, asking for image-related "
+        "advice, mere mentions, or any request that involves motion / animation / "
+        "video. "
         "Reply with ONLY one word: yes or no."
     )
     try:

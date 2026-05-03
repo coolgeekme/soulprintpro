@@ -103,13 +103,27 @@ Self-serve artifacts you can emit (pick the most useful format for the job):
   • .html           — landing page mockups, email HTML, dashboards
   • .sh / .py / .js — automation scripts the user can run themselves
   • .sql            — query bodies / migrations
+  • .pdf            — formatted business documents (the body you write is
+                      MARKDOWN — the system transcodes to a real PDF with
+                      proper headings, lists, tables, and page numbers).
+  • .docx           — Word documents — same deal, body is Markdown and the
+                      system produces a real .docx with native styles.
 
-IMPORTANT — TEXT ONLY.
-This artifact mechanism is for TEXT-BASED files only. Do NOT try to emit
-images (.png/.jpg/.webp), video (.mp4/.mov), audio (.mp3/.wav), or binary
-office docs (.pdf/.docx/.xlsx) via [[ARTIFACT]] — the body would arrive
-as gibberish text with the wrong extension. When you need a rendered
-image, either:
+IMPORTANT — PDF / DOCX BODY FORMAT.
+For `.pdf` and `.docx` artifacts write Markdown in the body (headings with
+`#`, bullet lists with `-`, numbered lists with `1.`, **bold**, *italic*,
+GFM tables with `|`, code blocks in triple backticks, blockquotes with `>`).
+The system will render it into a polished binary document the user can
+download directly from the chat. Do NOT attempt to emit PDF bytes, LaTeX,
+base64, or HTML in the body — just clean Markdown.
+
+IMPORTANT — TEXT & MARKDOWN-DRIVEN ONLY.
+This artifact mechanism is for text-based files AND Markdown-driven
+documents (.pdf/.docx — see above). Do NOT try to emit images (.png/
+.jpg/.webp), video (.mp4/.mov), audio (.mp3/.wav), Excel/PowerPoint, or
+legacy Office formats (.doc/.xls/.ppt) via [[ARTIFACT]] — the body would
+arrive as gibberish text with the wrong extension. When you need a
+rendered image, either:
   • Describe it in prose and the user can follow up with an image gen
     request, OR
   • If you're running inside a Mission, call the `generate_image` tool.
@@ -140,6 +154,14 @@ useful (a launch plan, a content calendar, a checklist, a script, a brief),
 go ahead and attach it as an artifact in addition to your prose answer.
 Don't ask permission first. Default to action.
 
+When the user explicitly asks for a "PDF", "document", "brief", "report",
+"Word doc", or similar — ALWAYS emit a `.pdf` (preferred) or `.docx`
+artifact as part of your reply. The body is Markdown; the system converts
+it. Do not just say "I'll generate the PDF shortly" — actually emit the
+[[ARTIFACT]] block right now so the user gets the download link in this
+same turn. Never promise a future delivery that won't arrive; if you
+can't produce the file in this turn, say so honestly.
+
 Stay quiet about missing native integrations — don't apologize, don't say
 "coming soon", don't lecture about API limits. Just deliver the artifact.
 """
@@ -157,6 +179,10 @@ ALLOWED_EXTS = {
     "ics", "vcf", "eml", "csv", "tsv", "json", "md", "txt",
     "html", "htm", "sh", "py", "js", "ts", "yaml", "yml", "sql",
     "xml", "rtf", "log", "ini", "toml", "env",
+    # Binary business docs — the body is Markdown and we synthesize real
+    # bytes server-side via artifact_synthesis.synthesize(). Agents write
+    # Markdown; users get a polished .pdf / .docx they can download.
+    "pdf", "docx",
 }
 
 # Extensions that `write_artifact` must NEVER accept — they're binary or
@@ -172,10 +198,17 @@ BINARY_EXTS = {
     "mp4", "mov", "avi", "mkv", "webm", "flv", "mpeg", "mpg", "wmv", "m4v",
     # Audio
     "mp3", "wav", "aac", "flac", "ogg", "m4a", "opus", "aiff",
-    # Binary docs (need a real generator or upload path)
-    "pdf", "docx", "doc", "xlsx", "xls", "pptx", "ppt",
+    # Binary docs we can't synthesize from Markdown safely. .pdf and .docx
+    # are handled separately via artifact_synthesis.synthesize() and are
+    # listed in ALLOWED_EXTS above.
+    "doc", "xlsx", "xls", "pptx", "ppt",
     "zip", "tar", "gz", "7z", "rar",
 }
+
+# Extensions for which the body is Markdown that we transcode into real
+# binary bytes at save time. Mapping is authoritative — any ext listed
+# here MUST also be in ALLOWED_EXTS.
+SYNTHESIZED_BINARY_EXTS = {"pdf", "docx"}
 
 DEFAULT_MIME = {
     "ics": "text/calendar", "vcf": "text/vcard", "eml": "message/rfc822",
@@ -186,6 +219,8 @@ DEFAULT_MIME = {
     "ts": "application/typescript", "yaml": "application/x-yaml", "yml": "application/x-yaml",
     "sql": "application/sql", "xml": "application/xml", "rtf": "application/rtf",
     "log": "text/plain", "ini": "text/plain", "toml": "text/plain", "env": "text/plain",
+    "pdf": "application/pdf",
+    "docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
 }
 
 _SAFE_NAME_RE = re.compile(r"[^a-zA-Z0-9._\-]")
@@ -321,8 +356,29 @@ async def save_artifacts(
     for b in blocks:
         try:
             content = (b.get("content") or "")
-            data = content.encode("utf-8", errors="replace")
             ext = b["ext"]
+            # PDF / DOCX paths: the body is Markdown and we synthesize
+            # real binary bytes here. Everything downstream (GridFS,
+            # /api/files/docs, Download button) just sees bytes + mime so
+            # nothing else changes for the frontend. If synthesis fails we
+            # fall back to saving the raw Markdown with a `.md` extension
+            # so the user still gets the content — never a broken file.
+            if ext in SYNTHESIZED_BINARY_EXTS:
+                try:
+                    from artifact_synthesis import synthesize as _synth
+                    data, mime_override = _synth(content, ext, title=b.get("title") or b["name"])
+                    b["mime"] = mime_override
+                except Exception as exc:
+                    logger.warning("Falling back to .md for failed %s synthesis: %s", ext, exc)
+                    data = content.encode("utf-8", errors="replace")
+                    ext = "md"
+                    b["ext"] = "md"
+                    # Rename to .md
+                    stem = b["name"].rsplit(".", 1)[0] or "document"
+                    b["name"] = f"{stem}.md"
+                    b["mime"] = "text/markdown"
+            else:
+                data = content.encode("utf-8", errors="replace")
             disk_name = f"{uuid.uuid4().hex}.{ext}"
             fpath = folder / disk_name
             fpath.write_bytes(data)
@@ -400,6 +456,8 @@ def _kind_for_ext(ext: str) -> str:
     if ext in {"ics"}: return "calendar"
     if ext in {"vcf"}: return "contact"
     if ext in {"eml"}: return "email"
+    if ext in {"pdf"}: return "pdf"
+    if ext in {"docx"}: return "doc"
     return "file"
 
 
