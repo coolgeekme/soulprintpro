@@ -232,21 +232,31 @@ async def perplexity_analyze_social_profile(
         "the single word UNKNOWN and nothing else."
     )
     user_msg = "\n".join(bits)
+    # Use ``sonar-pro`` here — the base ``sonar`` model often refuses social
+    # profile queries outright (returns "no data"), while sonar-pro reliably
+    # pulls from mirrored posts / third-party roundups / news coverage.
     content, _results = await _chat(
         [
             {"role": "system", "content": (
                 "You are a senior social-media brand strategist. Stay grounded "
                 "on the exact profile provided; never substitute a similarly-"
-                "named account. Be concrete, never generic."
+                "named account. Be concrete, never generic. If you don't have "
+                "the exact account's data, infer carefully from any mirrored "
+                "posts, news coverage, or the brand's own website style — "
+                "never respond with UNKNOWN; always produce your best "
+                "publicly-grounded teardown."
             )},
             {"role": "user", "content": user_msg},
         ],
+        model="sonar-pro",
         max_tokens=1200,
     )
     if not content:
         return ""
     cleaned = re.sub(r"\[\d+(?:\]\[\d+)*\]", " ", content)
     cleaned = re.sub(r"\s+\n", "\n", cleaned).strip()
+    # Legacy guard — kept for defensive cleanup even though the updated
+    # prompt tells the model never to emit UNKNOWN.
     if re.fullmatch(r"[\"'`*_ \t]*UNKNOWN[\"'`*_ \t.!,]*", cleaned, flags=re.IGNORECASE):
         log.info("Perplexity returned UNKNOWN for social profile %s", url or handle)
         return ""

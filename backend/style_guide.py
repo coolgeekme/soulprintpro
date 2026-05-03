@@ -160,8 +160,18 @@ async def _synthesize_structured_guide(
     samples: str, org_soul: dict,
     LlmChat, UserMessage, EMERGENT_LLM_KEY: str,
 ) -> dict:
-    """Run the LLM to fold all sources into a structured guide dict."""
-    if not analyses and not samples.strip():
+    """Run the LLM to fold all sources into a structured guide dict.
+
+    Input tiers (in order of richness):
+      - analyses  →  real post teardowns from Perplexity
+      - samples   →  user-pasted post copy
+      - profiles  →  just URLs/handles (no content) + the org Soul
+    As long as we have *any* of these + a non-empty Soul, produce a
+    starter guide so the user gets a head start. With nothing at all we
+    return empty and let the caller 422.
+    """
+    has_profile_metadata = bool(profiles) and bool((org_soul or {}))
+    if not analyses and not samples.strip() and not has_profile_metadata:
         return _empty_guide()
 
     parts: List[str] = []
@@ -183,6 +193,23 @@ async def _synthesize_structured_guide(
         parts.append("INSPIRATION PROFILES — voice to emulate:\n\n" + "\n\n---\n\n".join(insp_chunks))
     if samples.strip():
         parts.append("MANUAL SAMPLES (user pasted existing or desired posts):\n\n" + samples.strip())
+
+    # If we fell through on the metadata-only path, include profile refs
+    # so the LLM knows the brand's accounts exist and can reason about the
+    # platforms they target (e.g. LinkedIn-style posts vs X-style posts).
+    if profiles and not analyses:
+        prof_lines = []
+        for p in profiles:
+            pl = (p.get("platform") or "social").strip()
+            h = (p.get("handle") or "").strip()
+            u = (p.get("url") or "").strip()
+            role = p.get("role") or "own"
+            prof_lines.append(f"- {pl} ({role}): {h}  {u}".strip())
+        parts.append(
+            "SOCIAL PROFILES (live posts weren't accessible — infer a sensible "
+            "starter style from the brand's Soul and the target platforms):\n"
+            + "\n".join(prof_lines)
+        )
 
     parts.append(SYNTHESIS_SCHEMA_HINT)
 
@@ -386,14 +413,24 @@ def make_style_guide_router(*, db, AGENTS, EMERGENT_LLM_KEY,
         pplx_warn = ""
         if profiles:
             if not perplexity_available():
-                pplx_warn = "Perplexity isn't configured — only manual samples will be used."
+                pplx_warn = "Perplexity isn't configured — synthesizing from profile metadata + Soul only."
             else:
                 analyses = await _gather_profile_analyses(profiles)
-                if not analyses and not samples:
-                    raise HTTPException(422,
-                        "Couldn't read any of the supplied profiles. Some platforms "
-                        "block automated lookups — paste a few sample posts in the "
-                        "Samples box and try again.")
+                if not analyses:
+                    # Soft-fail: Perplexity couldn't index this profile
+                    # (common for X / Instagram / protected accounts). Rather
+                    # than 422-block the user, we synthesize from whatever
+                    # we have — profile metadata (platform + handle) + Soul
+                    # + any manual samples — and flag the gap in the warning
+                    # field so the UI can surface a hint.
+                    pplx_warn = (
+                        "Couldn't read live posts from the supplied profiles — "
+                        "some platforms (X, Instagram, protected accounts) "
+                        "block automated lookups. Synthesized from profile "
+                        "metadata + your Soul"
+                        f"{' + Samples' if samples else ''}. "
+                        "For a sharper guide, paste 3–5 recent posts in the Samples box."
+                    )
 
         guide = await _synthesize_structured_guide(
             profiles=profiles, analyses=analyses, samples=samples,
