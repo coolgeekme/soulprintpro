@@ -3595,6 +3595,8 @@ def serialize_asset(a: dict) -> dict:
         "mime": a.get("mime", ""),
         "size": a.get("size", 0),
         "description": a.get("description", ""),
+        "category": a.get("category", ""),
+        "usable_in_social": bool(a.get("usable_in_social", False)),
         "uploaded_by": a.get("uploaded_by", ""),
         "uploaded_by_name": a.get("uploaded_by_name", ""),
         "uploaded_at": a["uploaded_at"].isoformat() if isinstance(a["uploaded_at"], datetime) else a["uploaded_at"],
@@ -3606,6 +3608,8 @@ def serialize_asset(a: dict) -> dict:
 async def upload_asset(
     org_id: str,
     description: str = Form(""),
+    category: str = Form(""),       # product|lifestyle|team|venue|logo_variant|other
+    usable_in_social: bool = Form(True),  # allow agents to pick this for post cover images
     file: UploadFile = File(...),
     u: dict = Depends(get_current_user),
 ):
@@ -3638,6 +3642,11 @@ async def upload_asset(
         raw = extract_asset_text(path, ext)
         text_excerpt = trim_text(raw, limit=4000)
 
+    # Media Library categorisation — helps agents and the Social composer
+    # pick an on-brand asset for a given post topic. Whitelist on write so
+    # unknown values don't leak into the filter UI.
+    _VALID_CATEGORIES = {"product", "lifestyle", "team", "venue", "logo_variant", "other", ""}
+    safe_category = category.strip().lower() if category.strip().lower() in _VALID_CATEGORIES else ""
     doc = {
         "org_id": org_id,
         "filename": filename,
@@ -3647,6 +3656,8 @@ async def upload_asset(
         "size": total,
         "kind": kind_for_ext(ext),
         "description": description.strip()[:500],
+        "category": safe_category,
+        "usable_in_social": bool(usable_in_social) and kind_for_ext(ext) == "image",
         "uploaded_by": u["id"],
         "uploaded_by_name": u["name"],
         "uploaded_at": datetime.now(timezone.utc),
@@ -3667,6 +3678,8 @@ async def list_assets(org_id: str, u: dict = Depends(get_current_user)):
 async def update_asset(
     org_id: str, asset_id: str,
     description: Optional[str] = Form(None),
+    category: Optional[str] = Form(None),
+    usable_in_social: Optional[bool] = Form(None),
     u: dict = Depends(get_current_user),
 ):
     await require_org_member(org_id, u["id"])
@@ -3679,6 +3692,13 @@ async def update_asset(
     update = {}
     if description is not None:
         update["description"] = description.strip()[:500]
+    if category is not None:
+        _VALID_CATS = {"product", "lifestyle", "team", "venue", "logo_variant", "other", ""}
+        c = category.strip().lower()
+        update["category"] = c if c in _VALID_CATS else ""
+    if usable_in_social is not None:
+        # Only images can be picked by the social composer.
+        update["usable_in_social"] = bool(usable_in_social) and existing.get("kind") == "image"
     if update:
         await db.assets.update_one({"_id": ObjectId(asset_id)}, {"$set": update})
     fresh = await db.assets.find_one({"_id": ObjectId(asset_id)})

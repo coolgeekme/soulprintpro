@@ -37,6 +37,7 @@ export default function OrgPage() {
   const [showInviteTools, setShowInviteTools] = useState(false);
   const [uploading, setUploading] = useState(false);
   const [uploadDesc, setUploadDesc] = useState("");
+  const [uploadCategory, setUploadCategory] = useState(""); // product|lifestyle|team|venue|logo_variant|other
   const [dragActive, setDragActive] = useState(false);
   const fileRef = useRef(null);
 
@@ -170,11 +171,15 @@ export default function OrgPage() {
     setUploading(true);
     try {
       const sharedDesc = uploadDesc.trim();
+      const sharedCat = uploadCategory.trim();
       // Upload sequentially to keep failures clean
       for (const f of files) {
         const fd = new FormData();
         fd.append("file", f);
         if (sharedDesc) fd.append("description", sharedDesc);
+        if (sharedCat) fd.append("category", sharedCat);
+        // Images default to usable-in-social; user can flip per-asset later.
+        fd.append("usable_in_social", "true");
         try {
           const { data } = await api.post(`/orgs/${orgId}/assets`, fd, {
             headers: { "Content-Type": "multipart/form-data" },
@@ -580,11 +585,32 @@ export default function OrgPage() {
                     type="text"
                     value={uploadDesc}
                     onChange={(e) => setUploadDesc(e.target.value)}
-                    placeholder="Optional description (applied to next upload)"
+                    placeholder="Optional caption (e.g. 'Studio shot of our ceramic mug in oat') — helps agents pick this for the right post"
                     className="w-full max-w-md rounded-lg px-3 py-2 text-sm focus:sp-focus"
                     style={{ background: "var(--input-bg)", border: "1px solid var(--input-border)", color: "var(--fg)" }}
                     data-testid="asset-desc-input"
                   />
+                  <div className="flex flex-wrap justify-center gap-1 max-w-md">
+                    {[
+                      { v: "", label: "Uncategorised" },
+                      { v: "product", label: "Product" },
+                      { v: "lifestyle", label: "Lifestyle" },
+                      { v: "team", label: "Team" },
+                      { v: "venue", label: "Venue" },
+                      { v: "logo_variant", label: "Logo variant" },
+                      { v: "other", label: "Other" },
+                    ].map((c) => (
+                      <button
+                        key={c.v || "none"}
+                        type="button"
+                        onClick={() => setUploadCategory(c.v)}
+                        className={`sp-chip text-[10px] ${uploadCategory === c.v ? "!bg-orange-500/20 !border-orange-400/40 !text-white" : ""}`}
+                        data-testid={`asset-cat-${c.v || "none"}`}
+                      >
+                        {c.label}
+                      </button>
+                    ))}
+                  </div>
                   <input
                     ref={fileRef}
                     type="file"

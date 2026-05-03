@@ -836,6 +836,200 @@ def make_social_router(*, db, AGENTS, EMERGENT_LLM_KEY, LlmChat, UserMessage,
         fresh = await db.social_posts.find_one({"_id": _OID(post_id)})
         return serialize_social_post(fresh)
 
+    @r.post("/social/posts/{post_id}/use-asset")
+    async def use_existing_asset_as_image(
+        post_id: str,
+        asset_id: str = Body(..., embed=True),
+        u: dict = Depends(get_current_user),
+    ):
+        """Phase 2 — attach an org-owned Media Library asset as the post's
+        cover image. No LLM call; we just copy the reference + re-apply
+        the org's primary logo via the usual compose step."""
+        try:
+            post = await db.social_posts.find_one({"_id": _OID(post_id)})
+        except Exception as exc:
+            raise HTTPException(400, "Invalid post id") from exc
+        if not post:
+            raise HTTPException(404, "Post not found")
+        await require_org_member(post["org_id"], u["id"])
+        try:
+            asset = await db.assets.find_one({"_id": _OID(asset_id), "org_id": post["org_id"]})
+        except Exception as exc:
+            raise HTTPException(400, "Invalid asset id") from exc
+        if not asset or asset.get("kind") != "image":
+            raise HTTPException(404, "Asset not found or not an image")
+
+        # Point the post at the asset file directly — same capability URL
+        # pattern as generated images. We still run the logo compositor
+        # so branding stays consistent, but we keep the raw asset path
+        # intact so reposition/remix can go back to the un-branded source.
+        src_filename = asset["filename"]
+        from pathlib import Path as _Path
+        # upload_dir is /app/backend/uploads; assets live at
+        # /app/backend/uploads/assets/{org_id}/{filename}.
+        assets_dir = _Path(upload_dir) / "assets" / post["org_id"]
+        src_path = assets_dir / src_filename
+        if not src_path.is_file():
+            # Fallback for cases where assets live elsewhere; serve handler
+            # will still resolve via GridFS.
+            pass
+
+        # Copy into uploads/ so the composer can read it; new random name
+        # so future deletions of the source asset don't blow up the post.
+        import shutil as _shutil
+        import uuid as _uuid
+        dest_name = f"{_uuid.uuid4().hex}.{asset.get('ext') or 'png'}"
+        dest_path = _Path(upload_dir) / dest_name
+        try:
+            _shutil.copyfile(src_path, dest_path)
+        except Exception as exc:
+            logger.warning("Failed to copy asset into uploads/: %s", exc)
+            raise HTTPException(500, "Could not attach this asset")
+
+        org = await db.organizations.find_one({"_id": _OID(post["org_id"])})
+        ba = (org or {}).get("brand_assets") or {}
+        primary = (ba.get("primary_logo") or {}) if ba else {}
+        logo_filename = (primary or {}).get("filename") or ""
+        final_filename = dest_name
+        with_logo = False
+        if logo_filename and compose_logo_on_image:
+            try:
+                logo_path = _Path(upload_dir) / logo_filename
+                if logo_path.is_file():
+                    composed = compose_logo_on_image(
+                        dest_path, logo_path,
+                        position=post.get("logo_position") or "bottom-right",
+                    )
+                    if composed:
+                        final_filename = composed.name
+                        with_logo = True
+            except Exception as exc:
+                logger.warning("Asset logo compose failed: %s", exc)
+
+        image = {
+            "filename": final_filename,
+            "raw_filename": dest_name,  # un-branded base for reposition/remix
+            "url": f"/api/files/{final_filename}",
+            "with_logo": with_logo,
+            "source": "asset",
+            "source_asset_id": str(asset["_id"]),
+        }
+        await db.social_posts.update_one(
+            {"_id": _OID(post_id)},
+            {"$set": {"image": image, "image_updated_at": datetime.now(timezone.utc)}},
+        )
+        fresh = await db.social_posts.find_one({"_id": _OID(post_id)})
+        return serialize_social_post(fresh)
+
+    @r.post("/social/posts/{post_id}/remix-asset")
+    async def remix_asset_into_cover(
+        post_id: str,
+        body: dict = Body(...),
+        u: dict = Depends(get_current_user),
+    ):
+        """Phase 3 — use an existing asset as the BASE image and send it +
+        a prompt to Nano Banana for an image-to-image remix (new
+        background, lifestyle variant, platform retarget, etc.). Body:
+
+            { "asset_id": str, "prompt": str }
+        """
+        asset_id = (body.get("asset_id") or "").strip()
+        prompt = (body.get("prompt") or "").strip()
+        if not asset_id or not prompt:
+            raise HTTPException(422, "asset_id and prompt are both required")
+        try:
+            post = await db.social_posts.find_one({"_id": _OID(post_id)})
+        except Exception as exc:
+            raise HTTPException(400, "Invalid post id") from exc
+        if not post:
+            raise HTTPException(404, "Post not found")
+        await require_org_member(post["org_id"], u["id"])
+        try:
+            asset = await db.assets.find_one({"_id": _OID(asset_id), "org_id": post["org_id"]})
+        except Exception as exc:
+            raise HTTPException(400, "Invalid asset id") from exc
+        if not asset or asset.get("kind") != "image":
+            raise HTTPException(404, "Asset not found or not an image")
+
+        from pathlib import Path as _Path
+        assets_dir = _Path(upload_dir) / "assets" / post["org_id"]
+        src_path = assets_dir / asset["filename"]
+        if not src_path.is_file():
+            raise HTTPException(404, "Source asset file missing on disk")
+
+        org = await db.organizations.find_one({"_id": _OID(post["org_id"])})
+        # Persist the user's prompt so subsequent "Regenerate" calls keep
+        # intent; mirrors the override flow in /generate-image.
+        await db.social_posts.update_one(
+            {"_id": _OID(post_id)},
+            {"$set": {"image_prompt": prompt}},
+        )
+        # Fold Soul + visual-style into the prompt so the remix stays
+        # on-brand. Nano Banana composes best with concise direction; we
+        # cap each segment.
+        soul = (org or {}).get("soul") or {}
+        brand_bits: list[str] = []
+        if soul.get("tone"): brand_bits.append(f"Tone: {soul['tone']}")
+        if soul.get("audience"): brand_bits.append(f"Audience: {soul['audience']}")
+        ba = (org or {}).get("brand_assets") or {}
+        if (ba.get("visual_style") or "").strip():
+            brand_bits.append(f"Visual style: {ba['visual_style'][:300]}")
+        full_prompt = (
+            "Using the SOURCE IMAGE provided as the base, create a new on-brand "
+            "variation. Keep the subject/product clearly recognizable from the "
+            "source image.\n\n"
+            f"--- User direction ---\n{prompt}\n\n"
+            + ("--- Brand context ---\n" + "\n".join(brand_bits) if brand_bits else "")
+        ).strip()
+        sys_msg = (
+            "You are a brand-aware image artist. Produce ONE photograph/"
+            "illustration that fits the user's direction while keeping the "
+            "source subject visually coherent. Square 1:1 by default unless the "
+            "user asks otherwise. High quality, vivid, on-brand."
+        )
+        try:
+            fname, _caption = await generate_image_via_nano_banana(
+                full_prompt, sys_msg, input_image_paths=[src_path],
+            )
+        except Exception as exc:
+            logger.warning("Asset remix failed: %s", exc)
+            raise HTTPException(502, "Remix failed — try a different prompt or check back in a moment")
+
+        # Reapply logo (same compose pattern as /generate-image).
+        primary = (ba.get("primary_logo") or {}) if ba else {}
+        logo_filename = (primary or {}).get("filename") or ""
+        final_filename = fname
+        with_logo = False
+        if logo_filename and compose_logo_on_image:
+            try:
+                base_path = _Path(upload_dir) / fname
+                logo_path = _Path(upload_dir) / logo_filename
+                if base_path.is_file() and logo_path.is_file():
+                    composed = compose_logo_on_image(
+                        base_path, logo_path,
+                        position=post.get("logo_position") or "bottom-right",
+                    )
+                    if composed:
+                        final_filename = composed.name
+                        with_logo = True
+            except Exception as exc:
+                logger.warning("Remix logo compose failed: %s", exc)
+
+        image = {
+            "filename": final_filename,
+            "raw_filename": fname,
+            "url": f"/api/files/{final_filename}",
+            "with_logo": with_logo,
+            "source": "asset_remix",
+            "source_asset_id": str(asset["_id"]),
+        }
+        await db.social_posts.update_one(
+            {"_id": _OID(post_id)},
+            {"$set": {"image": image, "image_updated_at": datetime.now(timezone.utc)}},
+        )
+        fresh = await db.social_posts.find_one({"_id": _OID(post_id)})
+        return serialize_social_post(fresh)
+
     @r.patch("/social/posts/{post_id}/logo-position")
     async def reposition_logo(
         post_id: str, position: str, u: dict = Depends(get_current_user),
