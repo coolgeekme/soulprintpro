@@ -60,6 +60,7 @@ from artifacts import (
     extract_artifact_blocks,
     save_artifacts as _save_artifacts,
     annotate_empty_promise as _annotate_empty_promise,
+    has_empty_promise as _has_empty_promise,
     make_documents_router,
 )
 from style_guide import (
@@ -2018,8 +2019,14 @@ async def maybe_fetch_web_context(message: str, transcript: str = "") -> tuple[s
     return format_results_for_prompt(results), results, intent
 
 async def generate_agent_reply(conv: dict, team: dict, agent_id: str,
-                               latest_user_text: str, latest_user_name: str) -> tuple[str, list]:
-    """One LLM turn for `agent_id`. Returns (reply_text, web_sources)."""
+                               latest_user_text: str, latest_user_name: str,
+                               *, force_delivery: bool = False) -> tuple[str, list]:
+    """One LLM turn for `agent_id`. Returns (reply_text, web_sources).
+
+    When ``force_delivery=True`` we append a strong "deliver as [[ARTIFACT]]
+    NOW" instruction to the prompt — used as a single-shot retry when the
+    first turn produced empty-promise prose without an actual deliverable.
+    """
     tail = await build_transcript_tail(str(conv["_id"]), limit=12)
 
     transcript_lines = []
@@ -2074,6 +2081,25 @@ async def generate_agent_reply(conv: dict, team: dict, agent_id: str,
         f"{latest_user_text}\n\nRespond as {AGENTS[agent_id]['name']} ({AGENTS[agent_id]['role']})."
         if transcript else latest_user_text
     )
+    if force_delivery:
+        # The previous turn made an empty promise ("I'll send the report
+        # shortly") without attaching anything. Force the agent to produce
+        # the deliverable RIGHT NOW in this turn — no more "I'll get back
+        # to you" — and to use the [[ARTIFACT]] mechanism so the user gets
+        # a downloadable file.
+        prompt = (
+            f"{prompt}\n\n"
+            "FORCED-DELIVERY MODE: Your previous reply promised to deliver "
+            "something later (a report / brief / audit / plan / document) but "
+            "never attached it. The user is still waiting. Produce the FULL "
+            "deliverable RIGHT NOW in this single reply — no preamble, no "
+            "'I'll send shortly', no 'expect within 24 hours'. "
+            "Use a [[ARTIFACT name=\"...\" mime=\"...\"]] block with a sensible "
+            "filename ending in .pdf (preferred) or .docx — the body is "
+            "Markdown and the system will render real binary bytes. Include "
+            "rich content: headings, bullets, tables, recommendations. End "
+            "with one short sentence of prose introducing the file."
+        )
     try:
         text = await chat.send_message(UserMessage(text=prompt))
     except Exception as exc:
@@ -2501,6 +2527,36 @@ async def send_message(conv_id: str, body: SendMessageBody, u: dict = Depends(ge
         clean_reply, artifacts = await process_agent_artifacts(
             reply, conv=conv, agent_id=aid, message_id=msg_id, created_by=u["id"],
         )
+        # ── Auto-retry on empty promises ────────────────────────────────
+        # If the agent said something like "I'll prepare the report
+        # shortly" but never attached anything, fire one forced-delivery
+        # retry so the deliverable lands without requiring the user to
+        # type "draft it". Single retry only — if the agent still refuses
+        # to deliver, we keep the friendly footer the post-processor
+        # already appended. Skipped when canceled mid-flight.
+        if (not artifacts
+            and _has_empty_promise(reply or "")
+            and not _should_cancel(conv_id, started_at)):
+            try:
+                logger.info("Auto-retrying agent %s with forced-delivery (empty promise detected).", aid)
+                retry_reply, retry_sources = await generate_agent_reply(
+                    conv, team, aid, body.text, u["name"], force_delivery=True,
+                )
+                if retry_reply and not _should_cancel(conv_id, started_at):
+                    retry_clean, retry_artifacts = await process_agent_artifacts(
+                        retry_reply, conv=conv, agent_id=aid,
+                        message_id=msg_id, created_by=u["id"],
+                    )
+                    # Only adopt the retry if it actually delivered an
+                    # artifact — otherwise the original reply (with the
+                    # heads-up footer) is more useful to the user.
+                    if retry_artifacts:
+                        clean_reply = retry_clean
+                        artifacts = retry_artifacts
+                        if retry_sources:
+                            web_sources = retry_sources
+            except Exception as exc:
+                logger.warning("Forced-delivery retry failed: %s", exc)
         msg = {
             "id": msg_id,
             "conversation_id": conv_id,
