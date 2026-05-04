@@ -1,21 +1,24 @@
 import React, { useEffect, useState } from "react";
+import { useTheme } from "../context/ThemeContext";
 
 /**
  * SoulPrint Engine Pro brand mark.
  *
  * Variants:
- *   • `mark` (default) — the orange swirl glyph alone. Renders well on
- *     ANY background, no theme branching needed.
- *   • `wordmark` — the full "swirl + SOULPRINT ENGINE PRO" lockup. The
- *     wordmark text auto-switches between a white-text version (for dark
- *     surfaces) and a charcoal-text version (for light surfaces) by
- *     subscribing to the document's `data-theme` attribute, which the
- *     ThemeContext keeps in sync with the user's preference.
- *
- * Tailwind size classes (`w-9`, `h-8 w-auto`, …) are honoured via className.
+ *   • `mark` (default) — orange swirl glyph. Reads on ANY background.
+ *   • `wordmark` — full "swirl + SOULPRINT ENGINE PRO" lockup. The wordmark
+ *     text auto-switches between white-on-dark and charcoal-on-light by
+ *     reading the active ThemeContext. A MutationObserver fallback also
+ *     tracks direct `data-theme` mutations (e.g. the preview-mode theme
+ *     switcher that sets the attribute without going through React).
  */
-function useDocumentTheme() {
-  const [theme, setTheme] = useState(() => {
+function useActiveTheme() {
+  const ctx = useTheme();
+  // Observe `documentElement[data-theme]` as a fallback so we pick up
+  // direct-DOM theme flips (preview, tests, PWA startup paints). We then
+  // prefer the live context value over the observed value — it updates
+  // one tick earlier and avoids a brief mismatch on first paint.
+  const [attrTheme, setAttrTheme] = useState(() => {
     if (typeof document === "undefined") return "dark";
     return document.documentElement.getAttribute("data-theme") || "dark";
   });
@@ -23,13 +26,13 @@ function useDocumentTheme() {
     if (typeof document === "undefined") return;
     const root = document.documentElement;
     const update = () =>
-      setTheme(root.getAttribute("data-theme") || "dark");
+      setAttrTheme(root.getAttribute("data-theme") || "dark");
     update();
     const obs = new MutationObserver(update);
     obs.observe(root, { attributes: true, attributeFilter: ["data-theme"] });
     return () => obs.disconnect();
   }, []);
-  return theme;
+  return (ctx && ctx.mode) || attrTheme;
 }
 
 export default function Logo({
@@ -37,14 +40,11 @@ export default function Logo({
   variant = "mark",
   alt = "SoulPrint Engine Pro",
 }) {
-  const theme = useDocumentTheme();
+  const theme = useActiveTheme();
   let src;
   if (variant === "wordmark") {
-    // Light surfaces need the dark-text version so the wordmark stays
-    // readable against the cream/white page background.
     src = theme === "light" ? "/soulprint-logo-dark.png" : "/soulprint-logo.png";
   } else {
-    // The orange swirl reads cleanly on any background.
     src = "/soulprint-mark.png";
   }
   return (

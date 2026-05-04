@@ -37,7 +37,15 @@ export default function AboutPage() {
 
   return (
     <div className="min-h-screen" data-testid="about-page">
-      <div className="max-w-3xl mx-auto px-6 py-10">
+      <div
+        className="max-w-3xl mx-auto px-6"
+        style={{
+          paddingTop: "calc(env(safe-area-inset-top, 0px) + 2.5rem)",
+          paddingBottom: "2.5rem",
+          paddingLeft: "max(1.5rem, env(safe-area-inset-left, 0px))",
+          paddingRight: "max(1.5rem, env(safe-area-inset-right, 0px))",
+        }}
+      >
         <div className="flex items-center justify-between mb-8">
           <Link
             to="/"

@@ -14,10 +14,17 @@ export const ThemeProvider = ({ children }) => {
     if (typeof window === "undefined") return "dark";
     try {
       const saved = localStorage.getItem(STORAGE_KEY);
-      if (saved === "light" || saved === "dark") return saved;
+      if (saved === "light" || saved === "dark") {
+        // Apply BEFORE React paints so the first render (and any <img>
+        // subscribed to data-theme) picks up the right variant on mount.
+        apply(saved);
+        return saved;
+      }
     } catch {/* ignore */}
     const prefersLight = window.matchMedia && window.matchMedia("(prefers-color-scheme: light)").matches;
-    return prefersLight ? "light" : "dark";
+    const initial = prefersLight ? "light" : "dark";
+    apply(initial);
+    return initial;
   });
 
   useEffect(() => { apply(mode); }, [mode]);

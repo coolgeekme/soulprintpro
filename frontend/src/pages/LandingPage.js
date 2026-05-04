@@ -24,7 +24,17 @@ export default function LandingPage() {
       </div>
 
       {/* Nav */}
-      <header className="relative z-10 flex items-center justify-between px-6 md:px-10 py-6">
+      <header
+        className="relative z-10 flex items-center justify-between px-6 md:px-10 py-6"
+        style={{
+          // Push content below the iPhone notch / Dynamic Island when
+          // running as a PWA. Resolves to 0 in a regular browser window
+          // so desktop layout is unchanged.
+          paddingTop: "calc(env(safe-area-inset-top, 0px) + 1.5rem)",
+          paddingLeft: "max(1.5rem, env(safe-area-inset-left, 0px))",
+          paddingRight: "max(1.5rem, env(safe-area-inset-right, 0px))",
+        }}
+      >
         <Link to="/" className="flex items-center gap-2" data-testid="brand-logo" aria-label="SoulPrint Engine Pro home">
           <Logo variant="wordmark" className="h-9 w-auto" />
         </Link>

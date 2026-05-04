@@ -35,7 +35,15 @@ export default function AuthPage() {
   return (
     <div className="relative min-h-screen flex items-center justify-center px-6">
       <div className="pointer-events-none fixed inset-0 -z-10"><div className="sp-aurora" /></div>
-      <Link to="/" className="absolute top-6 left-6 inline-flex items-center gap-2 text-sm sp-subtle hover:text-white" data-testid="back-home">
+      <Link
+        to="/"
+        className="absolute inline-flex items-center gap-2 text-sm sp-subtle hover:text-white"
+        style={{
+          top: "calc(env(safe-area-inset-top, 0px) + 1.5rem)",
+          left: "calc(env(safe-area-inset-left, 0px) + 1.5rem)",
+        }}
+        data-testid="back-home"
+      >
         <ArrowLeft className="w-4 h-4" /> Home
       </Link>
       <div className="w-full max-w-md sp-glass-strong rounded-3xl p-8 sp-fade-up">
