@@ -126,3 +126,217 @@ async def generate_video(prompt: str, *, model: str = DEFAULT_VIDEO_MODEL,
     if not task_id:
         return None
     return await wait_for_video(task_id, total_timeout=total_timeout)
+
+
+
+# ─────────────────────────────────────────────────────────────────────
+# UNIVERSAL KIE.AI MARKETPLACE CLIENT
+# ─────────────────────────────────────────────────────────────────────
+# The original Veo helpers above are kept intact for backward compat.
+# Everything below is the new generic surface that powers image / video /
+# music generation across the broader Kie.ai marketplace.
+#
+# Kie.ai's task pattern is consistent across endpoints:
+#   POST /api/v1/<family>/generate  →  { code, data: { taskId } }
+#   GET  /api/v1/<family>/record-info?taskId=…  →  { data: { successFlag, response: { resultUrls: [...] } } }
+#
+# We model each provider here so the rest of the app can call ONE
+# function (`submit_kie_task` + `wait_for_kie_task`) regardless of which
+# kie.ai model is selected.
+# ─────────────────────────────────────────────────────────────────────
+
+# Provider key → kie.ai endpoint family name. The endpoint family is the
+# path segment used in /api/v1/<family>/generate and /record-info.
+KIE_PROVIDERS: dict[str, dict] = {
+    # ── Image models ────────────────────────────────────────────────
+    "flux-pro":       {"family": "flux",     "type": "image", "label": "Flux Pro"},
+    "imagen-4-ultra": {"family": "imagen",   "type": "image", "label": "Imagen 4 Ultra"},
+    "ideogram-3":     {"family": "ideogram", "type": "image", "label": "Ideogram 3"},
+    "seedream-5":     {"family": "seedream", "type": "image", "label": "Seedream 5"},
+    "gpt-image-1-5":  {"family": "gpt-image", "type": "image", "label": "GPT Image 1.5"},
+    # ── Video models ────────────────────────────────────────────────
+    "kling-3":        {"family": "kling",    "type": "video", "label": "Kling 3"},
+    "kling-3-pro":    {"family": "kling",    "type": "video", "label": "Kling 3 Pro",
+                       "extra": {"mode": "pro"}},
+    "wan-2-6":        {"family": "wan",      "type": "video", "label": "Wan 2.6"},
+    "seedance-1-5":   {"family": "seedance", "type": "video", "label": "Seedance 1.5"},
+    "sora-2":         {"family": "sora",     "type": "video", "label": "Sora 2"},
+    "runway-aleph":   {"family": "runway",   "type": "video", "label": "Runway Aleph"},
+    # ── Music / audio ───────────────────────────────────────────────
+    "suno":           {"family": "suno",     "type": "music", "label": "Suno"},
+}
+
+
+# How long we wait for each task type. Music / video are slow.
+KIE_TASK_TIMEOUTS = {
+    "image":  120,
+    "video":  600,
+    "music":  300,
+}
+
+
+def kie_provider_info(model_key: str) -> Optional[dict]:
+    """Resolve the marketplace metadata for a model key. Returns None if
+    the model isn't known — caller should fall back to a default path
+    (e.g. Nano Banana for image, Veo for video) so the user still gets
+    something."""
+    return KIE_PROVIDERS.get(model_key)
+
+
+async def submit_kie_task(
+    *, model_key: str, prompt: str,
+    image_url: Optional[str] = None,
+    image_base64: Optional[str] = None,
+    extra: Optional[dict] = None,
+) -> Optional[str]:
+    """Generic Kie.ai task submitter. Body shape:
+        { prompt, model, aspect_ratio?, image?, extra... }
+
+    Returns ``taskId`` or None on failure. We log loudly so the calling
+    code path can surface a clean toast to the user. Note: each kie.ai
+    model family expects slightly different field names — we send a
+    superset, and kie.ai ignores fields it doesn't recognise.
+    """
+    info = kie_provider_info(model_key)
+    if not info:
+        log.warning("Unknown kie.ai model: %s", model_key)
+        return None
+    key = _api_key()
+    if not key or not prompt.strip():
+        return None
+    headers = {"Authorization": f"Bearer {key}", "Content-Type": "application/json"}
+    body: dict = {
+        "prompt": prompt.strip()[:2000],
+        "model": model_key,
+        # Per-family pre-set sane defaults; caller's `extra` overrides.
+        "enableTranslation": True,
+    }
+    # Image input (for image-to-image / video-from-image flows)
+    if image_url:
+        body["image_url"] = image_url
+        body["imageUrl"] = image_url
+    if image_base64:
+        body["image_base64"] = image_base64
+    # Per-provider preset
+    if info.get("extra"):
+        body.update(info["extra"])
+    if extra:
+        body.update(extra)
+    family = info["family"]
+    try:
+        async with httpx.AsyncClient(timeout=DEFAULT_TIMEOUT) as client:
+            resp = await client.post(
+                f"{KIE_BASE}/api/v1/{family}/generate",
+                headers=headers, json=body,
+            )
+        if resp.status_code != 200:
+            log.warning("Kie %s submit %s: %s", family, resp.status_code, resp.text[:300])
+            return None
+        data = resp.json() or {}
+    except (httpx.HTTPError, ValueError) as exc:
+        log.warning("Kie %s submit error: %s", family, exc)
+        return None
+    if data.get("code") not in (200, "200", 0):
+        log.warning("Kie %s submit non-OK body: %s", family, data)
+        return None
+    return ((data.get("data") or {}).get("taskId")
+            or (data.get("data") or {}).get("task_id")
+            or None)
+
+
+async def get_kie_task_status(model_key: str, task_id: str) -> dict:
+    """Generic record-info reader. Returns the ``data`` dict (or empty)."""
+    info = kie_provider_info(model_key)
+    if not info or not task_id:
+        return {}
+    key = _api_key()
+    if not key:
+        return {}
+    family = info["family"]
+    headers = {"Authorization": f"Bearer {key}"}
+    try:
+        async with httpx.AsyncClient(timeout=DEFAULT_TIMEOUT) as client:
+            resp = await client.get(
+                f"{KIE_BASE}/api/v1/{family}/record-info",
+                headers=headers, params={"taskId": task_id},
+            )
+        if resp.status_code != 200:
+            log.warning("Kie %s status %s: %s", family, resp.status_code, resp.text[:300])
+            return {}
+        return (resp.json() or {}).get("data") or {}
+    except (httpx.HTTPError, ValueError) as exc:
+        log.warning("Kie %s status error: %s", family, exc)
+        return {}
+
+
+def _extract_kie_urls(data: dict) -> list[str]:
+    """Pull all usable result URLs from a kie.ai task payload. Image
+    tasks may return multiple variants; we keep them all so the user can
+    pick. Falls back to single-URL fields if `resultUrls` is missing."""
+    if not data:
+        return []
+    response = data.get("response") or {}
+    urls = response.get("resultUrls") or []
+    if isinstance(urls, list) and urls:
+        return [u for u in urls if isinstance(u, str)]
+    single = (response.get("url") or response.get("audioUrl")
+              or response.get("imageUrl") or response.get("videoUrl")
+              or data.get("url"))
+    return [single] if single else []
+
+
+async def wait_for_kie_task(
+    model_key: str, task_id: str,
+    *, total_timeout: Optional[int] = None,
+    poll_interval: float = POLL_INTERVAL,
+) -> list[str]:
+    """Poll the kie.ai task until done, returning a list of result URLs.
+    Empty list on failure / timeout."""
+    info = kie_provider_info(model_key)
+    if not info or not task_id:
+        return []
+    if total_timeout is None:
+        total_timeout = KIE_TASK_TIMEOUTS.get(info["type"], 300)
+    elapsed = 0.0
+    while elapsed < total_timeout:
+        data = await get_kie_task_status(model_key, task_id)
+        flag = data.get("successFlag")
+        if flag == 1:
+            return _extract_kie_urls(data)
+        if flag in (2, 3):
+            log.warning("Kie %s task failed: %s", info["family"], data)
+            return []
+        await asyncio.sleep(poll_interval)
+        elapsed += poll_interval
+    log.warning("Kie %s task timed out after %ss (task_id=%s)",
+                info["family"], total_timeout, task_id)
+    return []
+
+
+async def generate_via_kie(
+    *, model_key: str, prompt: str,
+    image_url: Optional[str] = None,
+    image_base64: Optional[str] = None,
+    extra: Optional[dict] = None,
+    total_timeout: Optional[int] = None,
+) -> list[str]:
+    """End-to-end helper: submit + poll → final result URL list (image,
+    video, or audio depending on the provider). Returns [] on failure."""
+    task_id = await submit_kie_task(
+        model_key=model_key, prompt=prompt,
+        image_url=image_url, image_base64=image_base64, extra=extra,
+    )
+    if not task_id:
+        return []
+    return await wait_for_kie_task(model_key, task_id, total_timeout=total_timeout)
+
+
+__all__ = [
+    # Original Veo helpers (kept for backward compat)
+    "submit_video", "wait_for_video", "generate_video", "get_video_status",
+    "VIDEO_MODELS", "DEFAULT_VIDEO_MODEL",
+    # New universal client
+    "KIE_PROVIDERS", "KIE_TASK_TIMEOUTS", "kie_provider_info",
+    "submit_kie_task", "get_kie_task_status", "wait_for_kie_task",
+    "generate_via_kie",
+]

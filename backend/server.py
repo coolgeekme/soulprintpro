@@ -3847,6 +3847,254 @@ def _attachment_kind(ext: str) -> str:
         return "video"
     return "file"
 
+
+# ── Universal media generation (kie.ai marketplace) ──────────────────
+from kie_client import (  # noqa: E402
+    submit_kie_task as _kie_submit_any,
+    wait_for_kie_task as _kie_wait_any,
+    kie_provider_info as _kie_info,
+    KIE_PROVIDERS as _KIE_PROVIDERS,
+)
+
+
+class GenerateMediaBody(BaseModel):
+    """Body for the universal `POST /generate-media` endpoint.
+
+    `media_type` is one of "image" | "video" | "music". `model` is a
+    kie.ai model key (or "nano-banana" / "veo-3-1" to fall through to the
+    existing Emergent / Veo paths). The endpoint resolves the right
+    backend automatically.
+    """
+    prompt: str
+    model: str
+    media_type: Optional[str] = None    # auto-detected from model if missing
+    aspect_ratio: Optional[str] = "16:9"
+    image_url: Optional[str] = None     # for image-to-image / video-from-image
+    extra: Optional[dict] = None
+
+
+async def _save_remote_url_to_uploads(url: str, *, suffix: str = "") -> Optional[Path]:
+    """Download a remote URL into /app/backend/uploads/ so the file lives
+    inside this app's CDN. Returns the local Path or None on failure."""
+    try:
+        async with httpx.AsyncClient(timeout=120.0, follow_redirects=True) as client:
+            resp = await client.get(url)
+        if resp.status_code != 200 or not resp.content:
+            logger.warning("Remote download failed: %s -> %s", url, resp.status_code)
+            return None
+    except Exception as exc:
+        logger.warning("Remote download crashed for %s: %s", url, exc)
+        return None
+    fname = f"kie-{uuid.uuid4().hex[:12]}{suffix}"
+    fp = UPLOAD_DIR / fname
+    fp.parent.mkdir(parents=True, exist_ok=True)
+    fp.write_bytes(resp.content)
+    return fp
+
+
+async def _poll_and_save_kie_media(
+    message_id: str, *, model: str, prompt: str, media_type: str,
+    image_url: Optional[str] = None, extra: Optional[dict] = None,
+) -> None:
+    """Background coroutine — submit + poll a kie.ai task, download the
+    result(s), patch the placeholder agent message with attachments."""
+    try:
+        task_id = await _kie_submit_any(
+            model_key=model, prompt=prompt,
+            image_url=image_url, extra=extra,
+        )
+        if not task_id:
+            urls: list[str] = []
+        else:
+            urls = await _kie_wait_any(model, task_id)
+    except Exception as exc:
+        logger.exception("Kie %s polling crash: %s", model, exc)
+        urls = []
+    now = datetime.now(timezone.utc)
+    if not urls:
+        await db.messages.update_one(
+            {"id": message_id},
+            {"$set": {
+                "media_status": "failed",
+                "text": (
+                    f"I couldn't generate that {media_type} with **{model}**. "
+                    "The model may be busy — try again or pick a different one."
+                ),
+                "ready_at": now,
+            }},
+        )
+        return
+    # Download every result URL into local uploads + build attachment dicts
+    suffix_by_type = {"image": ".png", "video": ".mp4", "music": ".mp3"}
+    suffix = suffix_by_type.get(media_type, "")
+    attachments: list[dict] = []
+    for u in urls:
+        fp = await _save_remote_url_to_uploads(u, suffix=suffix)
+        if not fp:
+            continue
+        mime = (
+            "image/png" if media_type == "image"
+            else "video/mp4" if media_type == "video"
+            else "audio/mpeg"
+        )
+        kind = "image" if media_type == "image" else (
+            "video" if media_type == "video" else "audio"
+        )
+        attachments.append({
+            "id": uuid.uuid4().hex,
+            "kind": kind,
+            "filename": fp.name,
+            "url": f"/api/files/{fp.name}",
+            "mime": mime,
+            "original_name": fp.name,
+            "size": fp.stat().st_size,
+            "model": model,
+        })
+    if not attachments:
+        await db.messages.update_one(
+            {"id": message_id},
+            {"$set": {
+                "media_status": "failed",
+                "text": "Generation succeeded but the file couldn't be saved.",
+                "ready_at": now,
+            }},
+        )
+        return
+    # Picker label for the message body
+    info = _kie_info(model) or {}
+    label = info.get("label") or model
+    n = len(attachments)
+    body_text = (
+        f"Generated {n} {media_type}{'s' if n > 1 else ''} with **{label}**."
+    )
+    await db.messages.update_one(
+        {"id": message_id},
+        {"$set": {
+            "media_status": "ready",
+            "media_url": attachments[0]["url"],
+            "attachments": attachments,
+            "text": body_text,
+            "ready_at": now,
+        }},
+    )
+
+
+@conv_r.post("/conversations/{conv_id}/generate-media")
+async def generate_media_endpoint(
+    conv_id: str, body: GenerateMediaBody,
+    u: dict = Depends(get_current_user),
+):
+    """Universal media-gen entry point. Resolves the right backend by
+    model id, posts a placeholder agent message, kicks off background
+    polling, returns the placeholder. The frontend re-fetches the
+    message list and the placeholder fills in once the task is ready.
+
+    Supported model keys cover all kie.ai marketplace models (image:
+    flux-pro, imagen-4-ultra, ideogram-3, seedream-5, gpt-image-1-5;
+    video: kling-3, kling-3-pro, wan-2-6, seedance-1-5, sora-2,
+    runway-aleph; music: suno) PLUS the legacy Veo (`veo3_fast` /
+    `veo3` / `veo3_lite`) paths and Emergent's Nano Banana for cheap
+    image generation.
+    """
+    if not body.prompt.strip():
+        raise HTTPException(400, "Prompt cannot be empty")
+    conv = await load_conv_or_403(conv_id, u["id"])
+    info = _kie_info(body.model)
+    media_type = body.media_type or (info["type"] if info else "image")
+
+    # Special-case the existing Nano Banana path (Emergent LLM Key) and
+    # the existing Veo legacy keys — we already have battle-tested
+    # endpoints for those, so fall through here rather than duplicating.
+    if body.model == "nano-banana":
+        from server import GenerateImageBody as _GIB
+        legacy = _GIB(prompt=body.prompt, agent_id=None)
+        return await generate_image(conv_id, legacy, u)
+    if body.model in ("veo3", "veo3_fast", "veo3_lite"):
+        legacy = GenerateVideoBody(
+            prompt=body.prompt,
+            aspect_ratio=body.aspect_ratio or "16:9",
+        )
+        return await generate_video_endpoint(conv_id, legacy, u)
+
+    if not info:
+        raise HTTPException(
+            400,
+            f"Unknown model `{body.model}`. Allowed kie.ai keys: "
+            + ", ".join(sorted(_KIE_PROVIDERS.keys())),
+        )
+
+    # Persist the user's request line so the thread reads naturally
+    icon = "🎵" if media_type == "music" else ("🎬" if media_type == "video" else "🎨")
+    await db.messages.insert_one({
+        "id": str(uuid.uuid4()),
+        "conversation_id": conv_id,
+        "sender_type": "user",
+        "sender_id": u["id"],
+        "sender_name": u["name"],
+        "text": f"{icon} {body.prompt}",
+        "intent": f"{media_type}_request",
+        "timestamp": datetime.now(timezone.utc),
+    })
+
+    # Pick an agent for the response bubble
+    agent_id = (conv.get("agent_ids") or [None])[0] or "specialized-chief-of-staff"
+    agent = AGENTS.get(agent_id) or {"name": "Studio"}
+
+    # Per-type ETA copy so the spinner has the right vibe
+    eta_copy = {
+        "image": "Generating your image — usually 10-40 seconds.",
+        "video": "Generating your video — this usually takes 60–180s.",
+        "music": "Composing your track — usually 30–120 seconds.",
+    }
+    placeholder = {
+        "id": str(uuid.uuid4()),
+        "conversation_id": conv_id,
+        "sender_type": "agent",
+        "sender_id": agent_id,
+        "sender_name": agent["name"],
+        "agent_id": agent_id,
+        "text": eta_copy.get(media_type, "Working on it…"),
+        "media_type": media_type,
+        "media_status": "pending",
+        "media_prompt": body.prompt[:500],
+        "media_model": body.model,
+        "aspect_ratio": body.aspect_ratio,
+        "timestamp": datetime.now(timezone.utc),
+    }
+    await db.messages.insert_one({**placeholder})
+    asyncio.create_task(_poll_and_save_kie_media(
+        placeholder["id"],
+        model=body.model,
+        prompt=body.prompt,
+        media_type=media_type,
+        image_url=body.image_url,
+        extra=body.extra,
+    ))
+    return {k: v for k, v in placeholder.items() if k != "_id"}
+
+
+@app.get("/api/media/models")
+async def list_media_models(_: dict = Depends(get_current_user)):
+    """Expose the kie.ai marketplace registry to the frontend so the
+    Generate-Media modal can render a dynamic model picker."""
+    rows = []
+    for key, info in _KIE_PROVIDERS.items():
+        rows.append({
+            "key": key,
+            "label": info["label"],
+            "type": info["type"],
+            "provider": "kie",
+        })
+    # Plus the legacy / Emergent paths the universal endpoint also accepts
+    rows.append({"key": "nano-banana", "label": "Nano Banana (default)",
+                 "type": "image", "provider": "emergent"})
+    rows.append({"key": "veo3_fast", "label": "Veo 3.1 Fast (default)",
+                 "type": "video", "provider": "kie"})
+    rows.append({"key": "veo3", "label": "Veo 3.1",
+                 "type": "video", "provider": "kie"})
+    return {"models": rows}
+
+
 # Allowlist for chat attachments — superset of org-asset list, but no .zip
 # (we don't want to dump a binary archive into a vision model).
 ALLOWED_ATTACH_EXTS = (

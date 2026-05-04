@@ -29,6 +29,8 @@ import logging
 import os
 import re
 import uuid
+
+import httpx
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
@@ -875,6 +877,151 @@ def build_tools(
             "ok": True,
         }
 
+    async def generate_video(ctx, args):
+        """Generate a video clip via Kie.ai (Veo 3.1 Fast by default).
+        Saves the resulting MP4 as a Documents row + mission artifact.
+
+        For other video models (Kling, Wan, Seedance, Sora 2, Runway
+        Aleph), pass ``model`` explicitly. Use this — NOT generate_image
+        — whenever the user wants motion / animation / a clip.
+        """
+        from kie_client import (
+            generate_video as _veo_generate, generate_via_kie as _kie_generate,
+            kie_provider_info,
+        )
+        prompt = (args.get("prompt") or "").strip()
+        if not prompt:
+            return {"error": "prompt is required"}
+        model = (args.get("model") or "veo3_fast").strip()
+        aspect = (args.get("aspect_ratio") or "16:9").strip()
+        # Veo legacy path
+        if model in ("veo3_fast", "veo3", "veo3_lite"):
+            video_url = await _veo_generate(
+                prompt=prompt, aspect_ratio=aspect, model=model,
+            )
+            urls = [video_url] if video_url else []
+        else:
+            info = kie_provider_info(model)
+            if not info or info["type"] != "video":
+                return {"error": f"Unknown video model `{model}`."}
+            urls = await _kie_generate(model_key=model, prompt=prompt)
+        if not urls:
+            return {"error": "Video generation failed or timed out — try again or pick a different model."}
+        # Persist to Documents + mission artifacts
+        artifacts = []
+        for u in urls:
+            try:
+                async with httpx.AsyncClient(timeout=120.0, follow_redirects=True) as client:
+                    resp = await client.get(u)
+                if resp.status_code != 200:
+                    continue
+                blob = resp.content
+            except Exception as exc:
+                logger.warning("Video download failed: %s", exc)
+                continue
+            atts = await save_artifacts(
+                db, [{
+                    "name": f"video-{uuid.uuid4().hex[:8]}.mp4",
+                    "ext": "mp4", "mime": "video/mp4",
+                    "title": f"Video — {prompt[:60]}",
+                    "content": "", "_raw_bytes": blob,
+                }],
+                docs_root=docs_root,
+                org_id=ctx["org_id"],
+                conversation_id=ctx.get("mission_id", ""),
+                message_id=ctx.get("mission_id", ""),
+                agent_id=ctx.get("lead_agent_id", ""),
+                agent_name=ctx.get("lead_agent_name", "Mission"),
+                created_by=ctx.get("created_by", ""),
+            )
+            if atts:
+                a = atts[0]
+                art = {
+                    "kind": "video",
+                    "filename": a.get("filename"),
+                    "url": a.get("url"),
+                    "mime": "video/mp4",
+                    "original_name": a.get("original_name"),
+                    "size": a.get("size"),
+                    "title": f"Video — {prompt[:60]}",
+                    "model": model,
+                    "document_id": a.get("document_id"),
+                }
+                artifacts.append(art)
+                await db.missions.update_one(
+                    {"id": ctx.get("mission_id")},
+                    {"$push": {"artifacts": art}},
+                )
+        if not artifacts:
+            return {"error": "Generated but couldn't save the video file."}
+        return {"ok": True, "produced": len(artifacts), "artifacts": artifacts,
+                "summary": f"Generated {len(artifacts)} video clip(s) with {model}."}
+
+    async def generate_music(ctx, args):
+        """Generate a music track via Kie.ai Suno. Args: ``prompt``
+        (required — describe the song), ``style`` (optional — e.g.
+        'cinematic', 'lo-fi hip hop'), ``instrumental`` (default false).
+        Saves the MP3 as a Documents row + mission artifact.
+        """
+        from kie_client import generate_via_kie as _kie_generate
+        prompt = (args.get("prompt") or "").strip()
+        if not prompt:
+            return {"error": "prompt is required"}
+        extra = {}
+        if args.get("style"):     extra["style"] = str(args["style"])
+        if args.get("instrumental"): extra["instrumental"] = bool(args["instrumental"])
+        urls = await _kie_generate(model_key="suno", prompt=prompt, extra=extra)
+        if not urls:
+            return {"error": "Music generation failed or timed out — try again."}
+        artifacts = []
+        for u in urls:
+            try:
+                async with httpx.AsyncClient(timeout=120.0, follow_redirects=True) as client:
+                    resp = await client.get(u)
+                if resp.status_code != 200:
+                    continue
+                blob = resp.content
+            except Exception as exc:
+                logger.warning("Music download failed: %s", exc)
+                continue
+            atts = await save_artifacts(
+                db, [{
+                    "name": f"track-{uuid.uuid4().hex[:8]}.mp3",
+                    "ext": "mp3", "mime": "audio/mpeg",
+                    "title": f"Music — {prompt[:60]}",
+                    "content": "", "_raw_bytes": blob,
+                }],
+                docs_root=docs_root,
+                org_id=ctx["org_id"],
+                conversation_id=ctx.get("mission_id", ""),
+                message_id=ctx.get("mission_id", ""),
+                agent_id=ctx.get("lead_agent_id", ""),
+                agent_name=ctx.get("lead_agent_name", "Mission"),
+                created_by=ctx.get("created_by", ""),
+            )
+            if atts:
+                a = atts[0]
+                art = {
+                    "kind": "audio",
+                    "filename": a.get("filename"),
+                    "url": a.get("url"),
+                    "mime": "audio/mpeg",
+                    "original_name": a.get("original_name"),
+                    "size": a.get("size"),
+                    "title": f"Music — {prompt[:60]}",
+                    "model": "suno",
+                    "document_id": a.get("document_id"),
+                }
+                artifacts.append(art)
+                await db.missions.update_one(
+                    {"id": ctx.get("mission_id")},
+                    {"$push": {"artifacts": art}},
+                )
+        if not artifacts:
+            return {"error": "Generated but couldn't save the audio file."}
+        return {"ok": True, "produced": len(artifacts), "artifacts": artifacts,
+                "summary": f"Composed {len(artifacts)} track(s) with Suno."}
+
     async def resize_image(ctx, args):
         """Resize ONE source image into MANY exact pixel sizes.
 
@@ -1395,6 +1542,14 @@ def build_tools(
              "Render a new image (PNG) with Nano Banana (default) or GPT Image 1 and save it to the Documents library. Use this for ANY image deliverable — do NOT try to emit .png via write_artifact.",
              '{"prompt": "A flat-design infographic...", "model": "nano-banana"}',
              generate_image, side_effect=True),
+        Tool("generate_video",
+             "Render a video clip and save it to the Documents library. Models: 'veo3_fast' (default — Google Veo 3.1 fast tier), 'veo3' (full Veo 3.1), 'kling-3' / 'kling-3-pro' (good for product shots), 'wan-2-6' (long-form), 'seedance-1-5' (animation), 'sora-2' (narrative), 'runway-aleph' (cinematic). Pass `aspect_ratio` like '16:9' or '9:16'. Use this — NOT generate_image — when the user wants motion, animation, or a clip.",
+             '{"prompt": "30-second cinematic shot of a coffee cup pouring", "model": "veo3_fast", "aspect_ratio": "16:9"}',
+             generate_video, side_effect=True),
+        Tool("generate_music",
+             "Compose a music track via Suno and save it to the Documents library as MP3. Args: `prompt` (describe the song), optional `style` (e.g. 'cinematic', 'lo-fi hip hop'), optional `instrumental: true` for no vocals. Use for background music, jingles, podcast intros.",
+             '{"prompt": "Upbeat 60s synthwave with female vocals about AI dreams", "style": "synthwave", "instrumental": false}',
+             generate_music, side_effect=True),
         Tool("resize_image",
              "Resize a SINGLE source image (a user-uploaded attachment OR an artifact this mission already produced) into MANY exact pixel sizes. Use this — NOT generate_image — when the user asks for a hero image at multiple ad/banner slots like 'Wide Skyscraper 160x600, Rectangle 300x250, Leaderboard 728x90'. Always call read_attachment with no args first to discover available `attachment_id`s, then call resize_image once with the full `sizes` list. Modes: 'fit' (default — scale + pad with averaged edge colour, no cropping; best for ads), 'fill' (cover + center-crop), 'stretch' (distort to exact). Outputs are saved as individual PNGs in the Documents library and emitted as mission artifacts.",
              '{"attachment_id": "att_xxx", "base_name": "hero", "sizes": [{"label": "Wide Skyscraper", "width": 160, "height": 600}, {"label": "Rectangle", "width": 300, "height": 250}, {"label": "Mobile Leaderboard", "width": 320, "height": 50}, {"label": "Leaderboard", "width": 728, "height": 90}, {"label": "Half-Page", "width": 300, "height": 600}, {"label": "Billboard", "width": 970, "height": 250}]}',
