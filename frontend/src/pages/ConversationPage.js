@@ -432,7 +432,7 @@ export default function ConversationPage() {
       return;
     }
 
-    // ── Smart routing via the SoulPrint Dynamic Intelligence SDK ─────────
+    // ── Dynamic Intelligence routing via the SoulPrint SDK ─────────────────
     // For each media intent (image / video) we honour the user's per-type
     // routing pref:
     //   "auto"        → SDK picks the best model

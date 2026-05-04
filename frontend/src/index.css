@@ -434,6 +434,11 @@ input[type="text"], input[type="email"], input[type="password"], textarea {
 :root[data-theme="light"] .hover\:border-white\/20:hover,
 :root[data-theme="light"] .hover\:border-white\/25:hover,
 :root[data-theme="light"] .hover\:border-white\/30:hover { border-color: var(--border-strong) !important; }
+/* Hover-feedback for light mode where `hover:bg-white/5` would otherwise
+   be invisible (white on white). Used by Dynamic Intelligence picker rows,
+   dropdown menus, etc. */
+:root[data-theme="light"] .hover\:bg-white\/5:hover,
+:root[data-theme="light"] .hover\:bg-white\/10:hover { background-color: rgba(20, 20, 28, 0.05) !important; }
 
 /* Make the auth backdrop and dialog overlays look right in light mode */
 :root[data-theme="light"] .bg-black\/0,

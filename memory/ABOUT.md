@@ -68,7 +68,7 @@ Drag in PDFs, brand guides, customer interviews, financial data, product specs �
 
 ### 8. **Conversational shortcuts the way you'd actually talk**
 - Slash command `/mission` to launch an autonomous run from inside any chat
-- Smart auto-routing — type something, the platform picks the right specialist
+- **Dynamic Intelligence** — type something, the platform picks the right specialist (and the right model — chat, image, video, or music) automatically. Lock a default per content type from the chip in the top bar whenever you want.
 - Inline image regeneration with custom prompts
 - One-click thumbs up/down to teach the platform your preferences
 
