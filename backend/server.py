@@ -3543,6 +3543,155 @@ async def regenerate_image(
         "ok": True,
     }
 
+
+# ── Batch image-resize endpoint (chat-side companion to the mission tool) ──
+class ResizeSpec(BaseModel):
+    label: str = ""
+    width: int
+    height: int
+    mode: Optional[str] = "fit"   # fit | fill | stretch
+
+
+class ResizeImageBody(BaseModel):
+    """Resize an existing chat image (or any uploaded file accessible at
+    `/api/files/<filename>`) into multiple exact pixel sizes.
+    Only one of ``message_id`` (preferred — uses that message's first image)
+    or ``filename`` (raw upload-dir filename) needs to be supplied.
+    """
+    message_id: Optional[str] = None
+    filename: Optional[str] = None
+    sizes: List[ResizeSpec]
+    base_name: Optional[str] = "image"
+
+
+@conv_r.post("/conversations/{conv_id}/resize-image")
+async def resize_image_endpoint(
+    conv_id: str,
+    body: ResizeImageBody,
+    u: dict = Depends(get_current_user),
+):
+    """Posts a single agent reply containing all resized variants as
+    inline image attachments. Mirrors the mission tool but lives in chat
+    so a user who pastes "recreate at IAB sizes" gets immediate results
+    without spinning up a mission.
+    """
+    conv = await load_conv_or_403(conv_id, u["id"])
+    if not body.sizes:
+        raise HTTPException(400, "Pass at least one {label,width,height} size.")
+    if len(body.sizes) > 24:
+        raise HTTPException(400, "Cap is 24 sizes per call.")
+
+    # Resolve source bytes
+    src_bytes: Optional[bytes] = None
+    src_label = ""
+    if body.message_id:
+        msg = await db.messages.find_one(
+            {"id": body.message_id, "conversation_id": conv_id}
+        )
+        if not msg:
+            raise HTTPException(404, "message_id not found in this conversation")
+        for a in msg.get("attachments") or []:
+            if (a.get("mime") or "").startswith("image/") or a.get("kind") == "image":
+                fname = (a.get("url") or "").rsplit("/", 1)[-1]
+                fp = UPLOAD_DIR / fname
+                if not fp.is_file() and "/files/docs/" in (a.get("url") or ""):
+                    parts = a["url"].split("/files/docs/", 1)[1].split("/", 1)
+                    if len(parts) == 2:
+                        fp = DOCS_DIR / parts[0] / parts[1]
+                if fp.is_file():
+                    src_bytes = fp.read_bytes()
+                    src_label = a.get("original_name") or fname
+                    break
+    if src_bytes is None and body.filename:
+        fname = body.filename.rsplit("/", 1)[-1]
+        fp = UPLOAD_DIR / fname
+        if fp.is_file():
+            src_bytes = fp.read_bytes()
+            src_label = fname
+
+    if src_bytes is None:
+        raise HTTPException(404, "Couldn't load source image — pass message_id or filename.")
+
+    # Get team_id + org_id for documents persistence
+    team = await db.teams.find_one({"_id": ObjectId(conv["team_id"])})
+    org_id = team.get("org_id") if team else ""
+
+    from image_resize import smart_resize_batch
+    base = body.base_name or src_label.rsplit(".", 1)[0] or "image"
+    sizes_dicts = [s.model_dump() for s in body.sizes]
+    variants = smart_resize_batch(src_bytes, sizes_dicts, base_name=base)
+
+    attachments_out: List[dict] = []
+    errors: List[dict] = []
+    for v in variants:
+        if v.get("error"):
+            errors.append({"label": v.get("label"), "error": v["error"]})
+            continue
+        from artifacts import save_artifacts
+        atts = await save_artifacts(
+            db, [{
+                "name": v["filename"],
+                "ext": "png",
+                "mime": "image/png",
+                "title": f"{base} — {v['label']} ({v['width']}×{v['height']})",
+                "content": "",
+                "_raw_bytes": v["bytes"],
+            }],
+            docs_root=DOCS_DIR,
+            org_id=org_id,
+            conversation_id=conv_id,
+            message_id="",
+            agent_id="",
+            agent_name="Resize tool",
+            created_by=u["id"],
+        )
+        if atts:
+            a = atts[0]
+            attachments_out.append({
+                **a,
+                "kind": "image",
+                "label": v["label"],
+                "width": v["width"],
+                "height": v["height"],
+                "title": f"{v['label']} ({v['width']}×{v['height']})",
+            })
+
+    if not attachments_out:
+        raise HTTPException(500, f"All {len(variants)} resize attempts failed: {errors}")
+
+    agent_id = (conv.get("agent_ids") or [None])[0] or "specialized-chief-of-staff"
+    agent = AGENTS.get(agent_id) or {"name": "Resize tool"}
+    summary_lines = [
+        f"Done — produced {len(attachments_out)} variant{'s' if len(attachments_out) != 1 else ''} from **{src_label}**:",
+        "",
+    ]
+    for a in attachments_out:
+        summary_lines.append(f"- **{a['label']}** ({a['width']}×{a['height']}) — `{a['original_name']}`")
+    if errors:
+        summary_lines.append("")
+        summary_lines.append(f"_{len(errors)} size(s) failed: {', '.join(e['label'] for e in errors)}_")
+    text = "\n".join(summary_lines)
+    msg = {
+        "id": str(uuid.uuid4()),
+        "conversation_id": conv_id,
+        "sender_type": "agent",
+        "sender_name": agent.get("name") or "Agent",
+        "agent_id": agent_id,
+        "agent_color": agent.get("color"),
+        "text": text,
+        "attachments": attachments_out,
+        "timestamp": datetime.now(timezone.utc),
+    }
+    await db.messages.insert_one({**msg})
+    return {
+        "ok": True,
+        "agent_message": {k: v for k, v in msg.items() if k != "_id"},
+        "produced": len(attachments_out),
+        "failed": len(errors),
+        "errors": errors,
+    }
+
+
 # ── Video generation tool (Kie.ai Veo 3.1) ──────────────────────────────────
 _VIDEO_AR_RE = re.compile(
     r"(?<!\d)(9\s*[:xX/]\s*16|16\s*[:xX/]\s*9|1\s*[:xX/]\s*1)(?!\d)"

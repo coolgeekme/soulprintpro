@@ -875,6 +875,164 @@ def build_tools(
             "ok": True,
         }
 
+    async def resize_image(ctx, args):
+        """Resize ONE source image into MANY exact pixel sizes.
+
+        Built specifically for the "recreate this image at six ad sizes"
+        workflow that pure image-gen models can't fulfil (they output
+        approximate aspect ratios, never exact pixel dimensions). PIL is
+        deterministic, fast, and lossless — perfect for ad-tech.
+
+        Args (all required unless noted):
+          source: Either an attachment_id (preferred — references a file
+            the user uploaded with the mission) OR a document_id (for
+            re-processing an artifact this mission already produced) OR
+            a path-like url such as "/api/files/<filename>" / "/api/files/docs/...".
+          sizes: List of {label, width, height, mode?}. ``mode`` is one of
+            "fit" (default — scale + pad), "fill" (cover + crop),
+            "stretch" (distort to exact). For ad slots stick with "fit".
+          base_name: optional filename stem for output files. Defaults
+            to "image".
+
+        Each variant is saved as its own Documents row (so the user can
+        download each one individually) AND emitted as a mission artifact.
+        """
+        from image_resize import smart_resize_batch  # local import
+        sizes = args.get("sizes") or []
+        if not isinstance(sizes, list) or not sizes:
+            return {"error": "Pass `sizes` as a non-empty list of {label, width, height, mode?}."}
+        if len(sizes) > 24:
+            return {"error": "Too many sizes — cap is 24 per call. Make multiple calls if needed."}
+
+        # Resolve the source — try attachment first, then document, then URL.
+        src_bytes: Optional[bytes] = None
+        src_label = ""
+        att_id = (args.get("attachment_id") or "").strip()
+        doc_id = (args.get("document_id") or "").strip()
+        source = (args.get("source") or "").strip()
+        # 1. Mission attachment (the most common case for "uploaded image")
+        mission_id = ctx.get("mission_id") or ""
+        if mission_id and (att_id or (source and not source.startswith("/"))):
+            mission = await db.missions.find_one({"id": mission_id}, {"_id": 0, "attachments": 1})
+            for a in (mission or {}).get("attachments") or []:
+                if a.get("id") == att_id or (
+                    not att_id and source and source in (a.get("original_name") or "")
+                ):
+                    fp = UPLOAD_DIR / (a.get("filename") or "")
+                    if fp.is_file():
+                        src_bytes = fp.read_bytes()
+                        src_label = a.get("original_name") or fp.name
+                        break
+        # 2. Org documents library
+        if src_bytes is None and doc_id:
+            d = await db.documents.find_one({"id": doc_id, "org_id": ctx["org_id"]})
+            if d:
+                fp = docs_root / d["org_id"] / d["filename"]
+                if fp.is_file():
+                    src_bytes = fp.read_bytes()
+                    src_label = d.get("original_name") or fp.name
+        # 3. URL/path  fallback (/api/files/... or /api/files/docs/<org>/<file>)
+        if src_bytes is None and source:
+            try:
+                if "/files/docs/" in source:
+                    parts = source.split("/files/docs/", 1)[1].split("/", 1)
+                    if len(parts) == 2:
+                        fp = docs_root / parts[0] / parts[1]
+                        if fp.is_file():
+                            src_bytes = fp.read_bytes()
+                            src_label = fp.name
+                elif "/files/" in source:
+                    fname = source.rsplit("/", 1)[-1]
+                    fp = UPLOAD_DIR / fname
+                    if fp.is_file():
+                        src_bytes = fp.read_bytes()
+                        src_label = fname
+            except Exception as exc:
+                logger.warning("resize_image source lookup failed for %s: %s", source, exc)
+
+        if src_bytes is None:
+            return {
+                "error": (
+                    "Couldn't load source image. Pass `attachment_id` for a "
+                    "file the user uploaded with the mission (call read_attachment "
+                    "with no args first to list them), or `document_id` for "
+                    "an artifact this mission generated, or `source` set to "
+                    "a /api/files/... url."
+                )
+            }
+
+        base = (args.get("base_name") or src_label.rsplit(".", 1)[0] or "image")
+        try:
+            variants = smart_resize_batch(src_bytes, sizes, base_name=base)
+        except Exception as exc:
+            return {"error": f"Resize batch failed: {exc}"[:300]}
+
+        # Persist each variant as its own document + mission artifact.
+        ok_results: list[dict] = []
+        errors: list[dict] = []
+        for v in variants:
+            if v.get("error"):
+                errors.append({"label": v.get("label"), "error": v["error"]})
+                continue
+            try:
+                attachments = await save_artifacts(
+                    db, [{
+                        "name": v["filename"],
+                        "ext": "png",
+                        "mime": "image/png",
+                        "title": f"{base} — {v['label']} ({v['width']}×{v['height']})",
+                        "content": "",  # raw bytes path bypasses content
+                        "_raw_bytes": v["bytes"],
+                    }],
+                    docs_root=docs_root,
+                    org_id=ctx["org_id"],
+                    conversation_id=mission_id,
+                    message_id=mission_id,
+                    agent_id=ctx.get("lead_agent_id", ""),
+                    agent_name=ctx.get("lead_agent_name", "Mission"),
+                    created_by=ctx.get("created_by", ""),
+                )
+            except Exception as exc:
+                logger.warning("save_artifacts failed for variant %s: %s", v["label"], exc)
+                errors.append({"label": v["label"], "error": str(exc)[:200]})
+                continue
+            if not attachments:
+                errors.append({"label": v["label"], "error": "Persist returned empty"})
+                continue
+            a = attachments[0]
+            artifact = {
+                "kind": "image",
+                "filename": a.get("filename"),
+                "url": a.get("url"),
+                "mime": "image/png",
+                "original_name": a.get("original_name"),
+                "size": a.get("size"),
+                "width": v["width"],
+                "height": v["height"],
+                "label": v["label"],
+                "title": f"{v['label']} ({v['width']}×{v['height']})",
+                "document_id": a.get("document_id"),
+            }
+            ok_results.append(artifact)
+            # Push directly so the mission detail page sees them as they arrive.
+            await db.missions.update_one(
+                {"id": mission_id},
+                {"$push": {"artifacts": artifact}},
+            )
+
+        return {
+            "ok": True,
+            "produced": len(ok_results),
+            "failed": len(errors),
+            "variants": ok_results,
+            "errors": errors,
+            "summary": (
+                f"Generated {len(ok_results)} image variant(s) "
+                f"from '{src_label}' at the requested sizes."
+                + (f" {len(errors)} failed." if errors else "")
+            ),
+        }
+
     async def draft_to_social_queue(ctx, args):
         # Phase 1 scope: use `write_artifact` to draft a `.md` social post
         # users can review before queueing. Native Social Queue draft tool
@@ -1237,6 +1395,10 @@ def build_tools(
              "Render a new image (PNG) with Nano Banana (default) or GPT Image 1 and save it to the Documents library. Use this for ANY image deliverable — do NOT try to emit .png via write_artifact.",
              '{"prompt": "A flat-design infographic...", "model": "nano-banana"}',
              generate_image, side_effect=True),
+        Tool("resize_image",
+             "Resize a SINGLE source image (a user-uploaded attachment OR an artifact this mission already produced) into MANY exact pixel sizes. Use this — NOT generate_image — when the user asks for a hero image at multiple ad/banner slots like 'Wide Skyscraper 160x600, Rectangle 300x250, Leaderboard 728x90'. Always call read_attachment with no args first to discover available `attachment_id`s, then call resize_image once with the full `sizes` list. Modes: 'fit' (default — scale + pad with averaged edge colour, no cropping; best for ads), 'fill' (cover + center-crop), 'stretch' (distort to exact). Outputs are saved as individual PNGs in the Documents library and emitted as mission artifacts.",
+             '{"attachment_id": "att_xxx", "base_name": "hero", "sizes": [{"label": "Wide Skyscraper", "width": 160, "height": 600}, {"label": "Rectangle", "width": 300, "height": 250}, {"label": "Mobile Leaderboard", "width": 320, "height": 50}, {"label": "Leaderboard", "width": 728, "height": 90}, {"label": "Half-Page", "width": 300, "height": 600}, {"label": "Billboard", "width": 970, "height": 250}]}',
+             resize_image, side_effect=True),
         Tool("browse_url",
              "Load a real web page in a headless Chromium (handles JavaScript / SPA / cookie walls). Returns rendered text, a screenshot, AND a structured page-map: `forms` (with field labels & types), `buttons` and `links` (with their visible text). ALWAYS read the `affordances_summary` field first — it tells you what's clickable on this page. The first step in any form-fill or multi-hop navigation goal.",
              '{"url": "https://..."}',
