@@ -59,6 +59,7 @@ from artifacts import (
     RESOURCEFULNESS_DIRECTIVE,
     extract_artifact_blocks,
     save_artifacts as _save_artifacts,
+    annotate_empty_promise as _annotate_empty_promise,
     make_documents_router,
 )
 from style_guide import (
@@ -2092,15 +2093,18 @@ async def process_agent_artifacts(reply_text: str, *, conv: dict, agent_id: str,
     try:
         cleaned, blocks = extract_artifact_blocks(reply_text or "")
         if not blocks:
-            return reply_text or "", []
+            # No artifacts attached — but the agent might have promised
+            # async work that won't actually happen. Append a clear next-
+            # step nudge so the user always knows what to type next.
+            return _annotate_empty_promise(reply_text or "", has_artifacts=False), []
         # Resolve org_id from the conversation's team
         team_id = conv.get("team_id")
         team_doc = await db.teams.find_one({"_id": ObjectId(team_id)}) if team_id else None
         if not team_doc:
-            return reply_text or "", []
+            return _annotate_empty_promise(reply_text or "", has_artifacts=False), []
         org_id = team_doc.get("org_id") or ""
         if not org_id:
-            return reply_text or "", []
+            return _annotate_empty_promise(reply_text or "", has_artifacts=False), []
         attachments = await _save_artifacts(
             db, blocks,
             docs_root=DOCS_DIR,
@@ -2116,6 +2120,10 @@ async def process_agent_artifacts(reply_text: str, *, conv: dict, agent_id: str,
         if not cleaned.strip():
             n = len(attachments)
             cleaned = f"📎 Attached {n} file{'s' if n != 1 else ''} for you."
+        # Even when artifacts were attached, the prose around them might
+        # still contain promise language ("I'll send the rest tomorrow…").
+        # Pass has_artifacts=True to suppress the footer in that case.
+        cleaned = _annotate_empty_promise(cleaned, has_artifacts=bool(attachments))
         return cleaned, attachments
     except Exception as exc:
         logger.warning("artifact extraction failed: %s", exc)

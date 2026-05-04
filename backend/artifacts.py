@@ -162,6 +162,26 @@ it. Do not just say "I'll generate the PDF shortly" — actually emit the
 same turn. Never promise a future delivery that won't arrive; if you
 can't produce the file in this turn, say so honestly.
 
+CRITICAL — NO EMPTY PROMISES. There is NO BACKGROUND WORK. There is no
+"later" — your reply IS the entire turn. The user is sitting in a chat
+window staring at your message right now. Phrases like:
+  • "I'll get back to you with…"
+  • "I'll prepare/finish/send the report/audit/plan shortly"
+  • "I'll prioritize this and have it over to you soon"
+  • "Looking forward to delivering…"
+  • "Let me know if you'd like me to proceed and I'll start on it"
+  • "I'm working on it / will work on it / will keep you posted"
+…are FORBIDDEN unless you also attach the deliverable in this very same
+reply (via an [[ARTIFACT]] block, or — for images — by letting the user
+ask "generate the image" so the image-gen path fires). If you cannot
+deliver the deliverable in this turn, say so honestly:
+  "Here's what I can do right now: <X>. To give you <full deliverable>
+   I'd need <a/b/c> — share those and I'll draft it in this same chat."
+End every reply that promises future work with a CONCRETE, CLICKABLE
+NEXT STEP for the user (e.g. "Want me to draft the audit now?" — yes/no
+question they can answer in two words). Never leave the user wondering
+whether anything is happening. Time is the user's most valuable resource.
+
 Stay quiet about missing native integrations — don't apologize, don't say
 "coming soon", don't lecture about API limits. Just deliver the artifact.
 """
@@ -393,6 +413,65 @@ def extract_artifact_blocks(text: str) -> Tuple[str, List[dict]]:
     # Tidy up double-blank-lines we created when removing inline blocks.
     cleaned = re.sub(r"\n{3,}", "\n\n", cleaned).strip()
     return cleaned, blocks
+
+
+# ── Empty-promise detector ───────────────────────────────────────────────
+# Phrases agents reach for when they don't know how to deliver right now —
+# things like "I'll get back to you", "preparing the report shortly",
+# "finishing up the audit". Without an actual artifact in the reply, these
+# leave the user staring at chat with zero indication anything is happening.
+# We detect this state and append a clear "what now?" footer so the user
+# always knows what their next move is.
+_EMPTY_PROMISE_RE = re.compile(
+    r"(?:^|[\s\.,;:!?\-–—\(\[])"
+    r"(?:"
+    r"i(?:'ll| will|'m about to| am about to)\s+(?:"
+    r"prepare|finish|finalize|finalise|wrap\s*up|send|deliver|share|"
+    r"send\s*over|get\s*(?:back|those|them|that|this)|provide|put\s*together|"
+    r"compile|write\s*up|draft|build|create|generate|prioriti[sz]e|"
+    r"start|begin|continue|keep\s*you|update\s*you|let\s*you\s*know"
+    r")\b|"
+    r"(?:i\s+(?:am|'m)\s+(?:working|preparing|finalizing|finalising|drafting|"
+    r"compiling|writing|building|generating|gathering)|"
+    r"working\s+on\s+(?:it|that|this|the\s+(?:report|audit|brief|plan|deliverable|document)))|"
+    r"(?:report|audit|brief|plan|document|deliverable|file|pdf|docx?)\s+"
+    r"(?:will\s+)?(?:be\s+)?(?:ready|delivered|sent|available|coming|over)\s+"
+    r"(?:to\s+you\s+)?(?:soon|shortly|in\s+a\s+(?:bit|moment)|by|in\s+the\s+next)|"
+    r"looking\s+forward\s+to\s+(?:delivering|sending|sharing|providing)|"
+    r"i'?ll\s+(?:keep\s+you|loop\s+you|circle\s+back|follow\s*up|update\s+you)"
+    r")",
+    re.IGNORECASE,
+)
+
+# Light footer wording — sized to be helpful, not naggy. Italic so it reads
+# as a UX nudge rather than agent prose.
+_EMPTY_PROMISE_FOOTER = (
+    "\n\n_——_\n"
+    "_⚠️ Heads-up: I can't work in the background — every reply IS the work. "
+    "If you want me to actually draft this now, reply with **\"draft it\"** "
+    "(or **\"go\"**) and I'll attach a `.pdf` or `.docx` in the very next "
+    "message._"
+)
+
+
+def has_empty_promise(text: str) -> bool:
+    """Return True when an agent reply contains future-tense delivery
+    promises (e.g. 'I'll send the report shortly') that the runtime can't
+    actually fulfil — letting the caller decide whether to nudge the user."""
+    if not text or len(text) < 12:
+        return False
+    return bool(_EMPTY_PROMISE_RE.search(text))
+
+
+def annotate_empty_promise(text: str, has_artifacts: bool) -> str:
+    """If the agent's reply contains promise-language but it didn't
+    actually attach any artifact OR media, append a footer telling the
+    user to reply 'draft it' so the next turn is forced to deliver."""
+    if has_artifacts:
+        return text
+    if not has_empty_promise(text):
+        return text
+    return (text or "").rstrip() + _EMPTY_PROMISE_FOOTER
 
 
 # ── Persistence ────────────────────────────────────────────────────────────
