@@ -2018,6 +2018,153 @@ async def maybe_fetch_web_context(message: str, transcript: str = "") -> tuple[s
         return "", [], intent
     return format_results_for_prompt(results), results, intent
 
+
+# ── User-supplied URL fetching (anti-hallucination ground truth) ──────────
+# When a user pastes "audit https://linkedin.com/in/foo and https://x.com/bar",
+# the chat-side agent has no `browse_url` tool and no way to actually visit
+# those pages — so it would hallucinate follower counts / engagement / posts.
+# Fix: detect URLs in the user's message, fetch them server-side via
+# Playwright, inject the rendered text as a "GROUND TRUTH" block in the
+# system prompt, and forbid the agent from inventing data not in that block.
+_URL_IN_TEXT_RE = re.compile(
+    r"(?:^|[\s\(\[\{<,;])"
+    r"(https?://[^\s\(\)\[\]\{\}<>'\"`]+?)"
+    r"(?=[\s\(\)\[\]\{\}<>'\"`,;:.!?]*(?:$|[\s]))",
+    re.IGNORECASE,
+)
+# Hard cap: avoid spending too much time on a single user message.
+_MAX_URLS_PER_TURN = 4
+_MAX_FETCH_TIMEOUT = 15  # seconds per URL
+
+
+def _extract_urls(text: str) -> list[str]:
+    """Pull http(s) URLs from a free-form user message. De-dupes while
+    preserving order, strips trailing punctuation that's almost certainly
+    not part of the URL."""
+    if not text:
+        return []
+    seen: set[str] = set()
+    out: list[str] = []
+    for m in _URL_IN_TEXT_RE.finditer(text):
+        u = m.group(1).rstrip(").,;:!?\"'`")
+        if u in seen:
+            continue
+        # Defensive: skip URLs that point to our own backend (avoids hitting
+        # ourselves or revealing internal paths to the LLM).
+        from urllib.parse import urlparse
+        try:
+            host = (urlparse(u).hostname or "").lower()
+        except Exception:
+            continue
+        if host.endswith("emergentagent.com") or host == "localhost":
+            continue
+        seen.add(u)
+        out.append(u)
+        if len(out) >= _MAX_URLS_PER_TURN:
+            break
+    return out
+
+
+async def _fetch_url_for_chat(url: str) -> dict:
+    """Single URL fetch with hard timeout. Returns
+    {'url', 'title', 'text', 'final_url', 'status', 'error'}.
+
+    `text` is truncated so a single chatty page can't blow the prompt
+    budget — agents need a representative excerpt, not the whole DOM."""
+    from browser_tools import browse_url as _browse
+    try:
+        result = await asyncio.wait_for(
+            _browse(url, take_screenshot=False, upload_dir=None, mission_id=None),
+            timeout=_MAX_FETCH_TIMEOUT,
+        )
+    except asyncio.TimeoutError:
+        return {"url": url, "title": "", "text": "",
+                "final_url": url, "status": 0,
+                "error": f"timed out after {_MAX_FETCH_TIMEOUT}s"}
+    except Exception as exc:
+        return {"url": url, "title": "", "text": "",
+                "final_url": url, "status": 0,
+                "error": f"{type(exc).__name__}: {exc}"[:200]}
+    text = (result.get("text") or "").strip()
+    # Truncate to ~6k chars per URL — enough for a real audit, leaves
+    # room for a few URLs + the rest of the prompt.
+    if len(text) > 6000:
+        text = text[:6000] + "\n…[truncated]"
+    return {
+        "url": url,
+        "title": (result.get("title") or "")[:240],
+        "text": text,
+        "final_url": result.get("final_url") or url,
+        "status": int(result.get("status") or 0),
+        "error": (result.get("error") or "")[:200],
+    }
+
+
+async def fetch_user_supplied_urls(message: str) -> tuple[str, list[dict]]:
+    """Fetch every URL the user pasted, format as a prompt block, return
+    (formatted_block, fetched_list). Returns ("", []) when no URLs detected
+    so callers can branch cleanly.
+
+    Each fetch is independent — failures are reported in the block (so the
+    agent can tell the user "linkedin.com returned a login wall") rather
+    than swallowed.
+    """
+    urls = _extract_urls(message)
+    if not urls:
+        return "", []
+    fetched = await asyncio.gather(*[_fetch_url_for_chat(u) for u in urls])
+    # Build the prompt block. Use a strong directive so the agent doesn't
+    # paper over fetch failures by inventing plausible numbers.
+    lines = [
+        "## GROUND-TRUTH PAGE CONTENT (user-supplied URLs)",
+        "",
+        "The user pasted the URL(s) below. The system fetched the rendered "
+        "page content and you are seeing the ACTUAL text the page returned. "
+        "Base your audit / analysis ONLY on this content. **Do NOT invent "
+        "follower counts, engagement metrics, post counts, dates, names, "
+        "or any number/string that doesn't appear in the GROUND TRUTH "
+        "below.** If a metric isn't in the rendered page (e.g. private "
+        "engagement data, paywalled content, login-walled feeds), say "
+        "explicitly: \"That metric isn't visible in the page content I "
+        "could fetch — to get it I'd need <X> (logged-in cookies, an API "
+        "key, etc.).\"",
+        "",
+    ]
+    for f in fetched:
+        sep = "─" * 60
+        lines.append(sep)
+        lines.append(f"URL: {f['url']}")
+        if f["final_url"] and f["final_url"] != f["url"]:
+            lines.append(f"Final URL (after redirects): {f['final_url']}")
+        if f["title"]:
+            lines.append(f"Title: {f['title']}")
+        if f["status"]:
+            lines.append(f"HTTP status: {f['status']}")
+        if f["error"]:
+            lines.append(f"Fetch error: {f['error']}")
+            lines.append(
+                "Because this fetch failed, you must NOT analyze this URL "
+                "as if you'd seen it. Tell the user the fetch failed and "
+                "ask whether they have alternate access (a public mirror, "
+                "a cached copy, an export, etc.)."
+            )
+        elif not f["text"]:
+            lines.append("(Page returned no readable text — likely a "
+                         "JavaScript-only SPA or a login wall.)")
+            lines.append(
+                "Because no text was extracted, you must NOT invent "
+                "metrics from this URL. Tell the user the page wouldn't "
+                "render server-side (login wall / SPA) and recommend "
+                "uploading a screenshot or a public-link copy."
+            )
+        else:
+            lines.append("Rendered content:")
+            lines.append("```")
+            lines.append(f["text"])
+            lines.append("```")
+        lines.append("")
+    return "\n".join(lines), list(fetched)
+
 async def generate_agent_reply(conv: dict, team: dict, agent_id: str,
                                latest_user_text: str, latest_user_name: str,
                                *, force_delivery: bool = False) -> tuple[str, list]:
@@ -2041,6 +2188,13 @@ async def generate_agent_reply(conv: dict, team: dict, agent_id: str,
 
     # Web-search augmentation (parallel to building the system prompt)
     web_block, web_sources, _intent = await maybe_fetch_web_context(latest_user_text, transcript)
+
+    # User-supplied URL ground truth — when the user pastes URLs in their
+    # message, fetch them server-side via Playwright and inject the
+    # rendered text as a "GROUND TRUTH" block. Without this the agent
+    # has no way to actually visit those pages (browse_url is mission-only)
+    # and would otherwise hallucinate follower counts / engagement / etc.
+    user_url_block, user_url_fetches = await fetch_user_supplied_urls(latest_user_text)
 
     # Pull a compact view of the org's asset library so the agent can cite it.
     org_assets_brief: List[dict] = []
@@ -2069,6 +2223,12 @@ async def generate_agent_reply(conv: dict, team: dict, agent_id: str,
             "sentence with a markdown link `[source](url)` referencing the most relevant URL.\n\n"
             f"{web_block}"
         )
+    if user_url_block:
+        # Critical: this block goes AFTER web search so it visually sits
+        # closest to the user's message in the prompt — the agent will
+        # weight it heavier. The block itself contains the strict "do not
+        # invent metrics" directive.
+        system += "\n\n" + user_url_block
 
     chat = LlmChat(
         api_key=EMERGENT_LLM_KEY,
