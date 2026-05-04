@@ -862,7 +862,7 @@ function GeneralChatCard({ orgId, teamId, convId }) {
       staged.forEach((s) => s.previewUrl && URL.revokeObjectURL(s.previewUrl));
       setStaged([]);
       setText("");
-      toast.success(`Uploaded ${n} file${n > 1 ? "s" : ""} to General`, {
+      toast.success(`Uploaded ${n} file${n > 1 ? "s" : ""} to Chief of Staff`, {
         action: { label: "Open chat", onClick: () => nav(`/app/team/${teamId}/c/${convId}`) },
       });
     } catch (err) {
@@ -883,7 +883,7 @@ function GeneralChatCard({ orgId, teamId, convId }) {
              style={{ borderColor: "rgba(246,64,0,0.7)", background: "color-mix(in srgb, var(--bg) 80%, transparent)", backdropFilter: "blur(8px)", WebkitBackdropFilter: "blur(8px)" }}
              data-testid="general-drop-overlay">
           <div className="flex items-center gap-2 text-sm font-medium" style={{ color: "var(--fg)" }}>
-            <Paperclip className="w-4 h-4" /> Drop to attach to General
+            <Paperclip className="w-4 h-4" /> Drop to attach to Chief of Staff
           </div>
         </div>
       )}
@@ -898,7 +898,7 @@ function GeneralChatCard({ orgId, teamId, convId }) {
           <MessageCircle className="w-5 h-5 text-white" />
         </div>
         <div className="flex-1 min-w-0">
-          <div className="font-medium text-lg" style={{ color: "var(--fg)" }}>General chat</div>
+          <div className="font-medium text-lg" style={{ color: "var(--fg)" }}>Chief of Staff chat</div>
           <div className="text-xs sp-subtle">Always-on. Just type — the right specialist will respond, and others jump in when the topic shifts.</div>
         </div>
         <ArrowRight className="w-5 h-5 sp-subtle group-hover:opacity-100 opacity-70 transition" />
@@ -955,7 +955,7 @@ function GeneralChatCard({ orgId, teamId, convId }) {
             }}
             placeholder={staged.length > 0
               ? `Optional — what should the agents do with ${staged.length === 1 ? "this file" : "these files"}?`
-              : "Drop, paste, or pick files to send to General — add an optional prompt"}
+              : "Drop, paste, or pick files to send to your Chief of Staff — add an optional prompt"}
             className="flex-1 rounded-xl px-4 py-2.5 text-sm focus:sp-focus resize-none leading-relaxed"
             style={{ background: "var(--input-bg)", border: "1px solid var(--input-border)", color: "var(--fg)", minHeight: "42px" }}
             data-testid="general-prompt-input"
@@ -965,7 +965,7 @@ function GeneralChatCard({ orgId, teamId, convId }) {
             disabled={uploading || staged.length === 0}
             className="sp-btn sp-btn-primary text-xs shrink-0 disabled:opacity-50"
             data-testid="general-send-btn"
-            title={staged.length === 0 ? "Attach a file first" : "Send to General"}
+            title={staged.length === 0 ? "Attach a file first" : "Send to Chief of Staff"}
           >
             {uploading ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Send className="w-3.5 h-3.5" />}
             {uploading ? "Uploading…" : "Send"}

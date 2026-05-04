@@ -253,7 +253,7 @@ export default function SchedulesPanel({ scope = "conversation", targetId, orgId
                 data-testid="schedule-scope"
               >
                 <option value="conversation">A specific conversation</option>
-                <option value="org">The org General chat</option>
+                <option value="org">The org Chief of Staff chat</option>
               </select>
               {pickedScope === "conversation" && (
                 <select

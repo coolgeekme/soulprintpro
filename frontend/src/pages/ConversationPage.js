@@ -50,6 +50,11 @@ export default function ConversationPage() {
   // state is hoisted above the early-return below so the hook order stays
   // stable across renders (React's rules-of-hooks).
   const [agentsExpanded, setAgentsExpanded] = useState(false);
+  // Rolling AI summary for long threads (Chief of Staff chats get long
+  // fast). When available, a compact recap card is shown above the
+  // message list and older messages fold behind a "Show all" toggle.
+  const [threadSummary, setThreadSummary] = useState(null);
+  const [showAllMessages, setShowAllMessages] = useState(false);
 
   const onScrollerScroll = () => {
     const el = scrollerRef.current;
@@ -90,6 +95,23 @@ export default function ConversationPage() {
   };
 
   useEffect(() => { load(); /* eslint-disable-next-line */ }, [convId]);
+
+  // Lazy-fetch the rolling summary for this conversation. The endpoint
+  // returns {summary_available: false} when the thread is too short to
+  // need a recap (<30 msgs) — in that case we just hide the card.
+  // Re-runs whenever messages count crosses the threshold so new
+  // summaries are picked up as the thread grows.
+  useEffect(() => {
+    if (!convId) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const { data } = await api.get(`/conversations/${convId}/summary`);
+        if (!cancelled) setThreadSummary(data);
+      } catch (_) { /* non-fatal */ }
+    })();
+    return () => { cancelled = true; };
+  }, [convId, messages.length]);
 
   // Track whether we've snapped to the bottom for *this* conversation yet.
   // Reset whenever the route's convId changes so opening a different chat
@@ -810,7 +832,47 @@ export default function ConversationPage() {
               </div>
             </div>
           )}
-          {messages.map((m) => {
+          {/* Rolling AI summary card — shows for long threads so users
+              land on a recap of older messages instead of an overwhelming
+              wall. Clicking "Show all messages" reveals the raw history. */}
+          {threadSummary?.summary_available && !showAllMessages && (
+            <div
+              className="sp-glass rounded-2xl p-4 sp-fade-up"
+              data-testid="thread-summary-card"
+              style={{ borderLeft: "2px solid rgba(246,64,0,0.55)" }}
+            >
+              <div className="flex items-center gap-2 mb-2">
+                <span className="text-[10px] uppercase tracking-widest sp-subtle">
+                  Earlier in this thread · {threadSummary.covers_count} messages
+                </span>
+              </div>
+              <div className="text-sm leading-relaxed" style={{ color: "var(--fg)" }}>
+                {threadSummary.text}
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowAllMessages(true)}
+                className="mt-3 sp-btn sp-btn-ghost text-[11px]"
+                data-testid="thread-summary-show-all"
+              >
+                Show all {threadSummary.covers_count} earlier messages
+              </button>
+            </div>
+          )}
+          {(() => {
+            // When a summary is active, fold older messages so only the
+            // recent KEEP_RECENT remain visible. Users can click "Show
+            // all" to reveal them. We also keep `system`-kind messages
+            // and any message tagged `kind=mission_card` visible always —
+            // those are lightweight and user-initiated affordances.
+            const keep = threadSummary?.keep_recent ?? 20;
+            if (threadSummary?.summary_available && !showAllMessages
+                && messages.length > keep) {
+              const cutoff = messages.length - keep;
+              return messages.slice(cutoff);
+            }
+            return messages;
+          })().map((m) => {
             // System notifications (agent added/removed etc.) render as a
             // small centered chip rather than a chat bubble.
             if (m.sender_type === "system") {

@@ -826,12 +826,14 @@ async def create_org(body: OrgCreateBody, u: dict = Depends(get_current_user)):
         "org_id": oid, "user_id": u["id"], "role": "owner", "joined_at": now,
     })
 
-    # Step 2 — auto-create a "General" team seeded with the org's Soul, so users
-    # can chat immediately without having to set up SoulPrint themselves.
+    # Step 2 — auto-create a "Chief of Staff" team seeded with the org's
+    # Soul so users can chat immediately without having to set up
+    # SoulPrint themselves. The internal flag `is_general=True` is
+    # unchanged for backwards compatibility.
     team_doc = {
         "org_id": oid,
-        "name": "General",
-        "description": "Always-on chat for the whole company",
+        "name": "Chief of Staff",
+        "description": "Always-on chat with your Chief of Staff — the anchor agent for the whole company",
         "soulprint": {
             "mission": soul.get("mission", ""),
             "tone": soul.get("tone", ""),
@@ -846,14 +848,14 @@ async def create_org(body: OrgCreateBody, u: dict = Depends(get_current_user)):
     team_res = await db.teams.insert_one(team_doc)
     team_id = str(team_res.inserted_id)
 
-    # Step 3 — auto-create a "General" group conversation. We seat
+    # Step 3 — auto-create a "Chief of Staff" group conversation. We seat
     # chief-of-staff as the anchor agent, turn auto_respond ON so the user can
     # just type, and turn smart_expand ON so other specialists get pulled in
     # when the topic shifts.
     anchor = GENERAL_DEFAULT_AGENT if GENERAL_DEFAULT_AGENT in AGENTS else next(iter(AGENTS))
     conv_doc = {
         "team_id": team_id,
-        "title": "General",
+        "title": "Chief of Staff",
         "type": "group",
         "agent_ids": [anchor],
         "member_ids": [u["id"]],
@@ -1360,7 +1362,7 @@ async def delete_team(team_id: str, u: dict = Depends(get_current_user)):
     if ctx["org_role"] not in ("owner", "admin"):
         raise HTTPException(403, "Only owners/admins can delete a team")
     if ctx["team"].get("is_general"):
-        raise HTTPException(400, "The General team cannot be deleted")
+        raise HTTPException(400, "The Chief of Staff team cannot be deleted")
     if ctx["team"].get("is_direct"):
         raise HTTPException(400, "The Direct chats team cannot be deleted")
     convs = await db.conversations.find({"team_id": team_id}, {"_id": 1}).to_list(2000)
@@ -4844,6 +4846,44 @@ async def _seed_superadmins():
         await db.llm_calls.create_index([("model", 1), ("created_at", -1)])
     except Exception:
         pass
+
+
+@app.on_event("startup")
+async def _migrate_general_to_chief_of_staff():
+    """One-shot rename of the legacy 'General' team / conversation name to
+    'Chief of Staff' for existing orgs. Uses ``is_general=True`` as the
+    authoritative selector so we only rewrite the auto-created anchor
+    team, never a user-created team that happens to be called 'General'.
+    Idempotent — does nothing on orgs already renamed.
+    """
+    try:
+        r1 = await db.teams.update_many(
+            {"is_general": True, "name": "General"},
+            {"$set": {"name": "Chief of Staff",
+                      "description": "Always-on chat with your Chief of Staff — the anchor agent for the whole company"}},
+        )
+        r2 = await db.conversations.update_many(
+            {"is_general": True, "title": "General"},
+            {"$set": {"title": "Chief of Staff"}},
+        )
+        if r1.modified_count or r2.modified_count:
+            logger.info(
+                "Migrated General -> Chief of Staff: %d team(s), %d conversation(s).",
+                r1.modified_count, r2.modified_count,
+            )
+    except Exception as exc:
+        logger.warning("Chief of Staff rename migration failed: %s", exc)
+
+# ── Conversation summary (rolling AI recap for long threads) ──────────
+from conversation_summary import make_summary_router as _make_summary_r  # noqa: E402
+summary_r = _make_summary_r(
+    db=db, llm_chat_cls=LlmChat, user_message_cls=UserMessage,
+    emergent_key=EMERGENT_LLM_KEY,
+    get_current_user=get_current_user,
+    load_conv_or_403=load_conv_or_403,
+)
+app.include_router(summary_r)
+
 
 # Org Documents library — populated automatically when agents emit
 # [[ARTIFACT]] blocks in their replies. See artifacts.py.

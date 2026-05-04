@@ -14,12 +14,13 @@ import WorkingIndicator from "../components/WorkingIndicator";
 // nodes onto a transparent canvas that sits on top of the page background,
 // so saturated brand-orange + readable text colors are what we want.
 const KIND_STYLES = {
-  soul:    { fill: "#F64000", stroke: "#FF7A36", text: "#FFFFFF", glyph: "S" },
-  team:    { fill: "#1B1B22", stroke: "#3B3B45", text: "#F5F5F7", glyph: "T" },
-  agent:   { fill: "#2A2A36", stroke: "#54546A", text: "#E2E2E8", glyph: "A" },
-  mission: { fill: "#0E5F46", stroke: "#1FA37A", text: "#E6FFF6", glyph: "M" },
-  post:    { fill: "#1E3A5F", stroke: "#3D7BB8", text: "#E0F2FF", glyph: "P" },
-  user:    { fill: "#5B2E70", stroke: "#9F66B7", text: "#F2E0FF", glyph: "U" },
+  soul:         { fill: "#F64000", stroke: "#FF7A36", text: "#FFFFFF", glyph: "S" },
+  team:         { fill: "#1B1B22", stroke: "#3B3B45", text: "#F5F5F7", glyph: "T" },
+  agent:        { fill: "#2A2A36", stroke: "#54546A", text: "#E2E2E8", glyph: "A" },
+  conversation: { fill: "#3A2550", stroke: "#7A4FA8", text: "#EBDFFC", glyph: "C" },
+  mission:      { fill: "#0E5F46", stroke: "#1FA37A", text: "#E6FFF6", glyph: "M" },
+  post:         { fill: "#1E3A5F", stroke: "#3D7BB8", text: "#E0F2FF", glyph: "P" },
+  user:         { fill: "#5B2E70", stroke: "#9F66B7", text: "#F2E0FF", glyph: "U" },
 };
 
 const WINDOW_OPTIONS = [
@@ -187,6 +188,10 @@ export default function OrgMapPage() {
   const paintNode = (node, ctx, globalScale) => {
     const style = KIND_STYLES[node.kind] || KIND_STYLES.agent;
     const r = nodeRadius(node);
+    // Inactive members (zero LLM calls) should still be visible but clearly
+    // dimmed so the graph tells the whole-team story without letting
+    // quiet folks drown out the active ones.
+    const dim = !!node.inactive;
     // Base fill comes from the kind palette for Activity mode. In Time
     // mode we replace it with the heatmap shade so the eye lands
     // immediately on slow/heavy nodes. The Soul stays orange in any mode
@@ -196,8 +201,11 @@ export default function OrgMapPage() {
     let stroke = style.stroke;
     if (ratio !== null && node.kind !== "soul") {
       fill = heatColor(ratio);
-      // Lift the stroke a touch lighter than the fill for definition
       stroke = ratio > 0.7 ? "rgba(255,255,255,0.55)" : "rgba(255,255,255,0.18)";
+    }
+    if (dim) {
+      ctx.save();
+      ctx.globalAlpha = 0.38;
     }
     // Filled circle
     ctx.beginPath();
@@ -216,6 +224,7 @@ export default function OrgMapPage() {
     ctx.textAlign = "center";
     ctx.textBaseline = "middle";
     ctx.fillText(style.glyph, node.x, node.y);
+    if (dim) ctx.restore();
     // Label below the node. Truncate aggressively + only show important
     // labels until the user zooms in or hovers/selects a node — this
     // prevents the dense overlap we saw on dense graphs.
@@ -224,7 +233,7 @@ export default function OrgMapPage() {
     const showLabel = isImportant || globalScale > 1.4;
     if (!showLabel) return;
     const raw = (node.label || "").trim();
-    const max = node.kind === "soul" ? 28 : 20;
+    const max = node.kind === "soul" ? 28 : 24;
     const label = raw.length > max ? raw.slice(0, max - 1) + "…" : raw;
     const fontPxScreen = node.kind === "soul" ? 13 : 11;
     const fontPxGraph = fontPxScreen / globalScale;
@@ -373,12 +382,13 @@ export default function OrgMapPage() {
         </div>
 
         {/* KPI strip */}
-        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-2 mb-4" data-testid="map-kpis">
+        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-2 mb-4" data-testid="map-kpis">
           <StatCard icon={Users}        label="Teams"     value={totals.teams ?? 0} />
           <StatCard icon={Bot}          label="Agents"    value={totals.agents_active ?? 0} accent="#F0A050" />
           <StatCard icon={MessageCircle} label="Messages"  value={(totals.messages ?? 0).toLocaleString()} accent="#7AB7FF" />
           <StatCard icon={Sparkles}     label="Missions"  value={totals.missions ?? 0} accent="#3FE0A2" />
           <StatCard icon={Megaphone}    label="Posts"     value={totals.social_posts ?? 0} accent="#A0C4FF" />
+          <StatCard icon={UserPlus}     label="Members"   value={totals.members ?? 0} accent="#C8A6F0" />
         </div>
 
         {/* Body: graph + side panel */}
@@ -449,7 +459,7 @@ export default function OrgMapPage() {
                 <div>
                   <div className="text-xs uppercase tracking-widest sp-subtle mb-1">About this map</div>
                   <p className="text-sm leading-relaxed sp-subtle">
-                    {viewMode === "activity" && "Bigger nodes = more activity in the selected window. Click any node for a deeper view, or switch to Time to see where wall-clock concentrates."}
+                    {viewMode === "activity" && "Every team, agent, conversation, mission, and member in your org. Conversations are tagged by category (Marketing, Engineering, Design…) so you can read activity at a glance. Click any node to drill in; switch to Time to see where wall-clock concentrates."}
                     {viewMode === "time" && "Nodes are tinted by how much LLM wall-clock time they consumed — gray = idle, red = the slowest / heaviest."}
                   </p>
                 </div>
@@ -503,6 +513,12 @@ function NodeDetail({ node, orgId, onClose }) {
     switch (node.kind) {
       case "soul": return `/app/org/${orgId}`;
       case "team": return `/app/org/${orgId}`;
+      case "conversation": {
+        // Route straight to the chat. We don't know the team_id from the
+        // node id alone — just land them on the org page's conversation
+        // list and let them pick. Future: embed team_id in the node.
+        return `/app/org/${orgId}`;
+      }
       case "mission": {
         const id = node.id.split(":")[1];
         return `/app/org/${orgId}/missions?focus=${id}`;
@@ -529,6 +545,12 @@ function NodeDetail({ node, orgId, onClose }) {
         <div className="text-[10px] uppercase tracking-widest sp-subtle">Label</div>
         <div className="text-sm font-medium" style={{ color: "var(--fg)" }}>{node.label}</div>
       </div>
+      {node.category && (
+        <div>
+          <div className="text-[10px] uppercase tracking-widest sp-subtle">Category</div>
+          <div className="text-sm" style={{ color: "var(--fg)" }}>{node.category}</div>
+        </div>
+      )}
       {node.subtitle && (
         <div>
           <div className="text-[10px] uppercase tracking-widest sp-subtle">Activity</div>

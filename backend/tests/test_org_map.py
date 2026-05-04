@@ -90,7 +90,7 @@ async def test_org_map_time_heatmap_fields(db):
         payload = await build_org_map(db, org_id, window_days=30)
         assert "totals" in payload and "nodes" in payload and "edges" in payload
         totals = payload["totals"]
-        for k in ("time_ms_max", "llm_calls", "llm_time_ms"):
+        for k in ("time_ms_max", "llm_calls", "llm_time_ms", "members"):
             assert k in totals, f"missing totals.{k}"
         # Cost must NOT be surfaced in the payload (per owner request).
         assert "llm_cost_usd" not in totals
@@ -101,13 +101,20 @@ async def test_org_map_time_heatmap_fields(db):
         assert totals["time_ms_max"] > 0
         # Node-level fields
         kinds = {n["kind"]: n for n in payload["nodes"]}
-        assert "soul" in kinds and "team" in kinds and "user" in kinds
+        assert "soul" in kinds and "team" in kinds
+        # Phase-2b adds conversation nodes per the live conversations in
+        # the org. With our seed we expect at least one.
+        assert "conversation" in kinds, "expected a conversation node"
         for n in payload["nodes"]:
             for k in ("time_ms", "calls"):
                 assert k in n, f"node {n['id']} missing {k}"
             assert "cost" not in n, f"node {n['id']} should not carry cost"
         # Team should have aggregated time from its conversation's telemetry
         assert kinds["team"]["time_ms"] == 4500
+        # The conversation node should carry a category label.
+        conv_node = kinds["conversation"]
+        assert conv_node.get("category"), "conversation node missing category"
+        assert " · " in conv_node["label"], "conversation label should include category prefix"
     finally:
         await _cleanup(db, org_id)
 

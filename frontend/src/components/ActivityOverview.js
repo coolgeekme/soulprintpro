@@ -91,7 +91,7 @@ export default function ActivityOverview({ orgId }) {
         <span className="opacity-60">{data.feed.length}</span>
       </div>
       {data.feed.length === 0 ? (
-        <div className="sp-glass rounded-xl p-6 text-center sp-subtle text-sm">Nothing happening yet — try sending a message in General or drafting a social post.</div>
+        <div className="sp-glass rounded-xl p-6 text-center sp-subtle text-sm">Nothing happening yet — try sending a message in Chief of Staff or drafting a social post.</div>
       ) : (
         <ul className="space-y-1.5" data-testid="activity-feed">
           {data.feed.slice(0, 20).map((e, idx) => {

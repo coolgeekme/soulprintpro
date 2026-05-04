@@ -126,7 +126,7 @@ export default function AppHome() {
                     className="inline-flex items-center gap-1.5 mt-3 text-[11px] sp-subtle hover:text-white transition"
                     data-testid={`org-card-chat-${o.id}`}
                   >
-                    <MessageCircle className="w-3 h-3" /> Open General chat
+                    <MessageCircle className="w-3 h-3" /> Open Chief of Staff chat
                   </Link>
                 )}
               </div>
@@ -170,7 +170,7 @@ export default function AppHome() {
               className="w-full bg-white/[0.03] border border-white/10 rounded-xl px-4 py-3 text-sm text-white placeholder:text-white/30 focus:border-white/30 focus:sp-focus resize-none"
             />
             <div className="text-[11px] sp-subtle mt-2">
-              We synthesise your company "Soul" — mission, audience, voice — and inject it into every agent. A General chat is created instantly so you can start talking.
+              We synthesise your company "Soul" — mission, audience, voice — and inject it into every agent. A Chief of Staff chat is created instantly so you can start talking.
             </div>
             <button
               data-testid="create-org-btn"
