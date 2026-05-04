@@ -4,6 +4,7 @@ import { useAuth } from "../context/AuthContext";
 import { useTheme } from "../context/ThemeContext";
 import { LogOut, Sun, Moon, MapPin, ChevronDown, HelpCircle, ShieldCheck } from "lucide-react";
 import Logo from "./Logo";
+import DynamicIntelligencePicker from "./DynamicIntelligencePicker";
 import { captureUserLocation, getCachedLocation, setCachedLocation } from "../lib/api";
 import { toast } from "sonner";
 import {
@@ -70,6 +71,14 @@ export default function TopBar({ children, right = null }) {
           </div>
           <div className="flex items-center gap-2">
             {right}
+            {/* Global Dynamic Intelligence indicator — visible on every
+                page so users always know the current routing mode and
+                can change it from anywhere in the org. */}
+            {user && (
+              <div className="hidden sm:block" data-testid="topbar-dynamic-intelligence">
+                <DynamicIntelligencePicker compact />
+              </div>
+            )}
             <button
               onClick={askLocation}
               className={`sp-btn text-xs ${loc ? "sp-btn-primary" : "sp-btn-ghost"}`}

@@ -1,76 +1,149 @@
 /**
  * DynamicIntelligencePicker — the prominent chip + dropdown that lets a
- * user either run on "Dynamic Intelligence" (the SDK auto-routes their
- * text to the best image/video/music model) or lock a specific default
- * model so every media request goes there.
+ * user configure Dynamic Intelligence on a per-content-type basis.
  *
- * Persists the choice to localStorage under `sp:routing-mode`. Three
- * legal values:
- *   "auto"          → SDK picks the model per-request (recommended)
- *   "off"           → never auto-route; everything is plain chat
- *   "<model-key>"   → lock to a specific model (e.g. "veo3" or "suno")
+ * Each of the four content types (chat, image, video, music) has its
+ * own routing default: either ``"auto"`` (Dynamic Intelligence picks
+ * the best model for that type) or a specific model key (locks that
+ * type to one model).
  *
- * Exposes a hook (`useRoutingMode`) so ConversationPage and any future
- * surface (settings page, missions composer) can read/write the choice
- * with a single import.
+ * Persistence is two-tier: localStorage for instant UI hydration before
+ * the network call lands, plus the server-side ``routing_preferences``
+ * map on the user doc (PATCH /api/auth/me/preferences) so choices
+ * survive logout / device hops. The ``useRoutingMode()`` hook handles
+ * the sync transparently for any consumer.
+ *
+ * Provider names (kie / emergent / etc.) are intentionally NEVER shown
+ * to users — they only see human-readable model labels.
  */
-import React, { useEffect, useMemo, useRef, useState } from "react";
-import { Cpu, Sparkles, Image as ImageIcon, Film, Music, ChevronDown, Check, X } from "lucide-react";
+import React, { useEffect, useMemo, useRef, useState, useCallback } from "react";
+import { Cpu, Image as ImageIcon, Film, Music, MessageCircle, ChevronDown, Check, X } from "lucide-react";
 import api from "../lib/api";
 
-// localStorage key — one source of truth for the whole app.
-const LS_KEY = "sp:routing-mode";
+// localStorage cache key. The shape is a JSON object:
+// { chat: "auto"|model, image: "auto"|model, video: "auto"|model, music: "auto"|model }
+const LS_KEY = "sp:routing-preferences";
 
-/** Read the persisted mode (defaults to "auto"). */
-export function readRoutingMode() {
+const TYPE_ICON = { chat: MessageCircle, image: ImageIcon, video: Film, music: Music };
+const TYPE_LABEL = { chat: "Chat", image: "Image", video: "Video", music: "Music" };
+const TYPE_ORDER = ["chat", "image", "video", "music"];
+
+const DEFAULT_PREFS = { chat: "auto", image: "auto", video: "auto", music: "auto" };
+
+
+/** Read prefs from localStorage. Always returns a complete object so
+ * components can safely destructure even on first run. */
+export function readRoutingPrefs() {
   try {
-    const v = localStorage.getItem(LS_KEY);
-    return v || "auto";
+    const raw = localStorage.getItem(LS_KEY);
+    if (!raw) return { ...DEFAULT_PREFS };
+    const parsed = JSON.parse(raw);
+    return { ...DEFAULT_PREFS, ...parsed };
   } catch (_) {
-    return "auto";
+    return { ...DEFAULT_PREFS };
   }
 }
 
-/** Write the routing mode + emit a window event so other tabs / mounted
- * pickers stay in sync without a global state lib. */
-export function writeRoutingMode(value) {
+function writeRoutingPrefsLocal(prefs) {
   try {
-    localStorage.setItem(LS_KEY, value);
-    window.dispatchEvent(new CustomEvent("sp:routing-mode-change", { detail: value }));
+    localStorage.setItem(LS_KEY, JSON.stringify(prefs));
+    window.dispatchEvent(new CustomEvent("sp:routing-prefs-change", { detail: prefs }));
   } catch (_) { /* best-effort */ }
 }
 
-/** Reactive hook for components that want to render based on the mode. */
-export function useRoutingMode() {
-  const [mode, setMode] = useState(() => readRoutingMode());
+
+/**
+ * Reactive hook returning ``[prefs, setPref]``.
+ *   - ``prefs`` is the full {chat, image, video, music} object.
+ *   - ``setPref(type, value)`` updates a single key, persists locally
+ *     immediately, and PATCHes the server so the choice survives
+ *     logout. Errors are silent (UI stays responsive).
+ *
+ * The hook syncs across mounts via the ``sp:routing-prefs-change``
+ * window event AND the standard ``storage`` event for cross-tab parity.
+ * On first mount it also pulls the canonical state from
+ * ``GET /api/auth/me`` so a fresh device picks up server-side prefs.
+ */
+export function useRoutingPrefs() {
+  const [prefs, setPrefsState] = useState(() => readRoutingPrefs());
+
+  // Hydrate from server on mount — corrects any drift between
+  // localStorage and the user's saved server-side prefs.
   useEffect(() => {
-    const onChange = (e) => setMode(e.detail || readRoutingMode());
-    const onStorage = (e) => { if (e.key === LS_KEY) setMode(e.newValue || "auto"); };
-    window.addEventListener("sp:routing-mode-change", onChange);
+    let cancelled = false;
+    (async () => {
+      try {
+        const { data } = await api.get("/auth/me");
+        if (cancelled) return;
+        if (data?.routing_preferences) {
+          const merged = { ...DEFAULT_PREFS, ...data.routing_preferences };
+          setPrefsState(merged);
+          writeRoutingPrefsLocal(merged);
+        }
+      } catch (_) { /* offline / unauthenticated — keep cache */ }
+    })();
+    return () => { cancelled = true; };
+  }, []);
+
+  // Local + cross-tab sync
+  useEffect(() => {
+    const onChange = (e) => setPrefsState(e.detail || readRoutingPrefs());
+    const onStorage = (e) => { if (e.key === LS_KEY) setPrefsState(readRoutingPrefs()); };
+    window.addEventListener("sp:routing-prefs-change", onChange);
     window.addEventListener("storage", onStorage);
     return () => {
-      window.removeEventListener("sp:routing-mode-change", onChange);
+      window.removeEventListener("sp:routing-prefs-change", onChange);
       window.removeEventListener("storage", onStorage);
     };
   }, []);
-  return [mode, writeRoutingMode];
+
+  const setPref = useCallback((type, value) => {
+    setPrefsState((prev) => {
+      const next = { ...prev, [type]: value };
+      writeRoutingPrefsLocal(next);
+      // Fire-and-forget server PATCH — survives logout
+      api.patch("/auth/me/preferences", { [type]: value }).catch(() => {});
+      return next;
+    });
+  }, []);
+
+  return [prefs, setPref];
+}
+
+/** Back-compat for the original single-mode hook. Returns ``"auto"`` if
+ * either chat OR image OR video is set to a specific model — i.e. used
+ * by older callers that just want a yes/no on Dynamic Intelligence. */
+export function useRoutingMode() {
+  const [prefs] = useRoutingPrefs();
+  // Composite mode for legacy consumers — "auto" if every type is auto.
+  const allAuto = TYPE_ORDER.every((t) => (prefs[t] || "auto") === "auto");
+  return [allAuto ? "auto" : "mixed", () => {}];
 }
 
 
-// Glyph used in the dropdown for each media type.
-const TYPE_ICON = { image: ImageIcon, video: Film, music: Music };
-const TYPE_ORDER = ["image", "video", "music"];
+/**
+ * Compact summary of a prefs object — used by both the picker chip and
+ * the global TopBar indicator.  Returns
+ *   { allAuto, anyLocked, lockedTypes: ["video","music"] }
+ */
+export function summarisePrefs(prefs) {
+  const lockedTypes = TYPE_ORDER.filter((t) => (prefs[t] || "auto") !== "auto");
+  return {
+    allAuto: lockedTypes.length === 0,
+    anyLocked: lockedTypes.length > 0,
+    lockedTypes,
+  };
+}
 
 
-export default function DynamicIntelligencePicker() {
-  const [mode, setMode] = useRoutingMode();
+export default function DynamicIntelligencePicker({ compact = false }) {
+  const [prefs, setPref] = useRoutingPrefs();
   const [open, setOpen] = useState(false);
   const [models, setModels] = useState([]);
   const [loading, setLoading] = useState(false);
   const wrapperRef = useRef(null);
 
-  // Lazy-load the model registry the first time the dropdown opens —
-  // saves a request on every conversation load.
+  // Lazy-load model registry the first time the dropdown opens.
   useEffect(() => {
     if (!open || models.length > 0) return;
     let cancelled = false;
@@ -100,176 +173,145 @@ export default function DynamicIntelligencePicker() {
     return () => document.removeEventListener("mousedown", onDoc);
   }, [open]);
 
-  // Group models by type for the dropdown — image first, then video, then music.
+  // Group models by type
   const grouped = useMemo(() => {
-    const out = { image: [], video: [], music: [] };
+    const out = { chat: [], image: [], video: [], music: [] };
     for (const m of models) {
       if (out[m.type]) out[m.type].push(m);
     }
     return out;
   }, [models]);
 
-  // Resolve label + sub-label for the trigger chip
-  const trigger = useMemo(() => {
-    if (mode === "auto") {
-      return {
-        title: "Dynamic Intelligence",
-        sub: "Auto-picks the best model",
-        icon: Cpu,
-        active: true,
-      };
-    }
-    if (mode === "off") {
-      return {
-        title: "Off",
-        sub: "Plain chat only",
-        icon: X,
-        active: false,
-      };
-    }
-    const m = models.find((x) => x.key === mode);
-    return {
-      title: m?.label || mode,
-      sub: m ? `Default ${m.type} model` : "Locked model",
-      icon: TYPE_ICON[m?.type] || Sparkles,
-      active: true,
-    };
-  }, [mode, models]);
+  const summary = summarisePrefs(prefs);
 
-  const TIcon = trigger.icon;
-  const pick = (val) => { setMode(val); setOpen(false); };
+  // Trigger label — "Dynamic Intelligence" if all auto, else the count of locked types.
+  const triggerTitle = summary.allAuto
+    ? "Dynamic Intelligence"
+    : `Custom defaults (${summary.lockedTypes.length}/4)`;
+  const triggerSub = summary.allAuto
+    ? "Auto-picks per content type"
+    : summary.lockedTypes.map((t) => TYPE_LABEL[t]).join(" · ");
 
   return (
     <div className="relative inline-flex" ref={wrapperRef} data-testid="dynamic-intelligence-picker">
       <button
         type="button"
         onClick={() => setOpen((v) => !v)}
-        className="inline-flex items-center gap-2 px-3 py-1.5 rounded-full sp-glass hover:bg-white/5 transition group"
-        title="Dynamic Intelligence — choose how messages should be routed"
+        className={`inline-flex items-center gap-2 ${compact ? "px-2 py-1" : "px-3 py-1.5"} rounded-full sp-glass hover:bg-white/5 transition`}
+        title="Dynamic Intelligence — choose how each content type gets routed"
         data-testid="dynamic-intelligence-trigger"
         style={{
-          border: trigger.active
+          border: summary.allAuto
             ? "1px solid rgba(246,64,0,0.45)"
-            : "1px solid rgba(120,120,140,0.25)",
-          boxShadow: trigger.active
+            : "1px solid rgba(160,120,255,0.45)",
+          boxShadow: summary.allAuto
             ? "0 0 12px rgba(246,64,0,0.18)"
-            : "none",
+            : "0 0 12px rgba(160,120,255,0.18)",
         }}
       >
         <span
           className="w-2 h-2 rounded-full shrink-0"
           style={{
-            background: trigger.active ? "#F64000" : "rgba(180,180,200,0.4)",
-            boxShadow: trigger.active ? "0 0 6px rgba(246,64,0,0.7)" : "none",
+            background: summary.allAuto ? "#F64000" : "#A078FF",
+            boxShadow: summary.allAuto
+              ? "0 0 6px rgba(246,64,0,0.7)"
+              : "0 0 6px rgba(160,120,255,0.7)",
           }}
         />
-        <TIcon className="w-3.5 h-3.5" style={{ color: "var(--fg)" }} />
-        <div className="flex flex-col items-start leading-tight">
-          <span className="text-[11px] font-medium" style={{ color: "var(--fg)" }}>
-            {trigger.title}
+        <Cpu className={`${compact ? "w-3 h-3" : "w-3.5 h-3.5"}`} style={{ color: "var(--fg)" }} />
+        {!compact && (
+          <div className="flex flex-col items-start leading-tight">
+            <span className="text-[11px] font-medium" style={{ color: "var(--fg)" }}>
+              {triggerTitle}
+            </span>
+            <span className="text-[9px] sp-subtle truncate max-w-[160px]">{triggerSub}</span>
+          </div>
+        )}
+        {compact && (
+          <span className="text-[10px] font-medium" style={{ color: "var(--fg)" }}>
+            {summary.allAuto ? "Dynamic Intelligence" : "Custom"}
           </span>
-          <span className="text-[9px] sp-subtle">{trigger.sub}</span>
-        </div>
+        )}
         <ChevronDown className={`w-3 h-3 sp-subtle transition ${open ? "rotate-180" : ""}`} />
       </button>
 
       {open && (
         <div
-          className="absolute right-0 top-full mt-2 w-[300px] max-h-[420px] overflow-y-auto sp-glass-strong rounded-xl shadow-2xl z-50 p-2"
+          className="absolute right-0 top-full mt-2 w-[320px] max-h-[520px] overflow-y-auto sp-glass-strong rounded-xl shadow-2xl z-50 p-2"
           data-testid="dynamic-intelligence-dropdown"
         >
-          {/* The hero option — Dynamic Intelligence (auto) */}
-          <button
-            type="button"
-            onClick={() => pick("auto")}
-            className="w-full text-left px-3 py-2.5 rounded-lg flex items-start gap-3 hover:bg-white/5 transition"
-            data-testid="routing-mode-auto"
-            style={{
-              background: mode === "auto" ? "rgba(246,64,0,0.10)" : "transparent",
-              border: mode === "auto"
-                ? "1px solid rgba(246,64,0,0.35)"
-                : "1px solid transparent",
-            }}
-          >
-            <div
-              className="w-8 h-8 rounded-lg flex items-center justify-center shrink-0"
-              style={{ background: "linear-gradient(160deg, #F64000, #FF7A36)" }}
-            >
-              <Cpu className="w-4 h-4 text-white" />
+          <div className="px-2 py-2 mb-1">
+            <div className="text-[12px] font-medium" style={{ color: "var(--fg)" }}>
+              Dynamic Intelligence
             </div>
-            <div className="flex-1 min-w-0">
-              <div className="flex items-center gap-1.5">
-                <span className="text-[12px] font-medium" style={{ color: "var(--fg)" }}>
-                  Dynamic Intelligence
-                </span>
-                <span className="sp-chip text-[8px]" style={{
-                  borderColor: "rgba(246,64,0,0.4)", color: "var(--fg)",
-                }}>RECOMMENDED</span>
-              </div>
-              <div className="text-[10px] sp-subtle leading-snug mt-0.5">
-                Detects what you want (image, video, or music) and picks the best model automatically.
-              </div>
+            <div className="text-[10px] sp-subtle leading-snug mt-0.5">
+              For each content type, pick "Dynamic Intelligence" to let
+              the system auto-choose the best model — or lock a specific
+              default. Your choice is saved across devices.
             </div>
-            {mode === "auto" && <Check className="w-3.5 h-3.5 text-orange-400 shrink-0 mt-1.5" />}
-          </button>
+          </div>
 
-          {/* Per-type model groups */}
+          {loading && (
+            <div className="px-3 py-3 text-[11px] sp-subtle">Loading models…</div>
+          )}
+
           {!loading && TYPE_ORDER.map((type) => {
             const items = grouped[type] || [];
-            if (items.length === 0) return null;
             const Icon = TYPE_ICON[type];
+            const current = prefs[type] || "auto";
             return (
-              <div key={type} className="mt-2">
+              <div key={type} className="mt-2 pb-2 border-b border-white/10 last:border-b-0">
                 <div className="px-2 py-1 flex items-center gap-1.5">
-                  <Icon className="w-3 h-3 sp-subtle" />
-                  <span className="text-[9px] uppercase tracking-widest sp-subtle">
-                    {type === "image" ? "Default image model"
-                      : type === "video" ? "Default video model"
-                      : "Default music model"}
+                  <Icon className="w-3.5 h-3.5" style={{ color: "var(--fg)" }} />
+                  <span className="text-[10px] uppercase tracking-widest" style={{ color: "var(--fg)" }}>
+                    {TYPE_LABEL[type]}
                   </span>
                 </div>
+                {/* Auto option */}
+                <button
+                  type="button"
+                  onClick={() => setPref(type, "auto")}
+                  className="w-full text-left px-3 py-1.5 rounded-md flex items-center gap-2 hover:bg-white/5 transition"
+                  data-testid={`routing-${type}-auto`}
+                  style={current === "auto" ? {
+                    background: "rgba(246,64,0,0.10)",
+                    border: "1px solid rgba(246,64,0,0.30)",
+                  } : { border: "1px solid transparent" }}
+                >
+                  <Cpu className="w-3 h-3" style={{ color: "#F64000" }} />
+                  <span className="text-[11px] flex-1" style={{ color: "var(--fg)" }}>
+                    Dynamic Intelligence
+                  </span>
+                  {current === "auto" && <Check className="w-3 h-3 text-orange-400 shrink-0" />}
+                </button>
+                {/* Specific models for this type */}
                 {items.map((m) => (
                   <button
                     key={m.key}
                     type="button"
-                    onClick={() => pick(m.key)}
+                    onClick={() => setPref(type, m.key)}
                     className="w-full text-left px-3 py-1.5 rounded-md flex items-center gap-2 hover:bg-white/5 transition"
-                    data-testid={`routing-mode-${m.key}`}
-                    style={mode === m.key ? {
-                      background: "rgba(246,64,0,0.10)",
-                    } : {}}
+                    data-testid={`routing-${type}-${m.key}`}
+                    style={current === m.key ? {
+                      background: "rgba(160,120,255,0.10)",
+                      border: "1px solid rgba(160,120,255,0.30)",
+                    } : { border: "1px solid transparent" }}
                   >
+                    <span className="w-3 h-3 shrink-0" />
                     <span className="text-[11px] flex-1 truncate" style={{ color: "var(--fg)" }}>
                       {m.label}
                     </span>
-                    <span className="text-[9px] sp-subtle uppercase">{m.provider}</span>
-                    {mode === m.key && <Check className="w-3 h-3 text-orange-400 shrink-0" />}
+                    {current === m.key && <Check className="w-3 h-3 text-violet-400 shrink-0" />}
                   </button>
                 ))}
+                {items.length === 0 && (
+                  <div className="px-3 py-1.5 text-[10px] sp-subtle italic">
+                    No models registered yet for {TYPE_LABEL[type].toLowerCase()}.
+                  </div>
+                )}
               </div>
             );
           })}
-          {loading && (
-            <div className="px-3 py-2 text-[11px] sp-subtle">Loading models…</div>
-          )}
-
-          {/* Off — pure chat */}
-          <div className="mt-2 pt-2 border-t border-white/10">
-            <button
-              type="button"
-              onClick={() => pick("off")}
-              className="w-full text-left px-3 py-2 rounded-md flex items-center gap-2 hover:bg-white/5 transition"
-              data-testid="routing-mode-off"
-              style={mode === "off" ? { background: "rgba(120,120,140,0.18)" } : {}}
-            >
-              <X className="w-3 h-3 sp-subtle" />
-              <div className="flex-1 min-w-0">
-                <div className="text-[11px]" style={{ color: "var(--fg)" }}>Off — pure chat</div>
-                <div className="text-[9px] sp-subtle">Never auto-generate media. Use the upload button or /mission instead.</div>
-              </div>
-              {mode === "off" && <Check className="w-3 h-3 sp-subtle shrink-0" />}
-            </button>
-          </div>
         </div>
       )}
     </div>

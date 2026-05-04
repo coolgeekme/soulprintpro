@@ -510,7 +510,66 @@ async def logout(resp: Response):
 
 @auth_r.get("/me")
 async def me(u: dict = Depends(get_current_user)):
+    # Hydrate the routing preferences (per-type Dynamic Intelligence config).
+    # We persist these on the user doc so they survive logout / device hops.
+    # Default = "auto" for every media type (Dynamic Intelligence on).
+    full = await db.users.find_one({"_id": ObjectId(u["id"])}, {"_id": 0, "password": 0})
+    prefs = (full or {}).get("routing_preferences") or {}
+    u["routing_preferences"] = {
+        "chat":  prefs.get("chat",  "auto"),
+        "image": prefs.get("image", "auto"),
+        "video": prefs.get("video", "auto"),
+        "music": prefs.get("music", "auto"),
+    }
     return u
+
+
+class RoutingPreferencesBody(BaseModel):
+    """Per-type routing defaults. Each value is either ``"auto"`` (use
+    Dynamic Intelligence) or a model key (lock that media type to a
+    specific model). Unset keys are left unchanged so the frontend can
+    PATCH a single type without resending the others.
+    """
+    chat:  Optional[str] = None
+    image: Optional[str] = None
+    video: Optional[str] = None
+    music: Optional[str] = None
+
+
+@auth_r.patch("/me/preferences")
+async def update_preferences(
+    body: RoutingPreferencesBody,
+    u: dict = Depends(get_current_user),
+):
+    """Server-side persistence for the Dynamic Intelligence picker.
+    Survives logout / device hops; the frontend hydrates these on auth/me.
+    """
+    update: dict = {}
+    for k in ("chat", "image", "video", "music"):
+        v = getattr(body, k)
+        if v is None:
+            continue
+        v = str(v).strip()
+        if not v:
+            continue
+        update[f"routing_preferences.{k}"] = v
+    if not update:
+        return {"ok": True, "unchanged": True}
+    await db.users.update_one(
+        {"_id": ObjectId(u["id"])},
+        {"$set": update},
+    )
+    full = await db.users.find_one({"_id": ObjectId(u["id"])}, {"routing_preferences": 1, "_id": 0})
+    prefs = (full or {}).get("routing_preferences") or {}
+    return {
+        "ok": True,
+        "routing_preferences": {
+            "chat":  prefs.get("chat",  "auto"),
+            "image": prefs.get("image", "auto"),
+            "video": prefs.get("video", "auto"),
+            "music": prefs.get("music", "auto"),
+        },
+    }
 
 # ── Org routes ───────────────────────────────────────────────────────────────
 org_r = APIRouter(prefix="/api/orgs")
@@ -4076,22 +4135,29 @@ async def generate_media_endpoint(
 @app.get("/api/media/models")
 async def list_media_models(_: dict = Depends(get_current_user)):
     """Expose the kie.ai marketplace registry to the frontend so the
-    Generate-Media modal can render a dynamic model picker."""
+    Generate-Media modal can render a dynamic model picker. Provider
+    names are intentionally omitted from the response — users don't need
+    to know whether a model lives on kie.ai or Emergent's universal key.
+    """
     rows = []
+    # Chat models — map to friendly display names
+    for key, label in (
+        ("gpt-4.1-mini",     "GPT-4.1 Mini (fast & cheap)"),
+        ("gpt-5.2",          "GPT-5.2 (deep reasoning)"),
+        ("claude-sonnet-4-5", "Claude Sonnet 4.5"),
+        ("claude-opus-4-5",  "Claude Opus 4.5 (highest quality)"),
+        ("claude-haiku-4-5", "Claude Haiku 4.5 (fastest)"),
+        ("gemini-3-pro",     "Gemini 3 Pro"),
+        ("gemini-3-flash",   "Gemini 3 Flash (fast)"),
+    ):
+        rows.append({"key": key, "label": label, "type": "chat"})
     for key, info in _KIE_PROVIDERS.items():
-        rows.append({
-            "key": key,
-            "label": info["label"],
-            "type": info["type"],
-            "provider": "kie",
-        })
-    # Plus the legacy / Emergent paths the universal endpoint also accepts
+        rows.append({"key": key, "label": info["label"], "type": info["type"]})
     rows.append({"key": "nano-banana", "label": "Nano Banana (default)",
-                 "type": "image", "provider": "emergent"})
+                 "type": "image"})
     rows.append({"key": "veo3_fast", "label": "Veo 3.1 Fast (default)",
-                 "type": "video", "provider": "kie"})
-    rows.append({"key": "veo3", "label": "Veo 3.1",
-                 "type": "video", "provider": "kie"})
+                 "type": "video"})
+    rows.append({"key": "veo3", "label": "Veo 3.1", "type": "video"})
     return {"models": rows}
 
 

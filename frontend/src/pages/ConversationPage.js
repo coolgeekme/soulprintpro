@@ -9,7 +9,7 @@ import LinkPreviewCard from "../components/LinkPreviewCard";
 import { MissionCard } from "../components/MissionCard";
 import { MessageActions } from "../components/MessageActions";
 import WorkingIndicator from "../components/WorkingIndicator";
-import DynamicIntelligencePicker, { useRoutingMode } from "../components/DynamicIntelligencePicker";
+import { useRoutingPrefs } from "../components/DynamicIntelligencePicker";
 
 const formatTime = (ts) => {
   try { return new Date(ts).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }); }
@@ -54,10 +54,11 @@ export default function ConversationPage() {
   // Track the most recent image URL in the thread so the SDK's
   // image_edit detection can fire ("change this to portrait").
   const lastImageUrlRef = useRef(null);
-  // Reactive routing mode — driven by the DynamicIntelligencePicker.
-  // "auto" = SDK auto-picks per request | "off" = pure chat |
-  // "<model-key>" = lock to that model for matching media types.
-  const [routingMode] = useRoutingMode();
+  // Reactive routing prefs — driven by the DynamicIntelligencePicker.
+  // Per-type: each of {chat, image, video, music} is either "auto"
+  // (Dynamic Intelligence picks the best model for that type) or a
+  // specific model key (locks that type to one model).
+  const [routingPrefs] = useRoutingPrefs();
   // Rolling AI summary for long threads (Chief of Staff chats get long
   // fast). When available, a compact recap card is shown above the
   // message list and older messages fold behind a "Show all" toggle.
@@ -432,16 +433,14 @@ export default function ConversationPage() {
     }
 
     // ── Smart routing via the SoulPrint Dynamic Intelligence SDK ─────────
-    // Three modes are supported (driven by DynamicIntelligencePicker):
-    //   "off"          → never auto-route; everything stays plain chat
-    //   "auto"         → SDK detects intent + picks the best model
-    //   "<model-key>"  → SDK still detects intent type; if the type
-    //                    matches the locked model's type, we use that
-    //                    model. Mismatches fall through to chat.
-    if (
-      staged.length === 0 && trimmed && trimmed.length <= 800
-      && routingMode !== "off"
-    ) {
+    // For each media intent (image / video) we honour the user's per-type
+    // routing pref:
+    //   "auto"        → SDK picks the best model
+    //   "<model-key>" → lock to that model (the SDK still detects intent;
+    //                   we just override the model selection)
+    // Chat intents fall through to the standard chat path. Empty composer
+    // / file uploads / slash commands are handled above.
+    if (staged.length === 0 && trimmed && trimmed.length <= 800) {
       try {
         const { route } = await import("../lib/spe-sdk/index.js");
         const decision = route({
@@ -451,27 +450,27 @@ export default function ConversationPage() {
             lastImageUrl: lastImageUrlRef.current || null,
           },
         });
-        // Decide which model to actually use
         let modelKey = null;
         let mediaType = null;
         let routeReason = "";
         if (decision.confidence === "high"
             && (decision.intent.type === "image" || decision.intent.type === "video")) {
           mediaType = decision.intent.type;
-          if (routingMode === "auto") {
+          const userPref = routingPrefs[mediaType] || "auto";
+          if (userPref === "auto") {
             modelKey = decision.model?.key || null;
             routeReason = `Dynamic Intelligence · ${decision.model?.name || modelKey}`;
           } else {
-            // User locked a specific model. Only honor it if the locked
-            // model's type matches the detected intent.
+            // User locked a model for this media type. Look it up in the
+            // registry to get the friendly label for the toast.
             try {
               const { data } = await api.get("/media/models");
-              const m = (data?.models || []).find(x => x.key === routingMode);
+              const m = (data?.models || []).find(x => x.key === userPref);
               if (m && m.type === mediaType) {
                 modelKey = m.key;
-                routeReason = `Locked default · ${m.label}`;
+                routeReason = `Your default · ${m.label}`;
               }
-            } catch { /* ignore — fall through to chat */ }
+            } catch { /* fall through to chat */ }
           }
         }
         if (modelKey && mediaType) {
@@ -1416,14 +1415,10 @@ export default function ConversationPage() {
               </div>
             </div>
           )}
-          {/* Dynamic Intelligence picker — prominent branded chip + dropdown.
-              Lets users either keep DI auto-routing on (default) or lock a
-              specific default model (Veo for all videos, Suno for all music,
-              etc.). Lives right above the composer so the routing mode is
-              always visible and one click away. */}
-          <div className="mb-2 flex items-center justify-end gap-2">
-            <DynamicIntelligencePicker />
-          </div>
+          {/* Dynamic Intelligence is now in the TopBar (visible on every
+              page). The in-composer affordance is removed to avoid
+              duplication — users can flip per-type defaults from any
+              page in the org via the TopBar chip. */}
           {looksLikeMission && (
             <div className="mb-2 sp-glass rounded-xl px-3 py-2 flex items-center gap-2 sp-fade-up"
                  data-testid="mission-suggest-pill">
