@@ -120,6 +120,34 @@ def verify_firebase_id_token(token: str) -> dict:
         )
     except jwt.ExpiredSignatureError as exc:
         raise ValueError("Firebase token expired") from exc
+    except jwt.InvalidAudienceError as exc:
+        # Surface what the token's audience was vs what we expected so the
+        # user knows when they're hitting the project-id mismatch trap
+        # (most common cause: stale frontend bundle from a previous
+        # Firebase project still cached in the browser).
+        try:
+            unverified = jwt.decode(token, options={"verify_signature": False})
+            actual_aud = unverified.get("aud")
+            actual_iss = unverified.get("iss")
+        except Exception:
+            actual_aud = "unknown"
+            actual_iss = "unknown"
+        raise ValueError(
+            f"Audience mismatch — token aud={actual_aud!r}, expected {FIREBASE_PROJECT_ID!r}. "
+            f"Token issuer={actual_iss!r}. "
+            f"Likely cause: browser is running a cached frontend bundle from a different Firebase project. "
+            f"Hard-refresh the page (Cmd/Ctrl+Shift+R) and clear site data."
+        ) from exc
+    except jwt.InvalidIssuerError as exc:
+        try:
+            unverified = jwt.decode(token, options={"verify_signature": False})
+            actual_iss = unverified.get("iss")
+        except Exception:
+            actual_iss = "unknown"
+        raise ValueError(
+            f"Issuer mismatch — token iss={actual_iss!r}, expected {expected_iss!r}. "
+            f"Hard-refresh the page and clear site data."
+        ) from exc
     except jwt.InvalidTokenError as exc:
         raise ValueError(f"Invalid Firebase token: {exc}") from exc
 
