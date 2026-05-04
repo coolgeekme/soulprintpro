@@ -39,12 +39,9 @@ export default function AuthPage() {
         <ArrowLeft className="w-4 h-4" /> Home
       </Link>
       <div className="w-full max-w-md sp-glass-strong rounded-3xl p-8 sp-fade-up">
-        <div className="flex items-center gap-2 mb-8">
-          <div className="w-9 h-9 rounded-lg sp-glass-strong flex items-center justify-center p-0.5">
-            <Logo className="w-full h-full" />
-          </div>
-          <span className="font-medium tracking-tight text-white">SoulPrint Engine Pro</span>
-        </div>
+        <Link to="/" aria-label="SoulPrint Engine Pro home" className="block mb-8">
+          <Logo variant="wordmark" className="h-10 w-auto mx-auto" />
+        </Link>
 
         <h1 className="sp-display text-3xl mb-1">
           {isRegister ? "Create your SoulPrint" : "Welcome back"}

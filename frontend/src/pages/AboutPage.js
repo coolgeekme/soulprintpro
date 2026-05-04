@@ -4,6 +4,7 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import api from "../lib/api";
 import { ArrowLeft, Loader2 } from "lucide-react";
+import Logo from "../components/Logo";
 
 /**
  * AboutPage — renders /app/memory/ABOUT.md.
@@ -44,6 +45,9 @@ export default function AboutPage() {
             data-testid="about-back"
           >
             <ArrowLeft className="w-3.5 h-3.5" /> Back
+          </Link>
+          <Link to="/" aria-label="SoulPrint Engine Pro home" data-testid="about-brand">
+            <Logo variant="wordmark" className="h-7 w-auto" />
           </Link>
         </div>
 

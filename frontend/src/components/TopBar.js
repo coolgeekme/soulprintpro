@@ -59,11 +59,11 @@ export default function TopBar({ children, right = null }) {
       <div>
         <div className="max-w-7xl mx-auto flex items-center justify-between px-4 sm:px-6 py-3 gap-2 sm:gap-4">
           <div className="flex items-center gap-3 min-w-0">
-            <Link to="/app" className="flex items-center gap-2 shrink-0" data-testid="topbar-brand">
-              <div className="w-9 h-9 rounded-lg sp-glass-strong flex items-center justify-center p-0.5">
-                <Logo className="w-full h-full" />
-              </div>
-              <span className="text-base font-medium tracking-tight hidden sm:block">SoulPrint Engine Pro</span>
+            <Link to="/app" className="flex items-center gap-2 shrink-0" data-testid="topbar-brand" aria-label="SoulPrint Engine Pro home">
+              {/* Compact mark on mobile, full wordmark from sm: up so it
+                  matches the landing & auth screens. */}
+              <Logo variant="mark" className="w-9 h-9 sm:hidden" />
+              <Logo variant="wordmark" className="hidden sm:block h-8 w-auto" />
             </Link>
             <div className="h-5 w-px mx-1 hidden sm:block" style={{ background: "var(--border-soft)" }} />
             <div className="truncate text-sm sp-subtle">{children}</div>

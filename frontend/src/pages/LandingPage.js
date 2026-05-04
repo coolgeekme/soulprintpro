@@ -25,11 +25,8 @@ export default function LandingPage() {
 
       {/* Nav */}
       <header className="relative z-10 flex items-center justify-between px-6 md:px-10 py-6">
-        <Link to="/" className="flex items-center gap-2" data-testid="brand-logo">
-          <div className="w-9 h-9 rounded-lg sp-glass-strong flex items-center justify-center p-0.5">
-            <Logo className="w-full h-full" />
-          </div>
-          <span className="font-medium tracking-tight text-white/95">SoulPrint Engine Pro</span>
+        <Link to="/" className="flex items-center gap-2" data-testid="brand-logo" aria-label="SoulPrint Engine Pro home">
+          <Logo variant="wordmark" className="h-9 w-auto" />
         </Link>
         <nav className="hidden md:flex items-center gap-8 text-sm sp-subtle">
           <a href="#features" className="hover:text-white transition-colors">How it works</a>
