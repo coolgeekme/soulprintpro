@@ -708,9 +708,12 @@ def build_tools(
         # Reject binary extensions BEFORE writing so we don't persist a
         # gibberish text-as-png that confuses the user. The agent should
         # use `generate_image` (or the dedicated video tool) instead.
-        from artifacts import _safe_filename, DEFAULT_MIME, BINARY_EXTS
+        # NOTE: `.pdf` and `.docx` are NOT rejected — the artifact pipeline
+        # transcodes their Markdown bodies into real binary documents via
+        # artifact_synthesis.synthesize().
+        from artifacts import _safe_filename, DEFAULT_MIME, BINARY_EXTS, SYNTHESIZED_BINARY_EXTS
         req_ext = name.rsplit(".", 1)[-1].lower() if "." in name else ""
-        if req_ext in BINARY_EXTS:
+        if req_ext in BINARY_EXTS and req_ext not in SYNTHESIZED_BINARY_EXTS:
             img_exts = {"png", "jpg", "jpeg", "gif", "webp", "bmp", "tiff",
                         "svg", "ico", "heic", "heif", "avif"}
             if req_ext in img_exts:
@@ -1132,8 +1135,8 @@ def build_tools(
              "Read a file the user attached when starting this mission. Call with no args to list attachments; pass `name` (substring) or `attachment_id` to read the full text. Use this when the mission goal references 'the uploaded file' / 'the PDF I attached' / etc.",
              '{"name": "substring"}', read_attachment),
         Tool("write_artifact",
-             "Save a TEXT file (markdown brief, CSV, .ics invite, email, script, JSON, HTML) to the Documents library. Users download these. ALLOWED extensions: .md .csv .tsv .json .html .ics .vcf .eml .sh .py .js .ts .sql .txt .xml .yaml. NOT for images — if you need an image, use `generate_image` instead; the artifact pipeline rejects binary extensions.",
-             '{"name": "brief.md", "mime": "text/markdown", "title": "Human title", "content": "raw file body"}',
+             "Save a deliverable to the Documents library — users download these. PREFER **.pdf** for briefs / reports / plans / audits / memos / proposals (body is Markdown, the system renders a polished PDF). Use **.docx** when the goal mentions Word. Use .md only when the goal explicitly asks for raw markdown. Use .csv for tabular data. ALLOWED extensions: .pdf .docx .md .csv .tsv .json .html .ics .vcf .eml .sh .py .js .ts .sql .txt .xml .yaml. NEVER save a long-form brief as .txt — it strips formatting. NOT for images — use `generate_image` instead.",
+             '{"name": "audit_report.pdf", "mime": "application/pdf", "title": "SEO Audit", "content": "# Heading\\n\\nMarkdown body — system renders to PDF."}',
              write_artifact, side_effect=True),
         Tool("generate_image",
              "Render a new image (PNG) with Nano Banana (default) or GPT Image 1 and save it to the Documents library. Use this for ANY image deliverable — do NOT try to emit .png via write_artifact.",
