@@ -1650,9 +1650,52 @@ async def get_conv(conv_id: str, u: dict = Depends(get_current_user)):
 
 @conv_r.delete("/conversations/{conv_id}")
 async def delete_conv(conv_id: str, u: dict = Depends(get_current_user)):
-    c = await load_conv_or_403(conv_id, u["id"])
-    if c["created_by"] != u["id"]:
-        raise HTTPException(403, "Only the creator can delete")
+    """Delete a conversation. Allowed for:
+      - The user who created it (any member can delete their own threads).
+      - The owner of the org the conversation lives in (can delete any thread).
+    Members who didn't create the thread cannot delete it (returns 403)."""
+    try:
+        c = await db.conversations.find_one({"_id": ObjectId(conv_id)})
+    except Exception:
+        raise HTTPException(400, "Invalid conversation id")
+    if not c:
+        raise HTTPException(404, "Conversation not found")
+
+    is_creator = c.get("created_by") == u["id"]
+
+    # Resolve org owner via team → org and protect the always-on Chief of
+    # Staff thread (auto-created on org provision; the Org page links to it
+    # directly so deletion would orphan the workspace).
+    is_org_owner = False
+    is_protected = False
+    org = None
+    try:
+        team = await db.teams.find_one({"_id": ObjectId(c["team_id"])})
+        if team:
+            org = await db.organizations.find_one({"_id": ObjectId(team["org_id"])})
+            if org:
+                if str(org.get("owner_id")) == str(u["id"]):
+                    is_org_owner = True
+                if str(org.get("general_conversation_id") or "") == str(c["_id"]):
+                    is_protected = True
+    except Exception:
+        pass
+
+    if is_protected:
+        raise HTTPException(
+            400,
+            "The always-on Chief of Staff thread can't be deleted. "
+            "It's auto-created with the org and serves as your default workspace.",
+        )
+
+    if not (is_creator or is_org_owner):
+        # Member trying to delete someone else's conversation. Surface a
+        # friendly message instead of the generic "forbidden" so the UI can
+        # show it as a toast.
+        if u["id"] in c.get("member_ids", []):
+            raise HTTPException(403, "Only the conversation creator or the org owner can delete this thread.")
+        raise HTTPException(403, "Not a participant")
+
     await db.messages.delete_many({"conversation_id": conv_id})
     await db.conversations.delete_one({"_id": ObjectId(conv_id)})
     return {"ok": True}

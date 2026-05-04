@@ -188,6 +188,17 @@ def make_activity_router(*, db, require_org_member, get_current_user, AGENTS):
         await require_org_member(org_id, u["id"])
         limit = max(1, min(20, limit))
 
+        # Org owner can delete any conversation; members only their own.
+        # The org's always-on Chief of Staff thread (general_conversation_id)
+        # is auto-created on org provision and is never deletable from the
+        # recent strip — the Org page links directly to it as the default
+        # workspace.
+        org = await db.organizations.find_one(
+            {"_id": ObjectId(org_id)}, {"owner_id": 1, "general_conversation_id": 1}
+        )
+        is_owner = bool(org and str(org.get("owner_id")) == str(u["id"]))
+        protected_conv_id = str((org or {}).get("general_conversation_id") or "")
+
         team_docs = await db.teams.find(
             {"org_id": org_id},
             {"_id": 1, "name": 1, "is_general": 1, "is_direct": 1},
@@ -219,17 +230,25 @@ def make_activity_router(*, db, require_org_member, get_current_user, AGENTS):
                     aid = last_msg.get("agent_id") or ""
                     agent_name = (AGENTS.get(aid) or {}).get("name", "Agent")
             ts = c.get("last_message_at") or c.get("created_at")
+            is_creator = c.get("created_by") == u["id"]
+            # Protect only the ALWAYS-ON Chief of Staff thread on this org
+            # (the auto-created default workspace). Other conversations that
+            # happen to live in the same General team — e.g. ones spawned
+            # via smart-start — are deletable by their creator or the owner.
+            is_general = bool(t.get("is_general"))
+            is_protected = (str(c["_id"]) == protected_conv_id) if protected_conv_id else False
             out.append({
                 "id": str(c["_id"]),
                 "title": c.get("title") or "Conversation",
                 "team_id": c.get("team_id", ""),
                 "team_name": t.get("name", ""),
-                "is_general": bool(t.get("is_general")),
+                "is_general": is_general,
                 "is_direct": bool(t.get("is_direct")) or c.get("type") == "direct",
                 "last_message_at": _iso(ts),
                 "preview": preview,
                 "agent_name": agent_name,
                 "deeplink": f"/app/team/{c.get('team_id', '')}/c/{str(c['_id'])}",
+                "can_delete": (is_creator or is_owner) and not is_protected,
             })
         return out
 

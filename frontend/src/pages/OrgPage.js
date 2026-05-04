@@ -849,24 +849,36 @@ function GeneralChatCard({ orgId, teamId, convId }) {
 
   const submit = async (e) => {
     e?.preventDefault?.();
-    if (uploading || staged.length === 0) return;
+    if (uploading) return;
+    const trimmed = (text || "").trim();
+    if (staged.length === 0 && !trimmed) return;
     setUploading(true);
-    const fd = new FormData();
-    fd.append("text", text || "");
-    staged.forEach((s) => fd.append("files", s.file));
     try {
-      await api.post(`/conversations/${convId}/upload`, fd, {
-        headers: { "Content-Type": "multipart/form-data" },
-      });
-      const n = staged.length;
-      staged.forEach((s) => s.previewUrl && URL.revokeObjectURL(s.previewUrl));
-      setStaged([]);
-      setText("");
-      toast.success(`Uploaded ${n} file${n > 1 ? "s" : ""} to Chief of Staff`, {
-        action: { label: "Open chat", onClick: () => nav(`/app/team/${teamId}/c/${convId}`) },
-      });
+      if (staged.length > 0) {
+        // Files (with optional prompt) — multipart upload path
+        const fd = new FormData();
+        fd.append("text", text || "");
+        staged.forEach((s) => fd.append("files", s.file));
+        await api.post(`/conversations/${convId}/upload`, fd, {
+          headers: { "Content-Type": "multipart/form-data" },
+        });
+        const n = staged.length;
+        staged.forEach((s) => s.previewUrl && URL.revokeObjectURL(s.previewUrl));
+        setStaged([]);
+        setText("");
+        toast.success(`Sent ${n} file${n > 1 ? "s" : ""} to Chief of Staff`, {
+          action: { label: "Open chat", onClick: () => nav(`/app/team/${teamId}/c/${convId}`) },
+        });
+      } else {
+        // Text-only — post a normal chat message and let agents respond.
+        await api.post(`/conversations/${convId}/messages`, { text: trimmed });
+        setText("");
+        toast.success("Message sent to Chief of Staff", {
+          action: { label: "Open chat", onClick: () => nav(`/app/team/${teamId}/c/${convId}`) },
+        });
+      }
     } catch (err) {
-      toast.error(err?.response?.data?.detail || "Upload failed");
+      toast.error(err?.response?.data?.detail || "Send failed");
     } finally { setUploading(false); }
   };
 
@@ -955,20 +967,20 @@ function GeneralChatCard({ orgId, teamId, convId }) {
             }}
             placeholder={staged.length > 0
               ? `Optional — what should the agents do with ${staged.length === 1 ? "this file" : "these files"}?`
-              : "Drop, paste, or pick files to send to your Chief of Staff — add an optional prompt"}
+              : "Message your Chief of Staff — type or drop / paste / pick files"}
             className="flex-1 rounded-xl px-4 py-2.5 text-sm focus:sp-focus resize-none leading-relaxed"
             style={{ background: "var(--input-bg)", border: "1px solid var(--input-border)", color: "var(--fg)", minHeight: "42px" }}
             data-testid="general-prompt-input"
           />
           <button
             type="submit"
-            disabled={uploading || staged.length === 0}
+            disabled={uploading || (staged.length === 0 && !text.trim())}
             className="sp-btn sp-btn-primary text-xs shrink-0 disabled:opacity-50"
             data-testid="general-send-btn"
-            title={staged.length === 0 ? "Attach a file first" : "Send to Chief of Staff"}
+            title={staged.length === 0 && !text.trim() ? "Type a message or attach a file" : "Send to Chief of Staff"}
           >
             {uploading ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Send className="w-3.5 h-3.5" />}
-            {uploading ? "Uploading…" : "Send"}
+            {uploading ? "Sending…" : "Send"}
           </button>
         </div>
       </form>

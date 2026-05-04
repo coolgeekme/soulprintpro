@@ -1,7 +1,8 @@
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useState, useCallback } from "react";
 import { Link } from "react-router-dom";
 import api from "../lib/api";
-import { MessageCircle, ArrowRight, Clock, Lock, Users } from "lucide-react";
+import { MessageCircle, ArrowRight, Clock, Lock, Users, Trash2, Loader2 } from "lucide-react";
+import { toast } from "sonner";
 
 const relTime = (iso) => {
   if (!iso) return "";
@@ -21,24 +22,46 @@ const relTime = (iso) => {
  * page. Shows the 5 most-recently-active conversations the caller is a
  * member of, with a one-line preview of the last reply and a one-click
  * jump to the chat.
+ *
+ * Each card with `can_delete=true` (creator-of-thread OR org owner; never
+ * the always-on Chief of Staff thread) gets a hover trash button.
  */
 export default function RecentConversations({ orgId }) {
   const [items, setItems] = useState(null);
+  const [deletingId, setDeletingId] = useState(null);
 
-  useEffect(() => {
-    let cancelled = false;
-    (async () => {
-      try {
-        const { data } = await api.get(`/orgs/${orgId}/recent-conversations`, {
-          params: { limit: 5 },
-        });
-        if (!cancelled) setItems(data || []);
-      } catch {
-        if (!cancelled) setItems([]);
-      }
-    })();
-    return () => { cancelled = true; };
+  const load = useCallback(async () => {
+    try {
+      const { data } = await api.get(`/orgs/${orgId}/recent-conversations`, {
+        params: { limit: 5 },
+      });
+      setItems(data || []);
+    } catch {
+      setItems([]);
+    }
   }, [orgId]);
+
+  useEffect(() => { load(); }, [load]);
+
+  const onDelete = async (e, c) => {
+    e.preventDefault();
+    e.stopPropagation();
+    if (!c?.can_delete) return;
+    if (!window.confirm(`Delete "${c.title}"? This permanently removes the conversation and all its messages.`)) return;
+    setDeletingId(c.id);
+    try {
+      await api.delete(`/conversations/${c.id}`);
+      // Optimistic remove + refresh
+      setItems((prev) => (prev || []).filter((x) => x.id !== c.id));
+      toast.success("Conversation deleted");
+      // Pull fresh list so the strip refills if there were more behind it
+      load();
+    } catch (err) {
+      toast.error(err?.response?.data?.detail || "Could not delete this conversation");
+    } finally {
+      setDeletingId(null);
+    }
+  };
 
   if (items === null) return null;    // loading — silent
   if (items.length === 0) return null; // nothing to resume — keep page clean
@@ -55,7 +78,7 @@ export default function RecentConversations({ orgId }) {
       </div>
       <ul className="grid md:grid-cols-2 lg:grid-cols-3 gap-2">
         {items.map((c) => (
-          <li key={c.id}>
+          <li key={c.id} className="relative group/conv">
             <Link
               to={c.deeplink}
               className="sp-glass rounded-xl p-3 flex items-start gap-2.5 hover:border-white/25 transition group block"
@@ -83,6 +106,22 @@ export default function RecentConversations({ orgId }) {
               </div>
               <ArrowRight className="w-3.5 h-3.5 text-white/40 group-hover:text-white transition shrink-0 self-center" />
             </Link>
+            {c.can_delete && (
+              <button
+                type="button"
+                onClick={(e) => onDelete(e, c)}
+                disabled={deletingId === c.id}
+                className="absolute top-1.5 right-1.5 rounded-md p-1.5 opacity-0 group-hover/conv:opacity-100 focus:opacity-100 transition hover:bg-red-500/15 disabled:opacity-60"
+                style={{ color: "rgb(239 68 68)" }}
+                title="Delete conversation"
+                aria-label={`Delete conversation ${c.title}`}
+                data-testid={`recent-conv-delete-${c.id}`}
+              >
+                {deletingId === c.id
+                  ? <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                  : <Trash2 className="w-3.5 h-3.5" />}
+              </button>
+            )}
           </li>
         ))}
       </ul>
