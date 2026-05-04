@@ -212,7 +212,11 @@ async def get_current_user(request: Request) -> dict:
         try:
             claims = verify_firebase_id_token(token)
         except ValueError as exc:
-            raise HTTPException(401, str(exc))
+            # Surface the actual reason in the response detail so the
+            # frontend / agent can debug clock-skew, project-id mismatch,
+            # rotated keys, etc. without grepping pod logs.
+            logger.warning("Firebase token verification failed: %s", exc)
+            raise HTTPException(401, f"Firebase token rejected: {exc}")
         try:
             resolved = await upsert_user_for_firebase_claims(db, claims)
         except Exception as exc:

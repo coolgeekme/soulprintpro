@@ -81,6 +81,10 @@ export const AuthProvider = ({ children }) => {
     await fbSignInWithGoogle();
     // Clear any legacy token so future requests use the Firebase one.
     setToken("");
+    // Force a fresh ID token + a small settle delay so the Firebase
+    // SDK has fully committed `currentUser` before our axios interceptor
+    // pulls the bearer for the upcoming /auth/me call.
+    await new Promise((r) => setTimeout(r, 150));
     const me = await api.get("/auth/me");
     setUser(me.data);
     return me.data;
@@ -90,6 +94,7 @@ export const AuthProvider = ({ children }) => {
     if (!FIREBASE_ENABLED) throw new Error("Firebase not configured");
     await fbSignInWithEmail(email, password);
     setToken("");
+    await new Promise((r) => setTimeout(r, 150));
     const me = await api.get("/auth/me");
     setUser(me.data);
     return me.data;
@@ -99,6 +104,7 @@ export const AuthProvider = ({ children }) => {
     if (!FIREBASE_ENABLED) throw new Error("Firebase not configured");
     await fbRegisterWithEmail({ name, email, password });
     setToken("");
+    await new Promise((r) => setTimeout(r, 150));
     const me = await api.get("/auth/me");
     setUser(me.data);
     return me.data;

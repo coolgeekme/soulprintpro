@@ -92,7 +92,10 @@ export default function AuthPage() {
       await loginWithGoogle();
       navigate("/app");
     } catch (err) {
-      toast.error(friendlyAuthError(err));
+      // Backend rejection (e.g. account disabled, token verification
+      // failed) — surface its detail. Otherwise the Firebase popup error.
+      const backendDetail = err?.response?.data?.detail;
+      toast.error(backendDetail || friendlyAuthError(err));
     } finally {
       setBusy(false);
     }
