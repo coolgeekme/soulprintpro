@@ -26,6 +26,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import re
 import uuid
 from datetime import datetime, timezone
@@ -236,6 +237,78 @@ async def _append_event(db, mission_id: str, *, kind: str, text: str = "",
     return doc
 
 
+async def _synthesize_brief_artifact(
+    db, *, mission_id: str, mission: dict, summary_text: str, iteration: int,
+) -> None:
+    """Build a Mission Brief markdown deliverable from the mission's
+    final summary and persist it the same way an [[ARTIFACT]] block would
+    be — i.e. into the on-disk docs folder, GridFS, the ``documents``
+    collection (so it shows up in the org Documents library) AND the
+    mission's own ``artifacts`` array (so it shows up in the Mission
+    Detail page's Deliverables card).
+
+    Lazy-imports ``save_artifacts`` to avoid a circular dependency at
+    module load time.
+    """
+    from artifacts import save_artifacts as _save_arts  # local import
+
+    org_id = mission.get("org_id") or ""
+    if not org_id:
+        return
+    goal = (mission.get("goal") or "").strip()
+    short_goal = goal.split("\n")[0][:80] or "Mission Brief"
+    docs_root = Path(os.environ.get("DOCS_DIR", "/app/backend/docs"))
+    title = f"Mission Brief — {short_goal}"
+    md = (
+        f"# {title}\n\n"
+        f"**Lead agent:** {mission.get('lead_agent_name') or mission.get('lead_agent_id') or 'Mission lead'}\n\n"
+        f"**Goal:** {goal or '(no goal recorded)'}\n\n"
+        f"---\n\n"
+        f"## Outcome\n\n{summary_text}\n"
+    )
+    block = {
+        "name": f"mission-brief-{mission_id[:8]}.md",
+        "ext": "md",
+        "mime": "text/markdown",
+        "title": title,
+        "content": md,
+    }
+    try:
+        attachments = await _save_arts(
+            db, [block],
+            docs_root=docs_root,
+            org_id=org_id,
+            conversation_id=mission_id,   # the mission acts as the "conv"
+            message_id=mission_id,
+            agent_id=mission.get("lead_agent_id") or "",
+            agent_name=mission.get("lead_agent_name") or "Mission lead",
+            created_by=mission.get("created_by") or "",
+        )
+    except Exception as exc:
+        logger.warning("save_artifacts failed for brief: %s", exc)
+        return
+    if not attachments:
+        return
+    a = attachments[0]
+    artifact = {
+        "kind": "document",
+        "filename": a.get("filename"),
+        "url": a.get("url"),
+        "mime": a.get("mime"),
+        "original_name": a.get("original_name"),
+        "size": a.get("size"),
+        "title": title,
+        "auto_synthesized": True,
+    }
+    await db.missions.update_one(
+        {"id": mission_id},
+        {"$push": {"artifacts": artifact}},
+    )
+    await _append_event(db, mission_id, kind="artifact",
+                        text=f"Auto-saved {a.get('original_name')}",
+                        artifact=artifact, iteration=iteration)
+
+
 # ── Main loop ──────────────────────────────────────────────────────────────
 async def run_mission_loop(
     *, db, mission: dict, tools: List[Tool],
@@ -402,6 +475,28 @@ async def run_mission_loop(
                 summary = (args.get("summary") or thought or "").strip()[:2000] or "Mission complete."
                 await _append_event(db, mission_id, kind="finish",
                                     text=summary, iteration=iteration)
+                # If the mission finishes WITHOUT producing any binary
+                # deliverables (no [[ARTIFACT]] blocks), auto-synthesize a
+                # "Mission Brief — {goal}.md" so the user always has at
+                # least one tangible result that lands in BOTH the
+                # mission's Deliverables card AND the org Documents
+                # library. Without this, missions that produced only a
+                # summary text would leave the user confused: "the run
+                # finished but I see nothing to download."
+                try:
+                    cur = await db.missions.find_one(
+                        {"id": mission_id}, {"artifacts": 1, "goal": 1, "org_id": 1, "lead_agent_name": 1, "lead_agent_id": 1}
+                    )
+                    has_artifacts = bool((cur or {}).get("artifacts"))
+                    has_meaningful_summary = len(summary) >= 60
+                    if not has_artifacts and has_meaningful_summary:
+                        await _synthesize_brief_artifact(
+                            db, mission_id=mission_id,
+                            mission=cur or {}, summary_text=summary,
+                            iteration=iteration,
+                        )
+                except Exception as exc:
+                    logger.warning("Brief auto-synthesis failed: %s", exc)
                 await db.missions.update_one(
                     {"id": mission_id},
                     {"$set": {

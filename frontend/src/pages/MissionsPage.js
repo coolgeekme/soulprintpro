@@ -507,9 +507,6 @@ function MissionDetail({ orgId, missionId }) {
                 {mission.conversation_id && (
                   <ConvBacklink convId={mission.conversation_id} />
                 )}
-                {mission.summary && (
-                  <div className="text-sm mt-2 sp-subtle leading-relaxed">{mission.summary}</div>
-                )}
                 {mission.error && (
                   <div className="text-xs mt-2 text-red-300 flex items-center gap-1"><AlertTriangle className="w-3 h-3" /> {mission.error}</div>
                 )}
@@ -532,6 +529,43 @@ function MissionDetail({ orgId, missionId }) {
               <button onClick={remove} className="sp-btn sp-btn-ghost text-xs hover:!text-red-300" data-testid="mission-delete-btn" title="Delete this mission">
                 <Trash2 className="w-3.5 h-3.5" /> Delete
               </button>
+            </div>
+          </div>
+        )}
+
+        {/* Outcome — the agent's final summary, surfaced as the FIRST
+            thing users see on a finished mission. Without this card, the
+            summary would only live as a faint subtitle under the goal,
+            which led to "I can't see the results" complaints. */}
+        {mission?.summary && ["finished", "cancelled", "failed"].includes(mission.status) && (
+          <div className="sp-glass-strong rounded-2xl p-5 mb-6" data-testid="mission-outcome">
+            <div className="flex items-center justify-between gap-2 mb-3 flex-wrap">
+              <div className="flex items-center gap-2">
+                <div className="w-8 h-8 rounded-lg sp-glass flex items-center justify-center">
+                  <Check className="w-4 h-4 text-emerald-300" />
+                </div>
+                <div>
+                  <div className="text-[10px] uppercase tracking-widest sp-subtle">Outcome</div>
+                  <div className="text-base font-medium" style={{ color: "var(--fg)" }}>Final report</div>
+                </div>
+              </div>
+              <div className="flex items-center gap-2">
+                <Link
+                  to={`/app/org/${orgId}/documents`}
+                  className="sp-btn sp-btn-ghost text-[11px]"
+                  data-testid="mission-outcome-docs-link"
+                  title="See this mission's deliverables in your Documents library"
+                >
+                  <FileText className="w-3.5 h-3.5" /> Open in Documents
+                </Link>
+              </div>
+            </div>
+            <div
+              className="text-sm leading-relaxed whitespace-pre-wrap"
+              style={{ color: "var(--fg)" }}
+              data-testid="mission-outcome-text"
+            >
+              {mission.summary}
             </div>
           </div>
         )}
@@ -735,27 +769,39 @@ function ConvBacklink({ convId }) {
   // The mission row only stores `conversation_id`. To build a link to
   // /app/team/:teamId/c/:convId we need the team_id, so resolve it lazily
   // via the conversation API. Falls back to no-op if the API errors (e.g.
-  // the conversation was deleted) — in that case we show nothing.
-  const [teamId, setTeamId] = useState(null);
+  // the conversation was deleted).
+  // We also peek at the conversation's title so we can show a clearer
+  // label than the misleading "Started in chat" text — if the link points
+  // to the org's Chief of Staff chat (the most common case for missions
+  // started outside of a real conversation), users were confused
+  // ("results in chat, but I never started a chat"). The new wording
+  // makes it clear this is a *working chat* tied to the mission, not
+  // something the user themselves opened.
+  const [conv, setConv] = useState(null);
   useEffect(() => {
     let cancelled = false;
     (async () => {
       try {
         const { data } = await api.get(`/conversations/${convId}`);
-        if (!cancelled) setTeamId(data?.team_id);
+        if (!cancelled) setConv(data);
       } catch { /* conv gone — silent */ }
     })();
     return () => { cancelled = true; };
   }, [convId]);
-  if (!teamId) return null;
+  if (!conv?.team_id) return null;
+  const isGeneral = !!conv.is_general;
+  const label = isGeneral
+    ? `Working chat · Chief of Staff`
+    : `Working chat · ${(conv.title || "Open conversation").slice(0, 40)}`;
   return (
     <Link
-      to={`/app/team/${teamId}/c/${convId}`}
+      to={`/app/team/${conv.team_id}/c/${convId}`}
       className="text-xs sp-subtle hover:text-white inline-flex items-center gap-1 mt-1"
       data-testid="mission-conv-backlink"
+      title="Open the chat thread the mission ran in"
     >
       <CornerDownRight className="w-3 h-3" />
-      Started in chat — open conversation
+      {label}
     </Link>
   );
 }
