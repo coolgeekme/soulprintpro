@@ -879,6 +879,23 @@ async def get_org(org_id: str, u: dict = Depends(get_current_user)):
     data["role"] = ctx["member"]["role"]
     return data
 
+@org_r.get("/{org_id}/map")
+async def get_org_map(
+    org_id: str,
+    window_days: int = 30,
+    u: dict = Depends(get_current_user),
+):
+    """Phase 1 mind map — returns the {nodes, edges} payload the
+    `/app/org/:id/map` page renders with react-force-graph-2d.
+    Member-gated. Window is one of {1, 7, 30, 90, 0(=all)}.
+    """
+    await require_org_member(org_id, u["id"])
+    from org_map import build_org_map
+    try:
+        return await build_org_map(db, org_id, window_days=window_days)
+    except ValueError as exc:
+        raise HTTPException(404, str(exc)) from exc
+
 @org_r.patch("/{org_id}")
 async def update_org(org_id: str, body: OrgUpdateBody, u: dict = Depends(get_current_user)):
     ctx = await require_org_member(org_id, u["id"])

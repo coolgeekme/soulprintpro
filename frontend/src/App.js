@@ -8,6 +8,7 @@ import LandingPage from "./pages/LandingPage";
 import AuthPage from "./pages/AuthPage";
 import AppHome from "./pages/AppHome";
 import OrgPage from "./pages/OrgPage";
+import OrgMapPage from "./pages/OrgMapPage";
 import TeamPage from "./pages/TeamPage";
 import ConversationPage from "./pages/ConversationPage";
 import AcceptInvitePage from "./pages/AcceptInvitePage";
@@ -52,6 +53,7 @@ function App() {
                 <Route path="/invite/:code" element={<Protected><AcceptInvitePage /></Protected>} />
                 <Route path="/app" element={<Protected><AppHome /></Protected>} />
                 <Route path="/app/org/:orgId" element={<Protected><OrgPage /></Protected>} />
+                <Route path="/app/org/:orgId/map" element={<Protected><OrgMapPage /></Protected>} />
                 <Route path="/app/org/:orgId/social" element={<Protected><SocialPage /></Protected>} />
                 <Route path="/app/org/:orgId/missions" element={<Protected><MissionsPage /></Protected>} />
                 <Route path="/app/org/:orgId/missions/:missionId" element={<Protected><MissionsPage /></Protected>} />
