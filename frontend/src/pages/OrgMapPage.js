@@ -4,8 +4,8 @@ import api from "../lib/api";
 import { toast } from "sonner";
 import {
   Loader2, ArrowLeft, Sparkles, RefreshCw, Network, Users, Bot,
-  FileText, Send, MessageCircle, DollarSign, Hash, Megaphone,
-  Activity, Flame, Timer, Shield, Lock, Check, X, UserPlus,
+  FileText, Send, MessageCircle, Hash, Megaphone,
+  Activity, Timer, Shield, Lock, Check, X, UserPlus,
 } from "lucide-react";
 import ForceGraph2D from "react-force-graph-2d";
 import WorkingIndicator from "../components/WorkingIndicator";
@@ -31,11 +31,10 @@ const WINDOW_OPTIONS = [
 ];
 
 // Phase 2 — view modes. "Activity" keeps the original kind-coloured nodes;
-// "Cost" and "Time" replace each node's fill with a heatmap shade based on
-// the node's value relative to the org's max in that window.
+// "Time" replaces each node's fill with a heatmap shade based on
+// the node's LLM wall-clock relative to the org's max in that window.
 const VIEW_MODES = [
   { value: "activity", label: "Activity", icon: Activity },
-  { value: "cost",     label: "Cost",     icon: Flame },
   { value: "time",     label: "Time",     icon: Timer },
 ];
 
@@ -78,12 +77,6 @@ function formatMs(ms) {
   return `${(m / 60).toFixed(1)}h`;
 }
 
-function formatUSD(n) {
-  if (!n) return "$0";
-  if (n < 0.01) return `$${(n * 100).toFixed(2)}¢`;
-  return `$${n.toFixed(2)}`;
-}
-
 function StatCard({ icon: Icon, label, value, accent = "var(--fg)" }) {
   return (
     <div className="sp-glass rounded-xl px-3.5 py-3 flex items-center gap-3" data-testid={`stat-${label.toLowerCase().replace(/\s+/g, '-')}`}>
@@ -112,7 +105,7 @@ export default function OrgMapPage() {
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [windowDays, setWindowDays] = useState(30);
-  const [viewMode, setViewMode] = useState("activity"); // "activity" | "cost" | "time"
+  const [viewMode, setViewMode] = useState("activity"); // "activity" | "time"
   const [selected, setSelected] = useState(null);
   const [size, setSize] = useState({ w: 800, h: 600 });
   const [orgMeta, setOrgMeta] = useState(null);  // { role, owner_id, ... } — used to know if viewer is the owner
@@ -178,12 +171,6 @@ export default function OrgMapPage() {
   // For Activity mode we don't paint a heatmap (we keep kind colors), so
   // we return null and the painter falls back to KIND_STYLES.
   const heatRatio = (node) => {
-    if (viewMode === "cost") {
-      const max = data?.totals?.cost_max || 0;
-      if (max <= 0) return null;
-      const v = node.cost || 0;
-      return v / max;
-    }
     if (viewMode === "time") {
       const max = data?.totals?.time_ms_max || 0;
       if (max <= 0) return null;
@@ -200,10 +187,10 @@ export default function OrgMapPage() {
   const paintNode = (node, ctx, globalScale) => {
     const style = KIND_STYLES[node.kind] || KIND_STYLES.agent;
     const r = nodeRadius(node);
-    // Base fill comes from the kind palette for Activity mode. In Cost /
-    // Time modes we replace it with the heatmap shade so the eye lands
-    // immediately on hot nodes. The Soul stays orange in any mode (it's
-    // the org's identity, not a metric).
+    // Base fill comes from the kind palette for Activity mode. In Time
+    // mode we replace it with the heatmap shade so the eye lands
+    // immediately on slow/heavy nodes. The Soul stays orange in any mode
+    // (it's the org's identity, not a metric).
     const ratio = heatRatio(node);
     let fill = style.fill;
     let stroke = style.stroke;
@@ -386,13 +373,12 @@ export default function OrgMapPage() {
         </div>
 
         {/* KPI strip */}
-        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-2 mb-4" data-testid="map-kpis">
+        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-2 mb-4" data-testid="map-kpis">
           <StatCard icon={Users}        label="Teams"     value={totals.teams ?? 0} />
           <StatCard icon={Bot}          label="Agents"    value={totals.agents_active ?? 0} accent="#F0A050" />
           <StatCard icon={MessageCircle} label="Messages"  value={(totals.messages ?? 0).toLocaleString()} accent="#7AB7FF" />
           <StatCard icon={Sparkles}     label="Missions"  value={totals.missions ?? 0} accent="#3FE0A2" />
           <StatCard icon={Megaphone}    label="Posts"     value={totals.social_posts ?? 0} accent="#A0C4FF" />
-          <StatCard icon={DollarSign}   label="LLM cost"  value={formatUSD(totals.llm_cost_usd ?? 0)} accent="#FFC65A" />
         </div>
 
         {/* Body: graph + side panel */}
@@ -409,7 +395,7 @@ export default function OrgMapPage() {
                   label="Building your org map"
                   hints={[
                     "Reading teams, agents, conversations, missions…",
-                    "Counting messages and tallying LLM spend per team…",
+                    "Counting messages and recent activity per team…",
                     "Composing the layout — almost there.",
                   ]}
                 />
@@ -463,8 +449,7 @@ export default function OrgMapPage() {
                 <div>
                   <div className="text-xs uppercase tracking-widest sp-subtle mb-1">About this map</div>
                   <p className="text-sm leading-relaxed sp-subtle">
-                    {viewMode === "activity" && "Bigger nodes = more activity in the selected window. Click any node for a deeper view, or switch to Cost / Time to see where spend and latency concentrate."}
-                    {viewMode === "cost" && "Nodes are tinted by how much LLM cost they accumulated in the selected window — gray = idle, red = the hottest spender."}
+                    {viewMode === "activity" && "Bigger nodes = more activity in the selected window. Click any node for a deeper view, or switch to Time to see where wall-clock concentrates."}
                     {viewMode === "time" && "Nodes are tinted by how much LLM wall-clock time they consumed — gray = idle, red = the slowest / heaviest."}
                   </p>
                 </div>
@@ -487,7 +472,7 @@ export default function OrgMapPage() {
                 {viewMode !== "activity" && (
                   <HeatLegend
                     mode={viewMode}
-                    max={viewMode === "cost" ? (totals.cost_max ?? 0) : (totals.time_ms_max ?? 0)}
+                    max={totals.time_ms_max ?? 0}
                   />
                 )}
 
@@ -550,13 +535,6 @@ function NodeDetail({ node, orgId, onClose }) {
           <div className="text-sm sp-subtle">{node.subtitle}</div>
         </div>
       )}
-      {(node.cost ?? 0) > 0 && (
-        <div className="flex items-center gap-2 text-sm">
-          <DollarSign className="w-3.5 h-3.5 text-amber-400" />
-          <span className="tabular-nums" style={{ color: "var(--fg)" }}>{formatUSD(node.cost)}</span>
-          <span className="sp-subtle text-xs">on LLM</span>
-        </div>
-      )}
       {(node.time_ms ?? 0) > 0 && (
         <div className="flex items-center gap-2 text-sm" data-testid="map-node-time">
           <Timer className="w-3.5 h-3.5 text-cyan-400" />
@@ -602,7 +580,6 @@ function HeatLegend({ mode, max }) {
   const stops = [0, 0.25, 0.5, 0.75, 1];
   const fmt = (t) => {
     if (!max) return "—";
-    if (mode === "cost") return formatUSD(max * t);
     return formatMs(Math.round(max * t));
   };
   const gradient = HEAT_STOPS
@@ -612,7 +589,7 @@ function HeatLegend({ mode, max }) {
     <div className="sp-glass rounded-lg p-3 space-y-2 text-xs" data-testid={`heat-legend-${mode}`}>
       <div className="flex items-center justify-between">
         <span className="text-[10px] uppercase tracking-widest sp-subtle">
-          {mode === "cost" ? "Cost intensity" : "Time intensity"}
+          Time intensity
         </span>
         <span className="text-[10px] sp-subtle tabular-nums">peak {fmt(1)}</span>
       </div>

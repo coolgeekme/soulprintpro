@@ -1,11 +1,11 @@
 """Regression tests for the Org Mind Map data builder (org_map.py).
 
-Validates the Phase 2 cost & time heatmap fields land on the payload:
-  • Each node has cost/time_ms/calls keys (even if zero).
-  • Org-level totals include cost_max + time_ms_max for client-side
-    heatmap normalisation.
-  • The aggregator reads from the real `llm_calls` collection (the bug
-    Phase 2 fixed — earlier code queried a non-existent collection).
+Validates the time-spent heatmap fields land on the payload:
+  • Each node has time_ms/calls keys (even if zero).
+  • Org-level totals include time_ms_max for client-side heatmap normalisation.
+  • The aggregator reads from the real `llm_calls` collection.
+  • COST is intentionally NOT in the payload — owners said they don't
+    want LLM $ figures surfaced in the org-facing Mind Map.
 """
 import os
 import pytest
@@ -60,30 +60,15 @@ async def _seed_org(db, *, with_telemetry=True):
         })
     await db.messages.insert_many(msgs)
     if with_telemetry:
-        # 3 chat calls totalling $0.45 cost / 4500ms latency.
-        await db.llm_calls.insert_many([
-            {
+        # 3 chat calls totalling 4500ms latency.
+        for _ in range(3):
+            await db.llm_calls.insert_one({
                 "provider": "openai", "model": "gpt-4o-mini", "kind": "chat",
                 "prompt_tokens": 100, "completion_tokens": 30, "total_tokens": 130,
                 "cost_usd": 0.15, "latency_ms": 1500, "ok": True,
                 "org_id": org_id, "user_id": "u1", "agent_id": "reggie-the-strategist",
                 "conversation_id": conv_id, "created_at": now,
-            },
-            {
-                "provider": "openai", "model": "gpt-4o-mini", "kind": "chat",
-                "prompt_tokens": 100, "completion_tokens": 30, "total_tokens": 130,
-                "cost_usd": 0.15, "latency_ms": 1500, "ok": True,
-                "org_id": org_id, "user_id": "u1", "agent_id": "reggie-the-strategist",
-                "conversation_id": conv_id, "created_at": now,
-            },
-            {
-                "provider": "openai", "model": "gpt-4o-mini", "kind": "chat",
-                "prompt_tokens": 100, "completion_tokens": 30, "total_tokens": 130,
-                "cost_usd": 0.15, "latency_ms": 1500, "ok": True,
-                "org_id": org_id, "user_id": "u1", "agent_id": "reggie-the-strategist",
-                "conversation_id": conv_id, "created_at": now,
-            },
-        ])
+            })
     return org_id, team_id, conv_id
 
 
@@ -91,57 +76,54 @@ async def _cleanup(db, org_id):
     await db.organizations.delete_one({"_id": ObjectId(org_id)})
     await db.teams.delete_many({"org_id": org_id})
     await db.conversations.delete_many({"org_id": org_id})
-    await db.messages.delete_many({})  # only seeded ones in this conv
+    await db.messages.delete_many({})
     await db.llm_calls.delete_many({"org_id": org_id})
     await db.missions.delete_many({"org_id": org_id})
     await db.social_posts.delete_many({"org_id": org_id})
 
 
 @pytest.mark.asyncio
-async def test_org_map_phase2_heatmap_fields(db):
-    """Every node carries cost/time_ms/calls + org totals expose maxes."""
-    org_id, team_id, _conv_id = await _seed_org(db)
+async def test_org_map_time_heatmap_fields(db):
+    """Every node carries time_ms/calls + org totals expose time_ms_max."""
+    org_id, _team_id, _conv_id = await _seed_org(db)
     try:
         payload = await build_org_map(db, org_id, window_days=30)
-        # Top-level shape
         assert "totals" in payload and "nodes" in payload and "edges" in payload
         totals = payload["totals"]
-        for k in ("cost_max", "time_ms_max", "llm_cost_usd", "llm_calls", "llm_time_ms"):
+        for k in ("time_ms_max", "llm_calls", "llm_time_ms"):
             assert k in totals, f"missing totals.{k}"
+        # Cost must NOT be surfaced in the payload (per owner request).
+        assert "llm_cost_usd" not in totals
+        assert "cost_max" not in totals
         # Telemetry should land in totals
-        assert totals["llm_cost_usd"] >= 0.44, totals  # ~$0.45 with rounding
         assert totals["llm_calls"] == 3
         assert totals["llm_time_ms"] == 4500
-        # Heatmap maxes at least equal to the team/user node values
-        assert totals["cost_max"] > 0
         assert totals["time_ms_max"] > 0
         # Node-level fields
         kinds = {n["kind"]: n for n in payload["nodes"]}
         assert "soul" in kinds and "team" in kinds and "user" in kinds
         for n in payload["nodes"]:
-            for k in ("cost", "time_ms", "calls"):
+            for k in ("time_ms", "calls"):
                 assert k in n, f"node {n['id']} missing {k}"
-        # Team should have aggregated cost from its conversation's telemetry
-        assert kinds["team"]["cost"] >= 0.44
+            assert "cost" not in n, f"node {n['id']} should not carry cost"
+        # Team should have aggregated time from its conversation's telemetry
         assert kinds["team"]["time_ms"] == 4500
-        # User node should reflect the same spend (same telemetry was tagged with user_id)
-        assert kinds["user"]["cost"] >= 0.44
     finally:
         await _cleanup(db, org_id)
 
 
 @pytest.mark.asyncio
-async def test_org_map_no_telemetry_returns_zero_maxes(db):
-    """Empty telemetry => cost_max/time_ms_max = 0; nodes still render."""
+async def test_org_map_no_telemetry_returns_zero_max(db):
+    """Empty telemetry => time_ms_max = 0; nodes still render."""
     org_id, _team_id, _conv_id = await _seed_org(db, with_telemetry=False)
     try:
         payload = await build_org_map(db, org_id, window_days=30)
-        assert payload["totals"]["llm_cost_usd"] == 0
-        assert payload["totals"]["cost_max"] == 0
         assert payload["totals"]["time_ms_max"] == 0
-        # Node-level cost/time_ms should be 0 but the keys must exist
+        assert payload["totals"]["llm_calls"] == 0
+        # Node-level time_ms/calls should be 0 but the keys must exist.
         for n in payload["nodes"]:
-            assert n["cost"] == 0
             assert n["time_ms"] == 0
+            assert n["calls"] == 0
+            assert "cost" not in n
     finally:
         await _cleanup(db, org_id)
