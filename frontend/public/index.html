@@ -8,7 +8,19 @@
         <meta name="description" content="SoulPrint Engine Pro — your company's AI crew." />
         <meta name="mobile-web-app-capable" content="yes" />
         <meta name="apple-mobile-web-app-capable" content="yes" />
-        <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+        <!-- `default` = the iPhone status bar stays opaque with a solid
+        <!-- Status-bar-style note for users: iOS caches this meta at
+             PWA install time. If you installed the app before Feb 4 2026
+             when it was `black-translucent`, remove it from your home
+             screen and re-add to pick up the opaque status bar. -->
+
+             background, and web content starts BELOW it. `black-translucent`
+             (our previous value) causes content to render UNDER the status
+             bar, which was overlapping the landing-page nav even with
+             safe-area-inset padding applied. Picking the safer value here
+             means the status bar is always readable and the nav sits below
+             it automatically — no safe-area math required. -->
+        <meta name="apple-mobile-web-app-status-bar-style" content="default" />
         <meta name="apple-mobile-web-app-title" content="SoulPrint" />
         <link rel="manifest" href="/manifest.json" />
         <link rel="icon" type="image/png" sizes="32x32" href="/favicon-32.png" />
