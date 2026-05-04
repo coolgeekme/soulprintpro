@@ -419,6 +419,23 @@ def serialize_org(org: dict) -> dict:
         "created_at": org["created_at"].isoformat() if isinstance(org["created_at"], datetime) else org["created_at"],
     }
 
+
+def _can_view_mind_map(org: dict, viewer_id: str, role: str = "") -> bool:
+    """Mind map is an OWNER tool — only the org owner sees it by default.
+    Owners can grant access to specific non-owner members by adding their
+    user_id to ``org.mind_map_access``. Site-level superadmins do not get
+    access on that basis alone (they must be the actual org owner or
+    explicitly granted).
+    """
+    if not org or not viewer_id:
+        return False
+    if str(org.get("owner_id")) == str(viewer_id):
+        return True
+    if role == "owner":
+        return True
+    allowed = org.get("mind_map_access") or []
+    return str(viewer_id) in [str(x) for x in allowed]
+
 def serialize_team(team: dict) -> dict:
     return {
         "id": str(team["_id"]),
@@ -877,6 +894,11 @@ async def get_org(org_id: str, u: dict = Depends(get_current_user)):
     ctx = await require_org_member(org_id, u["id"])
     data = serialize_org(ctx["org"])
     data["role"] = ctx["member"]["role"]
+    # Owners see the Mind Map by default; non-owners only see it if the
+    # owner explicitly grants them access via the mind-map-access list.
+    data["can_view_mind_map"] = _can_view_mind_map(
+        ctx["org"], u["id"], ctx["member"]["role"]
+    )
     return data
 
 @org_r.get("/{org_id}/map")
@@ -885,16 +907,95 @@ async def get_org_map(
     window_days: int = 30,
     u: dict = Depends(get_current_user),
 ):
-    """Phase 1 mind map — returns the {nodes, edges} payload the
-    `/app/org/:id/map` page renders with react-force-graph-2d.
-    Member-gated. Window is one of {1, 7, 30, 90, 0(=all)}.
+    """Org Mind Map payload — owner-gated by default; owner can grant
+    additional members via ``mind_map_access``. Returns ``{nodes, edges}``
+    that the `/app/org/:id/map` page renders with react-force-graph-2d.
+    Window is one of {1, 7, 30, 90, 0(=all)}.
     """
-    await require_org_member(org_id, u["id"])
+    ctx = await require_org_member(org_id, u["id"])
+    if not _can_view_mind_map(ctx["org"], u["id"], ctx["member"]["role"]):
+        raise HTTPException(
+            403,
+            "The Mind Map is an owner tool. Ask the organization owner to "
+            "grant you access from the Mind Map page.",
+        )
     from org_map import build_org_map
     try:
         return await build_org_map(db, org_id, window_days=window_days)
     except ValueError as exc:
         raise HTTPException(404, str(exc)) from exc
+
+
+# ── Mind Map access management (owner-only) ──────────────────────────
+@org_r.get("/{org_id}/mind-map-access")
+async def list_mind_map_access(org_id: str, u: dict = Depends(get_current_user)):
+    """Owner-only — return the set of org members and their access state
+    so the owner can toggle each one in the UI.
+    """
+    ctx = await require_org_member(org_id, u["id"])
+    if ctx["member"]["role"] != "owner":
+        raise HTTPException(403, "Only the organization owner can manage Mind Map access.")
+    org = ctx["org"]
+    allowed = {str(x) for x in (org.get("mind_map_access") or [])}
+    members = await db.org_members.find({"org_id": org_id}).to_list(500)
+    user_ids = [m["user_id"] for m in members]
+    user_oids = []
+    for uid in user_ids:
+        try:
+            user_oids.append(ObjectId(uid))
+        except Exception:
+            pass
+    users = {str(d["_id"]): d async for d in db.users.find({"_id": {"$in": user_oids}})}
+    items = []
+    for m in members:
+        uid = m["user_id"]
+        ud = users.get(uid) or {}
+        items.append({
+            "user_id": uid,
+            "name": ud.get("name") or (ud.get("email") or "").split("@")[0] or "Member",
+            "email": ud.get("email") or "",
+            "role": m.get("role") or "member",
+            "is_owner": str(org.get("owner_id")) == str(uid),
+            "has_access": (str(org.get("owner_id")) == str(uid)) or (uid in allowed),
+        })
+    # Owner first, then members alphabetically
+    items.sort(key=lambda x: (not x["is_owner"], x["name"].lower()))
+    return {"members": items}
+
+
+@org_r.post("/{org_id}/mind-map-access/{user_id}")
+async def grant_mind_map_access(
+    org_id: str, user_id: str, u: dict = Depends(get_current_user)
+):
+    """Owner-only — add a non-owner member to the Mind Map access list."""
+    ctx = await require_org_member(org_id, u["id"])
+    if ctx["member"]["role"] != "owner":
+        raise HTTPException(403, "Only the organization owner can manage Mind Map access.")
+    target = await db.org_members.find_one({"org_id": org_id, "user_id": user_id})
+    if not target:
+        raise HTTPException(404, "That user is not a member of this organization.")
+    await db.organizations.update_one(
+        {"_id": ObjectId(org_id)},
+        {"$addToSet": {"mind_map_access": user_id}},
+    )
+    return {"ok": True, "user_id": user_id, "has_access": True}
+
+
+@org_r.delete("/{org_id}/mind-map-access/{user_id}")
+async def revoke_mind_map_access(
+    org_id: str, user_id: str, u: dict = Depends(get_current_user)
+):
+    """Owner-only — remove a non-owner member from the Mind Map access list."""
+    ctx = await require_org_member(org_id, u["id"])
+    if ctx["member"]["role"] != "owner":
+        raise HTTPException(403, "Only the organization owner can manage Mind Map access.")
+    if str(ctx["org"].get("owner_id")) == str(user_id):
+        raise HTTPException(400, "The owner always has access — can't be revoked.")
+    await db.organizations.update_one(
+        {"_id": ObjectId(org_id)},
+        {"$pull": {"mind_map_access": user_id}},
+    )
+    return {"ok": True, "user_id": user_id, "has_access": False}
 
 @org_r.patch("/{org_id}")
 async def update_org(org_id: str, body: OrgUpdateBody, u: dict = Depends(get_current_user)):

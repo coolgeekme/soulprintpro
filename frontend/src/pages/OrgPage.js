@@ -381,23 +381,25 @@ export default function OrgPage() {
         </Link>
 
         {/* Mind map — live picture of the org's brain (teams, agents,
-            missions, posts, time-spent). Phase 1: structural map only;
-            heatmap + causality views land in Phase 2/3. */}
-        <Link
-          to={`/app/org/${orgId}/map`}
-          className="sp-glass rounded-2xl p-5 mb-6 flex items-center gap-4 hover:border-white/25 transition group"
-          data-testid="open-mind-map"
-        >
-          <div className="w-10 h-10 rounded-xl flex items-center justify-center"
-               style={{ background: "linear-gradient(160deg, rgba(168,85,247,0.45), rgba(168,85,247,0.08))" }}>
-            <Network className="w-4 h-4 text-white" />
-          </div>
-          <div className="flex-1 min-w-0">
-            <div className="text-white font-medium">Mind map</div>
-            <div className="text-xs sp-subtle">A live picture of how teams, agents, missions, and posts connect. Click any node to drill in. Filter by 24h / 7d / 30d / 90d to see where time and money are flowing.</div>
-          </div>
-          <ArrowRight className="w-4 h-4 text-white/60 group-hover:text-white transition" />
-        </Link>
+            missions, posts, time-spent). Owner-only by default; owners
+            can grant access to specific members from the Mind Map page. */}
+        {org.can_view_mind_map && (
+          <Link
+            to={`/app/org/${orgId}/map`}
+            className="sp-glass rounded-2xl p-5 mb-6 flex items-center gap-4 hover:border-white/25 transition group"
+            data-testid="open-mind-map"
+          >
+            <div className="w-10 h-10 rounded-xl flex items-center justify-center"
+                 style={{ background: "linear-gradient(160deg, rgba(168,85,247,0.45), rgba(168,85,247,0.08))" }}>
+              <Network className="w-4 h-4 text-white" />
+            </div>
+            <div className="flex-1 min-w-0">
+              <div className="text-white font-medium">Mind map</div>
+              <div className="text-xs sp-subtle">A live picture of how teams, agents, missions, and posts connect. Click any node to drill in. Filter by 24h / 7d / 30d / 90d to see where time and money are flowing.</div>
+            </div>
+            <ArrowRight className="w-4 h-4 text-white/60 group-hover:text-white transition" />
+          </Link>
+        )}
 
         {/* Pick up where you left off — recent conversations strip */}
         <RecentConversations orgId={orgId} />

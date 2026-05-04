@@ -5,7 +5,7 @@ import { toast } from "sonner";
 import {
   Loader2, ArrowLeft, Sparkles, RefreshCw, Network, Users, Bot,
   FileText, Send, MessageCircle, DollarSign, Hash, Megaphone,
-  Activity, Flame, Timer,
+  Activity, Flame, Timer, Shield, Lock, Check, X, UserPlus,
 } from "lucide-react";
 import ForceGraph2D from "react-force-graph-2d";
 import WorkingIndicator from "../components/WorkingIndicator";
@@ -115,6 +115,24 @@ export default function OrgMapPage() {
   const [viewMode, setViewMode] = useState("activity"); // "activity" | "cost" | "time"
   const [selected, setSelected] = useState(null);
   const [size, setSize] = useState({ w: 800, h: 600 });
+  const [orgMeta, setOrgMeta] = useState(null);  // { role, owner_id, ... } — used to know if viewer is the owner
+  const [accessOpen, setAccessOpen] = useState(false);
+
+  // Fetch org meta once so we can show owner-only affordances (the
+  // "Manage access" button) and detect the viewer's role. The map data
+  // itself doesn't carry role info — that lives on the org doc.
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const { data } = await api.get(`/orgs/${orgId}`);
+        if (!cancelled) setOrgMeta(data);
+      } catch (_) { /* non-fatal */ }
+    })();
+    return () => { cancelled = true; };
+  }, [orgId]);
+
+  const isOwner = orgMeta?.role === "owner";
 
   const load = async (refresh = false) => {
     if (refresh) setRefreshing(true);
@@ -353,6 +371,17 @@ export default function OrgMapPage() {
             >
               {refreshing ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <RefreshCw className="w-3.5 h-3.5" />}
             </button>
+            {isOwner && (
+              <button
+                type="button"
+                onClick={() => setAccessOpen(true)}
+                className="sp-btn sp-btn-ghost text-xs"
+                data-testid="map-access-btn"
+                title="Manage who can see the Mind Map"
+              >
+                <Shield className="w-3.5 h-3.5" /> Access
+              </button>
+            )}
           </div>
         </div>
 
@@ -473,6 +502,9 @@ export default function OrgMapPage() {
           </aside>
         </div>
       </div>
+      {accessOpen && (
+        <AccessManager orgId={orgId} onClose={() => setAccessOpen(false)} />
+      )}
     </div>
   );
 }
@@ -598,6 +630,155 @@ function HeatLegend({ mode, max }) {
           No LLM activity in this window — try widening the time range.
         </div>
       )}
+    </div>
+  );
+}
+
+
+// Modal for the org owner to grant / revoke Mind Map access for each
+// non-owner member. Shows a row per member with a toggle.
+function AccessManager({ orgId, onClose }) {
+  const [members, setMembers] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [savingId, setSavingId] = useState(null);
+
+  const refresh = async () => {
+    setLoading(true);
+    try {
+      const { data } = await api.get(`/orgs/${orgId}/mind-map-access`);
+      setMembers(data.members || []);
+    } catch (err) {
+      toast.error(err?.response?.data?.detail || "Couldn't load member list");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => { refresh(); /* eslint-disable-next-line */ }, [orgId]);
+
+  const toggle = async (m) => {
+    if (m.is_owner) return;
+    setSavingId(m.user_id);
+    try {
+      if (m.has_access) {
+        await api.delete(`/orgs/${orgId}/mind-map-access/${m.user_id}`);
+        toast.success(`Revoked access for ${m.name}`);
+      } else {
+        await api.post(`/orgs/${orgId}/mind-map-access/${m.user_id}`);
+        toast.success(`Granted access to ${m.name}`);
+      }
+      // Optimistic flip locally to avoid a second round-trip
+      setMembers((prev) => prev.map((x) =>
+        x.user_id === m.user_id ? { ...x, has_access: !m.has_access } : x
+      ));
+    } catch (err) {
+      toast.error(err?.response?.data?.detail || "Couldn't update access");
+    } finally {
+      setSavingId(null);
+    }
+  };
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center px-4"
+      style={{ background: "rgba(8,8,12,0.55)", backdropFilter: "blur(10px)" }}
+      data-testid="mind-map-access-modal"
+      onClick={onClose}
+    >
+      <div
+        className="sp-glass rounded-2xl p-5 w-full max-w-md max-h-[80dvh] overflow-y-auto"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="flex items-start justify-between gap-3 mb-3">
+          <div>
+            <div className="text-base font-medium" style={{ color: "var(--fg)" }}>
+              Mind Map access
+            </div>
+            <div className="text-xs sp-subtle mt-0.5">
+              The Mind Map is an owner tool. You can grant access to specific
+              teammates — they'll see the link on the org page and the
+              full graph.
+            </div>
+          </div>
+          <button
+            type="button"
+            onClick={onClose}
+            className="sp-btn sp-btn-ghost text-[11px]"
+            data-testid="access-close-btn"
+          >
+            <X className="w-3.5 h-3.5" />
+          </button>
+        </div>
+
+        {loading ? (
+          <div className="flex items-center gap-2 text-xs sp-subtle py-6 justify-center">
+            <Loader2 className="w-4 h-4 animate-spin" /> Loading members…
+          </div>
+        ) : (
+          <div className="space-y-1.5" data-testid="access-member-list">
+            {members.map((m) => (
+              <div
+                key={m.user_id}
+                className="flex items-center gap-3 p-2.5 rounded-xl"
+                style={{ background: "var(--input-bg)", border: "1px solid var(--input-border)" }}
+                data-testid={`access-row-${m.user_id}`}
+              >
+                <div
+                  className="w-8 h-8 rounded-full flex items-center justify-center shrink-0 text-xs font-medium"
+                  style={{ background: m.is_owner ? "rgba(246,64,0,0.20)" : "var(--input-border)", color: "var(--fg)" }}
+                >
+                  {(m.name || "?").charAt(0).toUpperCase()}
+                </div>
+                <div className="flex-1 min-w-0">
+                  <div className="text-sm truncate" style={{ color: "var(--fg)" }}>
+                    {m.name}
+                    {m.is_owner && (
+                      <span className="ml-2 sp-chip text-[9px]" style={{ borderColor: "rgba(246,64,0,0.35)", color: "var(--fg)" }}>
+                        OWNER
+                      </span>
+                    )}
+                  </div>
+                  <div className="text-[11px] sp-subtle truncate">
+                    {m.email || m.role}
+                  </div>
+                </div>
+                {m.is_owner ? (
+                  <span className="text-[11px] sp-subtle inline-flex items-center gap-1">
+                    <Lock className="w-3 h-3" /> Always
+                  </span>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={() => toggle(m)}
+                    disabled={savingId === m.user_id}
+                    className={`text-[11px] px-2.5 py-1 rounded-full inline-flex items-center gap-1 transition disabled:opacity-50 ${
+                      m.has_access
+                        ? "bg-emerald-500/15 text-emerald-300 hover:bg-emerald-500/25"
+                        : "bg-white/5 sp-subtle hover:bg-white/10"
+                    }`}
+                    data-testid={`access-toggle-${m.user_id}`}
+                    title={m.has_access ? "Revoke Mind Map access" : "Grant Mind Map access"}
+                  >
+                    {savingId === m.user_id ? (
+                      <Loader2 className="w-3 h-3 animate-spin" />
+                    ) : m.has_access ? (
+                      <><Check className="w-3 h-3" /> Has access</>
+                    ) : (
+                      <><UserPlus className="w-3 h-3" /> Grant</>
+                    )}
+                  </button>
+                )}
+              </div>
+            ))}
+            {members.length === 0 && (
+              <div className="text-xs sp-subtle italic text-center py-6">
+                You're the only member of this org right now. Invite teammates
+                from the org page first.
+              </div>
+            )}
+          </div>
+        )}
+      </div>
     </div>
   );
 }
