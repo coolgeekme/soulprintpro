@@ -2,6 +2,7 @@ import React, { useEffect, useRef, useState } from "react";
 import api, { BACKEND_URL } from "../lib/api";
 import { toast } from "sonner";
 import { Sparkles, UploadCloud, Trash2, Save, Image as ImageIcon, X as XIcon, Lock } from "lucide-react";
+import { compressImageFile, formatBytes } from "../lib/imageCompress";
 
 // One self-contained component for the org's brand kit:
 // - primary logo (used for social-image overlay)
@@ -38,11 +39,28 @@ export default function BrandAssetsPanel({ orgId, initial, isOwner = false, onCh
       toast.error("Only the organization owner can change brand logos. Ask the owner to update it.");
       return;
     }
-    if (file.size > 8 * 1024 * 1024) { toast.error("Logo must be 8 MB or smaller"); return; }
     setUploadingKind(kind);
+
+    // Auto-shrink before the 8 MB cap check so users uploading a giant
+    // 12 MP photo of their letterhead still succeed without a ResizeMyImage
+    // detour. SVG / GIF pass through unchanged (compressImageFile is a
+    // no-op for unsupported types).
+    let toUpload = file;
+    try {
+      const r = await compressImageFile(file);
+      toUpload = r.file;
+      if (r.savedBytes > 200 * 1024) {
+        toast.message(`Auto-shrunk logo — saved ${formatBytes(r.savedBytes)}`);
+      }
+    } catch (_) { /* fall back to original */ }
+    if (toUpload.size > 8 * 1024 * 1024) {
+      toast.error("Logo must be 8 MB or smaller (even after auto-shrink)");
+      setUploadingKind("");
+      return;
+    }
     try {
       const fd = new FormData();
-      fd.append("file", file);
+      fd.append("file", toUpload);
       const { data } = await api.post(`/orgs/${orgId}/brand/logo?kind=${kind}`, fd, {
         headers: { "Content-Type": "multipart/form-data" },
       });

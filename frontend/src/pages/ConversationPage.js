@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { useParams, Link, useNavigate } from "react-router-dom";
 import api, { BACKEND_URL } from "../lib/api";
+import { compressImageFiles, formatBytes } from "../lib/imageCompress";
 import TopBar from "../components/TopBar";
 import { toast } from "sonner";
 import { useAuth } from "../context/AuthContext";
@@ -283,29 +284,53 @@ export default function ConversationPage() {
   // drag-and-drop. Validates size + count, builds previews, and appends to
   // the staging tray. Returns true when at least one file was staged so the
   // paste handler knows whether to swallow the event.
-  const stageFiles = (incoming) => {
+  const stageFiles = async (incoming) => {
     const picked = Array.from(incoming || []).filter(Boolean);
     if (!picked.length) return false;
-    const tooBig = picked.find((f) => f.size > 25 * 1024 * 1024);
-    if (tooBig) { toast.error(`${tooBig.name} is too large (max 25 MB)`); return false; }
     if (staged.length + picked.length > 6) {
       toast.error("You can attach at most 6 files per message");
       return false;
     }
-    const additions = picked.map((f) => ({
+
+    // Auto-shrink images BEFORE the 25 MB cap check — turns a 12 MB
+    // phone photo into ~400 KB without the user thinking about it.
+    // Non-images and already-small images pass through unchanged.
+    let compressedResults = [];
+    try {
+      compressedResults = await compressImageFiles(picked);
+    } catch (_) {
+      compressedResults = picked.map((f) => ({ file: f, original: f.size, compressed: f.size, savedBytes: 0, untouched: true }));
+    }
+
+    // Surface a single combined toast for any meaningful savings.
+    const totalSaved = compressedResults.reduce((s, r) => s + (r.savedBytes || 0), 0);
+    if (totalSaved > 200 * 1024) {
+      toast.success(`Auto-shrunk image${compressedResults.filter((r) => r.savedBytes > 0).length > 1 ? "s" : ""} — saved ${formatBytes(totalSaved)}`);
+    }
+
+    const tooBig = compressedResults.find((r) => r.file.size > 25 * 1024 * 1024);
+    if (tooBig) { toast.error(`${tooBig.file.name} is too large (max 25 MB even after auto-shrink)`); return false; }
+
+    const additions = compressedResults.map((r) => {
+      const f = r.file;
       // Paste-from-clipboard images sometimes come through with a generic
       // `image.png` filename — give them a unique-ish name so the user can
       // tell them apart in the staging tray.
-      id: `stg-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-      file: f.name && f.name !== "image.png"
+      const finalFile = f.name && f.name !== "image.png"
         ? f
-        : new File([f], `pasted-${new Date().toISOString().replace(/[:.]/g, "-")}.${(f.type.split("/")[1] || "png")}`, { type: f.type }),
-      previewUrl: f.type.startsWith("image/") ? URL.createObjectURL(f) : "",
-      kind: f.type.startsWith("image/") ? "image"
-            : f.type.startsWith("video/") ? "video"
-            : f.type.startsWith("audio/") ? "audio"
-            : "file",
-    }));
+        : new File([f], `pasted-${new Date().toISOString().replace(/[:.]/g, "-")}.${(f.type.split("/")[1] || "png")}`, { type: f.type });
+      return {
+        id: `stg-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+        file: finalFile,
+        previewUrl: f.type.startsWith("image/") ? URL.createObjectURL(finalFile) : "",
+        kind: f.type.startsWith("image/") ? "image"
+              : f.type.startsWith("video/") ? "video"
+              : f.type.startsWith("audio/") ? "audio"
+              : "file",
+        originalSize: r.original,
+        savedBytes: r.savedBytes || 0,
+      };
+    });
     setStaged((prev) => [...prev, ...additions]);
     return true;
   };
@@ -313,10 +338,10 @@ export default function ConversationPage() {
   // The paperclip button now STAGES files instead of uploading immediately.
   // The user can pick multiple at once (or click again to add more), then
   // type a prompt and hit send — all files go up together in one request.
-  const onFilesPicked = (e) => {
+  const onFilesPicked = async (e) => {
     const picked = Array.from(e.target.files || []);
     e.target.value = "";  // reset so the same file can be re-picked
-    stageFiles(picked);
+    await stageFiles(picked);
   };
 
   // Pasting files (e.g. ⌘V a screenshot, copied PDF, attached image from
@@ -324,11 +349,11 @@ export default function ConversationPage() {
   // actual file blobs on the clipboard. We swallow the event so the textarea
   // doesn't get a stray "[image]" placeholder and instead drop the file(s)
   // into the staging tray, ready to send with the next prompt.
-  const onComposerPaste = (e) => {
+  const onComposerPaste = async (e) => {
     const files = Array.from(e.clipboardData?.files || []);
     if (!files.length) return;  // plain-text paste — let the browser handle it
-    if (stageFiles(files)) {
-      e.preventDefault();
+    e.preventDefault();
+    if (await stageFiles(files)) {
       toast.success(`Pasted ${files.length} file${files.length > 1 ? "s" : ""}`);
     }
   };
@@ -342,11 +367,11 @@ export default function ConversationPage() {
     }
   };
   const onComposerDragLeave = () => setIsDragging(false);
-  const onComposerDrop = (e) => {
+  const onComposerDrop = async (e) => {
     if (!e.dataTransfer?.files?.length) return;
     e.preventDefault();
     setIsDragging(false);
-    stageFiles(Array.from(e.dataTransfer.files));
+    await stageFiles(Array.from(e.dataTransfer.files));
   };
 
   const removeStaged = (id) => {
@@ -1397,7 +1422,14 @@ export default function ConversationPage() {
                   )}
                   <div className="text-[11px] leading-tight max-w-[140px]">
                     <div className="truncate" title={s.file.name}>{s.file.name}</div>
-                    <div className="sp-subtle">{(s.file.size / 1024).toFixed(0)} KB</div>
+                    <div className="sp-subtle">
+                      {formatBytes(s.file.size)}
+                      {s.savedBytes > 0 && (
+                        <span className="text-emerald-300/80 ml-1" title={`Auto-shrunk from ${formatBytes(s.originalSize)}`}>
+                          · saved {formatBytes(s.savedBytes)}
+                        </span>
+                      )}
+                    </div>
                   </div>
                   <button
                     type="button"

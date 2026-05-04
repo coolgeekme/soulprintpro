@@ -14,6 +14,7 @@ import Logo from "../components/Logo";
 import SchedulesPanel from "../components/SchedulesPanel";
 import SoulSuggestionsPanel from "../components/SoulSuggestionsPanel";
 import WorkingIndicator from "../components/WorkingIndicator";
+import { compressImageFiles } from "../lib/imageCompress";
 
 const formatBytes = (n) => {
   if (!n) return "0 B";
@@ -786,28 +787,46 @@ function GeneralChatCard({ orgId, teamId, convId }) {
     ta.style.overflowY = ta.scrollHeight > max ? "auto" : "hidden";
   }, [text]);
 
-  const stageFiles = (incoming) => {
+  const stageFiles = async (incoming) => {
     const picked = Array.from(incoming || []).filter(Boolean);
     if (!picked.length) return false;
-    const tooBig = picked.find((f) => f.size > 25 * 1024 * 1024);
-    if (tooBig) { toast.error(`${tooBig.name} is too large (max 25 MB)`); return false; }
     if (staged.length + picked.length > 6) {
       toast.error("Up to 6 files per upload"); return false;
     }
+    // Auto-shrink images BEFORE the size cap — turns big phone photos
+    // into web-friendly KBs without the user thinking about it.
+    let results = [];
+    try {
+      results = await compressImageFiles(picked);
+    } catch (_) {
+      results = picked.map((f) => ({ file: f, original: f.size, savedBytes: 0, untouched: true }));
+    }
+    const totalSaved = results.reduce((s, r) => s + (r.savedBytes || 0), 0);
+    if (totalSaved > 200 * 1024) {
+      toast.success(`Auto-shrunk image${results.filter((r) => r.savedBytes > 0).length > 1 ? "s" : ""} — saved ${formatBytes(totalSaved)}`);
+    }
+    const tooBig = results.find((r) => r.file.size > 25 * 1024 * 1024);
+    if (tooBig) { toast.error(`${tooBig.file.name} is too large (max 25 MB even after auto-shrink)`); return false; }
     setStaged((prev) => [
       ...prev,
-      ...picked.map((f) => ({
-        id: `stg-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-        file: f.name && f.name !== "image.png" ? f : new File(
+      ...results.map((r) => {
+        const f = r.file;
+        const finalFile = f.name && f.name !== "image.png" ? f : new File(
           [f],
           `pasted-${new Date().toISOString().replace(/[:.]/g, "-")}.${(f.type.split("/")[1] || "png")}`,
-          { type: f.type }),
-        kind: f.type.startsWith("image/") ? "image"
-              : f.type.startsWith("video/") ? "video"
-              : f.type.startsWith("audio/") ? "audio"
-              : "file",
-        previewUrl: f.type.startsWith("image/") ? URL.createObjectURL(f) : "",
-      })),
+          { type: f.type });
+        return {
+          id: `stg-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+          file: finalFile,
+          kind: f.type.startsWith("image/") ? "image"
+                : f.type.startsWith("video/") ? "video"
+                : f.type.startsWith("audio/") ? "audio"
+                : "file",
+          previewUrl: f.type.startsWith("image/") ? URL.createObjectURL(finalFile) : "",
+          originalSize: r.original,
+          savedBytes: r.savedBytes || 0,
+        };
+      }),
     ]);
     return true;
   };
@@ -816,16 +835,16 @@ function GeneralChatCard({ orgId, teamId, convId }) {
   useEffect(() => () => staged.forEach((s) => s.previewUrl && URL.revokeObjectURL(s.previewUrl)),
     /* eslint-disable-next-line react-hooks/exhaustive-deps */ []);
 
-  const onPick = (e) => {
+  const onPick = async (e) => {
     const picked = Array.from(e.target.files || []);
     e.target.value = "";
-    stageFiles(picked);
+    await stageFiles(picked);
   };
-  const onPaste = (e) => {
+  const onPaste = async (e) => {
     const files = Array.from(e.clipboardData?.files || []);
     if (!files.length) return;
-    if (stageFiles(files)) {
-      e.preventDefault();
+    e.preventDefault();
+    if (await stageFiles(files)) {
       toast.success(`Pasted ${files.length} file${files.length > 1 ? "s" : ""}`);
     }
   };
@@ -835,11 +854,11 @@ function GeneralChatCard({ orgId, teamId, convId }) {
       if (!isDragging) setIsDragging(true);
     }
   };
-  const onDrop = (e) => {
+  const onDrop = async (e) => {
     if (!e.dataTransfer?.files?.length) return;
     e.preventDefault();
     setIsDragging(false);
-    stageFiles(Array.from(e.dataTransfer.files));
+    await stageFiles(Array.from(e.dataTransfer.files));
   };
   const removeStaged = (id) => setStaged((prev) => {
     const tgt = prev.find((s) => s.id === id);
@@ -929,6 +948,11 @@ function GeneralChatCard({ orgId, teamId, convId }) {
                 )}
                 <span className="max-w-[180px] truncate" title={s.file.name}>{s.file.name}</span>
                 <span className="sp-subtle">{formatBytes(s.file.size)}</span>
+                {s.savedBytes > 0 && (
+                  <span className="text-emerald-300/80 text-[10px]" title={`Auto-shrunk from ${formatBytes(s.originalSize)}`}>
+                    saved {formatBytes(s.savedBytes)}
+                  </span>
+                )}
                 <button type="button" onClick={() => removeStaged(s.id)} className="sp-subtle hover:text-white"
                         data-testid={`general-remove-staged-${s.id}`}>
                   <XIcon className="w-3 h-3" />
