@@ -1967,14 +1967,42 @@ _EDIT_VERBS_RE = re.compile(
     re.IGNORECASE,
 )
 
+# Phrases like "based on this", "version of this", "inspired by", etc.
+# When the user attaches an image AND uses one of these, they almost always
+# want a NEW image derived from it — not a vision description.
+_IMAGE_DERIVE_RE = re.compile(
+    r"\b(based\s+on|inspired\s+by|derived\s+from|adapted\s+from|"
+    r"version\s+of|variant\s+of|variation\s+of|"
+    r"using\s+this|from\s+this(?:\s+image|\s+photo|\s+picture)?|"
+    r"like\s+this(?:\s+but|\s+except|\s+with)|"
+    r"redesign|reimagine|restyle|recreate|remake|redo)\b",
+    re.IGNORECASE,
+)
+
 def _quick_image_edit_intent(text: str, has_image: bool) -> bool:
-    """Treat as edit intent when (a) the user has just attached an image
-    AND (b) the prompt contains a clear edit/transformation verb. Returns
-    False if no image is in play — fall through to the normal vision/desc
-    path."""
+    """Treat as edit intent when the user has just attached an image AND
+    one of these is true:
+
+    1. The prompt contains a narrow edit verb (add / remove / change / ...).
+    2. The prompt contains an image keyword (banner / poster / Instagram
+       post / ...) AND a creation verb (make / create / generate / ...) —
+       e.g. "make me a 160x600 banner version of this image".
+    3. The prompt contains a derivation phrase (based on / version of /
+       inspired by / redesign / ...).
+
+    Returns False (→ vision-describe path) for plain "describe this" or
+    "summarize what's in here" prompts where no image keyword + verb pair
+    exists.
+    """
     if not has_image or not text:
         return False
-    return bool(_EDIT_VERBS_RE.search(text))
+    if _EDIT_VERBS_RE.search(text):
+        return True
+    if _IMAGE_KEYWORDS_RE.search(text) and _VERB_HINTS_RE.search(text):
+        return True
+    if _IMAGE_DERIVE_RE.search(text):
+        return True
+    return False
 
 async def _generate_bulk_images(
     *, db, conv_id: str, primary_agent_id: str, primary_agent_name: str,
