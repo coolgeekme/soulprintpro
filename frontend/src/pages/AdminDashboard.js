@@ -12,6 +12,7 @@ import {
 import api from "../lib/api";
 import { useAuth } from "../context/AuthContext";
 import TopBar from "../components/TopBar";
+import AdminUsersPanel from "../components/AdminUsersPanel";
 
 /**
  * AdminDashboard — superadmin-only analytics surface.
@@ -386,19 +387,6 @@ export default function AdminDashboard() {
     { key: "created_at", label: "Created",
       render: (r) => r.created_at ? new Date(r.created_at).toLocaleDateString() : "—" },
   ], []);
-  const userCols = useMemo(() => [
-    { key: "email", label: "Email",
-      render: (r) => <span className="flex items-center gap-2">
-        {r.is_superadmin && <ShieldCheck className="w-3 h-3 text-emerald-400" title="Superadmin" />}
-        {r.email}
-      </span> },
-    { key: "name", label: "Name" },
-    { key: "org_count", label: "Orgs", align: "right" },
-    { key: "created_at", label: "Joined",
-      render: (r) => r.created_at ? new Date(r.created_at).toLocaleDateString() : "—" },
-    { key: "last_active_at", label: "Last active",
-      render: (r) => r.last_active_at ? new Date(r.last_active_at).toLocaleDateString() : "—" },
-  ], []);
 
   if (loading) return null;
   if (!user?.is_superadmin) {
@@ -435,7 +423,7 @@ export default function AdminDashboard() {
         {tab === "overview" && <OverviewPanel />}
         {tab === "llm" && <LlmPanel />}
         {tab === "orgs" && <PaginatedTable endpoint="/admin/orgs" columns={orgCols} testidPrefix="admin-org" emptyMsg="No organizations yet." />}
-        {tab === "users" && <PaginatedTable endpoint="/admin/users" columns={userCols} testidPrefix="admin-user" emptyMsg="No users yet." />}
+        {tab === "users" && <AdminUsersPanel currentUserId={user?.id} />}
         {tab === "missions" && <MissionsPanel />}
       </main>
     </div>

@@ -18,14 +18,35 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
+import bcrypt
 from bson import ObjectId
 from fastapi import APIRouter, Depends, HTTPException, Query
+from pydantic import BaseModel, EmailStr
 
 
 def _iso(d):
     if isinstance(d, datetime):
         return d.isoformat()
     return d
+
+
+def _hash_password(p: str) -> str:
+    return bcrypt.hashpw(p.encode(), bcrypt.gensalt()).decode()
+
+
+class UserCreateBody(BaseModel):
+    name: str
+    email: EmailStr
+    password: str
+    is_superadmin: bool = False
+
+
+class UserUpdateBody(BaseModel):
+    name: Optional[str] = None
+    email: Optional[EmailStr] = None
+    password: Optional[str] = None
+    is_superadmin: Optional[bool] = None
+    is_disabled: Optional[bool] = None
 
 
 def make_admin_router(*, db, get_current_user) -> APIRouter:
@@ -326,11 +347,119 @@ def make_admin_router(*, db, get_current_user) -> APIRouter:
                 "email": u.get("email") or "",
                 "name": u.get("name") or "",
                 "is_superadmin": bool(u.get("is_superadmin")),
+                "firebase_uid": u.get("firebase_uid") or "",
+                "firebase_provider": u.get("firebase_provider") or "",
+                "is_disabled": bool(u.get("is_disabled")),
                 "created_at": _iso(u.get("created_at")),
                 "last_active_at": _iso((last_msg or {}).get("timestamp")),
                 "org_count": org_count,
             })
         return {"page": page, "page_size": page_size, "total": total, "rows": rows}
+
+    # ── User CRUD (admin add / edit / delete) ────────────────────────────
+
+    @r.post("/users")
+    async def create_user(body: UserCreateBody, _: dict = Depends(require_superadmin)):
+        """Create a fresh Mongo user record. Password is bcrypt-hashed
+        for the legacy email/password path — Firebase users will get
+        their UID stamped on this record the first time they sign in
+        with the same email (handled by the `upsert_user_for_firebase_claims`
+        link-by-email rule in `firebase_auth.py`)."""
+        email = body.email.lower().strip()
+        if not email:
+            raise HTTPException(400, "Email is required")
+        if len(body.password) < 6:
+            raise HTTPException(400, "Password must be at least 6 characters")
+        existing = await db.users.find_one({"email": email})
+        if existing:
+            raise HTTPException(409, "A user with this email already exists")
+        now = datetime.now(timezone.utc)
+        doc = {
+            "name": (body.name or email.split("@")[0]).strip(),
+            "email": email,
+            "password_hash": _hash_password(body.password),
+            "is_superadmin": bool(body.is_superadmin),
+            "created_at": now,
+        }
+        res = await db.users.insert_one(doc)
+        return {
+            "id": str(res.inserted_id),
+            "email": doc["email"],
+            "name": doc["name"],
+            "is_superadmin": doc["is_superadmin"],
+            "created_at": _iso(now),
+        }
+
+    @r.patch("/users/{user_id}")
+    async def update_user(
+        user_id: str, body: UserUpdateBody, admin: dict = Depends(require_superadmin),
+    ):
+        """Edit a user. Any combination of fields is allowed; omitted
+        fields are left untouched. An admin can NOT remove their own
+        superadmin flag — must be done by another admin."""
+        try:
+            target = await db.users.find_one({"_id": ObjectId(user_id)})
+        except Exception:
+            raise HTTPException(400, "Invalid user id")
+        if not target:
+            raise HTTPException(404, "User not found")
+
+        update: dict = {}
+        if body.name is not None and body.name.strip():
+            update["name"] = body.name.strip()
+        if body.email is not None:
+            new_email = body.email.lower().strip()
+            if new_email != target.get("email"):
+                clash = await db.users.find_one({"email": new_email, "_id": {"$ne": target["_id"]}})
+                if clash:
+                    raise HTTPException(409, "Another user already uses that email")
+                update["email"] = new_email
+        if body.password is not None:
+            if len(body.password) < 6:
+                raise HTTPException(400, "Password must be at least 6 characters")
+            update["password_hash"] = _hash_password(body.password)
+        if body.is_superadmin is not None:
+            if str(target["_id"]) == str(admin["id"]) and body.is_superadmin is False:
+                raise HTTPException(400, "Admins cannot remove their own superadmin flag — ask another admin")
+            update["is_superadmin"] = bool(body.is_superadmin)
+        if body.is_disabled is not None:
+            if str(target["_id"]) == str(admin["id"]) and body.is_disabled is True:
+                raise HTTPException(400, "You cannot disable your own account")
+            update["is_disabled"] = bool(body.is_disabled)
+
+        if not update:
+            raise HTTPException(400, "No fields to update")
+        await db.users.update_one({"_id": target["_id"]}, {"$set": update})
+        fresh = await db.users.find_one({"_id": target["_id"]}, {"password_hash": 0})
+        return {
+            "id": str(fresh["_id"]),
+            "email": fresh.get("email") or "",
+            "name": fresh.get("name") or "",
+            "is_superadmin": bool(fresh.get("is_superadmin")),
+            "is_disabled": bool(fresh.get("is_disabled")),
+        }
+
+    @r.delete("/users/{user_id}")
+    async def delete_user(
+        user_id: str, admin: dict = Depends(require_superadmin),
+    ):
+        """Permanently remove a user record + all org memberships they
+        held. Conversations / messages they posted are preserved
+        (anonymised by the missing user record, since the rest of the
+        system identifies them by id only). Refuses to delete the
+        currently-signed-in admin so they don't lock themselves out."""
+        try:
+            target = await db.users.find_one({"_id": ObjectId(user_id)})
+        except Exception:
+            raise HTTPException(400, "Invalid user id")
+        if not target:
+            raise HTTPException(404, "User not found")
+        if str(target["_id"]) == str(admin["id"]):
+            raise HTTPException(400, "You cannot delete your own account")
+        # Cascade: drop org memberships so the user vanishes from member lists.
+        await db.org_members.delete_many({"user_id": str(target["_id"])})
+        await db.users.delete_one({"_id": target["_id"]})
+        return {"ok": True, "deleted_id": str(target["_id"])}
 
     # ── Recent missions ──────────────────────────────────────────────────
     @r.get("/missions")

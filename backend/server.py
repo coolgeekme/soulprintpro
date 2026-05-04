@@ -218,6 +218,12 @@ async def get_current_user(request: Request) -> dict:
         except Exception as exc:
             logger.exception("Firebase upsert failed: %s", exc)
             raise HTTPException(401, "Could not resolve Firebase user")
+        # Block disabled accounts (set by an admin via /api/admin/users/{id}).
+        # Re-fetch the doc to check the live flag — the upsert helper
+        # doesn't expose it.
+        live = await db.users.find_one({"_id": ObjectId(resolved["id"])}, {"is_disabled": 1})
+        if live and live.get("is_disabled"):
+            raise HTTPException(403, "Account disabled. Contact your administrator.")
         # Capture user-context headers for the agent prompt block.
         tz = (request.headers.get("X-User-Timezone") or "").strip()[:80]
         loc = (request.headers.get("X-User-Location") or "").strip()[:200]
@@ -234,6 +240,8 @@ async def get_current_user(request: Request) -> dict:
     user = await db.users.find_one({"_id": ObjectId(payload["sub"])})
     if not user:
         raise HTTPException(401, "User not found")
+    if user.get("is_disabled"):
+        raise HTTPException(403, "Account disabled. Contact your administrator.")
     # Capture user-context headers (timezone + optional location) so deeper
     # helpers can pick them up via _USER_CTX without threading a request param.
     tz = (request.headers.get("X-User-Timezone") or "").strip()[:80]
@@ -525,6 +533,8 @@ async def login(body: LoginBody, resp: Response):
     user = await db.users.find_one({"email": email})
     if not user or not verify_password(body.password, user["password_hash"]):
         raise HTTPException(401, "Invalid email or password")
+    if user.get("is_disabled"):
+        raise HTTPException(403, "Account disabled. Contact your administrator.")
     uid = str(user["_id"])
     token = create_access_token(uid, email)
     set_auth_cookies(resp, token)
