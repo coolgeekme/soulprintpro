@@ -3,7 +3,7 @@ import { useParams, Link, useNavigate } from "react-router-dom";
 import api, { BACKEND_URL } from "../lib/api";
 import TopBar from "../components/TopBar";
 import { toast } from "sonner";
-import { Plus, Users, ArrowRight, Copy, UserPlus, FileText, Image as ImageIcon, FileBox, Trash2, UploadCloud, Download, File as FileIcon, MessageCircle, Pencil, Save, X as XIcon, RefreshCw, Megaphone, Paperclip, Send, Loader2, Rocket, Network } from "lucide-react";
+import { Plus, Users, ArrowRight, Copy, UserPlus, FileText, Image as ImageIcon, FileBox, Trash2, UploadCloud, Download, File as FileIcon, MessageCircle, Pencil, Save, X as XIcon, RefreshCw, Megaphone, Paperclip, Send, Loader2, Rocket, Network, Minimize2 } from "lucide-react";
 import BrandAssetsPanel from "../components/BrandAssetsPanel";
 import ActivityOverview from "../components/ActivityOverview";
 import DocumentsPanel from "../components/DocumentsPanel";
@@ -14,7 +14,7 @@ import Logo from "../components/Logo";
 import SchedulesPanel from "../components/SchedulesPanel";
 import SoulSuggestionsPanel from "../components/SoulSuggestionsPanel";
 import WorkingIndicator from "../components/WorkingIndicator";
-import { compressImageFiles } from "../lib/imageCompress";
+import { compressImageFile } from "../lib/imageCompress";
 
 const formatBytes = (n) => {
   if (!n) return "0 B";
@@ -787,30 +787,27 @@ function GeneralChatCard({ orgId, teamId, convId }) {
     ta.style.overflowY = ta.scrollHeight > max ? "auto" : "hidden";
   }, [text]);
 
-  const stageFiles = async (incoming) => {
+  const stageFiles = (incoming) => {
     const picked = Array.from(incoming || []).filter(Boolean);
     if (!picked.length) return false;
     if (staged.length + picked.length > 6) {
       toast.error("Up to 6 files per upload"); return false;
     }
-    // Auto-shrink images BEFORE the size cap — turns big phone photos
-    // into web-friendly KBs without the user thinking about it.
-    let results = [];
-    try {
-      results = await compressImageFiles(picked);
-    } catch (_) {
-      results = picked.map((f) => ({ file: f, original: f.size, savedBytes: 0, untouched: true }));
+    // Images can stage up to 100 MB so the user has room to click Shrink.
+    // Non-images keep the 25 MB cap (no client-side compression available).
+    const tooBig = picked.find((f) => {
+      const cap = f.type?.startsWith("image/") ? 100 * 1024 * 1024 : 25 * 1024 * 1024;
+      return f.size > cap;
+    });
+    if (tooBig) {
+      toast.error(tooBig.type?.startsWith("image/")
+        ? `${tooBig.name} is over 100 MB — please shrink it externally first.`
+        : `${tooBig.name} is too large (max 25 MB)`);
+      return false;
     }
-    const totalSaved = results.reduce((s, r) => s + (r.savedBytes || 0), 0);
-    if (totalSaved > 200 * 1024) {
-      toast.success(`Auto-shrunk image${results.filter((r) => r.savedBytes > 0).length > 1 ? "s" : ""} — saved ${formatBytes(totalSaved)}`);
-    }
-    const tooBig = results.find((r) => r.file.size > 25 * 1024 * 1024);
-    if (tooBig) { toast.error(`${tooBig.file.name} is too large (max 25 MB even after auto-shrink)`); return false; }
     setStaged((prev) => [
       ...prev,
-      ...results.map((r) => {
-        const f = r.file;
+      ...picked.map((f) => {
         const finalFile = f.name && f.name !== "image.png" ? f : new File(
           [f],
           `pasted-${new Date().toISOString().replace(/[:.]/g, "-")}.${(f.type.split("/")[1] || "png")}`,
@@ -823,28 +820,50 @@ function GeneralChatCard({ orgId, teamId, convId }) {
                 : f.type.startsWith("audio/") ? "audio"
                 : "file",
           previewUrl: f.type.startsWith("image/") ? URL.createObjectURL(finalFile) : "",
-          originalSize: r.original,
-          savedBytes: r.savedBytes || 0,
+          originalSize: 0,
+          savedBytes: 0,
         };
       }),
     ]);
     return true;
   };
 
+  // On-demand shrink, triggered by the chip-level "Shrink" button.
+  const shrinkStaged = async (id) => {
+    const tgt = staged.find((s) => s.id === id);
+    if (!tgt || tgt.kind !== "image" || tgt.savedBytes > 0) return;
+    try {
+      const r = await compressImageFile(tgt.file);
+      if (r.untouched || r.savedBytes <= 0) {
+        toast.message("Already as small as it gets.");
+        return;
+      }
+      const newPreview = URL.createObjectURL(r.file);
+      setStaged((prev) => prev.map((s) => {
+        if (s.id !== id) return s;
+        if (s.previewUrl) URL.revokeObjectURL(s.previewUrl);
+        return { ...s, file: r.file, previewUrl: newPreview, originalSize: r.original, savedBytes: r.savedBytes };
+      }));
+      toast.success(`Shrunk — saved ${formatBytes(r.savedBytes)}`);
+    } catch (_) {
+      toast.error("Couldn't shrink this image.");
+    }
+  };
+
   // Free preview blob URLs when the card unmounts
   useEffect(() => () => staged.forEach((s) => s.previewUrl && URL.revokeObjectURL(s.previewUrl)),
     /* eslint-disable-next-line react-hooks/exhaustive-deps */ []);
 
-  const onPick = async (e) => {
+  const onPick = (e) => {
     const picked = Array.from(e.target.files || []);
     e.target.value = "";
-    await stageFiles(picked);
+    stageFiles(picked);
   };
-  const onPaste = async (e) => {
+  const onPaste = (e) => {
     const files = Array.from(e.clipboardData?.files || []);
     if (!files.length) return;
-    e.preventDefault();
-    if (await stageFiles(files)) {
+    if (stageFiles(files)) {
+      e.preventDefault();
       toast.success(`Pasted ${files.length} file${files.length > 1 ? "s" : ""}`);
     }
   };
@@ -854,11 +873,11 @@ function GeneralChatCard({ orgId, teamId, convId }) {
       if (!isDragging) setIsDragging(true);
     }
   };
-  const onDrop = async (e) => {
+  const onDrop = (e) => {
     if (!e.dataTransfer?.files?.length) return;
     e.preventDefault();
     setIsDragging(false);
-    await stageFiles(Array.from(e.dataTransfer.files));
+    stageFiles(Array.from(e.dataTransfer.files));
   };
   const removeStaged = (id) => setStaged((prev) => {
     const tgt = prev.find((s) => s.id === id);
@@ -871,6 +890,15 @@ function GeneralChatCard({ orgId, teamId, convId }) {
     if (uploading) return;
     const trimmed = (text || "").trim();
     if (staged.length === 0 && !trimmed) return;
+    // Send-time hard cap (server enforces 25 MB per file). Clean error
+    // here so a too-big un-shrunk image doesn't 413 server-side.
+    const stillBig = staged.find((s) => s.file.size > 25 * 1024 * 1024);
+    if (stillBig) {
+      toast.error(stillBig.kind === "image"
+        ? `${stillBig.file.name} is over 25 MB — click Shrink on the chip first, then send.`
+        : `${stillBig.file.name} is too large (max 25 MB)`);
+      return;
+    }
     setUploading(true);
     try {
       if (staged.length > 0) {
@@ -949,9 +977,21 @@ function GeneralChatCard({ orgId, teamId, convId }) {
                 <span className="max-w-[180px] truncate" title={s.file.name}>{s.file.name}</span>
                 <span className="sp-subtle">{formatBytes(s.file.size)}</span>
                 {s.savedBytes > 0 && (
-                  <span className="text-emerald-300/80 text-[10px]" title={`Auto-shrunk from ${formatBytes(s.originalSize)}`}>
+                  <span className="text-emerald-300/80 text-[10px]" title={`Shrunk from ${formatBytes(s.originalSize)}`}>
                     saved {formatBytes(s.savedBytes)}
                   </span>
+                )}
+                {s.kind === "image" && s.savedBytes === 0 && s.file.size > 500 * 1024 && (
+                  <button
+                    type="button"
+                    onClick={() => shrinkStaged(s.id)}
+                    className="sp-btn sp-btn-ghost text-[10px] px-1.5 py-0.5 shrink-0"
+                    title="Re-encode this image at ~80% quality (max 2048px) before sending"
+                    data-testid={`general-shrink-staged-${s.id}`}
+                  >
+                    <Minimize2 className="w-3 h-3" />
+                    Shrink
+                  </button>
                 )}
                 <button type="button" onClick={() => removeStaged(s.id)} className="sp-subtle hover:text-white"
                         data-testid={`general-remove-staged-${s.id}`}>

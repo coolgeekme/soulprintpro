@@ -1,11 +1,11 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { useParams, Link, useNavigate } from "react-router-dom";
 import api, { BACKEND_URL } from "../lib/api";
-import { compressImageFiles, formatBytes } from "../lib/imageCompress";
+import { compressImageFile, formatBytes } from "../lib/imageCompress";
 import TopBar from "../components/TopBar";
 import { toast } from "sonner";
 import { useAuth } from "../context/AuthContext";
-import { Send, Trash2, AtSign, Users, Repeat, Search, X, Lock, Film, Globe, ArrowUp, ArrowDown, UserPlus, Paperclip, FileText, File as FileIcon, Download, CornerDownRight, Megaphone, Pencil, Sparkles, Loader2, Rocket, Square } from "lucide-react";
+import { Send, Trash2, AtSign, Users, Repeat, Search, X, Lock, Film, Globe, ArrowUp, ArrowDown, UserPlus, Paperclip, FileText, File as FileIcon, Download, CornerDownRight, Megaphone, Pencil, Sparkles, Loader2, Rocket, Square, Minimize2 } from "lucide-react";
 import LinkPreviewCard from "../components/LinkPreviewCard";
 import { MissionCard } from "../components/MissionCard";
 import { MessageActions } from "../components/MessageActions";
@@ -284,35 +284,28 @@ export default function ConversationPage() {
   // drag-and-drop. Validates size + count, builds previews, and appends to
   // the staging tray. Returns true when at least one file was staged so the
   // paste handler knows whether to swallow the event.
-  const stageFiles = async (incoming) => {
+  const stageFiles = (incoming) => {
     const picked = Array.from(incoming || []).filter(Boolean);
     if (!picked.length) return false;
     if (staged.length + picked.length > 6) {
       toast.error("You can attach at most 6 files per message");
       return false;
     }
-
-    // Auto-shrink images BEFORE the 25 MB cap check — turns a 12 MB
-    // phone photo into ~400 KB without the user thinking about it.
-    // Non-images and already-small images pass through unchanged.
-    let compressedResults = [];
-    try {
-      compressedResults = await compressImageFiles(picked);
-    } catch (_) {
-      compressedResults = picked.map((f) => ({ file: f, original: f.size, compressed: f.size, savedBytes: 0, untouched: true }));
+    // Images get a much higher staging cap (100 MB) so users have a
+    // chance to click Shrink. Non-images still cap at 25 MB at staging
+    // (no client-side compression available for video / pdf / docs).
+    const tooBig = picked.find((f) => {
+      const cap = f.type?.startsWith("image/") ? 100 * 1024 * 1024 : 25 * 1024 * 1024;
+      return f.size > cap;
+    });
+    if (tooBig) {
+      toast.error(tooBig.type?.startsWith("image/")
+        ? `${tooBig.name} is over 100 MB — please shrink it externally first.`
+        : `${tooBig.name} is too large (max 25 MB)`);
+      return false;
     }
 
-    // Surface a single combined toast for any meaningful savings.
-    const totalSaved = compressedResults.reduce((s, r) => s + (r.savedBytes || 0), 0);
-    if (totalSaved > 200 * 1024) {
-      toast.success(`Auto-shrunk image${compressedResults.filter((r) => r.savedBytes > 0).length > 1 ? "s" : ""} — saved ${formatBytes(totalSaved)}`);
-    }
-
-    const tooBig = compressedResults.find((r) => r.file.size > 25 * 1024 * 1024);
-    if (tooBig) { toast.error(`${tooBig.file.name} is too large (max 25 MB even after auto-shrink)`); return false; }
-
-    const additions = compressedResults.map((r) => {
-      const f = r.file;
+    const additions = picked.map((f) => {
       // Paste-from-clipboard images sometimes come through with a generic
       // `image.png` filename — give them a unique-ish name so the user can
       // tell them apart in the staging tray.
@@ -327,21 +320,54 @@ export default function ConversationPage() {
               : f.type.startsWith("video/") ? "video"
               : f.type.startsWith("audio/") ? "audio"
               : "file",
-        originalSize: r.original,
-        savedBytes: r.savedBytes || 0,
+        // Shrink-tracking: filled in by `shrinkStaged` after the user
+        // explicitly asks for compression. Zero by default == "original".
+        originalSize: 0,
+        savedBytes: 0,
       };
     });
     setStaged((prev) => [...prev, ...additions]);
     return true;
   };
 
-  // The paperclip button now STAGES files instead of uploading immediately.
+  // On-demand client-side shrink for a single staged image. Triggered
+  // by the user clicking the "Shrink" chip on an image preview in the
+  // staged tray — we never compress silently so users stay in control
+  // of what actually gets uploaded.
+  const shrinkStaged = async (id) => {
+    const tgt = staged.find((s) => s.id === id);
+    if (!tgt || tgt.kind !== "image" || tgt.savedBytes > 0) return;
+    try {
+      const r = await compressImageFile(tgt.file);
+      if (r.untouched || r.savedBytes <= 0) {
+        toast.message("Already as small as it gets.");
+        return;
+      }
+      const newPreview = URL.createObjectURL(r.file);
+      setStaged((prev) => prev.map((s) => {
+        if (s.id !== id) return s;
+        if (s.previewUrl) URL.revokeObjectURL(s.previewUrl);
+        return {
+          ...s,
+          file: r.file,
+          previewUrl: newPreview,
+          originalSize: r.original,
+          savedBytes: r.savedBytes,
+        };
+      }));
+      toast.success(`Shrunk — saved ${formatBytes(r.savedBytes)}`);
+    } catch (err) {
+      toast.error("Couldn't shrink this image.");
+    }
+  };
+
+  // The paperclip button STAGES files instead of uploading immediately.
   // The user can pick multiple at once (or click again to add more), then
   // type a prompt and hit send — all files go up together in one request.
-  const onFilesPicked = async (e) => {
+  const onFilesPicked = (e) => {
     const picked = Array.from(e.target.files || []);
     e.target.value = "";  // reset so the same file can be re-picked
-    await stageFiles(picked);
+    stageFiles(picked);
   };
 
   // Pasting files (e.g. ⌘V a screenshot, copied PDF, attached image from
@@ -349,11 +375,11 @@ export default function ConversationPage() {
   // actual file blobs on the clipboard. We swallow the event so the textarea
   // doesn't get a stray "[image]" placeholder and instead drop the file(s)
   // into the staging tray, ready to send with the next prompt.
-  const onComposerPaste = async (e) => {
+  const onComposerPaste = (e) => {
     const files = Array.from(e.clipboardData?.files || []);
     if (!files.length) return;  // plain-text paste — let the browser handle it
-    e.preventDefault();
-    if (await stageFiles(files)) {
+    if (stageFiles(files)) {
+      e.preventDefault();
       toast.success(`Pasted ${files.length} file${files.length > 1 ? "s" : ""}`);
     }
   };
@@ -367,11 +393,11 @@ export default function ConversationPage() {
     }
   };
   const onComposerDragLeave = () => setIsDragging(false);
-  const onComposerDrop = async (e) => {
+  const onComposerDrop = (e) => {
     if (!e.dataTransfer?.files?.length) return;
     e.preventDefault();
     setIsDragging(false);
-    await stageFiles(Array.from(e.dataTransfer.files));
+    stageFiles(Array.from(e.dataTransfer.files));
   };
 
   const removeStaged = (id) => {
@@ -539,6 +565,16 @@ export default function ConversationPage() {
 
     // ── Multi-file upload path ────────────────────────────────────────────
     if (staged.length > 0) {
+      // Send-time hard cap (server enforces 25 MB per file). If a user
+      // attached a big image and skipped clicking Shrink, surface a
+      // clean error here instead of letting the request 413 server-side.
+      const stillBig = staged.find((s) => s.file.size > 25 * 1024 * 1024);
+      if (stillBig) {
+        toast.error(stillBig.kind === "image"
+          ? `${stillBig.file.name} is over 25 MB — click Shrink on the chip first, then send.`
+          : `${stillBig.file.name} is too large (max 25 MB)`);
+        return;
+      }
       setUploading(true);
       const fd = new FormData();
       fd.append("text", text || "");
@@ -1425,12 +1461,28 @@ export default function ConversationPage() {
                     <div className="sp-subtle">
                       {formatBytes(s.file.size)}
                       {s.savedBytes > 0 && (
-                        <span className="text-emerald-300/80 ml-1" title={`Auto-shrunk from ${formatBytes(s.originalSize)}`}>
+                        <span className="text-emerald-300/80 ml-1" title={`Shrunk from ${formatBytes(s.originalSize)}`}>
                           · saved {formatBytes(s.savedBytes)}
                         </span>
                       )}
                     </div>
                   </div>
+                  {/* Per-image "Shrink" button — only shown for image
+                      files over 500 KB that haven't been shrunk yet.
+                      Keeps the control explicit so users decide when
+                      compression happens. */}
+                  {s.kind === "image" && s.savedBytes === 0 && s.file.size > 500 * 1024 && (
+                    <button
+                      type="button"
+                      onClick={() => shrinkStaged(s.id)}
+                      className="sp-btn sp-btn-ghost text-[10px] px-1.5 py-0.5 shrink-0"
+                      title="Re-encode this image at ~80% quality (max 2048px) to make it smaller before sending. Original is discarded on send."
+                      data-testid={`shrink-staged-${s.id}`}
+                    >
+                      <Minimize2 className="w-3 h-3" />
+                      Shrink
+                    </button>
+                  )}
                   <button
                     type="button"
                     onClick={() => removeStaged(s.id)}
