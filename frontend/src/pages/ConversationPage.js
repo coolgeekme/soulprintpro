@@ -9,6 +9,7 @@ import LinkPreviewCard from "../components/LinkPreviewCard";
 import { MissionCard } from "../components/MissionCard";
 import { MessageActions } from "../components/MessageActions";
 import WorkingIndicator from "../components/WorkingIndicator";
+import DynamicIntelligencePicker, { useRoutingMode } from "../components/DynamicIntelligencePicker";
 
 const formatTime = (ts) => {
   try { return new Date(ts).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }); }
@@ -50,16 +51,13 @@ export default function ConversationPage() {
   // state is hoisted above the early-return below so the hook order stays
   // stable across renders (React's rules-of-hooks).
   const [agentsExpanded, setAgentsExpanded] = useState(false);
-  // Smart-route opt-out — stored per-tab so power users who just want to
-  // chat can flip it off without affecting other sessions. The SDK only
-  // ever fires on HIGH-confidence media intents, but some users prefer
-  // raw chat regardless.
-  const [smartRouteOff, setSmartRouteOff] = useState(
-    () => sessionStorage.getItem("sp:smart-route-off") === "1"
-  );
   // Track the most recent image URL in the thread so the SDK's
   // image_edit detection can fire ("change this to portrait").
   const lastImageUrlRef = useRef(null);
+  // Reactive routing mode — driven by the DynamicIntelligencePicker.
+  // "auto" = SDK auto-picks per request | "off" = pure chat |
+  // "<model-key>" = lock to that model for matching media types.
+  const [routingMode] = useRoutingMode();
   // Rolling AI summary for long threads (Chief of Staff chats get long
   // fast). When available, a compact recap card is shown above the
   // message list and older messages fold behind a "Show all" toggle.
@@ -434,13 +432,16 @@ export default function ConversationPage() {
     }
 
     // ── Smart routing via the SoulPrint Dynamic Intelligence SDK ─────────
-    // Detect whether the user wants a chat reply, an image, a video, or
-    // music — and if it's a media intent, route through the universal
-    // /generate-media endpoint with the SDK's chosen model. Keeps the
-    // existing chat path for plain conversation. Skipped when the user is
-    // attaching files (those go through /upload below) or when the
-    // composer is empty / a slash command was already handled.
-    if (staged.length === 0 && trimmed && trimmed.length <= 800 && !smartRouteOff) {
+    // Three modes are supported (driven by DynamicIntelligencePicker):
+    //   "off"          → never auto-route; everything stays plain chat
+    //   "auto"         → SDK detects intent + picks the best model
+    //   "<model-key>"  → SDK still detects intent type; if the type
+    //                    matches the locked model's type, we use that
+    //                    model. Mismatches fall through to chat.
+    if (
+      staged.length === 0 && trimmed && trimmed.length <= 800
+      && routingMode !== "off"
+    ) {
       try {
         const { route } = await import("../lib/spe-sdk/index.js");
         const decision = route({
@@ -450,16 +451,32 @@ export default function ConversationPage() {
             lastImageUrl: lastImageUrlRef.current || null,
           },
         });
-        // Only act on HIGH-confidence media intents — anything ambiguous
-        // falls through to normal chat so we don't surprise users.
+        // Decide which model to actually use
+        let modelKey = null;
+        let mediaType = null;
+        let routeReason = "";
         if (decision.confidence === "high"
-            && (decision.intent.type === "image" || decision.intent.type === "video")
-            && decision.model) {
-          const mediaType = decision.intent.type;
-          const modelKey = decision.model.key;
+            && (decision.intent.type === "image" || decision.intent.type === "video")) {
+          mediaType = decision.intent.type;
+          if (routingMode === "auto") {
+            modelKey = decision.model?.key || null;
+            routeReason = `Dynamic Intelligence · ${decision.model?.name || modelKey}`;
+          } else {
+            // User locked a specific model. Only honor it if the locked
+            // model's type matches the detected intent.
+            try {
+              const { data } = await api.get("/media/models");
+              const m = (data?.models || []).find(x => x.key === routingMode);
+              if (m && m.type === mediaType) {
+                modelKey = m.key;
+                routeReason = `Locked default · ${m.label}`;
+              }
+            } catch { /* ignore — fall through to chat */ }
+          }
+        }
+        if (modelKey && mediaType) {
           const wasText = text;
           setText("");
-          // Optimistic user bubble so the SDK choice feels instant
           const icon = mediaType === "video" ? "🎬" : "🎨";
           const opt = {
             id: `tmp-sm-${Date.now()}`,
@@ -469,7 +486,7 @@ export default function ConversationPage() {
             sender_name: user.name,
             text: `${icon} ${trimmed}`,
             timestamp: new Date().toISOString(),
-            _smart_route_hint: `${decision.reason} → ${decision.model.name}`,
+            _smart_route_hint: routeReason,
           };
           setMessages((prev) => [...prev, opt]);
           try {
@@ -481,12 +498,11 @@ export default function ConversationPage() {
               const without = prev.filter((m) => m.id !== opt.id);
               return [...without, data];
             });
-            toast.success(`${decision.reason} · ${decision.model.name}`,
-                          { duration: 3500 });
+            toast.success(routeReason, { duration: 3500 });
           } catch (err) {
             setMessages((prev) => prev.filter((m) => m.id !== opt.id));
             setText(wasText);
-            toast.error(err?.response?.data?.detail || "Smart routing failed — try again");
+            toast.error(err?.response?.data?.detail || "Routing failed — try again");
           }
           return;
         }
@@ -1400,31 +1416,13 @@ export default function ConversationPage() {
               </div>
             </div>
           )}
-          {/* Smart-route toggle — when ON, image/video requests get
-              auto-routed via the SDK to the best kie.ai model. Quiet
-              one-line affordance — power users can flip it off if they
-              just want to chat freely about visuals without triggering
-              generation. */}
-          <div className="mb-2 flex items-center justify-end gap-2 text-[10px] sp-subtle">
-            <button
-              type="button"
-              onClick={() => {
-                const next = !smartRouteOff;
-                setSmartRouteOff(next);
-                sessionStorage.setItem("sp:smart-route-off", next ? "1" : "0");
-              }}
-              className="inline-flex items-center gap-1.5 px-2 py-1 rounded-full hover:text-white transition"
-              title={smartRouteOff
-                ? "Smart routing OFF — your text won't auto-trigger image/video gen."
-                : "Smart routing ON — phrases like 'create a video of…' route to the best model."}
-              data-testid="smart-route-toggle"
-            >
-              <span
-                className={`w-1.5 h-1.5 rounded-full ${smartRouteOff ? "bg-white/30" : "bg-emerald-400"}`}
-                style={smartRouteOff ? {} : { boxShadow: "0 0 6px rgba(16,185,129,0.7)" }}
-              />
-              Smart routing {smartRouteOff ? "off" : "on"}
-            </button>
+          {/* Dynamic Intelligence picker — prominent branded chip + dropdown.
+              Lets users either keep DI auto-routing on (default) or lock a
+              specific default model (Veo for all videos, Suno for all music,
+              etc.). Lives right above the composer so the routing mode is
+              always visible and one click away. */}
+          <div className="mb-2 flex items-center justify-end gap-2">
+            <DynamicIntelligencePicker />
           </div>
           {looksLikeMission && (
             <div className="mb-2 sp-glass rounded-xl px-3 py-2 flex items-center gap-2 sp-fade-up"
