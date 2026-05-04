@@ -71,6 +71,12 @@ from missions import (
     make_missions_router,
     build_tools as _build_mission_tools,
 )
+from firebase_auth import (
+    firebase_enabled as _firebase_enabled,
+    _looks_like_firebase_token,
+    verify_firebase_id_token,
+    upsert_user_for_firebase_claims,
+)
 
 ROOT_DIR = Path(__file__).parent
 UPLOAD_DIR = ROOT_DIR / "uploads"
@@ -196,6 +202,29 @@ async def get_current_user(request: Request) -> dict:
             token = auth[7:]
     if not token:
         raise HTTPException(401, "Not authenticated")
+
+    # Firebase ID tokens have a recognisable issuer — sniff first so we
+    # never feed a Firebase RS256 token to the legacy HS256 decoder. If
+    # Firebase isn't configured on this backend, every token is treated
+    # as legacy (so existing JWT users keep working untouched).
+    user_doc: Optional[dict] = None
+    if _firebase_enabled() and _looks_like_firebase_token(token):
+        try:
+            claims = verify_firebase_id_token(token)
+        except ValueError as exc:
+            raise HTTPException(401, str(exc))
+        try:
+            resolved = await upsert_user_for_firebase_claims(db, claims)
+        except Exception as exc:
+            logger.exception("Firebase upsert failed: %s", exc)
+            raise HTTPException(401, "Could not resolve Firebase user")
+        # Capture user-context headers for the agent prompt block.
+        tz = (request.headers.get("X-User-Timezone") or "").strip()[:80]
+        loc = (request.headers.get("X-User-Location") or "").strip()[:200]
+        _USER_CTX.set({"timezone": tz, "location": loc})
+        return resolved
+
+    # Legacy HS256 path — unchanged.
     try:
         payload = jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALGO])
     except jwt.ExpiredSignatureError:

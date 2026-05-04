@@ -1,4 +1,5 @@
 import axios from "axios";
+import { getCurrentIdToken, FIREBASE_ENABLED } from "./firebase";
 
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
 const TOKEN_KEY = "soulprint_token";
@@ -97,10 +98,20 @@ const api = axios.create({
 // We additionally tag every request with the user's timezone (always
 // available via Intl) and — if previously granted — their approximate
 // location, so agents can quote "today" / "your local time" correctly.
-api.interceptors.request.use((config) => {
-  const t = getToken();
+api.interceptors.request.use(async (config) => {
   config.headers = config.headers || {};
-  if (t) config.headers.Authorization = `Bearer ${t}`;
+  // Prefer a fresh Firebase ID token when the user signed in via Firebase
+  // (Google or Firebase email/password). The Firebase SDK auto-refreshes
+  // tokens once they get within 5 min of expiry, so getIdToken() returns
+  // a valid token without any network call most of the time.
+  let bearer = "";
+  if (FIREBASE_ENABLED) {
+    try { bearer = await getCurrentIdToken(); } catch { bearer = ""; }
+  }
+  // Fallback to the legacy bcrypt/HS256 token for users who signed in via
+  // the existing email+password flow (no Firebase session active).
+  if (!bearer) bearer = getToken();
+  if (bearer) config.headers.Authorization = `Bearer ${bearer}`;
   config.headers["X-User-Timezone"] = userTimezone();
   const loc = getCachedLocation();
   if (loc) config.headers["X-User-Location"] = loc;
