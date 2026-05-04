@@ -1,18 +1,20 @@
 """org_map.py — Mind-map data builder.
 
 Aggregates the existing collections (organizations, teams, conversations,
-messages, missions, social_posts, llm_telemetry) into a `{nodes, edges}`
-payload for the Phase 1 force-directed graph view at `/app/org/:id/map`.
+messages, missions, social_posts, llm_calls) into a `{nodes, edges}`
+payload for the force-directed graph view at `/app/org/:id/map`.
 
-Design notes:
-  • Read-only. No schema changes — just queries against existing data.
-  • The graph is intentionally COARSE: Soul → Teams → Agents → recent
-    Missions/Conversations. We keep node count under ~200 so D3 stays
-    snappy on the lowest-end laptops.
-  • Activity weight = message_count + mission_event_count over the
-    selected window. Drives node size on the client.
-  • LLM cost (when telemetry has rows in the window) drives node color
-    intensity — owner instantly sees where money is being spent.
+Phase 1 (graph topology + activity sizing) — DONE.
+Phase 2 (cost & latency heatmap)             — THIS FILE.
+
+Phase 2 additions:
+  • Per-node ``cost`` and ``time_ms`` so the client can paint a heatmap
+    colored by spend or wall-clock latency.
+  • Org-level ``cost_max`` / ``time_ms_max`` so the client can normalise
+    each node's intensity into a 0..1 ratio without re-walking the data.
+  • Read from ``llm_calls`` (the actual telemetry collection) using the
+    real field names — earlier code referenced a non-existent
+    ``llm_telemetry`` collection so cost was always 0.
 """
 from __future__ import annotations
 
@@ -37,15 +39,17 @@ async def build_org_map(db, org_id: str, *, window_days: int = 30) -> dict:
 
     Shape:
         {
-          "org": {id, name, soul, brand_assets},
+          "org": {id, name, soul},
           "window_days": int,
           "generated_at": iso,
           "totals": {
               "teams", "agents_active", "conversations",
               "messages", "missions", "social_posts",
               "llm_cost_usd", "llm_input_tokens", "llm_output_tokens",
+              "llm_calls", "llm_time_ms",
+              "cost_max", "time_ms_max",     # for heatmap normalisation
           },
-          "nodes": [{id, label, kind, weight, cost, ...}],
+          "nodes": [{id, label, kind, weight, cost, time_ms, calls, ...}],
           "edges": [{source, target, weight, kind}]
         }
     """
@@ -64,6 +68,8 @@ async def build_org_map(db, org_id: str, *, window_days: int = 30) -> dict:
         "kind": "soul",
         "weight": 22,
         "cost": 0.0,
+        "time_ms": 0,
+        "calls": 0,
         "subtitle": (org.get("soul_description") or "")[:160],
     }
 
@@ -74,18 +80,22 @@ async def build_org_map(db, org_id: str, *, window_days: int = 30) -> dict:
     teams_cursor = db.teams.find({"org_id": org_id}, {"name": 1, "agents": 1})
     teams = await teams_cursor.to_list(50)
 
-    # Index team_id -> set of conversation_ids (used to count messages)
+    # Index team_id -> set of conversation_ids (used to count messages and
+    # to attribute LLM spend back to a team via conversation_id).
     team_conv_ids: dict[str, list[str]] = {}
+    conv_to_team: dict[str, str] = {}
     all_conv_ids: list[str] = []
     for t in teams:
         tid = str(t["_id"])
         conv_cursor = db.conversations.find({"team_id": tid}, {"_id": 1})
         cids = [str(c["_id"]) async for c in conv_cursor]
         team_conv_ids[tid] = cids
+        for c in cids:
+            conv_to_team[c] = tid
         all_conv_ids.extend(cids)
 
     # Message counts by conversation (windowed)
-    msg_match = {"conversation_id": {"$in": all_conv_ids}}
+    msg_match: dict = {"conversation_id": {"$in": all_conv_ids}}
     if start is not None:
         msg_match["timestamp"] = {"$gte": start}
     msg_counts: dict[str, int] = {}
@@ -95,6 +105,7 @@ async def build_org_map(db, org_id: str, *, window_days: int = 30) -> dict:
             {"$group": {"_id": "$conversation_id", "n": {"$sum": 1}}},
         ]):
             msg_counts[r["_id"]] = r["n"]
+
     # Per-agent message volume (windowed) — for agent node size
     agent_msg_counts: dict[str, int] = {}
     if all_conv_ids:
@@ -105,38 +116,101 @@ async def build_org_map(db, org_id: str, *, window_days: int = 30) -> dict:
         ]):
             agent_msg_counts[r["_id"]] = r["n"]
 
-    # LLM telemetry totals (windowed) — drives color intensity
-    tele_match: dict = {"org_id": org_id}
+    # ── LLM telemetry (windowed) — drives cost+time heatmap ───────────
+    # Real collection is `llm_calls`. Fields: cost_usd, prompt_tokens,
+    # completion_tokens, latency_ms, created_at.
+    tele_match: dict = {"org_id": org_id, "ok": {"$ne": False}}
     if start is not None:
-        tele_match["timestamp"] = {"$gte": start}
-    cost_by_team: dict[str, float] = {}
-    cost_by_user: dict[str, float] = {}
-    total_cost = 0.0
-    total_in = 0
-    total_out = 0
-    async for r in db.llm_telemetry.aggregate([
-        {"$match": tele_match},
+        tele_match["created_at"] = {"$gte": start}
+
+    # Per-conversation aggregation (we resolve team_id via conv_to_team)
+    cost_by_conv: dict[str, float] = {}
+    time_by_conv: dict[str, int] = {}
+    calls_by_conv: dict[str, int] = {}
+    async for r in db.llm_calls.aggregate([
+        {"$match": {**tele_match, "conversation_id": {"$ne": None}}},
         {"$group": {
-            "_id": {"team_id": "$team_id", "user_id": "$user_id"},
-            "cost": {"$sum": "$cost"},
-            "in_tokens": {"$sum": "$input_tokens"},
-            "out_tokens": {"$sum": "$output_tokens"},
+            "_id": "$conversation_id",
+            "cost": {"$sum": "$cost_usd"},
+            "time_ms": {"$sum": "$latency_ms"},
+            "calls": {"$sum": 1},
         }},
     ]):
-        cost = float(r.get("cost") or 0.0)
-        tin = int(r.get("in_tokens") or 0)
-        tou = int(r.get("out_tokens") or 0)
-        tid = (r["_id"] or {}).get("team_id") or ""
-        uid = (r["_id"] or {}).get("user_id") or ""
-        if tid:
-            cost_by_team[tid] = cost_by_team.get(tid, 0.0) + cost
-        if uid:
-            cost_by_user[uid] = cost_by_user.get(uid, 0.0) + cost
-        total_cost += cost
-        total_in += tin
-        total_out += tou
+        cid = r["_id"]
+        cost_by_conv[cid] = float(r.get("cost") or 0.0)
+        time_by_conv[cid] = int(r.get("time_ms") or 0)
+        calls_by_conv[cid] = int(r.get("calls") or 0)
 
-    # Build team & agent nodes
+    # Per-agent aggregation (across the whole org — covers chat & missions)
+    cost_by_agent: dict[str, float] = {}
+    time_by_agent: dict[str, int] = {}
+    calls_by_agent: dict[str, int] = {}
+    async for r in db.llm_calls.aggregate([
+        {"$match": {**tele_match, "agent_id": {"$ne": None}}},
+        {"$group": {
+            "_id": "$agent_id",
+            "cost": {"$sum": "$cost_usd"},
+            "time_ms": {"$sum": "$latency_ms"},
+            "calls": {"$sum": 1},
+        }},
+    ]):
+        aid = r["_id"]
+        cost_by_agent[aid] = float(r.get("cost") or 0.0)
+        time_by_agent[aid] = int(r.get("time_ms") or 0)
+        calls_by_agent[aid] = int(r.get("calls") or 0)
+
+    # Per-user aggregation
+    cost_by_user: dict[str, float] = {}
+    time_by_user: dict[str, int] = {}
+    async for r in db.llm_calls.aggregate([
+        {"$match": {**tele_match, "user_id": {"$ne": None}}},
+        {"$group": {
+            "_id": "$user_id",
+            "cost": {"$sum": "$cost_usd"},
+            "time_ms": {"$sum": "$latency_ms"},
+        }},
+    ]):
+        uid = r["_id"]
+        cost_by_user[uid] = float(r.get("cost") or 0.0)
+        time_by_user[uid] = int(r.get("time_ms") or 0)
+
+    # Org-level totals (covers calls without conversation_id too — e.g.
+    # standalone routing/soul-gen/style-guide calls).
+    total_cost = 0.0
+    total_time_ms = 0
+    total_calls = 0
+    total_in = 0
+    total_out = 0
+    async for r in db.llm_calls.aggregate([
+        {"$match": tele_match},
+        {"$group": {
+            "_id": None,
+            "cost": {"$sum": "$cost_usd"},
+            "time_ms": {"$sum": "$latency_ms"},
+            "calls": {"$sum": 1},
+            "in_tokens": {"$sum": "$prompt_tokens"},
+            "out_tokens": {"$sum": "$completion_tokens"},
+        }},
+    ]):
+        total_cost = float(r.get("cost") or 0.0)
+        total_time_ms = int(r.get("time_ms") or 0)
+        total_calls = int(r.get("calls") or 0)
+        total_in = int(r.get("in_tokens") or 0)
+        total_out = int(r.get("out_tokens") or 0)
+
+    # Roll conversation-level metrics up to teams.
+    cost_by_team: dict[str, float] = {}
+    time_by_team: dict[str, int] = {}
+    calls_by_team: dict[str, int] = {}
+    for cid, c in cost_by_conv.items():
+        tid = conv_to_team.get(cid)
+        if not tid:
+            continue
+        cost_by_team[tid] = cost_by_team.get(tid, 0.0) + c
+        time_by_team[tid] = time_by_team.get(tid, 0) + time_by_conv.get(cid, 0)
+        calls_by_team[tid] = calls_by_team.get(tid, 0) + calls_by_conv.get(cid, 0)
+
+    # ── Build team & agent nodes ──────────────────────────────────────
     agents_seen: set[str] = set()
     total_messages = 0
     for t in teams:
@@ -145,13 +219,17 @@ async def build_org_map(db, org_id: str, *, window_days: int = 30) -> dict:
         team_msgs = sum(msg_counts.get(c, 0) for c in cids)
         total_messages += team_msgs
         team_cost = cost_by_team.get(tid, 0.0)
+        team_time = time_by_team.get(tid, 0)
+        team_calls = calls_by_team.get(tid, 0)
         team_node = {
             "id": f"team:{tid}",
             "label": t.get("name") or "Team",
             "kind": "team",
             "weight": 13 + min(8, team_msgs // 10),
             "cost": round(team_cost, 4),
-            "subtitle": f"{team_msgs} msgs · ${team_cost:.2f}",
+            "time_ms": team_time,
+            "calls": team_calls,
+            "subtitle": f"{team_msgs} msgs · ${team_cost:.2f} · {team_calls} LLM calls",
             "conv_count": len(cids),
         }
         nodes.append(team_node)
@@ -160,7 +238,10 @@ async def build_org_map(db, org_id: str, *, window_days: int = 30) -> dict:
 
         for aid in (t.get("agents") or []):
             n = agent_msg_counts.get(aid, 0)
-            if n == 0 and aid in agents_seen:
+            a_cost = cost_by_agent.get(aid, 0.0)
+            a_time = time_by_agent.get(aid, 0)
+            a_calls = calls_by_agent.get(aid, 0)
+            if n == 0 and a_calls == 0 and aid in agents_seen:
                 # Agent already added under another team and inactive here
                 continue
             agents_seen.add(aid)
@@ -169,8 +250,10 @@ async def build_org_map(db, org_id: str, *, window_days: int = 30) -> dict:
                 "label": aid.replace("-", " ").title(),
                 "kind": "agent",
                 "weight": 6 + min(6, n // 4),
-                "cost": 0.0,
-                "subtitle": f"{n} msgs",
+                "cost": round(a_cost, 4),
+                "time_ms": a_time,
+                "calls": a_calls,
+                "subtitle": f"{n} msgs · ${a_cost:.2f}",
                 "agent_id": aid,
             }
             nodes.append(agent_node)
@@ -178,8 +261,6 @@ async def build_org_map(db, org_id: str, *, window_days: int = 30) -> dict:
                           "weight": max(1, n), "kind": "agent-of"})
 
     # ── Recent missions (last N) ──────────────────────────────────────
-    # Use `_id` for sort/window since `created_at` may be absent on older
-    # documents — ObjectId encodes the creation timestamp anyway.
     miss_match: dict = {"org_id": org_id}
     if start is not None:
         miss_match["_id"] = {"$gte": ObjectId.from_datetime(start)}
@@ -188,20 +269,41 @@ async def build_org_map(db, org_id: str, *, window_days: int = 30) -> dict:
         {"goal": 1, "status": 1, "team_id": 1, "lead_agent_id": 1, "created_at": 1},
     ).sort("_id", -1).limit(40)
     missions = await miss_cursor.to_list(40)
+    # Per-mission cost/time
+    mission_costs: dict[str, dict] = {}
+    if missions:
+        mids = [str(m["_id"]) for m in missions]
+        async for r in db.llm_calls.aggregate([
+            {"$match": {**tele_match, "mission_id": {"$in": mids}}},
+            {"$group": {
+                "_id": "$mission_id",
+                "cost": {"$sum": "$cost_usd"},
+                "time_ms": {"$sum": "$latency_ms"},
+                "calls": {"$sum": 1},
+            }},
+        ]):
+            mission_costs[r["_id"]] = {
+                "cost": float(r.get("cost") or 0.0),
+                "time_ms": int(r.get("time_ms") or 0),
+                "calls": int(r.get("calls") or 0),
+            }
+
     for m in missions:
         mid = str(m["_id"])
         team_link = f"team:{m.get('team_id')}" if m.get("team_id") else org_node["id"]
-        # If the team isn't on the map (deleted), fall back to soul
         if not any(n["id"] == team_link for n in nodes):
             team_link = org_node["id"]
+        mc = mission_costs.get(mid, {})
         m_node = {
             "id": f"mission:{mid}",
             "label": (m.get("goal") or "Mission")[:60],
             "kind": "mission",
             "status": m.get("status") or "unknown",
             "weight": 8,
-            "cost": 0.0,
-            "subtitle": f"{m.get('status') or '?'} · lead {m.get('lead_agent_id') or '?'}",
+            "cost": round(mc.get("cost", 0.0), 4),
+            "time_ms": int(mc.get("time_ms", 0)),
+            "calls": int(mc.get("calls", 0)),
+            "subtitle": f"{m.get('status') or '?'} · ${mc.get('cost', 0.0):.2f}",
         }
         nodes.append(m_node)
         edges.append({"source": team_link, "target": m_node["id"],
@@ -226,6 +328,8 @@ async def build_org_map(db, org_id: str, *, window_days: int = 30) -> dict:
             "platform": p.get("platform") or "any",
             "weight": 5,
             "cost": 0.0,
+            "time_ms": 0,
+            "calls": 0,
             "subtitle": f"{p.get('platform') or 'any'} · {p.get('status') or 'draft'}",
         }
         nodes.append(p_node)
@@ -235,7 +339,6 @@ async def build_org_map(db, org_id: str, *, window_days: int = 30) -> dict:
     # ── Active members (top spenders by LLM cost) ─────────────────────
     if cost_by_user:
         top_users = sorted(cost_by_user.items(), key=lambda x: x[1], reverse=True)[:10]
-        # Resolve names
         ids = [u for u, _ in top_users]
         oid_list: list[ObjectId] = []
         for u in ids:
@@ -255,12 +358,18 @@ async def build_org_map(db, org_id: str, *, window_days: int = 30) -> dict:
                 "kind": "user",
                 "weight": 7 + min(5, int(cost * 30)),
                 "cost": round(cost, 4),
+                "time_ms": int(time_by_user.get(uid, 0)),
+                "calls": 0,
                 "subtitle": f"${cost:.2f} · {label}",
             }
             nodes.append(u_node)
             edges.append({"source": org_node["id"], "target": u_node["id"],
                           "weight": max(1, int(cost * 100)),
                           "kind": "member-of"})
+
+    # ── Heatmap normalisation maxes ───────────────────────────────────
+    cost_max = max((n.get("cost") or 0.0) for n in nodes) if nodes else 0.0
+    time_ms_max = max((n.get("time_ms") or 0) for n in nodes) if nodes else 0
 
     return {
         "org": {
@@ -280,6 +389,10 @@ async def build_org_map(db, org_id: str, *, window_days: int = 30) -> dict:
             "llm_cost_usd": round(total_cost, 4),
             "llm_input_tokens": total_in,
             "llm_output_tokens": total_out,
+            "llm_calls": total_calls,
+            "llm_time_ms": total_time_ms,
+            "cost_max": round(float(cost_max), 4),
+            "time_ms_max": int(time_ms_max),
         },
         "nodes": nodes,
         "edges": edges,

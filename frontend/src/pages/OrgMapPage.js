@@ -5,6 +5,7 @@ import { toast } from "sonner";
 import {
   Loader2, ArrowLeft, Sparkles, RefreshCw, Network, Users, Bot,
   FileText, Send, MessageCircle, DollarSign, Hash, Megaphone,
+  Activity, Flame, Timer,
 } from "lucide-react";
 import ForceGraph2D from "react-force-graph-2d";
 import WorkingIndicator from "../components/WorkingIndicator";
@@ -28,6 +29,54 @@ const WINDOW_OPTIONS = [
   { value: 90, label: "90d" },
   { value: 0,  label: "All" },
 ];
+
+// Phase 2 — view modes. "Activity" keeps the original kind-coloured nodes;
+// "Cost" and "Time" replace each node's fill with a heatmap shade based on
+// the node's value relative to the org's max in that window.
+const VIEW_MODES = [
+  { value: "activity", label: "Activity", icon: Activity },
+  { value: "cost",     label: "Cost",     icon: Flame },
+  { value: "time",     label: "Time",     icon: Timer },
+];
+
+// 5-stop heatmap (cool gray → amber → red). We interpolate linearly in RGB
+// space — close enough at this scale and avoids pulling in a colour lib.
+const HEAT_STOPS = [
+  { t: 0.00, c: [60,  64,  76]   },  // cool slate (no spend)
+  { t: 0.20, c: [80,  100, 140] },   // dim blue
+  { t: 0.50, c: [220, 150, 60]  },   // amber
+  { t: 0.80, c: [240, 90,  50]  },   // hot orange
+  { t: 1.00, c: [200, 30,  40]  },   // deep red
+];
+
+function _lerp(a, b, k) { return a + (b - a) * k; }
+
+function heatColor(t) {
+  // t is 0..1; we sample the gradient.
+  const x = Math.max(0, Math.min(1, t));
+  for (let i = 0; i < HEAT_STOPS.length - 1; i++) {
+    const A = HEAT_STOPS[i], B = HEAT_STOPS[i + 1];
+    if (x >= A.t && x <= B.t) {
+      const k = (x - A.t) / Math.max(1e-9, B.t - A.t);
+      const r = Math.round(_lerp(A.c[0], B.c[0], k));
+      const g = Math.round(_lerp(A.c[1], B.c[1], k));
+      const b = Math.round(_lerp(A.c[2], B.c[2], k));
+      return `rgb(${r},${g},${b})`;
+    }
+  }
+  const last = HEAT_STOPS[HEAT_STOPS.length - 1].c;
+  return `rgb(${last[0]},${last[1]},${last[2]})`;
+}
+
+function formatMs(ms) {
+  if (!ms) return "0s";
+  if (ms < 1000) return `${ms} ms`;
+  const s = ms / 1000;
+  if (s < 60) return `${s.toFixed(1)}s`;
+  const m = s / 60;
+  if (m < 60) return `${m.toFixed(1)}m`;
+  return `${(m / 60).toFixed(1)}h`;
+}
 
 function formatUSD(n) {
   if (!n) return "$0";
@@ -63,6 +112,7 @@ export default function OrgMapPage() {
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [windowDays, setWindowDays] = useState(30);
+  const [viewMode, setViewMode] = useState("activity"); // "activity" | "cost" | "time"
   const [selected, setSelected] = useState(null);
   const [size, setSize] = useState({ w: 800, h: 600 });
 
@@ -106,6 +156,25 @@ export default function OrgMapPage() {
     return 4 + Math.sqrt(w) * 2.0;
   };
 
+  // Heatmap intensity for the active view mode. Returns 0..1.
+  // For Activity mode we don't paint a heatmap (we keep kind colors), so
+  // we return null and the painter falls back to KIND_STYLES.
+  const heatRatio = (node) => {
+    if (viewMode === "cost") {
+      const max = data?.totals?.cost_max || 0;
+      if (max <= 0) return null;
+      const v = node.cost || 0;
+      return v / max;
+    }
+    if (viewMode === "time") {
+      const max = data?.totals?.time_ms_max || 0;
+      if (max <= 0) return null;
+      const v = node.time_ms || 0;
+      return v / max;
+    }
+    return null;
+  };
+
   // Custom node painter. Coordinates here are in graph-space; force-graph
   // applies its own zoom transform on top. To make text + glyphs render
   // at a roughly CONSTANT screen size regardless of zoom, we divide by
@@ -113,13 +182,25 @@ export default function OrgMapPage() {
   const paintNode = (node, ctx, globalScale) => {
     const style = KIND_STYLES[node.kind] || KIND_STYLES.agent;
     const r = nodeRadius(node);
+    // Base fill comes from the kind palette for Activity mode. In Cost /
+    // Time modes we replace it with the heatmap shade so the eye lands
+    // immediately on hot nodes. The Soul stays orange in any mode (it's
+    // the org's identity, not a metric).
+    const ratio = heatRatio(node);
+    let fill = style.fill;
+    let stroke = style.stroke;
+    if (ratio !== null && node.kind !== "soul") {
+      fill = heatColor(ratio);
+      // Lift the stroke a touch lighter than the fill for definition
+      stroke = ratio > 0.7 ? "rgba(255,255,255,0.55)" : "rgba(255,255,255,0.18)";
+    }
     // Filled circle
     ctx.beginPath();
     ctx.arc(node.x, node.y, r, 0, 2 * Math.PI, false);
-    ctx.fillStyle = style.fill;
+    ctx.fillStyle = fill;
     ctx.fill();
     ctx.lineWidth = 1.5 / globalScale;
-    ctx.strokeStyle = node.id === selected?.id ? "#FFFFFF" : style.stroke;
+    ctx.strokeStyle = node.id === selected?.id ? "#FFFFFF" : stroke;
     ctx.stroke();
     // Glyph — kept at a constant screen size so it stays legible at any
     // zoom level (regardless of the node's graph-unit radius).
@@ -197,6 +278,15 @@ export default function OrgMapPage() {
     setTimeout(() => fg.zoomToFit?.(400, 90), 700);
   }, [data]);
 
+  // Force the canvas to redraw when the view mode flips so nodes
+  // recolor immediately (without it the user has to drag/zoom for the
+  // heatmap to apply on settled graphs).
+  useEffect(() => {
+    const fg = fgRef.current;
+    if (!fg) return;
+    try { fg.refresh?.(); } catch (_) { /* no-op */ }
+  }, [viewMode]);
+
   const totals = data?.totals || {};
 
   return (
@@ -222,7 +312,24 @@ export default function OrgMapPage() {
             <Network className="w-4 h-4 text-orange-400" />
             <span>{data?.org?.name || "Mind map"}</span>
           </h1>
-          <div className="ml-auto flex items-center gap-1.5">
+          <div className="ml-auto flex items-center gap-1.5 flex-wrap justify-end">
+            <div className="sp-glass rounded-lg p-1 flex items-center gap-0.5" data-testid="view-mode-picker">
+              {VIEW_MODES.map(opt => {
+                const Icon = opt.icon;
+                return (
+                  <button
+                    key={opt.value}
+                    type="button"
+                    onClick={() => setViewMode(opt.value)}
+                    className={`px-2.5 py-1 text-[11px] rounded inline-flex items-center gap-1 ${viewMode === opt.value ? "bg-orange-500/30 text-white" : "sp-subtle hover:text-white"}`}
+                    data-testid={`view-mode-${opt.value}`}
+                    title={`Color nodes by ${opt.label.toLowerCase()}`}
+                  >
+                    <Icon className="w-3 h-3" /> {opt.label}
+                  </button>
+                );
+              })}
+            </div>
             <div className="sp-glass rounded-lg p-1 flex items-center gap-0.5" data-testid="window-picker">
               {WINDOW_OPTIONS.map(opt => (
                 <button
@@ -327,23 +434,34 @@ export default function OrgMapPage() {
                 <div>
                   <div className="text-xs uppercase tracking-widest sp-subtle mb-1">About this map</div>
                   <p className="text-sm leading-relaxed sp-subtle">
-                    Your org's brain at a glance. Bigger nodes = more activity in the selected window.
-                    Click any node for a deeper view — or use the time picker to zoom into the last day,
-                    week, month, or quarter.
+                    {viewMode === "activity" && "Bigger nodes = more activity in the selected window. Click any node for a deeper view, or switch to Cost / Time to see where spend and latency concentrate."}
+                    {viewMode === "cost" && "Nodes are tinted by how much LLM cost they accumulated in the selected window — gray = idle, red = the hottest spender."}
+                    {viewMode === "time" && "Nodes are tinted by how much LLM wall-clock time they consumed — gray = idle, red = the slowest / heaviest."}
                   </p>
                 </div>
-                <div className="sp-glass rounded-lg p-3 space-y-1.5 text-xs">
-                  <div className="text-[10px] uppercase tracking-widest sp-subtle mb-1">Legend</div>
-                  {Object.entries(KIND_STYLES).map(([k, s]) => (
-                    <div key={k} className="flex items-center gap-2">
-                      <span
-                        className="inline-block w-3 h-3 rounded-full"
-                        style={{ background: s.fill, border: `1.5px solid ${s.stroke}` }}
-                      />
-                      <span className="capitalize">{k}</span>
-                    </div>
-                  ))}
-                </div>
+
+                {viewMode === "activity" && (
+                  <div className="sp-glass rounded-lg p-3 space-y-1.5 text-xs" data-testid="map-legend-kinds">
+                    <div className="text-[10px] uppercase tracking-widest sp-subtle mb-1">Legend</div>
+                    {Object.entries(KIND_STYLES).map(([k, s]) => (
+                      <div key={k} className="flex items-center gap-2">
+                        <span
+                          className="inline-block w-3 h-3 rounded-full"
+                          style={{ background: s.fill, border: `1.5px solid ${s.stroke}` }}
+                        />
+                        <span className="capitalize">{k}</span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                {viewMode !== "activity" && (
+                  <HeatLegend
+                    mode={viewMode}
+                    max={viewMode === "cost" ? (totals.cost_max ?? 0) : (totals.time_ms_max ?? 0)}
+                  />
+                )}
+
                 {data?.org?.soul && (
                   <div className="sp-glass rounded-lg p-3 text-xs leading-relaxed">
                     <div className="text-[10px] uppercase tracking-widest sp-subtle mb-1">Company Soul</div>
@@ -407,6 +525,20 @@ function NodeDetail({ node, orgId, onClose }) {
           <span className="sp-subtle text-xs">on LLM</span>
         </div>
       )}
+      {(node.time_ms ?? 0) > 0 && (
+        <div className="flex items-center gap-2 text-sm" data-testid="map-node-time">
+          <Timer className="w-3.5 h-3.5 text-cyan-400" />
+          <span className="tabular-nums" style={{ color: "var(--fg)" }}>{formatMs(node.time_ms)}</span>
+          <span className="sp-subtle text-xs">LLM wall-clock</span>
+        </div>
+      )}
+      {(node.calls ?? 0) > 0 && (
+        <div className="flex items-center gap-2 text-sm" data-testid="map-node-calls">
+          <Hash className="w-3.5 h-3.5 text-purple-300" />
+          <span className="tabular-nums" style={{ color: "var(--fg)" }}>{node.calls.toLocaleString()}</span>
+          <span className="sp-subtle text-xs">LLM calls</span>
+        </div>
+      )}
       {node.kind === "mission" && node.status && (
         <div className="flex items-center gap-2 text-sm">
           <span className="sp-chip text-[10px]">{node.status}</span>
@@ -426,6 +558,45 @@ function NodeDetail({ node, orgId, onClose }) {
         >
           <Send className="w-3.5 h-3.5" /> Jump in
         </Link>
+      )}
+    </div>
+  );
+}
+
+
+// Compact horizontal heatmap legend. Shows the gradient + min/mid/max
+// labels so the user can read absolute values, not just relative shade.
+function HeatLegend({ mode, max }) {
+  const stops = [0, 0.25, 0.5, 0.75, 1];
+  const fmt = (t) => {
+    if (!max) return "—";
+    if (mode === "cost") return formatUSD(max * t);
+    return formatMs(Math.round(max * t));
+  };
+  const gradient = HEAT_STOPS
+    .map((s) => `${heatColor(s.t)} ${Math.round(s.t * 100)}%`)
+    .join(", ");
+  return (
+    <div className="sp-glass rounded-lg p-3 space-y-2 text-xs" data-testid={`heat-legend-${mode}`}>
+      <div className="flex items-center justify-between">
+        <span className="text-[10px] uppercase tracking-widest sp-subtle">
+          {mode === "cost" ? "Cost intensity" : "Time intensity"}
+        </span>
+        <span className="text-[10px] sp-subtle tabular-nums">peak {fmt(1)}</span>
+      </div>
+      <div
+        className="w-full h-2 rounded-full"
+        style={{ background: `linear-gradient(90deg, ${gradient})` }}
+      />
+      <div className="flex justify-between text-[10px] sp-subtle tabular-nums">
+        {stops.map((t) => (
+          <span key={t}>{fmt(t)}</span>
+        ))}
+      </div>
+      {!max && (
+        <div className="text-[10px] sp-subtle italic">
+          No LLM activity in this window — try widening the time range.
+        </div>
       )}
     </div>
   );
