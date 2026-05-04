@@ -98,19 +98,22 @@ export default function OrgMapPage() {
     return () => { ro.disconnect(); window.removeEventListener("resize", update); };
   }, []);
 
+  // Compute a *visual* node radius (graph units). We compress the raw
+  // backend weight via sqrt so the Soul (~22) doesn't visually dwarf
+  // Posts (~5). End result: Soul ~13, Team ~10–11, Agent ~8, Post ~7.
+  const nodeRadius = (node) => {
+    const w = Math.max(1, node.weight || 6);
+    return 4 + Math.sqrt(w) * 2.0;
+  };
+
   // Custom node painter. Coordinates here are in graph-space; force-graph
   // applies its own zoom transform on top. To make text + glyphs render
   // at a roughly CONSTANT screen size regardless of zoom, we divide by
-  // globalScale (the standard pattern). We do NOT cap the result — the
-  // cap caused huge labels at high zoom levels because it forced the
-  // graph-units font size to stay large.
+  // globalScale for screen-pinned text.
   const paintNode = (node, ctx, globalScale) => {
     const style = KIND_STYLES[node.kind] || KIND_STYLES.agent;
-    // Radius shrinks slightly with zoom-in so big nodes don't dominate
-    // when the user drills in. Bottoms out so it's always visible.
-    const r = Math.max(3, (node.weight || 8));
-    // Filled circle (graph-coord radius — visual size auto-scales with
-    // the canvas zoom transform).
+    const r = nodeRadius(node);
+    // Filled circle
     ctx.beginPath();
     ctx.arc(node.x, node.y, r, 0, 2 * Math.PI, false);
     ctx.fillStyle = style.fill;
@@ -118,37 +121,50 @@ export default function OrgMapPage() {
     ctx.lineWidth = 1.5 / globalScale;
     ctx.strokeStyle = node.id === selected?.id ? "#FFFFFF" : style.stroke;
     ctx.stroke();
-    // Glyph — sized to fit the circle, in GRAPH units so it scales with
-    // the node automatically (no division by globalScale).
+    // Glyph — kept at a constant screen size so it stays legible at any
+    // zoom level (regardless of the node's graph-unit radius).
     ctx.fillStyle = style.text;
-    const glyphSize = r * 0.85;
-    ctx.font = `bold ${glyphSize}px Inter, sans-serif`;
+    const glyphPxScreen = Math.max(10, Math.min(18, r * globalScale * 0.7));
+    const glyphPxGraph = glyphPxScreen / globalScale;
+    ctx.font = `600 ${glyphPxGraph}px Inter, sans-serif`;
     ctx.textAlign = "center";
     ctx.textBaseline = "middle";
     ctx.fillText(style.glyph, node.x, node.y);
-    // Label below the node. Use the inverse-scale formula so text stays
-    // ~12 SCREEN pixels regardless of zoom. Hide labels that would be
-    // too small to read (zoom way out) and skip cluttery labels for
-    // less-important nodes.
+    // Label below the node. Truncate aggressively + only show important
+    // labels until the user zooms in or hovers/selects a node — this
+    // prevents the dense overlap we saw on dense graphs.
     const isImportant = node.kind === "soul" || node.kind === "team" ||
                         node.id === selected?.id;
-    if (globalScale > 0.7 || isImportant) {
-      const label = (node.label || "").slice(0, 32);
-      const fontPxScreen = 12;            // desired screen size
-      const fontPxGraph = fontPxScreen / globalScale;
-      ctx.font = `${fontPxGraph}px Inter, sans-serif`;
-      const padX = 4 / globalScale;
-      const padY = 2 / globalScale;
-      const tw = ctx.measureText(label).width;
-      const lh = fontPxGraph;
-      const labelTop = node.y + r + 5 / globalScale;
-      ctx.fillStyle = "rgba(20,20,28,0.78)";
-      ctx.fillRect(node.x - tw / 2 - padX, labelTop,
-                   tw + padX * 2, lh + padY * 2);
-      ctx.fillStyle = "#FFFFFF";
-      ctx.textBaseline = "top";
-      ctx.fillText(label, node.x, labelTop + padY);
+    const showLabel = isImportant || globalScale > 1.4;
+    if (!showLabel) return;
+    const raw = (node.label || "").trim();
+    const max = node.kind === "soul" ? 28 : 20;
+    const label = raw.length > max ? raw.slice(0, max - 1) + "…" : raw;
+    const fontPxScreen = node.kind === "soul" ? 13 : 11;
+    const fontPxGraph = fontPxScreen / globalScale;
+    ctx.font = `500 ${fontPxGraph}px Inter, sans-serif`;
+    const padX = 5 / globalScale;
+    const padY = 3 / globalScale;
+    const tw = ctx.measureText(label).width;
+    const lh = fontPxGraph;
+    const labelTop = node.y + r + 6 / globalScale;
+    ctx.fillStyle = "rgba(18,18,24,0.82)";
+    // Rounded background pill for the label
+    const bx = node.x - tw / 2 - padX;
+    const by = labelTop;
+    const bw = tw + padX * 2;
+    const bh = lh + padY * 2;
+    const br = Math.min(bh / 2, 4 / globalScale);
+    if (ctx.roundRect) {
+      ctx.beginPath();
+      ctx.roundRect(bx, by, bw, bh, br);
+      ctx.fill();
+    } else {
+      ctx.fillRect(bx, by, bw, bh);
     }
+    ctx.fillStyle = "#FFFFFF";
+    ctx.textBaseline = "top";
+    ctx.fillText(label, node.x, labelTop + padY);
   };
 
   const graphData = useMemo(() => {
@@ -164,11 +180,21 @@ export default function OrgMapPage() {
     };
   }, [data]);
 
-  // Cool the simulation gradually so it settles into a nice pose
+  // Cool the simulation gradually so it settles into a nice pose.
+  // Also inject custom force tunings via the imperative ref so nodes
+  // spread out nicely and labels don't overlap.
   useEffect(() => {
     const fg = fgRef.current;
     if (!fg || !data) return;
-    setTimeout(() => fg.zoomToFit?.(400, 60), 600);
+    try {
+      const linkF = fg.d3Force?.("link");
+      if (linkF?.distance) linkF.distance(75);
+      const chargeF = fg.d3Force?.("charge");
+      if (chargeF?.strength) chargeF.strength(-260);
+      // Reheat so the new forces actually apply
+      fg.d3ReheatSimulation?.();
+    } catch (_) { /* no-op */ }
+    setTimeout(() => fg.zoomToFit?.(400, 90), 700);
   }, [data]);
 
   const totals = data?.totals || {};
@@ -263,20 +289,17 @@ export default function OrgMapPage() {
                 nodeCanvasObject={paintNode}
                 nodePointerAreaPaint={(node, color, ctx) => {
                   ctx.fillStyle = color;
-                  const r = (node.weight || 8);
+                  const r = nodeRadius(node);
                   ctx.beginPath();
                   ctx.arc(node.x, node.y, r, 0, 2 * Math.PI, false);
                   ctx.fill();
                 }}
-                linkColor={() => "rgba(180,180,200,0.18)"}
-                linkWidth={(l) => Math.min(3, 0.4 + Math.log10((l.value || 1) + 1))}
-                cooldownTicks={120}
-                d3AlphaDecay={0.0228}
-                d3VelocityDecay={0.4}
-                // Spread nodes more by setting a stronger repulsion + a
-                // longer base link distance so the graph doesn't pile up
-                // on the Soul node.
-                onEngineStop={() => fgRef.current?.zoomToFit?.(400, 80)}
+                linkColor={() => "rgba(180,180,200,0.22)"}
+                linkWidth={(l) => Math.min(2.5, 0.4 + Math.log10((l.value || 1) + 1))}
+                cooldownTicks={140}
+                d3AlphaDecay={0.022}
+                d3VelocityDecay={0.32}
+                onEngineStop={() => fgRef.current?.zoomToFit?.(400, 90)}
                 onNodeClick={(node) => {
                   setSelected(node);
                   fgRef.current?.centerAt(node.x, node.y, 700);
