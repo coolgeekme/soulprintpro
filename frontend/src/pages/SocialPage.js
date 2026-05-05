@@ -157,6 +157,37 @@ export default function SocialPage() {
     [posts, tab],
   );
 
+  // Poll for any post whose cover image is being generated in the
+  // background (image_status === "pending"). After /social/draft
+  // returns, the first post's image lands ~6-15s later — without this,
+  // the user sees a stale skeleton until they manually refresh.
+  // Stops polling automatically once nothing is pending or after 90s.
+  useEffect(() => {
+    const hasPending = posts.some((p) => p.image_status === "pending");
+    if (!hasPending) return undefined;
+    let cancelled = false;
+    let attempts = 0;
+    const interval = setInterval(async () => {
+      attempts += 1;
+      if (attempts > 23 /* ~90s at 4s ticks */) {
+        clearInterval(interval);
+        return;
+      }
+      try {
+        const { data } = await api.get(`/orgs/${orgId}/social/posts`);
+        if (cancelled) return;
+        setPosts(data);
+        // Stop the interval as soon as nothing is pending — the next
+        // useEffect tick will re-evaluate `hasPending` and return early.
+        if (!data.some((p) => p.image_status === "pending")) {
+          clearInterval(interval);
+        }
+      } catch { /* swallow — next tick will retry */ }
+    }, 4000);
+    return () => { cancelled = true; clearInterval(interval); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [posts.some((p) => p.image_status === "pending"), orgId]);
+
   const togglePlatform = (id) => {
     setComposePlatforms((prev) =>
       prev.includes(id) ? prev.filter((p) => p !== id) : [...prev, id]
@@ -178,7 +209,19 @@ export default function SocialPage() {
       setPosts((prev) => [...fresh, ...prev]);
       setPrompt("");
       setTab("draft");
-      toast.success(`Drafted ${fresh.length} post${fresh.length === 1 ? "" : "s"}`);
+      // Friendlier copy: most users hit "Draft posts" expecting magic in
+      // <10s. The text response now lands fast (~8s) but the cover image
+      // is still being generated in the background, so we tell them so
+      // they don't think the cover is missing.
+      const pending = fresh.filter((p) => p.image_status === "pending").length;
+      if (pending > 0) {
+        toast.success(
+          `Drafted ${fresh.length} post${fresh.length === 1 ? "" : "s"} — cover image generating in background…`,
+          { duration: 4500 }
+        );
+      } else {
+        toast.success(`Drafted ${fresh.length} post${fresh.length === 1 ? "" : "s"}`);
+      }
     } catch (err) {
       toast.error(err?.response?.data?.detail || "Could not draft posts");
     } finally { setComposing(false); }
@@ -874,6 +917,31 @@ function PostCoverImage({ post, orgId, onUpdate, onReplace }) {
       toast.error(err?.response?.data?.detail || "Couldn't apply logo");
     } finally { setApplyingLogo(false); }
   };
+
+  // Background-gen pending state — rendered when the /draft endpoint
+  // queued the cover image and we're waiting on Nano Banana. SocialPage
+  // polls every 4s and patches `post.image_status` to "ready" once the
+  // image lands. Without this skeleton, the post would render the same
+  // "No cover image yet" CTA bar as a manually-pending one and confuse
+  // the user — the system IS working, just async.
+  if (post.image_status === "pending") {
+    return (
+      <div className="mt-2">
+        <div
+          className="rounded-xl overflow-hidden border border-orange-500/20 aspect-square max-w-[420px] flex flex-col items-center justify-center gap-3 relative bg-black/30"
+          data-testid={`post-cover-pending-${post.id}`}
+        >
+          {/* Sweep shimmer — the same global .sp-shimmer keyframe used
+              by the chat image-pending placeholder. */}
+          <span aria-hidden className="absolute inset-0 sp-shimmer pointer-events-none" />
+          <Loader2 className="w-8 h-8 animate-spin opacity-80" />
+          <div className="text-xs sp-subtle px-3 text-center max-w-[260px] leading-relaxed">
+            Generating your on-brand cover image —<br />usually 8–25s.
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   if (!post.image) {
     return (

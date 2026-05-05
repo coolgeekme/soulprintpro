@@ -18,6 +18,7 @@ posts in one shot and stages them as drafts.
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import re
@@ -120,6 +121,11 @@ def serialize_social_post(p: dict) -> dict:
         "link_url": p.get("link_url", ""),
         "media": p.get("media", []),
         "image": p.get("image") or None,  # auto-generated cover image (with logo overlay)
+        # "none" = nothing happening, "pending" = background gen in flight,
+        # "ready" = image ready (also implies image is non-null), "failed" = gen errored.
+        # Frontend uses this to render a shimmer skeleton while pending so
+        # the user knows a cover is on the way after /draft returns.
+        "image_status": p.get("image_status", "ready" if p.get("image") else "none"),
         "image_prompt": p.get("image_prompt", ""),  # user-authored override prompt
         "logo_position": p.get("logo_position") or "bottom-right",
         "scheduled_for": _iso(p.get("scheduled_for")),
@@ -654,6 +660,13 @@ def make_social_router(*, db, AGENTS, EMERGENT_LLM_KEY, LlmChat, UserMessage,
         # first post in the batch (so users have something visual to react
         # to immediately) and let them hit "Generate image" on the rest.
         # Saves on Nano Banana cost (~$0.04 each) for big multi-post drafts.
+        #
+        # Important: the image gen is dispatched as a BACKGROUND task so
+        # the endpoint returns the text drafts in ~8s instead of waiting
+        # the additional ~6-10s for Nano Banana + logo composite. The
+        # frontend polls `/social/posts` and the cover image appears
+        # in the UI when it lands. This is the same fire-and-forget
+        # pattern used for chat /generate-media.
         for idx, p in enumerate(posts):
             doc = {
                 "org_id": org_id,
@@ -669,24 +682,47 @@ def make_social_router(*, db, AGENTS, EMERGENT_LLM_KEY, LlmChat, UserMessage,
                 "link_url": "",
                 "media": [],
                 "image": None,
+                # When we kick off background image gen, mark it pending
+                # so the frontend can show a shimmer skeleton in place of
+                # the cover-image card.
+                "image_status": "pending" if idx == 0 else "none",
+                # Stamp the resolved body prompt up front so the editor
+                # has something to show even before the image lands.
+                "image_prompt": (p["text"] or "").strip()[:600] if idx == 0 else "",
                 "logo_position": "bottom-right",
                 "scheduled_for": None,
                 "published_at": None,
                 "created_at": now,
                 "created_by": u["id"],
             }
-            if idx == 0:
-                img = await _generate_post_image(doc, ctx["org"])
-                if img:
-                    doc["image"] = img
-                    # Stamp the resolved body prompt on the post so the
-                    # "Edit prompt" affordance shows what was actually
-                    # sent to Nano Banana (the post copy by default), not
-                    # an empty textarea. Cap matches `_generate_post_image`.
-                    doc["image_prompt"] = (doc.get("text") or "").strip()[:600]
             res = await db.social_posts.insert_one(doc)
             doc["_id"] = res.inserted_id
             docs.append(doc)
+
+        # Fire-and-forget the first-post image gen. We capture the
+        # inserted post id + a snapshot of the org doc so the worker
+        # doesn't need to re-fetch (avoids racing a brand-asset edit).
+        first_post_id = docs[0]["_id"] if docs else None
+        if first_post_id is not None:
+            org_snapshot = ctx["org"]
+            post_snapshot = dict(docs[0])
+            post_snapshot.pop("_id", None)
+
+            async def _bg_first_image():
+                try:
+                    img = await _generate_post_image(post_snapshot, org_snapshot)
+                except Exception as exc:
+                    logger.warning("Background first-post image gen failed: %s", exc)
+                    img = None
+                update: dict = {"image_status": "ready" if img else "failed"}
+                if img:
+                    update["image"] = img
+                await db.social_posts.update_one(
+                    {"_id": first_post_id}, {"$set": update},
+                )
+            # Don't await — let the response return immediately.
+            asyncio.create_task(_bg_first_image())
+
         return {"posts": [serialize_social_post(d) for d in docs]}
 
     @r.post("/orgs/{org_id}/social/suggest-topics")
