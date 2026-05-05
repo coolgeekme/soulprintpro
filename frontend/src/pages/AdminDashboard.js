@@ -6,18 +6,19 @@ import {
 } from "recharts";
 import {
   Loader2, Users, Building2, Layers, Rocket, MessageSquare,
-  Activity, DollarSign, Search, ShieldCheck,
+  Activity, DollarSign, Search, ShieldCheck, Target,
 } from "lucide-react";
 
 import api from "../lib/api";
 import { useAuth } from "../context/AuthContext";
 import TopBar from "../components/TopBar";
 import AdminUsersPanel from "../components/AdminUsersPanel";
+import AdminAuditsPanel from "../components/AdminAuditsPanel";
 
 /**
- * AdminDashboard — superadmin-only analytics surface.
+ * AdminDashboard — superadmin-only analytics + tooling surface.
  *
- * Tabs: Overview · LLM Usage · Orgs · Users · Missions
+ * Tabs: Overview · LLM Usage · Orgs · Users · Missions · Audits
  * Hard-gated client-side via `user.is_superadmin`; the backend also
  * 403s any non-superadmin hitting /api/admin/*, so a tampered client
  * still gets nothing.
@@ -28,6 +29,7 @@ const TAB_DEFS = [
   { id: "orgs",     label: "Orgs", icon: Building2 },
   { id: "users",    label: "Users", icon: Users },
   { id: "missions", label: "Missions", icon: Rocket },
+  { id: "audits",   label: "Audits", icon: Target },
 ];
 
 function StatCard({ icon: Icon, label, value, sub }) {
@@ -425,6 +427,7 @@ export default function AdminDashboard() {
         {tab === "orgs" && <PaginatedTable endpoint="/admin/orgs" columns={orgCols} testidPrefix="admin-org" emptyMsg="No organizations yet." />}
         {tab === "users" && <AdminUsersPanel currentUserId={user?.id} />}
         {tab === "missions" && <MissionsPanel />}
+        {tab === "audits" && <AdminAuditsPanel />}
       </main>
     </div>
   );

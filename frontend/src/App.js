@@ -16,6 +16,7 @@ import SocialPage from "./pages/SocialPage";
 import MissionsPage from "./pages/MissionsPage";
 import AboutPage from "./pages/AboutPage";
 import AdminDashboard from "./pages/AdminDashboard";
+import PublicAuditPage from "./pages/PublicAuditPage";
 import ErrorBoundary from "./components/ErrorBoundary";
 
 const Loader = () => (
@@ -60,6 +61,10 @@ function App() {
                 <Route path="/app/team/:teamId" element={<Protected><TeamPage /></Protected>} />
                 <Route path="/app/team/:teamId/c/:convId" element={<Protected><ConversationPage /></Protected>} />
                 <Route path="/admin" element={<Protected><AdminDashboard /></Protected>} />
+                {/* Public-facing prospect-grade audit landing page (NO AUTH).
+                    Lives outside the /app shell so anyone with the link can
+                    view the teaser; the lead form gates the full report. */}
+                <Route path="/audit/:slug" element={<PublicAuditPage />} />
                 <Route path="*" element={<Navigate to="/" replace />} />
               </Routes>
             </ErrorBoundary>

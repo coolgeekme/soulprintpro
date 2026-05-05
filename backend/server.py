@@ -5814,6 +5814,34 @@ _install_llm_logging(db)
 from admin import make_admin_router, ensure_superadmin_seed  # noqa: E402
 app.include_router(make_admin_router(db=db, get_current_user=get_current_user))
 
+# ── Business Audit prospecting tool (superadmin-only + public gated page) ──
+from audits import make_audits_router  # noqa: E402
+from artifact_synthesis import _render_pdf as _audit_render_pdf  # noqa: E402
+from brave_search import brave_web_search as _audit_brave_search  # noqa: E402
+from browser_tools import browse_url as _audit_browse_url  # noqa: E402
+
+async def _require_superadmin_dep(u: dict = Depends(get_current_user)) -> dict:
+    """Mirror of the closure inside admin.py, exposed at module scope so
+    the audits router can import it without re-implementing the rule."""
+    if not u.get("is_superadmin"):
+        raise HTTPException(403, "Superadmin only")
+    return u
+
+_audit_admin_router, _audit_public_router = make_audits_router(
+    db=db,
+    get_current_user=get_current_user,
+    require_superadmin=_require_superadmin_dep,
+    LlmChat=LlmChat, UserMessage=UserMessage,
+    EMERGENT_LLM_KEY=EMERGENT_LLM_KEY,
+    brave_web_search=_audit_brave_search,
+    browse_url=_audit_browse_url,
+    persist_bytes=persist_bytes,
+    upload_dir=UPLOAD_DIR,
+    render_pdf=_audit_render_pdf,
+)
+app.include_router(_audit_admin_router)
+app.include_router(_audit_public_router)
+
 @app.on_event("startup")
 async def _seed_superadmins():
     """Stamp configured emails as superadmin if their accounts already
