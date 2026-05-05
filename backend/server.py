@@ -2917,7 +2917,26 @@ async def _find_last_image_in_conv(conv_id: str) -> Optional[Path]:
     `UPLOAD_DIR`) and user-uploaded images (`attachment_filename` in
     `CONV_UPLOAD_DIR/<conv_id>/`). Returns the first existing file found,
     walking newest-first. Returns None if nothing usable is found.
+
+    After Feb 2026: if the disk copy is missing (pod restart wiped the
+    ephemeral filesystem), we REHYDRATE from GridFS before returning —
+    so "edit the previous image" keeps working even after a redeploy.
+    Without this, edits silently fell back to the review path and the
+    agent told the user the edit happened when it actually didn't.
     """
+    async def _rehydrate(target: Path, filename: str) -> bool:
+        """Try to restore bytes from GridFS. Returns True on success."""
+        blob, _mime, _orig = await recover_bytes_from_gridfs(filename)
+        if not blob:
+            return False
+        try:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(blob)
+            return target.is_file()
+        except Exception as exc:
+            logger.warning("GridFS rehydrate to %s failed: %s", target, exc)
+            return False
+
     cur = db.messages.find(
         {
             "conversation_id": conv_id,
@@ -2931,12 +2950,19 @@ async def _find_last_image_in_conv(conv_id: str) -> Optional[Path]:
     )
     async for msg in cur:
         if msg.get("media_type") == "image" and msg.get("media_filename"):
-            p = UPLOAD_DIR / msg["media_filename"]
+            fname = msg["media_filename"]
+            p = UPLOAD_DIR / fname
             if p.is_file():
                 return p
+            # Disk copy gone — try GridFS before giving up.
+            if await _rehydrate(p, fname):
+                return p
         if msg.get("attachment_kind") == "image" and msg.get("attachment_filename"):
-            p = CONV_UPLOAD_DIR / conv_id / msg["attachment_filename"]
+            fname = msg["attachment_filename"]
+            p = CONV_UPLOAD_DIR / conv_id / fname
             if p.is_file():
+                return p
+            if await _rehydrate(p, fname):
                 return p
     return None
 
@@ -3102,6 +3128,28 @@ async def send_message(conv_id: str, body: SendMessageBody, u: dict = Depends(ge
                 responders = []  # edited image alone is enough
             except Exception as exc:
                 logger.warning("inline image edit failed, falling back: %s", exc)
+        elif _quick_image_edit_intent(body.text or "", True):
+            # User clearly asked for an edit but we couldn't locate a source
+            # image AT ALL (disk wiped + GridFS empty). Better to tell them
+            # truthfully than to silently generate an unrelated vision
+            # summary. Post a single clarifying agent message instead.
+            primary = responders[0]
+            await db.messages.insert_one({
+                "id": str(uuid.uuid4()),
+                "conversation_id": conv_id,
+                "sender_type": "agent",
+                "sender_id": primary,
+                "sender_name": AGENTS[primary]["name"],
+                "agent_id": primary,
+                "text": (
+                    "I can't find the source image to edit — the last one I generated "
+                    "or you uploaded isn't accessible anymore. Could you re-upload it, "
+                    "or paste a URL and I'll apply your edit from there?"
+                ),
+                "intent": "image_edit_missing_source",
+                "timestamp": datetime.now(timezone.utc),
+            })
+            responders = []  # don't pile a normal reply on top
 
     if responders:
         try:
@@ -4228,8 +4276,16 @@ class GenerateMediaBody(BaseModel):
 
 
 async def _save_remote_url_to_uploads(url: str, *, suffix: str = "") -> Optional[Path]:
-    """Download a remote URL into /app/backend/uploads/ so the file lives
-    inside this app's CDN. Returns the local Path or None on failure."""
+    """Download a remote URL into /app/backend/uploads/ and MIRROR to
+    MongoDB GridFS so the file survives a pod restart. Returns the local
+    Path or None on failure.
+
+    Before Feb 2026 this function wrote to disk only — which meant every
+    Kie.ai-generated image / video became a broken link the moment the
+    Kubernetes pod migrated (disk is ephemeral, Mongo is persistent).
+    Now we call ``persist_bytes`` so downloads get the same GridFS
+    mirror every other file path uses.
+    """
     try:
         async with httpx.AsyncClient(timeout=120.0, follow_redirects=True) as client:
             resp = await client.get(url)
@@ -4242,7 +4298,21 @@ async def _save_remote_url_to_uploads(url: str, *, suffix: str = "") -> Optional
     fname = f"kie-{uuid.uuid4().hex[:12]}{suffix}"
     fp = UPLOAD_DIR / fname
     fp.parent.mkdir(parents=True, exist_ok=True)
-    fp.write_bytes(resp.content)
+    # Guess a mime from the suffix so the GridFS record has useful
+    # metadata for the fallback resolver. Kie.ai URLs occasionally redirect
+    # through their CDN which strips content-type on the 302.
+    mime = {
+        ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
+        ".webp": "image/webp", ".mp4": "video/mp4", ".mov": "video/quicktime",
+        ".mp3": "audio/mpeg", ".wav": "audio/wav",
+    }.get(suffix.lower(), resp.headers.get("content-type") or "application/octet-stream")
+    try:
+        await persist_bytes(fp, resp.content, original_name=fname, mime=mime)
+    except Exception as exc:
+        # If the GridFS mirror fails (e.g. very large video + oplog
+        # trouble), still return the disk path — the file is at least
+        # reachable until the next pod restart.
+        logger.warning("GridFS mirror failed for %s: %s", fname, exc)
     return fp
 
 
@@ -5106,15 +5176,30 @@ async def serve_conv_attachment(conv_id: str, filename: str):
     the on-disk file vanishes after a redeploy."""
     if not CONV_ATTACH_FILENAME_RE.match(filename):
         raise HTTPException(400, "Invalid filename")
+    # Lookup must handle THREE attachment-storage shapes:
+    #  (1) legacy single-file — root-level `attachment_filename`
+    #  (2) multi-file uploads — file lives in `attachments[*].filename`
+    #  (3) agent-generated images written into a conversation's attachments
+    # Without this, any file past the first one in a multi-file upload 404ed.
     msg = await db.messages.find_one({
         "conversation_id": conv_id,
-        "attachment_filename": filename,
+        "$or": [
+            {"attachment_filename": filename},
+            {"attachments.filename": filename},
+        ],
     })
     if not msg:
         raise HTTPException(404, "Not linked to any message")
-    path = CONV_UPLOAD_DIR / conv_id / filename
+    # Resolve per-file metadata — prefer the exact attachments[*] match
+    # so the download gets the right original name / mime.
     original = msg.get("attachment_original_name") or filename
     mime = msg.get("attachment_mime") or None
+    for att in (msg.get("attachments") or []):
+        if (att or {}).get("filename") == filename:
+            original = att.get("original_name") or original
+            mime = att.get("mime") or mime
+            break
+    path = CONV_UPLOAD_DIR / conv_id / filename
     if path.is_file():
         return FileResponse(path, filename=original, media_type=mime)
     blob, m2, o2 = await recover_bytes_from_gridfs(filename)
@@ -5147,8 +5232,15 @@ async def serve_file(filename: str):
     path = UPLOAD_DIR / filename
 
     # Defensive ownership check — confirm this filename was actually
-    # written by an agent reply, brand asset, or social post.
-    msg = await db.messages.find_one({"media_filename": filename})
+    # written by an agent reply, brand asset, social post, OR a multi-file
+    # chat attachment (the latter missed the root `media_filename` check
+    # before Feb 2026 and 404ed despite the file being on disk).
+    msg = await db.messages.find_one({
+        "$or": [
+            {"media_filename": filename},
+            {"attachments.filename": filename},
+        ],
+    })
     if not msg:
         org = await db.organizations.find_one({
             "$or": [
