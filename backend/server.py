@@ -5283,7 +5283,7 @@ async def unfurl(url: str, u: dict = Depends(get_current_user)):
     )
     return preview
 
-ALLOWED_FILENAME_RE = re.compile(r"^([a-z]+-)?[a-f0-9]{16,}\.(png|jpg|jpeg|webp|gif|pdf)$", re.IGNORECASE)
+ALLOWED_FILENAME_RE = re.compile(r"^([a-z]+-)?[a-f0-9][a-f0-9\-]{14,}\.(png|jpg|jpeg|webp|gif|pdf)$", re.IGNORECASE)
 
 @files_r.get("/assets/{filename}")
 async def serve_org_asset(filename: str):
@@ -5408,7 +5408,9 @@ async def serve_file(filename: str):
                 ]
             })
             if not sp:
-                raise HTTPException(404, "Not linked to any message")
+                au = await db.business_audits.find_one({"pdf_filename": filename})
+                if not au:
+                    raise HTTPException(404, "Not linked to any message")
 
     if path.is_file():
         return FileResponse(path)

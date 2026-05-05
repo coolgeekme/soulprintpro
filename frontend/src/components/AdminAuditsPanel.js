@@ -81,6 +81,35 @@ export default function AdminAuditsPanel() {
     }
   };
 
+  // Direct PDF download from the row — opens the persisted PDF in a new
+  // tab so the admin can save / print / email it without first opening
+  // the in-app full-report modal.
+  const [pdfBusy, setPdfBusy] = useState(null); // audit id currently downloading
+  const downloadAuditPdf = async (audit) => {
+    setPdfBusy(audit.id);
+    try {
+      const { data } = await api.get(`/admin/audits/${audit.id}/pdf`);
+      if (!data?.url) throw new Error("no-url");
+      // Force a download by clicking a synthetic anchor — works around
+      // browsers that ignore window.open on slower links.
+      const a = document.createElement("a");
+      a.href = data.url;
+      a.download = data.filename || `audit-${audit.slug}.pdf`;
+      a.target = "_blank";
+      a.rel = "noopener";
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+    } catch (err) {
+      toast.error(
+        err?.response?.data?.detail
+        || "PDF not available — try regenerating the audit",
+      );
+    } finally {
+      setPdfBusy(null);
+    }
+  };
+
   const onRegenerate = async (id) => {
     try {
       await api.post(`/admin/audits/${id}/regenerate`);
@@ -245,6 +274,20 @@ export default function AdminAuditsPanel() {
                             >
                               <Eye className="w-3 h-3" />
                             </a>
+                            {a.pdf_filename && (
+                              <button
+                                type="button"
+                                onClick={() => downloadAuditPdf(a)}
+                                disabled={pdfBusy === a.id}
+                                className="sp-btn sp-btn-ghost text-xs"
+                                data-testid={`audit-pdf-${a.id}`}
+                                title="Download the audit as a PDF"
+                              >
+                                {pdfBusy === a.id
+                                  ? <Loader2 className="w-3 h-3 animate-spin" />
+                                  : <Download className="w-3 h-3" />}
+                              </button>
+                            )}
                           </>
                         )}
                         <button type="button" onClick={() => onRegenerate(a.id)}
