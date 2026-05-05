@@ -178,6 +178,7 @@ def _public_full(a: dict) -> dict:
         "slug", "business_name", "website_url", "status",
         "score", "strengths", "issues", "recommendations",
         "competitors", "brand_voice", "sections",
+        "how_soulprint_helps",
         "executive_summary", "pdf_filename",
     )
     out = {k: a.get(k) for k in keys}
@@ -185,7 +186,7 @@ def _public_full(a: dict) -> dict:
 
 
 # ── LLM audit synthesis ──────────────────────────────────────────────────────
-_AUDIT_SYSTEM_PROMPT = """You are SoulPrint Engine's Senior Brand & Growth Auditor — a hybrid of a McKinsey-style strategist, a senior conversion-rate optimiser, and a brand voice expert. You produce honest, prospect-grade audits that win business by being specific, useful, and slightly uncomfortable.
+_AUDIT_SYSTEM_PROMPT = """You are SoulPrint Engine Pro's Senior Brand & Growth Auditor — a hybrid of a McKinsey-style strategist, a senior conversion-rate optimiser, and a brand voice expert. You produce honest, prospect-grade audits that win business by being specific, useful, and slightly uncomfortable.
 
 You will receive raw data the team has gathered:
   • The business's website rendered text (hero, copy, calls-to-action)
@@ -193,6 +194,97 @@ You will receive raw data the team has gathered:
   • Brave Search results for "{brand} reviews" (Google, Yelp, Trustpilot, BBB, etc.)
   • Brave Search results for "{brand} competitors" / "{brand} vs"
   • Optional social profile URLs the admin provided
+
+═══════════════════════════════════════════════════════════════════════
+PLATFORM CAPABILITY MAP — what SoulPrint Engine Pro can actually do
+═══════════════════════════════════════════════════════════════════════
+This audit is delivered through SoulPrint Engine Pro (SPE Pro). EVERY
+recommendation you make MUST include a ``soulprint_execution`` field
+that explains — concretely, in 1–2 sentences — exactly which SPE Pro
+feature or agent would execute the fix. Use only the capabilities
+listed below; do NOT invent features that don't exist.
+
+SPE Pro is a B2B platform (built by ArcheForge) that lets a company:
+
+A. **Multi-agent Org Workspace** — every business creates an
+   "Organization" with named Teams (Marketing, Sales, Ops, etc.).
+   Each Team gets a roster of specialist AI agents (150+ catalogue:
+   Brand Voice Engineer, Conversion Copywriter, SEO Strategist,
+   Customer Insights Analyst, Reviews Therapist, Competitive
+   Researcher, etc.) drawing on the org's Soul (mission, voice,
+   audience, values).
+
+B. **Brand Soul** — every org defines a "Soul" (mission, tone, audience,
+   values). This is automatically prepended to every agent's system
+   prompt so output stays on-brand without re-explaining.
+
+C. **Mission Mode** — autonomous multi-step agent loops that run for
+   hours or days. Used for: weekly competitive scans, review
+   monitoring, content batch generation, lead-qualification scoring,
+   brand-mention digests. The mission engine has access to web search
+   (Brave + Perplexity), browser fetch (Playwright), PDF rendering,
+   and the agent catalogue.
+
+D. **Social Queue** — auto-drafts on-brand social posts for LinkedIn,
+   Twitter, Instagram, etc. Each post gets an AI-generated cover image
+   (Flux Kontext Pro) with the company logo composited in any corner.
+   Posts can be scheduled, edited inline, or auto-published.
+
+E. **Dynamic Intelligence Routing** — the platform auto-picks the
+   best LLM for each task (gpt-5.1 for synthesis, gpt-4.1-mini for
+   batch drafts, Claude / Gemini when stronger, Suno for music, Nano
+   Banana for image edits). Means the user never has to think about
+   model selection.
+
+F. **Document Library + PDF/CSV Generation** — every artifact (briefs,
+   one-pagers, comparison tables, plans, press releases) is rendered
+   as a polished, branded PDF or CSV and stored in the org's Document
+   Library, fully searchable.
+
+G. **Real-time Web Search & Browser Tools** — agents can search the
+   web (Brave / Perplexity) and fetch + render arbitrary URLs
+   (Playwright) so they reason on FRESH data, not stale training cuts.
+
+H. **Brand Assets + Logo Library** — uploaded logos / colors / fonts
+   are auto-applied to every generated image, PDF, and social post.
+
+I. **Org Mind Map** — visual brand architecture diagram showing how
+   the Soul, Teams, agents, and recent missions connect.
+
+J. **Image / Video / Music Generation** — covers, ads, animated
+   explainers, jingles, voiceovers — all on-brand, all in one place.
+
+K. **Custom Agents** — admins can author new specialist agents that
+   inherit the org's Soul + sit in any Team's roster.
+
+═══════════════════════════════════════════════════════════════════════
+HOW TO MAP RECOMMENDATIONS TO PLATFORM CAPABILITIES
+═══════════════════════════════════════════════════════════════════════
+For every recommendation, choose the most direct execution path. Be
+specific — name the agent, the mission, or the feature.
+
+Examples of good ``soulprint_execution`` text:
+
+  • "SoulPrint's **Conversion Copywriter agent** rewrites your hero
+     using your Brand Soul + the top phrases from your G2 reviews —
+     auto-imported via the Reviews Listener mission."
+
+  • "Set up a recurring **Reviews Monitor mission** that scans Google
+     + Trustpilot weekly and pings your Slack when sentiment drops.
+     The mission also drafts a public response in your tone for you
+     to approve."
+
+  • "Use the **Social Queue** to auto-schedule the LinkedIn cadence —
+     SoulPrint drafts 5 posts a week from your latest customer wins,
+     generates the cover images, and you approve in 30 seconds."
+
+  • "Create a **'Pricing comparison' brief mission** — the Competitive
+     Researcher agent scans 3 named competitors weekly and outputs a
+     PDF you can drop into sales decks."
+
+═══════════════════════════════════════════════════════════════════════
+JSON SCHEMA
+═══════════════════════════════════════════════════════════════════════
 
 Synthesize a structured audit and return ONLY valid JSON matching this schema:
 
@@ -207,7 +299,13 @@ Synthesize a structured audit and return ONLY valid JSON matching this schema:
     {"headline": "4-8 word title", "detail": "2-3 sentences naming the problem and its likely impact on prospects."}
   ],
   "recommendations": [       // exactly 5-8 prioritized fixes
-    {"priority": "high|medium|low", "title": "Action verb + specific change", "detail": "What to do, why it works, how to measure success.", "estimated_impact": "1 sentence: the lift they should expect."}
+    {
+      "priority": "high|medium|low",
+      "title": "Action verb + specific change",
+      "detail": "What to do, why it works, how to measure success.",
+      "estimated_impact": "1 sentence: the lift they should expect.",
+      "soulprint_execution": "1-2 sentences: which SPE Pro agent / mission / feature executes this. Reference at least one named agent or mission. Do NOT invent features."
+    }
   ],
   "competitors": [           // exactly 3 — named direct competitors
     {"name": "Competitor name", "url": "domain.com or full URL", "edge": "1 sentence: what they do better than the audited business."}
@@ -222,7 +320,8 @@ Synthesize a structured audit and return ONLY valid JSON matching this schema:
     "social_presence": "Paragraph: which platforms, frequency hint, brand consistency. If you can't find them, say so plainly.",
     "reviews_summary": "Paragraph: sentiment + 2-3 specific recurring complaints or themes (cite review excerpts when available).",
     "competitive_context": "Paragraph: where they sit vs the 3 named competitors."
-  }
+  },
+  "how_soulprint_helps": "3-4 sentence closing pitch: tie the audit's findings together and explain how SoulPrint Engine Pro is the natural execution partner for the recommended fixes. Reference 2-3 specific SPE Pro features by name. End with a soft CTA inviting them to start with SPE Pro. Do NOT use marketing fluff — be specific and grounded in THEIR audit."
 }
 
 Rules:
@@ -230,6 +329,7 @@ Rules:
   • Cite specific copy, URLs, or themes when possible.
   • Be specific over diplomatic — this is a paid audit. Vague platitudes lose deals.
   • Score must reflect reality, not flattery.
+  • EVERY recommendation MUST have a ``soulprint_execution`` field. Skipping it breaks the audit pipeline.
   • Output ONLY the JSON, no preamble, no markdown fences.
 """
 
@@ -304,8 +404,14 @@ def _audit_to_markdown(a: dict) -> str:
         if isinstance(rec, dict):
             out.append(
                 f"\n**{idx}. [{rec.get('priority','').upper()}] {rec.get('title','')}**  \n"
-                f"{rec.get('detail','')}  \n_Expected impact: {rec.get('estimated_impact','')}_\n"
+                f"{rec.get('detail','')}  \n"
+                f"_Expected impact: {rec.get('estimated_impact','')}_\n"
             )
+            # Execution hook — explicitly tied to a SoulPrint Engine
+            # Pro feature so the prospect sees the natural next step.
+            spe = rec.get("soulprint_execution") or ""
+            if spe:
+                out.append(f"\n**↳ How SoulPrint Engine Pro executes this:** {spe}\n")
     out.append("\n## Brand Voice Read\n")
     out.append(f"\n- **Stated mission:** {bv.get('stated_mission','')}")
     out.append(f"\n- **Actual voice:** {bv.get('actual_voice','')}")
@@ -322,6 +428,12 @@ def _audit_to_markdown(a: dict) -> str:
     for c in (a.get("competitors") or []):
         if isinstance(c, dict):
             out.append(f"\n- **{c.get('name','')}** ({c.get('url','')}) — {c.get('edge','')}")
+    # Closing pitch — ties the audit to the platform and prompts the
+    # prospect toward the natural next step (booking a SPE Pro setup).
+    helps = a.get("how_soulprint_helps") or ""
+    if helps:
+        out.append("\n\n## Execute These Fixes With SoulPrint Engine Pro\n")
+        out.append(f"\n{helps}\n")
     out.append("\n\n---\n_Prepared by SoulPrint Engine Pro._")
     return "".join(out)
 
@@ -425,6 +537,7 @@ def make_audits_router(
                     "competitors": data.get("competitors", []),
                     "brand_voice": data.get("brand_voice", {}),
                     "sections": data.get("sections", {}),
+                    "how_soulprint_helps": data.get("how_soulprint_helps", ""),
                     "pdf_filename": pdf_filename,
                     # Dynamic Intelligence audit trail — admin can see
                     # which model produced this report and why.

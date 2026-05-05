@@ -1,5 +1,5 @@
 import React from "react";
-import { Sparkles, Building2, ExternalLink } from "lucide-react";
+import { Sparkles, Building2, ExternalLink, Zap, Rocket } from "lucide-react";
 
 /**
  * AuditFullReport — the full rendered audit body.
@@ -16,9 +16,12 @@ export default function AuditFullReport({ audit }) {
   const sections = audit.sections || {};
   return (
     <div className="space-y-8" data-testid="audit-full-report">
-      {/* Recommendations */}
+      {/* Recommendations — each one carries an "execute with SPE Pro"
+          execution hook so the prospect sees not just WHAT to fix but
+          HOW our platform delivers the fix. This is the audit's primary
+          conversion mechanism: every reco is also a soft pitch. */}
       <section>
-        <SectionHeader icon={Sparkles} title="Prioritized recommendations" subtitle="The highest-leverage fixes, ranked." />
+        <SectionHeader icon={Sparkles} title="Prioritized recommendations" subtitle="The highest-leverage fixes — and exactly how SoulPrint Engine Pro executes each one." />
         <ol className="space-y-3 mt-3">
           {(audit.recommendations || []).map((r, i) => (
             <li key={i} className="sp-glass rounded-xl p-4">
@@ -33,6 +36,20 @@ export default function AuditFullReport({ audit }) {
               <div className="text-sm leading-relaxed">{r.detail}</div>
               {r.estimated_impact && (
                 <div className="text-xs sp-subtle italic mt-2">Expected impact: {r.estimated_impact}</div>
+              )}
+              {/* Execution hook — small inset card, orange accent, anchors
+                  the recommendation to a specific SPE Pro feature/agent.
+                  This is the "and here's how we'd do it for you" beat. */}
+              {r.soulprint_execution && (
+                <div className="mt-3 rounded-lg border border-orange-500/30 bg-orange-500/5 px-3 py-2.5 flex items-start gap-2">
+                  <Zap className="w-3.5 h-3.5 text-orange-300 shrink-0 mt-0.5" />
+                  <div className="text-xs leading-relaxed">
+                    <span className="text-orange-300/90 uppercase tracking-widest text-[10px] font-medium block mb-0.5">
+                      How SoulPrint executes this
+                    </span>
+                    {r.soulprint_execution}
+                  </div>
+                </div>
               )}
             </li>
           ))}
@@ -87,6 +104,35 @@ export default function AuditFullReport({ audit }) {
         <SectionParagraph title="Reviews summary" body={sections.reviews_summary} />
         <SectionParagraph title="Competitive context" body={sections.competitive_context} />
       </div>
+
+      {/* Closing pitch — ties the audit's findings to SPE Pro's
+          ability to execute them. The single highest-value section
+          for converting an audit reader into a paying customer.
+          Hidden when empty (legacy audits or LLM omitted the field). */}
+      {audit.how_soulprint_helps && (
+        <section
+          className="rounded-2xl p-6 sm:p-8 bg-gradient-to-br from-orange-500/15 via-orange-500/5 to-transparent border border-orange-500/30 mt-2"
+          data-testid="audit-spe-cta"
+        >
+          <div className="flex items-center gap-2 mb-3">
+            <Rocket className="w-4 h-4 text-orange-300" />
+            <div className="text-[11px] uppercase tracking-widest text-orange-300/90 font-medium">
+              Execute these with SoulPrint Engine Pro
+            </div>
+          </div>
+          <p className="text-sm sm:text-base leading-relaxed mb-4">
+            {audit.how_soulprint_helps}
+          </p>
+          <a
+            href="https://pro.soulprintengine.ai/auth"
+            target="_blank" rel="noopener noreferrer"
+            className="sp-btn sp-btn-primary text-sm"
+            data-testid="audit-spe-cta-button"
+          >
+            <Rocket className="w-3.5 h-3.5" /> Start with SoulPrint Engine Pro
+          </a>
+        </section>
+      )}
     </div>
   );
 }
