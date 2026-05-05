@@ -3480,26 +3480,53 @@ async def smart_start(team_id: str, body: SmartStartBody, u: dict = Depends(get_
         except Exception as exc:
             logger.warning("smart_start image generation failed, falling back to text: %s", exc)
 
-    reply, web_sources = await generate_agent_reply(conv_doc, team, chosen, body.text, u["name"])
-    msg_id = str(uuid.uuid4())
-    clean_reply, artifacts = await process_agent_artifacts(
-        reply, conv=conv_doc, agent_id=chosen, message_id=msg_id, created_by=u["id"],
-    )
-    agent_msg = {
-        "id": msg_id,
-        "conversation_id": conv_id,
-        "sender_type": "agent",
-        "sender_id": chosen,
-        "sender_name": AGENTS[chosen]["name"],
-        "agent_id": chosen,
-        "text": clean_reply,
-        "timestamp": datetime.now(timezone.utc),
-    }
-    if web_sources:
-        agent_msg["web_sources"] = web_sources
-    if artifacts:
-        agent_msg["attachments"] = artifacts
-    await db.messages.insert_one({**agent_msg})
+    # ── Agent reply — wrapped so a transient LLM / web-search / brave
+    # error doesn't orphan the conversation. Before this guard, any
+    # exception here would 500 the endpoint AFTER the conversation +
+    # user-message were already inserted, so the frontend retried and
+    # the user wound up with N empty conversations from N retries.
+    # The conversation is now ALWAYS returned 200 — if the agent reply
+    # fails, we post a single agent message with a friendly retry
+    # nudge so the user knows what to do next.
+    try:
+        reply, web_sources = await generate_agent_reply(conv_doc, team, chosen, body.text, u["name"])
+        msg_id = str(uuid.uuid4())
+        clean_reply, artifacts = await process_agent_artifacts(
+            reply, conv=conv_doc, agent_id=chosen, message_id=msg_id, created_by=u["id"],
+        )
+        agent_msg = {
+            "id": msg_id,
+            "conversation_id": conv_id,
+            "sender_type": "agent",
+            "sender_id": chosen,
+            "sender_name": AGENTS[chosen]["name"],
+            "agent_id": chosen,
+            "text": clean_reply,
+            "timestamp": datetime.now(timezone.utc),
+        }
+        if web_sources:
+            agent_msg["web_sources"] = web_sources
+        if artifacts:
+            agent_msg["attachments"] = artifacts
+        await db.messages.insert_one({**agent_msg})
+    except Exception as exc:
+        logger.warning("smart_start agent reply failed: %s", exc)
+        agent_msg = {
+            "id": str(uuid.uuid4()),
+            "conversation_id": conv_id,
+            "sender_type": "agent",
+            "sender_id": chosen,
+            "sender_name": AGENTS[chosen]["name"],
+            "agent_id": chosen,
+            "text": (
+                "I started the conversation but hit a hiccup drafting my first "
+                "reply (the model or a web fetch timed out). Try rephrasing or "
+                "sending again — the conversation is saved so you won't lose context."
+            ),
+            "intent": "smart_start_fallback",
+            "timestamp": datetime.now(timezone.utc),
+        }
+        await db.messages.insert_one({**agent_msg})
 
     return {
         "conversation": serialize_conv(conv_doc),
