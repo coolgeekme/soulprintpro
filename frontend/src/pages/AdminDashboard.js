@@ -398,7 +398,7 @@ export default function AdminDashboard() {
   return (
     <div className="min-h-screen" style={{ background: "var(--bg)", color: "var(--fg)" }}>
       <TopBar />
-      <main className="max-w-7xl mx-auto px-6 py-8" data-testid="admin-dashboard">
+      <main className="max-w-7xl mx-auto px-4 sm:px-6 py-6 sm:py-8" data-testid="admin-dashboard">
         <div className="mb-6">
           <div className="flex items-center gap-2 mb-1">
             <ShieldCheck className="w-4 h-4 text-emerald-400" />

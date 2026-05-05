@@ -176,8 +176,110 @@ export default function AdminAuditsPanel() {
           <div className="text-sm sp-subtle">No audits yet. Click <b>New audit</b> to scan your first prospect.</div>
         </div>
       ) : (
-        <div className="sp-glass rounded-2xl overflow-hidden">
-          <table className="w-full text-sm">
+        <>
+        {/* Mobile: stacked cards (each row becomes its own card with
+            the action buttons unconditionally visible at the bottom).
+            Hidden at `md` and up where the table fits comfortably. */}
+        <div className="space-y-3 md:hidden">
+          {audits.map((a) => {
+            const badge = STATUS_BADGE[a.status] || STATUS_BADGE.generating;
+            const BadgeIcon = badge.icon;
+            return (
+              <div
+                key={a.id}
+                className="sp-glass rounded-2xl p-4 space-y-3"
+                data-testid={`audit-row-${a.id}`}
+              >
+                <div className="flex items-start justify-between gap-3">
+                  <div className="min-w-0 flex-1">
+                    <div className="font-medium truncate">{a.business_name}</div>
+                    {a.website_url && (
+                      <a href={a.website_url} target="_blank" rel="noopener noreferrer"
+                         className="text-[11px] sp-subtle hover:text-orange-300 inline-flex items-center gap-1 break-all">
+                        {a.website_url} <ExternalLink className="w-3 h-3 shrink-0" />
+                      </a>
+                    )}
+                  </div>
+                  <div className="text-right shrink-0">
+                    {typeof a.score === "number" ? (
+                      <div className="text-2xl font-medium tabular-nums leading-none">{a.score}</div>
+                    ) : (
+                      <span className="sp-subtle text-xs">—</span>
+                    )}
+                    <div className="text-[9px] uppercase tracking-widest sp-subtle mt-1">Score</div>
+                  </div>
+                </div>
+                <div className="flex items-center gap-2 flex-wrap text-[11px]">
+                  <span className={`inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full border ${badge.cls}`}>
+                    <BadgeIcon className={`w-3 h-3 ${a.status === "generating" ? "animate-spin" : ""}`} />
+                    {badge.label}
+                  </span>
+                  <button
+                    type="button" onClick={() => openLeads(a)}
+                    className="text-orange-300 hover:underline inline-flex items-center gap-1"
+                    data-testid={`audit-leads-${a.id}`}
+                  >
+                    <UsersIcon className="w-3 h-3" /> {a.lead_count || 0} leads
+                  </button>
+                  <span className="sp-subtle inline-flex items-center gap-1 tabular-nums">
+                    <Eye className="w-3 h-3" /> {a.view_count || 0}
+                  </span>
+                </div>
+                {a.status === "failed" && a.error && (
+                  <div className="text-[11px] text-red-300/80 leading-relaxed">{a.error}</div>
+                )}
+                <div className="flex flex-wrap gap-1.5 pt-1 border-t border-white/5">
+                  {a.status === "ready" && (
+                    <>
+                      <button type="button" onClick={() => setViewing(a)}
+                              className="sp-btn sp-btn-ghost text-xs flex-1 min-w-[80px]"
+                              data-testid={`audit-view-${a.id}`}>
+                        <FileText className="w-3 h-3" /> View
+                      </button>
+                      <a href={`/audit/${a.slug}`} target="_blank" rel="noopener noreferrer"
+                         className="sp-btn sp-btn-ghost text-xs flex-1 min-w-[80px]"
+                         data-testid={`audit-preview-${a.id}`}>
+                        <Eye className="w-3 h-3" /> Public
+                      </a>
+                      <button type="button" onClick={() => copyPublicUrl(a.slug)}
+                              className="sp-btn sp-btn-ghost text-xs flex-1 min-w-[80px]"
+                              data-testid={`audit-copy-${a.id}`}>
+                        Copy link
+                      </button>
+                      {a.pdf_filename && (
+                        <button type="button" onClick={() => downloadAuditPdf(a)}
+                                disabled={pdfBusy === a.id}
+                                className="sp-btn sp-btn-ghost text-xs flex-1 min-w-[80px]"
+                                data-testid={`audit-pdf-${a.id}`}>
+                          {pdfBusy === a.id
+                            ? <Loader2 className="w-3 h-3 animate-spin" />
+                            : <Download className="w-3 h-3" />}
+                          PDF
+                        </button>
+                      )}
+                    </>
+                  )}
+                  <button type="button" onClick={() => onRegenerate(a.id)}
+                          className="sp-btn sp-btn-ghost text-xs"
+                          data-testid={`audit-regen-${a.id}`}>
+                    <RefreshCw className="w-3 h-3" />
+                  </button>
+                  <button type="button" onClick={() => onDelete(a.id)}
+                          className="sp-btn sp-btn-ghost text-xs text-red-300 hover:text-red-200"
+                          data-testid={`audit-delete-${a.id}`}>
+                    <Trash2 className="w-3 h-3" />
+                  </button>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+
+        {/* Desktop: original table — only shown at `md` and up so the
+            7 columns don't get squeezed off-screen on phones. */}
+        <div className="sp-glass rounded-2xl overflow-hidden hidden md:block">
+          <div className="overflow-x-auto">
+          <table className="w-full text-sm min-w-[760px]">
             <thead>
               <tr className="text-left text-[10px] uppercase tracking-widest sp-subtle">
                 <th className="px-4 py-3 font-medium">Business</th>
@@ -309,7 +411,9 @@ export default function AdminAuditsPanel() {
               })}
             </tbody>
           </table>
+          </div>
         </div>
+        </>
       )}
 
       {showCreate && (
@@ -543,30 +647,36 @@ function ViewAuditModal({ audit, onClose }) {
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-start justify-center bg-black/70 backdrop-blur-sm overflow-y-auto py-8 px-4"
+      className="fixed inset-0 z-50 flex items-stretch justify-center bg-black/70 backdrop-blur-sm sm:p-4"
       onClick={onClose}
       data-testid="audit-view-modal"
     >
       <div
         onClick={(e) => e.stopPropagation()}
-        className="sp-glass-strong rounded-2xl p-6 sm:p-8 max-w-4xl w-full my-auto"
+        className="sp-glass-strong sm:rounded-2xl w-full max-w-4xl flex flex-col max-h-[100dvh] sm:max-h-[calc(100dvh-2rem)] sm:my-auto"
+        style={{
+          paddingTop: "calc(env(safe-area-inset-top, 0px))",
+          paddingBottom: "calc(env(safe-area-inset-bottom, 0px))",
+        }}
       >
-        {/* Header: business name + score + actions */}
-        <div className="flex items-start justify-between gap-4 mb-6 flex-wrap">
-          <div className="min-w-0">
+        {/* Sticky header: business name + score + actions. Stays pinned
+            while the body scrolls so the Close button is always reachable
+            on mobile. */}
+        <div className="flex items-start justify-between gap-3 px-4 sm:px-8 pt-4 sm:pt-6 pb-3 sm:pb-4 border-b border-white/5 flex-wrap sm:flex-nowrap">
+          <div className="min-w-0 flex-1">
             <div className="text-[10px] uppercase tracking-widest sp-subtle">Full audit · admin view</div>
-            <h2 className="text-2xl sm:text-3xl font-medium tracking-tight">{audit.business_name}</h2>
+            <h2 className="text-xl sm:text-3xl font-medium tracking-tight truncate">{audit.business_name}</h2>
             {audit.website_url && (
               <a href={audit.website_url} target="_blank" rel="noopener noreferrer"
-                 className="text-xs sp-subtle hover:text-orange-300 inline-flex items-center gap-1 mt-1">
-                {audit.website_url} <ExternalLink className="w-3 h-3" />
+                 className="text-xs sp-subtle hover:text-orange-300 inline-flex items-center gap-1 mt-1 break-all">
+                {audit.website_url} <ExternalLink className="w-3 h-3 shrink-0" />
               </a>
             )}
           </div>
-          <div className="flex items-center gap-3 shrink-0">
+          <div className="flex items-center gap-2 sm:gap-3 shrink-0">
             <div className="text-right">
-              <div className={`text-4xl font-medium tabular-nums ${scoreColor}`}>{score}</div>
-              <div className="text-[10px] uppercase tracking-widest sp-subtle">Health score</div>
+              <div className={`text-3xl sm:text-4xl font-medium tabular-nums leading-none ${scoreColor}`}>{score}</div>
+              <div className="text-[9px] sm:text-[10px] uppercase tracking-widest sp-subtle mt-1">Health</div>
             </div>
             <div className="flex flex-col gap-1.5">
               {audit.pdf_filename && (
@@ -588,6 +698,10 @@ function ViewAuditModal({ audit, onClose }) {
           </div>
         </div>
 
+        {/* Scrollable body — contains the rest of the audit so the
+            header / close button stays fixed. `overscroll-contain` keeps
+            iOS rubber-band scrolling inside the modal. */}
+        <div className="flex-1 min-h-0 overflow-y-auto overscroll-contain px-4 sm:px-8 py-5 sm:py-6">
         {/* Executive summary + score rationale */}
         {(audit.executive_summary || audit.score_rationale) && (
           <div className="sp-glass rounded-xl p-4 mb-6 space-y-2">
@@ -627,7 +741,7 @@ function ViewAuditModal({ audit, onClose }) {
         {/* Public-link footer — quick way to copy the prospect URL
             without leaving the modal. */}
         <div className="mt-8 pt-4 border-t border-white/5 flex items-center justify-between gap-3 flex-wrap">
-          <div className="text-[11px] sp-subtle">
+          <div className="text-[11px] sp-subtle break-all">
             Public link:{" "}
             <code className="bg-black/30 px-1.5 py-0.5 rounded ml-1">/audit/{audit.slug}</code>
           </div>
@@ -636,6 +750,7 @@ function ViewAuditModal({ audit, onClose }) {
              data-testid="audit-view-open-public">
             <Eye className="w-3 h-3" /> Open prospect page
           </a>
+        </div>
         </div>
       </div>
     </div>
