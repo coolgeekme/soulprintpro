@@ -149,7 +149,11 @@ async def generate_video(prompt: str, *, model: str = DEFAULT_VIDEO_MODEL,
 # path segment used in /api/v1/<family>/generate and /record-info.
 KIE_PROVIDERS: dict[str, dict] = {
     # ── Image models ────────────────────────────────────────────────
-    "flux-pro":       {"family": "flux",     "type": "image", "label": "Flux Pro"},
+    # Flux Kontext — kie.ai's only Flux variants. Note the unusual
+    # two-segment family path "flux/kontext"; submit/poll URLs become
+    # /api/v1/flux/kontext/generate and /record-info.
+    "flux-kontext-pro": {"family": "flux/kontext", "type": "image", "label": "Flux Kontext Pro"},
+    "flux-kontext-max": {"family": "flux/kontext", "type": "image", "label": "Flux Kontext Max"},
     "imagen-4-ultra": {"family": "imagen",   "type": "image", "label": "Imagen 4 Ultra"},
     "ideogram-3":     {"family": "ideogram", "type": "image", "label": "Ideogram 3"},
     "seedream-5":     {"family": "seedream", "type": "image", "label": "Seedream 5"},
@@ -211,6 +215,12 @@ async def submit_kie_task(
         # Per-family pre-set sane defaults; caller's `extra` overrides.
         "enableTranslation": True,
     }
+    # Flux Kontext expects `aspectRatio` (camelCase) and a default 1:1
+    # square works for social-post covers. Caller can override via
+    # ``extra={"aspectRatio": "16:9"}`` for landscape needs.
+    if info.get("family") == "flux/kontext":
+        body.setdefault("aspectRatio", "1:1")
+        body.setdefault("outputFormat", "png")
     # Image input (for image-to-image / video-from-image flows)
     if image_url:
         body["image_url"] = image_url
@@ -272,16 +282,29 @@ async def get_kie_task_status(model_key: str, task_id: str) -> dict:
 def _extract_kie_urls(data: dict) -> list[str]:
     """Pull all usable result URLs from a kie.ai task payload. Image
     tasks may return multiple variants; we keep them all so the user can
-    pick. Falls back to single-URL fields if `resultUrls` is missing."""
+    pick. Falls back to single-URL fields if `resultUrls` is missing.
+
+    Different kie.ai families serialise results inconsistently:
+      • Veo / Suno / Sora: ``response.resultUrls = [url, ...]``
+      • Flux Kontext:       ``response.resultImageUrl = url`` (single)
+      • Other image models: typically ``response.imageUrl`` or ``response.url``
+    We probe all known shapes so callers never have to know which.
+    """
     if not data:
         return []
     response = data.get("response") or {}
     urls = response.get("resultUrls") or []
     if isinstance(urls, list) and urls:
         return [u for u in urls if isinstance(u, str)]
-    single = (response.get("url") or response.get("audioUrl")
-              or response.get("imageUrl") or response.get("videoUrl")
-              or data.get("url"))
+    # Single-URL forms used by various kie.ai providers
+    single = (
+        response.get("resultImageUrl")     # Flux Kontext
+        or response.get("imageUrl")        # Imagen / Ideogram / GPT Image
+        or response.get("videoUrl")        # Some video providers
+        or response.get("audioUrl")        # Suno
+        or response.get("url")             # Generic
+        or data.get("url")
+    )
     return [single] if single else []
 
 

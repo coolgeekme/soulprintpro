@@ -539,7 +539,23 @@ def make_social_router(*, db, AGENTS, EMERGENT_LLM_KEY, LlmChat, UserMessage,
         ]
         prompt = "\n".join(p for p in prompt_parts if p)
         try:
-            fname, _caption = await generate_image_via_nano_banana(prompt, sys_msg)
+            # Phase 1 of the Dynamic Intelligence image router (Feb 5
+            # 2026): social-post cover images route to kie.ai's Flux
+            # Kontext Pro by default. Why:
+            #   • Cleaner "marketing-grade" aesthetic out of the box
+            #     than Nano Banana, with comparable cost.
+            #   • Decouples social cover gen from chat editing flows
+            #     (which keep Nano Banana — it's still the best at
+            #     image-to-image edits).
+            #   • The kie.ai client is already in our infra (used for
+            #     video) so adding image traffic here doesn't expand
+            #     our dependency surface.
+            # Falls back to Nano Banana on ANY kie.ai failure (404, 5xx,
+            # timeout, missing key, empty result) so the user always
+            # gets a cover image regardless of kie.ai's uptime.
+            fname, source_model = await _generate_post_image_via_kie_then_fallback(
+                prompt=prompt, system_message=sys_msg,
+            )
         except Exception as exc:
             logger.warning("Social image generation failed: %s", exc)
             return None
@@ -596,7 +612,69 @@ def make_social_router(*, db, AGENTS, EMERGENT_LLM_KEY, LlmChat, UserMessage,
             "url": f"/api/files/{final_filename}",
             "with_logo": with_logo,
             "raw_filename": fname,  # un-composited base, kept so we can re-anchor logo cheaply
+            "model_used": source_model,  # "kie:flux-kontext-pro" or "nano-banana" — admin trail
         }
+
+    async def _generate_post_image_via_kie_then_fallback(
+        *, prompt: str, system_message: str,
+    ) -> tuple[str, str]:
+        """Phase-1 Dynamic Intelligence image router for social-post covers.
+
+        Tries kie.ai's Flux Kontext Pro first. Falls back to Nano Banana
+        on any failure (timeout, 4xx, 5xx, missing key, empty result).
+        Returns ``(filename, model_label)``. Raises only if BOTH backends
+        fail, so the caller can surface a single clear error.
+
+        Why this layout (kie-first, NB fallback) — not the reverse:
+          • Switching on success is a no-op (fast path stays fast).
+          • Falling back on failure means the user always gets a cover.
+          • If kie.ai is having a bad day (Suno's already 404ing in our
+            logs), social-post drafts don't go out unstyled.
+        """
+        from kie_client import generate_via_kie, kie_provider_info  # local import keeps boot light
+        # kie.ai's Flux Kontext doesn't take a system message — fold it
+        # into the prompt so the brand direction still lands.
+        full_prompt = f"{system_message.strip()}\n\n{prompt.strip()}" if system_message else prompt
+        try:
+            if kie_provider_info("flux-kontext-pro"):
+                urls = await generate_via_kie(
+                    model_key="flux-kontext-pro", prompt=full_prompt,
+                )
+                if urls:
+                    # Download the image and persist locally so we have a
+                    # stable filename. kie.ai URLs expire in 7-14 days
+                    # which would break old social posts.
+                    import httpx
+                    async with httpx.AsyncClient(timeout=30) as client:
+                        resp = await client.get(urls[0])
+                    if resp.status_code == 200 and resp.content:
+                        filename = f"{uuid.uuid4().hex}.png"
+                        from pathlib import Path
+                        if upload_dir:
+                            target = Path(upload_dir) / filename
+                            target.parent.mkdir(parents=True, exist_ok=True)
+                            target.write_bytes(resp.content)
+                        # Mirror to GridFS so a pod restart doesn't lose
+                        # the image. The persist helper is the same one
+                        # the rest of the app uses for media durability.
+                        try:
+                            from server import persist_bytes  # late import, app startup ordering
+                            await persist_bytes(
+                                Path(upload_dir) / filename, resp.content,
+                                original_name=filename, mime="image/png",
+                            )
+                        except Exception:
+                            pass  # GridFS mirror is best-effort
+                        return filename, "kie:flux-kontext-pro"
+                    logger.warning("kie.ai returned URL but download failed (%s)", resp.status_code)
+                else:
+                    logger.warning("kie.ai flux-kontext-pro returned no URLs — falling back")
+        except Exception as exc:
+            logger.warning("kie.ai social-cover gen failed: %s — falling back to Nano Banana", exc)
+        # Fallback: Nano Banana (the original path). Any failure here
+        # propagates up so the outer try/except reports it once cleanly.
+        fname, _caption = await generate_image_via_nano_banana(prompt, system_message)
+        return fname, "nano-banana"
 
     @r.post("/orgs/{org_id}/social/draft")
     async def draft_social_posts(
