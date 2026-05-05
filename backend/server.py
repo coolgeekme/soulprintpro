@@ -4141,8 +4141,14 @@ async def _poll_and_save_video(message_id: str, prompt: str, aspect_ratio: str =
     """Background coroutine: call Kie.ai, then update the placeholder message.
 
     The agent message is created with `media_status="pending"` immediately so
-    the UI can render a spinner. When polling resolves we patch the message
-    document with the final URL (or an error caption on failure).
+    the UI can render a spinner. When polling resolves we DOWNLOAD the video
+    (via `_save_remote_url_to_uploads` → persistent GridFS mirror) and patch
+    the message with a `/api/files/<local>` URL.
+
+    Before Feb 2026 we stored the raw Kie.ai CDN URL which silently expired
+    after a few days — producing exactly the "broken video link" symptom
+    the user reported. The local file is always served by our own
+    capability-URL route, so it can never expire unless manually deleted.
     """
     try:
         url = await kie_generate_video(prompt, aspect_ratio=aspect_ratio)
@@ -4151,14 +4157,18 @@ async def _poll_and_save_video(message_id: str, prompt: str, aspect_ratio: str =
         url = None
     now = datetime.now(timezone.utc)
     if url:
-        await db.messages.update_one(
-            {"id": message_id},
-            {"$set": {
-                "media_url": url,
-                "media_status": "ready",
-                "ready_at": now,
-            }},
-        )
+        # Download + mirror to GridFS so the link survives indefinitely.
+        local_path = await _save_remote_url_to_uploads(url, suffix=".mp4")
+        final_url = f"/api/files/{local_path.name}" if local_path else url
+        update = {
+            "media_url": final_url,
+            "media_status": "ready",
+            "ready_at": now,
+        }
+        if local_path:
+            update["media_filename"] = local_path.name
+            update["media_remote_url"] = url  # keep the original for audit
+        await db.messages.update_one({"id": message_id}, {"$set": update})
     else:
         await db.messages.update_one(
             {"id": message_id},
@@ -4391,15 +4401,21 @@ async def _poll_and_save_kie_media(
     body_text = (
         f"Generated {n} {media_type}{'s' if n > 1 else ''} with **{label}**."
     )
+    patch = {
+        "media_status": "ready",
+        "media_url": attachments[0]["url"],
+        "attachments": attachments,
+        "text": body_text,
+        "ready_at": now,
+    }
+    # ALSO stamp `media_filename` on the root message for image/video so
+    # downstream lookups that don't know about `attachments[*]` — most
+    # notably the image-edit source finder — can still locate the file.
+    if media_type in ("image", "video"):
+        patch["media_filename"] = attachments[0]["filename"]
     await db.messages.update_one(
         {"id": message_id},
-        {"$set": {
-            "media_status": "ready",
-            "media_url": attachments[0]["url"],
-            "attachments": attachments,
-            "text": body_text,
-            "ready_at": now,
-        }},
+        {"$set": patch},
     )
 
 

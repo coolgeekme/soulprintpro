@@ -1292,13 +1292,13 @@ export default function ConversationPage() {
                   {m.media_type === "video" && m.media_status === "ready" && m.media_url && (
                     <div className="mt-3 relative group/media" data-testid={`message-video-${m.id}`}>
                       <video
-                        src={m.media_url}
+                        src={m.media_url.startsWith("http") ? m.media_url : `${BACKEND_URL}${m.media_url}`}
                         controls
                         preload="metadata"
                         className="block rounded-xl overflow-hidden border border-white/10 w-full max-h-[480px] bg-black/30"
                       />
                       <a
-                        href={m.media_url}
+                        href={m.media_url.startsWith("http") ? m.media_url : `${BACKEND_URL}${m.media_url}`}
                         download
                         target="_blank" rel="noreferrer"
                         className="absolute top-2 right-2 sp-glass-strong rounded-full p-2 opacity-0 group-hover/media:opacity-100 hover:scale-105 transition shadow-lg"

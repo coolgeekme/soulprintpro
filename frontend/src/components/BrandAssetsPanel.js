@@ -113,7 +113,7 @@ export default function BrandAssetsPanel({ orgId, initial, isOwner = false, onCh
                on every upload so the cache-key naturally changes). Adding
                ?v=... is belt-and-braces in case a CDN along the way
                ignored the new path. */
-            src={`${BACKEND_URL}${doc.url}${doc.url.includes("?") ? "&" : "?"}v=${encodeURIComponent(doc.filename || "")}`}
+            src={`${doc.url?.startsWith("http") ? doc.url : `${BACKEND_URL}${doc.url}`}${doc.url?.includes("?") ? "&" : "?"}v=${encodeURIComponent(doc.filename || "")}`}
             alt={`${kind} logo`}
             className="max-h-28 max-w-full object-contain"
             data-testid={`brand-${kind}-img`}

@@ -491,7 +491,7 @@ function MissionDetail({ orgId, missionId }) {
                     <span className="text-[10px] uppercase tracking-widest sp-subtle mr-1">Attached</span>
                     {mission.attachments.map((a) => (
                       <a key={a.id}
-                         href={`${BACKEND_URL}${a.url}`}
+                         href={a.url?.startsWith("http") ? a.url : `${BACKEND_URL}${a.url}`}
                          target="_blank" rel="noreferrer"
                          title={`${a.original_name} (${Math.round((a.size || 0) / 1024)} KB)`}
                          className="inline-flex items-center gap-1 text-[11px] px-2 py-0.5 rounded-full bg-white/5 border border-white/10 text-white/75 hover:text-white hover:bg-white/10"
