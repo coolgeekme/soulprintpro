@@ -170,7 +170,24 @@ app = FastAPI(title="SoulPrint Engine API")
 
 JWT_SECRET = os.environ.get("JWT_SECRET", "soulprint-dev-secret")
 JWT_ALGO = "HS256"
-EMERGENT_LLM_KEY = os.environ.get("EMERGENT_LLM_KEY", "")
+
+# ── LLM key resolution ──────────────────────────────────────────────────────
+# Prefer the user's own OPENAI_API_KEY when it's set (per Reggie's explicit
+# choice on Feb 5, 2026 — "default to my OpenAI key whenever an LLM is
+# needed"). The Emergent universal key is kept as a fallback so the app
+# still works for users who haven't supplied their own provider key.
+#
+# Image generation requires a separate handle — the Gemini Nano Banana
+# model is only reachable via the Emergent universal key (user-supplied
+# OpenAI keys can't talk to the gemini provider). Hence we keep
+# `_EMERGENT_KEY_FOR_IMAGES` available for the Nano Banana wiring below.
+_USER_OPENAI_KEY = (os.environ.get("OPENAI_API_KEY") or "").strip()
+_EMERGENT_KEY_FOR_IMAGES = os.environ.get("EMERGENT_LLM_KEY", "")
+EMERGENT_LLM_KEY = _USER_OPENAI_KEY or _EMERGENT_KEY_FOR_IMAGES
+# Default text model when an LlmChat is constructed without an explicit
+# ``.with_model()`` call. Set per Reggie's choice; existing per-site model
+# choices (e.g. gpt-4.1-mini for cheap helpers) are preserved.
+DEFAULT_TEXT_LLM_MODEL = "gpt-5.1"
 
 # ── Auth helpers ─────────────────────────────────────────────────────────────
 def hash_password(p: str) -> str:
@@ -3694,7 +3711,10 @@ async def generate_image_via_openai(
     Image-to-image editing isn't supported here (Nano Banana covers that).
     """
     from emergentintegrations.llm.openai.image_generation import OpenAIImageGeneration
-    gen = OpenAIImageGeneration(api_key=EMERGENT_LLM_KEY)
+    # Image gen uses the Emergent universal key (when configured) — even
+    # though we have a user OpenAI key for text, image-gen routes through
+    # the same shared key for billing predictability and provider parity.
+    gen = OpenAIImageGeneration(api_key=_EMERGENT_KEY_FOR_IMAGES or EMERGENT_LLM_KEY)
     full_prompt = prompt
     if system_message:
         full_prompt = f"{system_message.strip()}\n\n{prompt.strip()}"
@@ -3771,7 +3791,9 @@ async def generate_image_via_nano_banana(
         ImageContent as _IC,
     )
     chat = _LlmChat(
-        api_key=EMERGENT_LLM_KEY,
+        # Nano Banana only works via the Emergent universal key (gemini
+        # provider isn't reachable with a user-supplied OpenAI key).
+        api_key=_EMERGENT_KEY_FOR_IMAGES or EMERGENT_LLM_KEY,
         session_id=f"img:{uuid.uuid4()}",
         system_message=system_message,
     ).with_model("gemini", NANO_BANANA_MODEL).with_params(modalities=["image", "text"])

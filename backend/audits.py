@@ -257,7 +257,7 @@ async def _synthesise_audit_via_llm(
         api_key=EMERGENT_LLM_KEY,
         session_id=f"audit-{uuid.uuid4().hex[:12]}",
         system_message=_AUDIT_SYSTEM_PROMPT,
-    ).with_model("anthropic", "claude-sonnet-4-5-20250929")
+    ).with_model("openai", "gpt-5.1")
     raw = await chat.send_message(UserMessage(text=user_text))
     text = (raw or "").strip()
     # Strip accidental ```json fences
