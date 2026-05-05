@@ -77,6 +77,20 @@ from firebase_auth import (
     verify_firebase_id_token,
     upsert_user_for_firebase_claims,
 )
+from team_access import (
+    can_user_view_team,
+    can_user_message_in_team,
+    can_user_access_private_cos,
+    is_team_admin,
+    is_org_owner as _is_org_owner,
+    team_visibility,
+    team_member_ids,
+    team_admin_ids,
+    backfill_team_membership,
+    serialize_team_with_visibility,
+    get_or_create_private_cos,
+    PRIVATE_COS_KIND,
+)
 
 ROOT_DIR = Path(__file__).parent
 UPLOAD_DIR = ROOT_DIR / "uploads"
@@ -352,10 +366,12 @@ class OrgUpdateBody(BaseModel):
 class TeamCreateBody(BaseModel):
     name: str
     description: Optional[str] = ""
+    visibility: Optional[str] = "open"   # "open" | "closed"
 
 class TeamUpdateBody(BaseModel):
     name: Optional[str] = None
     description: Optional[str] = None
+    visibility: Optional[str] = None     # "open" | "closed"
 
 class ScheduleCreateBody(BaseModel):
     title: str
@@ -432,18 +448,45 @@ async def require_org_member(org_id: str, user_id: str) -> dict:
         raise HTTPException(403, "Not a member of this organization")
     return {"org": org, "member": m}
 
-async def require_team_member(team_id: str, user_id: str) -> dict:
+async def require_team_member(team_id: str, user_id: str, *, mode: str = "view") -> dict:
+    """Gate access to a team. ``mode`` is one of:
+      - "view": user can see the team listed (open or member of closed)
+      - "message": user can send/receive in the team's conversations
+      - "admin": user can edit visibility / invite / remove members
+    Org owners always pass every mode.
+    """
     try:
         team = await db.teams.find_one({"_id": ObjectId(team_id)})
     except Exception:
         raise HTTPException(400, "Invalid team id")
     if not team:
         raise HTTPException(404, "Team not found")
-    # team membership = org membership (any org member can access any team in the org)
+    org = await db.organizations.find_one({"_id": ObjectId(team["org_id"])})
+    if not org:
+        raise HTTPException(404, "Organization not found")
     m = await db.org_members.find_one({"org_id": team["org_id"], "user_id": user_id})
-    if not m:
-        raise HTTPException(403, "No access to this team")
-    return {"team": team, "org_role": m["role"]}
+    if not m and not _is_org_owner(org, user_id):
+        raise HTTPException(403, "Not a member of this organization")
+    # Lazy backfill so the new fields are populated for legacy rows.
+    team = await backfill_team_membership(db, team, org)
+
+    member_rows = await db.org_members.find({"org_id": team["org_id"]}, {"user_id": 1}).to_list(2000)
+    org_member_ids = [str(r["user_id"]) for r in member_rows]
+
+    if mode == "admin":
+        if not is_team_admin(team=team, org=org, user_id=user_id):
+            raise HTTPException(403, "Only team admins can do this")
+    elif mode == "message":
+        if not can_user_message_in_team(
+            team=team, org=org, user_id=user_id, org_member_ids=org_member_ids,
+        ):
+            raise HTTPException(403, "Not a member of this team — join first to participate")
+    else:
+        if not can_user_view_team(
+            team=team, org=org, user_id=user_id, org_member_ids=org_member_ids,
+        ):
+            raise HTTPException(403, "No access to this team")
+    return {"team": team, "org": org, "org_role": (m or {}).get("role", "owner"), "org_member_ids": org_member_ids}
 
 def serialize_org(org: dict) -> dict:
     from brand import serialize_brand as _serialize_brand
@@ -486,6 +529,8 @@ def serialize_team(team: dict) -> dict:
         "soulprint": team.get("soulprint", {}),
         "is_general": bool(team.get("is_general")),
         "is_direct": bool(team.get("is_direct")),
+        "visibility": team_visibility(team),
+        "created_by": str(team.get("created_by") or ""),
         "created_at": team["created_at"].isoformat() if isinstance(team["created_at"], datetime) else team["created_at"],
     }
 
@@ -1403,36 +1448,71 @@ team_r = APIRouter(prefix="/api")
 
 @team_r.post("/orgs/{org_id}/teams")
 async def create_team(org_id: str, body: TeamCreateBody, u: dict = Depends(get_current_user)):
-    await require_org_member(org_id, u["id"])
+    ctx = await require_org_member(org_id, u["id"])
+    org = ctx["org"]
     if not body.name.strip():
         raise HTTPException(400, "Team name required")
+    visibility = body.visibility if body.visibility in ("open", "closed") else "open"
     now = datetime.now(timezone.utc)
+    # Pre-populate `member_user_ids` with ALL current org members for an
+    # Open team (so the existing "everyone in the org sees this team"
+    # behaviour holds without a join click) and with just the creator
+    # for a Closed team. The creator is always an admin.
+    if visibility == "open":
+        all_members = await db.org_members.find({"org_id": org_id}, {"user_id": 1}).to_list(2000)
+        member_user_ids = [str(r["user_id"]) for r in all_members]
+        # Always include the creator + org owner just in case the rows
+        # got out of sync.
+        for extra in (u["id"], str(org.get("owner_id") or "")):
+            if extra and extra not in member_user_ids:
+                member_user_ids.append(extra)
+    else:
+        member_user_ids = [u["id"]]
     doc = {
         "org_id": org_id,
         "name": body.name.strip(),
         "description": body.description or "",
         "soulprint": {"mission": "", "tone": "", "audience": "", "values": "", "north_star": ""},
+        "visibility": visibility,
+        "member_user_ids": member_user_ids,
+        "admin_user_ids": [u["id"]],
         "created_by": u["id"],
         "created_at": now,
     }
     res = await db.teams.insert_one(doc)
     team = await db.teams.find_one({"_id": res.inserted_id})
-    return serialize_team(team)
+    member_rows = await db.org_members.find({"org_id": org_id}, {"user_id": 1}).to_list(2000)
+    org_member_ids = [str(r["user_id"]) for r in member_rows]
+    return serialize_team_with_visibility(team, org=org, viewer_id=u["id"], org_member_ids=org_member_ids)
 
 @team_r.get("/orgs/{org_id}/teams")
 async def list_teams(org_id: str, u: dict = Depends(get_current_user)):
-    await require_org_member(org_id, u["id"])
+    ctx = await require_org_member(org_id, u["id"])
+    org = ctx["org"]
     teams = await db.teams.find({"org_id": org_id}).sort("created_at", -1).to_list(500)
-    return [serialize_team(t) for t in teams]
+    member_rows = await db.org_members.find({"org_id": org_id}, {"user_id": 1}).to_list(2000)
+    org_member_ids = [str(r["user_id"]) for r in member_rows]
+    out = []
+    for t in teams:
+        # Lazy backfill keeps legacy teams behaving exactly as before.
+        t = await backfill_team_membership(db, t, org)
+        if not can_user_view_team(team=t, org=org, user_id=u["id"], org_member_ids=org_member_ids):
+            continue
+        out.append(serialize_team_with_visibility(
+            t, org=org, viewer_id=u["id"], org_member_ids=org_member_ids,
+        ))
+    return out
 
 @team_r.get("/teams/{team_id}")
 async def get_team(team_id: str, u: dict = Depends(get_current_user)):
-    ctx = await require_team_member(team_id, u["id"])
-    return serialize_team(ctx["team"])
+    ctx = await require_team_member(team_id, u["id"], mode="view")
+    return serialize_team_with_visibility(
+        ctx["team"], org=ctx["org"], viewer_id=u["id"], org_member_ids=ctx["org_member_ids"],
+    )
 
 @team_r.put("/teams/{team_id}/soulprint")
 async def update_soulprint(team_id: str, body: SoulPrintBody, u: dict = Depends(get_current_user)):
-    await require_team_member(team_id, u["id"])
+    await require_team_member(team_id, u["id"], mode="message")
     await db.teams.update_one(
         {"_id": ObjectId(team_id)},
         {"$set": {"soulprint": body.model_dump()}},
@@ -1442,9 +1522,8 @@ async def update_soulprint(team_id: str, body: SoulPrintBody, u: dict = Depends(
 
 @team_r.patch("/teams/{team_id}")
 async def update_team(team_id: str, body: TeamUpdateBody, u: dict = Depends(get_current_user)):
-    ctx = await require_team_member(team_id, u["id"])
-    if ctx["org_role"] not in ("owner", "admin"):
-        raise HTTPException(403, "Only owners/admins can edit a team")
+    ctx = await require_team_member(team_id, u["id"], mode="admin")
+    team, org = ctx["team"], ctx["org"]
     update: dict = {}
     if body.name is not None:
         n = body.name.strip()
@@ -1453,16 +1532,109 @@ async def update_team(team_id: str, body: TeamUpdateBody, u: dict = Depends(get_
         update["name"] = n
     if body.description is not None:
         update["description"] = body.description.strip()[:500]
+    if body.visibility is not None:
+        if body.visibility not in ("open", "closed"):
+            raise HTTPException(400, "Visibility must be 'open' or 'closed'")
+        if team.get("is_general") and body.visibility == "closed":
+            raise HTTPException(400, "The General team is always Open and shared with the org")
+        update["visibility"] = body.visibility
     if update:
         await db.teams.update_one({"_id": ObjectId(team_id)}, {"$set": update})
     fresh = await db.teams.find_one({"_id": ObjectId(team_id)})
-    return serialize_team(fresh)
+    return serialize_team_with_visibility(
+        fresh, org=org, viewer_id=u["id"], org_member_ids=ctx["org_member_ids"],
+    )
+
+# ── Open team self-join ──────────────────────────────────────────────────
+@team_r.post("/teams/{team_id}/join")
+async def join_team(team_id: str, u: dict = Depends(get_current_user)):
+    """Open teams allow self-join. Closed teams require an admin invite."""
+    try:
+        team = await db.teams.find_one({"_id": ObjectId(team_id)})
+    except Exception:
+        raise HTTPException(400, "Invalid team id")
+    if not team:
+        raise HTTPException(404, "Team not found")
+    org = await db.organizations.find_one({"_id": ObjectId(team["org_id"])})
+    if not org:
+        raise HTTPException(404, "Organization not found")
+    m = await db.org_members.find_one({"org_id": team["org_id"], "user_id": u["id"]})
+    if not m and not _is_org_owner(org, u["id"]):
+        raise HTTPException(403, "Not a member of this organization")
+    team = await backfill_team_membership(db, team, org)
+    if team_visibility(team) == "closed":
+        raise HTTPException(403, "This team is invite-only — ask a team admin to add you")
+    members = team_member_ids(team)
+    if u["id"] in members:
+        return {"ok": True, "already_member": True}
+    members.append(u["id"])
+    await db.teams.update_one({"_id": team["_id"]}, {"$set": {"member_user_ids": members}})
+    return {"ok": True, "joined": True}
+
+# ── Admin invites another org member to this team ────────────────────────
+class TeamInviteBody(BaseModel):
+    user_ids: List[str]
+
+@team_r.post("/teams/{team_id}/invite")
+async def invite_to_team(team_id: str, body: TeamInviteBody, u: dict = Depends(get_current_user)):
+    ctx = await require_team_member(team_id, u["id"], mode="admin")
+    team, org = ctx["team"], ctx["org"]
+    member_rows = await db.org_members.find({"org_id": team["org_id"]}, {"user_id": 1}).to_list(2000)
+    valid_ids = {str(r["user_id"]) for r in member_rows}
+    if org.get("owner_id"):
+        valid_ids.add(str(org["owner_id"]))
+    members = team_member_ids(team)
+    added = []
+    for uid in body.user_ids or []:
+        uid = str(uid)
+        if not uid or uid not in valid_ids or uid in members:
+            continue
+        members.append(uid)
+        added.append(uid)
+    if added:
+        await db.teams.update_one({"_id": team["_id"]}, {"$set": {"member_user_ids": members}})
+    return {"ok": True, "added": added}
+
+# ── Member leaves a team (or admin removes a member) ─────────────────────
+@team_r.delete("/teams/{team_id}/members/{user_id}")
+async def remove_team_member(team_id: str, user_id: str, u: dict = Depends(get_current_user)):
+    """Self-leave: caller removes themselves. Otherwise requires admin."""
+    if str(user_id) != str(u["id"]):
+        ctx = await require_team_member(team_id, u["id"], mode="admin")
+    else:
+        ctx = await require_team_member(team_id, u["id"], mode="view")
+    team = ctx["team"]
+    if team.get("is_general"):
+        raise HTTPException(400, "Cannot leave the General team while you remain in the org")
+    members = [m for m in team_member_ids(team) if str(m) != str(user_id)]
+    admins = [a for a in team_admin_ids(team) if str(a) != str(user_id)]
+    update = {"member_user_ids": members, "admin_user_ids": admins or [str(team.get("created_by") or u["id"])]}
+    await db.teams.update_one({"_id": team["_id"]}, {"$set": update})
+    return {"ok": True}
+
+# ── Resolve / lazily create the caller's private Chief of Staff ──────────
+@team_r.get("/orgs/{org_id}/my-cos")
+async def my_chief_of_staff(org_id: str, u: dict = Depends(get_current_user)):
+    """Returns the conversation_id of the caller's PRIVATE Chief of Staff
+    thread for this org. Auto-creates one on first call so existing
+    members get migrated lazily."""
+    ctx = await require_org_member(org_id, u["id"])
+    org = ctx["org"]
+    conv = await get_or_create_private_cos(db, org=org, user_id=u["id"], user_name=u.get("name", ""))
+    if not conv:
+        raise HTTPException(500, "Could not provision a private Chief of Staff thread")
+    return {
+        "conversation_id": str(conv["_id"]),
+        "team_id": conv["team_id"],
+        "title": conv.get("title") or "My Chief of Staff",
+        "kind": conv.get("kind") or PRIVATE_COS_KIND,
+        "owner_user_id": conv.get("owner_user_id") or u["id"],
+        "deeplink": f"/app/team/{conv['team_id']}/c/{str(conv['_id'])}",
+    }
 
 @team_r.delete("/teams/{team_id}")
 async def delete_team(team_id: str, u: dict = Depends(get_current_user)):
-    ctx = await require_team_member(team_id, u["id"])
-    if ctx["org_role"] not in ("owner", "admin"):
-        raise HTTPException(403, "Only owners/admins can delete a team")
+    ctx = await require_team_member(team_id, u["id"], mode="admin")
     if ctx["team"].get("is_general"):
         raise HTTPException(400, "The Chief of Staff team cannot be deleted")
     if ctx["team"].get("is_direct"):
@@ -1623,7 +1795,7 @@ async def load_assets_brief(org_id: str, max_items: int = 30) -> List[dict]:
 
 @conv_r.post("/teams/{team_id}/conversations")
 async def create_conversation(team_id: str, body: ConversationCreateBody, u: dict = Depends(get_current_user)):
-    ctx = await require_team_member(team_id, u["id"])
+    ctx = await require_team_member(team_id, u["id"], mode="message")
     for aid in body.agent_ids:
         if not is_agent(aid):
             raise HTTPException(400, f"Unknown agent: {aid}")
@@ -1682,9 +1854,18 @@ async def load_conv_or_403(conv_id: str, user_id: str) -> dict:
         raise HTTPException(400, "Invalid conversation id")
     if not c:
         raise HTTPException(404, "Conversation not found")
-    if user_id not in c.get("member_ids", []):
-        raise HTTPException(403, "Not a participant")
-    return c
+    # Direct member access — covers the vast majority of conversations.
+    if user_id in c.get("member_ids", []):
+        return c
+    # Private CoS audit-access: the org owner can read any private CoS
+    # in their org for moderation / oversight purposes.
+    if c.get("kind") == PRIVATE_COS_KIND:
+        team = await db.teams.find_one({"_id": ObjectId(c["team_id"])}) if c.get("team_id") else None
+        if team:
+            org = await db.organizations.find_one({"_id": ObjectId(team["org_id"])})
+            if org and _is_org_owner(org, user_id):
+                return c
+    raise HTTPException(403, "Not a participant")
 
 @conv_r.get("/conversations/{conv_id}")
 async def get_conv(conv_id: str, u: dict = Depends(get_current_user)):

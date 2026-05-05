@@ -33,8 +33,11 @@ export default function OrgPage() {
   const [invites, setInvites] = useState([]);
   const [assets, setAssets] = useState([]);
   const [loading, setLoading] = useState(true);
+  // Per-user PRIVATE Chief of Staff thread (auto-created on first call)
+  const [myCos, setMyCos] = useState(null);
   const [newTeam, setNewTeam] = useState("");
   const [newTeamDesc, setNewTeamDesc] = useState("");
+  const [newTeamVisibility, setNewTeamVisibility] = useState("open");
   const [creating, setCreating] = useState(false);
   const [showInviteTools, setShowInviteTools] = useState(false);
   const [uploading, setUploading] = useState(false);
@@ -128,6 +131,13 @@ export default function OrgPage() {
           setInvites(data);
         } catch (_) {}
       }
+      // Lazy-create the caller's PRIVATE Chief of Staff thread for this
+      // org. Idempotent on the backend — first call provisions, every
+      // call after returns the same conversation id.
+      try {
+        const { data } = await api.get(`/orgs/${orgId}/my-cos`);
+        setMyCos(data);
+      } catch (_) { /* non-fatal — user can still use the shared CoS */ }
     } catch (err) {
       toast.error("Failed to load organization");
       nav("/app");
@@ -146,12 +156,28 @@ export default function OrgPage() {
       const { data } = await api.post(`/orgs/${orgId}/teams`, {
         name: newTeam.trim(),
         description: newTeamDesc.trim(),
+        visibility: newTeamVisibility,
       });
-      toast.success("Team created");
+      toast.success(`${data.visibility === "closed" ? "Closed" : "Open"} team created`);
       nav(`/app/team/${data.id}`);
     } catch (err) {
       toast.error(err?.response?.data?.detail || "Failed");
     } finally { setCreating(false); }
+  };
+
+  // Open team self-join — non-members click "Join team" on the card and
+  // are immediately added to `member_user_ids`. Closed teams reject this
+  // server-side; the UI only shows the button when `can_join=true`.
+  const joinTeam = async (t) => {
+    try {
+      await api.post(`/teams/${t.id}/join`);
+      const { data } = await api.get(`/orgs/${orgId}/teams`);
+      setTeams(data);
+      toast.success(`Joined ${t.name}`);
+      nav(`/app/team/${t.id}`);
+    } catch (err) {
+      toast.error(err?.response?.data?.detail || "Could not join this team");
+    }
   };
 
   const createInvite = async (role) => {
@@ -381,6 +407,30 @@ export default function OrgPage() {
           <ArrowRight className="w-4 h-4 text-white/60 group-hover:text-white transition" />
         </Link>
 
+        {/* Your private Chief of Staff — per-user thread visible only
+            to you (and the org owner for audit). Always shown, even for
+            the owner (they get their own private CoS too). */}
+        {myCos && (
+          <Link
+            to={myCos.deeplink}
+            className="sp-glass rounded-2xl p-5 mb-3 flex items-center gap-4 hover:border-white/25 transition group"
+            data-testid="my-chief-of-staff-card"
+          >
+            <div className="w-10 h-10 rounded-xl flex items-center justify-center shrink-0"
+                 style={{ background: "linear-gradient(160deg, rgba(251,146,60,0.55), rgba(251,146,60,0.08))" }}>
+              <MessageCircle className="w-4 h-4 text-white" />
+            </div>
+            <div className="flex-1 min-w-0">
+              <div className="flex items-center gap-2">
+                <span className="text-white font-medium">Your Chief of Staff</span>
+                <span className="text-[9px] uppercase tracking-widest px-1.5 py-0.5 rounded sp-glass-strong">Private</span>
+              </div>
+              <div className="text-xs sp-subtle">A private thread just for you. The org owner can audit it for moderation, but no other member sees it.</div>
+            </div>
+            <ArrowRight className="w-4 h-4 text-white/60 group-hover:text-white transition" />
+          </Link>
+        )}
+
         {/* Mind map — live picture of the org's brain (teams, agents,
             missions, posts, time-spent). Owner-only by default; owners
             can grant access to specific members from the Mind Map page. */}
@@ -422,7 +472,10 @@ export default function OrgPage() {
             </span>
           </div>
           <div className="grid md:grid-cols-3 gap-4">
-            {teams.filter((t) => t.id !== org.general_team_id).map((t) => (
+            {teams.filter((t) => t.id !== org.general_team_id).map((t) => {
+              const isClosed = t.visibility === "closed";
+              const canJoin = t.can_join;
+              return (
               <div key={t.id} className="sp-glass rounded-2xl p-6 hover:border-white/20 transition group relative" data-testid={`team-card-${t.id}`}>
                 {canEdit && (
                   <button
@@ -434,18 +487,47 @@ export default function OrgPage() {
                     <Trash2 className="w-3.5 h-3.5" />
                   </button>
                 )}
-                <Link to={`/app/team/${t.id}`} className="block">
-                  <div className="w-10 h-10 rounded-xl sp-glass-strong flex items-center justify-center mb-4">
+                <Link to={canJoin ? "#" : `/app/team/${t.id}`}
+                      onClick={(e) => { if (canJoin) e.preventDefault(); }}
+                      className="block">
+                  <div className="w-10 h-10 rounded-xl sp-glass-strong flex items-center justify-center mb-3">
                     <Users className="w-5 h-5 text-white/90" />
                   </div>
-                  <div className="text-white font-medium text-lg truncate">{t.name}</div>
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <span className="text-white font-medium text-lg truncate">{t.name}</span>
+                    {/* Visibility pill */}
+                    <span
+                      className="text-[9px] uppercase tracking-widest px-1.5 py-0.5 rounded"
+                      style={{
+                        background: isClosed ? "rgba(239,68,68,0.15)" : "rgba(16,185,129,0.15)",
+                        color: isClosed ? "rgb(252,165,165)" : "rgb(110,231,183)",
+                        border: `1px solid ${isClosed ? "rgba(239,68,68,0.35)" : "rgba(16,185,129,0.35)"}`,
+                      }}
+                      title={isClosed
+                        ? "Invite-only — only members can see and chat in this team"
+                        : "Open — anyone in the org can join"}
+                    >
+                      {isClosed ? "Closed" : "Open"}
+                    </span>
+                  </div>
                   {t.description && <div className="text-xs sp-subtle mt-1 line-clamp-2">{t.description}</div>}
                   <div className="flex items-center gap-2 mt-4 text-xs sp-subtle group-hover:text-white/80">
-                    Open workspace <ArrowRight className="w-3.5 h-3.5" />
+                    {canJoin ? (
+                      <button
+                        type="button"
+                        onClick={(e) => { e.preventDefault(); e.stopPropagation(); joinTeam(t); }}
+                        className="sp-btn sp-btn-primary !py-1 !px-3 text-xs"
+                        data-testid={`join-team-${t.id}`}
+                      >
+                        Join team <ArrowRight className="w-3.5 h-3.5" />
+                      </button>
+                    ) : (
+                      <>Open workspace <ArrowRight className="w-3.5 h-3.5" /></>
+                    )}
                   </div>
                 </Link>
               </div>
-            ))}
+            );})}
             {teams.filter((t) => t.id !== org.general_team_id).length === 0 && (
               <div className="sp-glass rounded-2xl p-6 col-span-full text-center text-sm sp-subtle">
                 No specialised teams yet — create one in <span className="text-white/80">Org setup</span> below.
@@ -723,13 +805,36 @@ export default function OrgPage() {
                     placeholder="One-line description (optional)"
                     className="w-full bg-white/[0.03] border border-white/10 rounded-xl px-4 py-3 text-sm text-white placeholder:text-white/30 focus:border-white/30 focus:sp-focus"
                   />
+                  {/* Open vs Closed toggle — controls who can see + join the team */}
+                  <div className="grid grid-cols-2 gap-2 mt-3">
+                    {[
+                      { v: "open",   label: "Open",   sub: "Anyone in the org can join" },
+                      { v: "closed", label: "Closed", sub: "Invite-only" },
+                    ].map(({ v, label, sub }) => (
+                      <button
+                        type="button"
+                        key={v}
+                        onClick={() => setNewTeamVisibility(v)}
+                        className="text-left rounded-xl px-3 py-2.5 transition"
+                        style={{
+                          background: newTeamVisibility === v ? "color-mix(in srgb, var(--accent) 14%, transparent)" : "var(--input-bg)",
+                          border: `1px solid ${newTeamVisibility === v ? "var(--accent)" : "var(--input-border)"}`,
+                          color: "var(--fg)",
+                        }}
+                        data-testid={`new-team-vis-${v}`}
+                      >
+                        <div className="text-xs font-medium">{label}</div>
+                        <div className="text-[10px] sp-subtle">{sub}</div>
+                      </button>
+                    ))}
+                  </div>
                   <button
                     type="submit"
                     disabled={creating || !newTeam.trim()}
                     className="sp-btn sp-btn-primary w-full justify-center mt-3 disabled:opacity-50"
                     data-testid="create-team-btn"
                   >
-                    {creating ? "Creating…" : "Create team"}
+                    {creating ? "Creating…" : `Create ${newTeamVisibility === "closed" ? "closed" : "open"} team`}
                   </button>
                 </form>
 
