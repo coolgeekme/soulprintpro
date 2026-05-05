@@ -239,9 +239,17 @@ async def _synthesise_audit_via_llm(
     business_name: str, website_url: str,
     website_text: str, brand_search: list, reviews_search: list,
     competitors_search: list, socials: dict, hint: str,
-) -> dict:
-    """Call Claude Sonnet 4.5 with the gathered data, parse JSON. Raises on
-    structural failure."""
+):
+    """Call the audit synthesis model and parse its JSON.
+
+    Returns ``(parsed_audit_dict, ModelChoice)`` — the model choice is
+    persisted on the audit row so the admin can see (and the public page
+    can display, if we ever surface it) which model produced the analysis.
+    Raises on structural failure.
+    """
+    from dynamic_intelligence import pick_text_model, TASK_AUDIT_SYNTHESIS
+    choice = pick_text_model(TASK_AUDIT_SYNTHESIS)
+
     user_text = json.dumps({
         "business_name": business_name,
         "website_url": website_url,
@@ -257,7 +265,7 @@ async def _synthesise_audit_via_llm(
         api_key=EMERGENT_LLM_KEY,
         session_id=f"audit-{uuid.uuid4().hex[:12]}",
         system_message=_AUDIT_SYSTEM_PROMPT,
-    ).with_model("openai", "gpt-5.1")
+    ).with_model(choice.provider, choice.model)
     raw = await chat.send_message(UserMessage(text=user_text))
     text = (raw or "").strip()
     # Strip accidental ```json fences
@@ -266,7 +274,7 @@ async def _synthesise_audit_via_llm(
         data = json.loads(text)
     except json.JSONDecodeError as exc:
         raise RuntimeError(f"Audit LLM returned non-JSON: {exc}") from exc
-    return data
+    return data, choice
 
 
 # ── PDF rendering (uses existing reportlab helper) ───────────────────────────
@@ -375,8 +383,10 @@ def make_audits_router(
                 _safe_brave(f"{brand} competitors OR alternatives"),
             )
 
-            # Stage B — synthesise
-            data = await _synthesise_audit_via_llm(
+            # Stage B — synthesise (Dynamic Intelligence picks the model
+            # based on task signature; the choice + rationale is stamped
+            # on the audit row for the admin's audit trail).
+            data, model_choice = await _synthesise_audit_via_llm(
                 LlmChat=LlmChat, UserMessage=UserMessage,
                 EMERGENT_LLM_KEY=EMERGENT_LLM_KEY,
                 business_name=brand,
@@ -416,10 +426,17 @@ def make_audits_router(
                     "brand_voice": data.get("brand_voice", {}),
                     "sections": data.get("sections", {}),
                     "pdf_filename": pdf_filename,
+                    # Dynamic Intelligence audit trail — admin can see
+                    # which model produced this report and why.
+                    "model_used": f"{model_choice.provider}/{model_choice.model}",
+                    "model_routing_reason": model_choice.reason,
                     "updated_at": datetime.now(timezone.utc),
                 }},
             )
-            logger.info("Audit %s ready (score=%s)", audit_id, data.get("score"))
+            logger.info(
+                "Audit %s ready (score=%s, model=%s/%s)",
+                audit_id, data.get("score"), model_choice.provider, model_choice.model,
+            )
         except Exception as exc:
             logger.exception("Audit generation failed for %s", audit_id)
             await db.business_audits.update_one(

@@ -167,6 +167,15 @@ export default function AdminAuditsPanel() {
                       ) : (
                         <span className="sp-subtle text-xs">—</span>
                       )}
+                      {a.model_used && (
+                        <div
+                          className="text-[10px] sp-subtle mt-0.5 truncate max-w-[140px]"
+                          title={a.model_routing_reason || a.model_used}
+                          data-testid={`audit-model-${a.id}`}
+                        >
+                          via {a.model_used}
+                        </div>
+                      )}
                     </td>
                     <td className="px-4 py-3">
                       <span className={`inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[11px] border ${badge.cls}`}>
