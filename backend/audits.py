@@ -493,6 +493,26 @@ def make_audits_router(
             raise HTTPException(404, "Audit not found")
         return _full_serialize(a)
 
+    @admin_r.get("/audits/{audit_id}/pdf")
+    async def admin_audit_pdf(audit_id: str, _: dict = Depends(require_superadmin)):
+        """Admin-only PDF download — no lead-id required, no public-page
+        gating. Returns the same `/api/files/<filename>` URL the public
+        endpoint returns, but skips the lead-ownership check because the
+        caller has already proven they're a superadmin via the auth
+        dependency. Idempotent + safe for a "Download PDF" button in
+        the admin viewer modal.
+        """
+        try:
+            a = await db.business_audits.find_one({"_id": ObjectId(audit_id)})
+        except Exception as exc:
+            raise HTTPException(400, "Invalid audit id") from exc
+        if not a:
+            raise HTTPException(404, "Audit not found")
+        if not a.get("pdf_filename"):
+            raise HTTPException(404, "PDF not yet generated for this audit")
+        return {"url": f"/api/files/{a['pdf_filename']}",
+                "filename": a["pdf_filename"]}
+
     @admin_r.delete("/audits/{audit_id}")
     async def delete_audit(audit_id: str, _: dict = Depends(require_superadmin)):
         try:

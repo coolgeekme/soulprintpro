@@ -2,10 +2,11 @@ import React, { useCallback, useEffect, useMemo, useState } from "react";
 import {
   Loader2, Plus, Trash2, RefreshCw, ExternalLink, Mail, Phone,
   AlertCircle, CheckCircle2, Clock, Building, FileText, Users as UsersIcon,
-  Eye, X,
+  Eye, X, Download, Sparkles, TrendingUp, AlertTriangle,
 } from "lucide-react";
 import { toast } from "sonner";
 import api from "../lib/api";
+import AuditFullReport from "./AuditFullReport";
 
 /**
  * AdminAuditsPanel — superadmin-only prospecting tool.
@@ -36,6 +37,11 @@ export default function AdminAuditsPanel() {
   const [selected, setSelected] = useState(null); // an audit object or null
   const [leads, setLeads] = useState([]);
   const [leadsLoading, setLeadsLoading] = useState(false);
+  // Admin "View report" modal — renders the same shared AuditFullReport
+  // the prospect would see post-form, but with no gate. Distinct from
+  // the leads modal so admins can quickly toggle between "what does the
+  // prospect see" and "who's been on the page".
+  const [viewing, setViewing] = useState(null);
 
   const reload = useCallback(async () => {
     try {
@@ -217,15 +223,32 @@ export default function AdminAuditsPanel() {
                     <td className="px-4 py-3 text-right">
                       <div className="inline-flex gap-1">
                         {a.status === "ready" && (
-                          <a
-                            href={`/audit/${a.slug}`}
-                            target="_blank" rel="noopener noreferrer"
-                            className="sp-btn sp-btn-ghost text-xs"
-                            data-testid={`audit-preview-${a.id}`}
-                            title="Preview the public page"
-                          >
-                            <Eye className="w-3 h-3" />
-                          </a>
+                          <>
+                            {/* Admin-only "View report" — opens an in-app
+                                modal with the full audit body. No lead
+                                form, no gating — admins already have
+                                this row in their dashboard. */}
+                            <button
+                              type="button" onClick={() => setViewing(a)}
+                              className="sp-btn sp-btn-ghost text-xs"
+                              data-testid={`audit-view-${a.id}`}
+                              title="View the full audit report inline (no lead form)"
+                            >
+                              <FileText className="w-3 h-3" />
+                            </button>
+                            {/* Same audit, but rendered through the
+                                public page so the admin can see what
+                                the prospect sees (teaser + form). */}
+                            <a
+                              href={`/audit/${a.slug}`}
+                              target="_blank" rel="noopener noreferrer"
+                              className="sp-btn sp-btn-ghost text-xs"
+                              data-testid={`audit-preview-${a.id}`}
+                              title="Open the public-facing prospect page in a new tab"
+                            >
+                              <Eye className="w-3 h-3" />
+                            </a>
+                          </>
                         )}
                         <button type="button" onClick={() => onRegenerate(a.id)}
                                 className="sp-btn sp-btn-ghost text-xs"
@@ -266,6 +289,13 @@ export default function AdminAuditsPanel() {
           leads={leads}
           loading={leadsLoading}
           onClose={() => { setSelected(null); setLeads([]); }}
+        />
+      )}
+
+      {viewing && (
+        <ViewAuditModal
+          audit={viewing}
+          onClose={() => setViewing(null)}
         />
       )}
     </div>
@@ -432,3 +462,180 @@ function LeadsModal({ audit, leads, loading, onClose }) {
     </div>
   );
 }
+
+
+/**
+ * ViewAuditModal — admin-only "show me the full audit without a lead
+ * form" modal. Renders the same `AuditFullReport` body the prospect
+ * gets after submitting the lead form, plus the executive summary,
+ * score header, strengths + issues, and a one-click PDF download
+ * button that hits the admin-only `/admin/audits/{id}/pdf` endpoint.
+ *
+ * The list-row payload from `/admin/audits` already contains every
+ * field we need (the admin serializer returns the full document) so
+ * we don't re-fetch.
+ */
+function ViewAuditModal({ audit, onClose }) {
+  const [downloading, setDownloading] = useState(false);
+
+  const downloadPdf = async () => {
+    setDownloading(true);
+    try {
+      const { data } = await api.get(`/admin/audits/${audit.id}/pdf`);
+      const a = document.createElement("a");
+      a.href = data.url;
+      a.download = data.filename || `audit-${audit.slug}.pdf`;
+      a.target = "_blank";
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+    } catch (err) {
+      toast.error(err?.response?.data?.detail || "PDF not available — try regenerating the audit");
+    } finally { setDownloading(false); }
+  };
+
+  // Score color band (matches the public ScoreRing color logic so the
+  // same audit reads consistently across surfaces).
+  const score = Number(audit.score) || 0;
+  const scoreColor = score >= 80 ? "text-emerald-300"
+                    : score >= 60 ? "text-amber-300"
+                    : "text-red-300";
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-start justify-center bg-black/70 backdrop-blur-sm overflow-y-auto py-8 px-4"
+      onClick={onClose}
+      data-testid="audit-view-modal"
+    >
+      <div
+        onClick={(e) => e.stopPropagation()}
+        className="sp-glass-strong rounded-2xl p-6 sm:p-8 max-w-4xl w-full my-auto"
+      >
+        {/* Header: business name + score + actions */}
+        <div className="flex items-start justify-between gap-4 mb-6 flex-wrap">
+          <div className="min-w-0">
+            <div className="text-[10px] uppercase tracking-widest sp-subtle">Full audit · admin view</div>
+            <h2 className="text-2xl sm:text-3xl font-medium tracking-tight">{audit.business_name}</h2>
+            {audit.website_url && (
+              <a href={audit.website_url} target="_blank" rel="noopener noreferrer"
+                 className="text-xs sp-subtle hover:text-orange-300 inline-flex items-center gap-1 mt-1">
+                {audit.website_url} <ExternalLink className="w-3 h-3" />
+              </a>
+            )}
+            {audit.model_used && (
+              <div className="text-[10px] sp-subtle mt-2" title={audit.model_routing_reason}>
+                Synthesized by <code className="bg-black/30 px-1.5 py-0.5 rounded">{audit.model_used}</code>
+              </div>
+            )}
+          </div>
+          <div className="flex items-center gap-3 shrink-0">
+            <div className="text-right">
+              <div className={`text-4xl font-medium tabular-nums ${scoreColor}`}>{score}</div>
+              <div className="text-[10px] uppercase tracking-widest sp-subtle">Health score</div>
+            </div>
+            <div className="flex flex-col gap-1.5">
+              {audit.pdf_filename && (
+                <button
+                  type="button" onClick={downloadPdf} disabled={downloading}
+                  className="sp-btn sp-btn-primary text-xs disabled:opacity-50"
+                  data-testid="audit-view-pdf-download"
+                >
+                  {downloading ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Download className="w-3.5 h-3.5" />}
+                  PDF
+                </button>
+              )}
+              <button type="button" onClick={onClose}
+                      className="sp-btn sp-btn-ghost text-xs"
+                      data-testid="audit-view-close">
+                <X className="w-3.5 h-3.5" /> Close
+              </button>
+            </div>
+          </div>
+        </div>
+
+        {/* Executive summary + score rationale */}
+        {(audit.executive_summary || audit.score_rationale) && (
+          <div className="sp-glass rounded-xl p-4 mb-6 space-y-2">
+            {audit.executive_summary && (
+              <div className="text-sm leading-relaxed italic">{audit.executive_summary}</div>
+            )}
+            {audit.score_rationale && (
+              <div className="text-xs sp-subtle leading-relaxed">
+                <b>Why this score:</b> {audit.score_rationale}
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* Strengths + Issues — admin sees these inline (the public
+            page renders them above the lead form, so we toggle on the
+            shared component flag). */}
+        <div className="grid sm:grid-cols-2 gap-3 mb-6">
+          <FullStrengthsIssuesCard
+            icon={TrendingUp}
+            title="Top strengths"
+            items={audit.strengths || []}
+            accent="emerald"
+          />
+          <FullStrengthsIssuesCard
+            icon={AlertTriangle}
+            title="Critical issues"
+            items={audit.issues || []}
+            accent="orange"
+          />
+        </div>
+
+        {/* The shared full-report body (recommendations + competitors +
+            brand voice gap + 4 section paragraphs). */}
+        <AuditFullReport audit={audit} />
+
+        {/* Public-link footer — quick way to copy the prospect URL
+            without leaving the modal. */}
+        <div className="mt-8 pt-4 border-t border-white/5 flex items-center justify-between gap-3 flex-wrap">
+          <div className="text-[11px] sp-subtle">
+            Public link:{" "}
+            <code className="bg-black/30 px-1.5 py-0.5 rounded ml-1">/audit/{audit.slug}</code>
+          </div>
+          <a href={`/audit/${audit.slug}`} target="_blank" rel="noopener noreferrer"
+             className="sp-btn sp-btn-ghost text-xs"
+             data-testid="audit-view-open-public">
+            <Eye className="w-3 h-3" /> Open prospect page
+          </a>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+
+/**
+ * Strengths/Issues card used inside the admin View modal. Same look as
+ * the public-page TeaserCard but renders the full detail copy (no blur)
+ * since admins don't need the gate.
+ */
+function FullStrengthsIssuesCard({ icon: Icon, title, items, accent }) {
+  const border = accent === "emerald" ? "border-emerald-500/30" : "border-orange-500/30";
+  return (
+    <div className={`sp-glass rounded-xl p-4 border ${border}`}>
+      <div className="flex items-center gap-2 mb-3">
+        <Icon className="w-4 h-4 opacity-80" />
+        <div className="text-[11px] uppercase tracking-widest sp-subtle">{title}</div>
+      </div>
+      {items.length === 0 ? (
+        <div className="text-xs sp-subtle">—</div>
+      ) : (
+        <ul className="space-y-3">
+          {items.map((it, i) => (
+            <li key={i}>
+              <div className="font-medium text-sm">{it.headline}</div>
+              {it.detail && (
+                <div className="text-xs sp-subtle mt-1 leading-relaxed">{it.detail}</div>
+              )}
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
+}
+
