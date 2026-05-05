@@ -367,6 +367,8 @@ Synthesize a structured audit and return ONLY valid JSON matching this schema:
 
 Rules:
   • If a data source is empty/missing, acknowledge it ("No public reviews surfaced in our scan…") rather than fabricating.
+  • The input includes ``perplexity_company_summary`` — Perplexity Sonar's live web research on the business. Treat it as ADDITIVE CONTEXT (market position, what they actually do, recent mentions) — NOT as a substitute for verbatim on-page copy. When grading voice/tone/CTAs, cite the ``website_rendered_text_excerpt`` first; only fall back to the Perplexity summary when on-page text is empty or shows a bot-challenge wall.
+  • If ``website_rendered_text_excerpt`` looks like a Cloudflare / bot-verification interstitial (e.g. "Verifying that you are not a robot", "Just a moment", "Checking your browser"), make that itself a finding — first-time visitors hitting that wall is a real conversion problem — and lean on the Perplexity summary for the rest of the audit.
   • Cite specific copy, URLs, or themes when possible.
   • Be specific over diplomatic — this is a paid audit. Vague platitudes lose deals.
   • Score must reflect reality, not flattery.
@@ -380,6 +382,7 @@ async def _synthesise_audit_via_llm(
     business_name: str, website_url: str,
     website_text: str, brand_search: list, reviews_search: list,
     competitors_search: list, socials: dict, hint: str,
+    perplexity_summary: str = "",
 ):
     """Call the audit synthesis model and parse its JSON.
 
@@ -397,6 +400,12 @@ async def _synthesise_audit_via_llm(
         "admin_hint": hint,
         "socials_provided": socials or {},
         "website_rendered_text_excerpt": (website_text or "")[:8000],
+        # Perplexity Sonar summary — independent of the page scrape, so
+        # it's useful even when Playwright succeeded (real-time market
+        # context, customer mentions, positioning) and CRITICAL when the
+        # site cloaks bots. The synthesizer treats this as background
+        # context, not as a substitute for verbatim on-page copy.
+        "perplexity_company_summary": (perplexity_summary or "")[:6000],
         "brave_brand_search": brand_search[:8],
         "brave_reviews_search": reviews_search[:8],
         "brave_competitors_search": competitors_search[:8],
@@ -520,65 +529,57 @@ def make_audits_router(
                     return []
 
             async def _safe_browse():
-                """Fetch website text with a Cloudflare / bot-challenge
-                fallback chain:
-                  1. Playwright `browse_url` (renders JS, follows redirects)
-                  2. If it returns a bot-challenge interstitial OR <300
-                     chars of text, fall back to Perplexity Sonar's
-                     company summary (Perplexity has its own scraping
-                     infrastructure and isn't blocked the same way we are).
-                  3. If Perplexity ALSO returns nothing, surface whatever
-                     we got from Playwright so the synthesizer can at
-                     least say "site is behind a bot wall — limited data."
+                """Fetch on-page text via Playwright. Returns the raw
+                rendered text (may be a bot-challenge interstitial — the
+                caller decides whether to use it based on `_looks_blocked`).
                 """
                 if not url:
                     return ""
-                playwright_text = ""
                 try:
                     snap = await browse_url(url, take_screenshot=False)
-                    playwright_text = (snap or {}).get("text", "") or ""
+                    return (snap or {}).get("text", "") or ""
                 except Exception as exc:
                     logger.warning("browse %s failed: %s", url, exc)
+                    return ""
 
-                if not _looks_blocked(playwright_text):
-                    return playwright_text
-
-                logger.info(
-                    "Audit fetch for %s looks blocked / thin "
-                    "(%d chars) — falling back to Perplexity",
-                    url, len(playwright_text),
-                )
+            async def _safe_perplexity():
+                """Always-on Perplexity Sonar summary. Independent of
+                the on-page scrape: provides market context + customer
+                mentions + real-time positioning even when Playwright
+                succeeds, AND is the only available signal when the site
+                cloaks bots.
+                """
+                if not url and not brand:
+                    return ""
                 try:
-                    pplx_text = await perplexity_company_summary(brand, url)
+                    return await perplexity_company_summary(brand, url) or ""
                 except Exception as exc:
-                    logger.warning("Perplexity fallback failed for %s: %s", url, exc)
-                    pplx_text = ""
+                    logger.warning("Perplexity summary failed for %s: %s", url, exc)
+                    return ""
 
-                if pplx_text:
-                    # Combine: tag where each chunk came from so the LLM
-                    # can weight them appropriately. Playwright text is
-                    # often partial nav chrome — still worth keeping.
-                    parts = [
-                        "## Source: Perplexity Sonar (live web search; the "
-                        "site itself blocked our direct scraper)",
-                        pplx_text,
-                    ]
-                    if playwright_text.strip():
-                        parts += [
-                            "",
-                            "## Source: partial direct fetch (mostly nav / "
-                            "challenge text — use sparingly)",
-                            playwright_text.strip()[:1500],
-                        ]
-                    return "\n\n".join(parts)
-                return playwright_text
-
-            website_text, brand_hits, reviews_hits, comp_hits = await asyncio.gather(
+            # All five fetches run in parallel — total wall time is the
+            # slowest one, not the sum.
+            (
+                website_text, perplexity_text,
+                brand_hits, reviews_hits, comp_hits,
+            ) = await asyncio.gather(
                 _safe_browse(),
+                _safe_perplexity(),
                 _safe_brave(brand),
                 _safe_brave(f"{brand} reviews"),
                 _safe_brave(f"{brand} competitors OR alternatives"),
             )
+
+            # If the on-page text looks like a bot wall, log it so the
+            # synthesizer's prompt can frame the audit honestly. The text
+            # itself is still passed through (sometimes the wall reveals
+            # which protection vendor is in use, which IS a finding).
+            if _looks_blocked(website_text):
+                logger.info(
+                    "Audit fetch for %s blocked / thin (%d chars). "
+                    "Perplexity summary len=%d will carry the audit.",
+                    url, len(website_text), len(perplexity_text or ""),
+                )
 
             # Stage B — synthesise (Dynamic Intelligence picks the model
             # based on task signature; the choice + rationale is stamped
@@ -589,6 +590,7 @@ def make_audits_router(
                 business_name=brand,
                 website_url=url,
                 website_text=website_text,
+                perplexity_summary=perplexity_text,
                 brand_search=brand_hits,
                 reviews_search=reviews_hits,
                 competitors_search=comp_hits,
