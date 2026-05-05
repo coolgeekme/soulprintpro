@@ -32,6 +32,10 @@ export default function OrgPage() {
   const [members, setMembers] = useState([]);
   const [invites, setInvites] = useState([]);
   const [assets, setAssets] = useState([]);
+  // ── Asset library — collapsed-by-default beyond a soft cap so the
+  // org page doesn't get noisy once teams have uploaded a lot of files.
+  const ASSETS_INITIAL_LIMIT = 6;
+  const [assetsExpanded, setAssetsExpanded] = useState(false);
   const [loading, setLoading] = useState(true);
   // Per-user PRIVATE Chief of Staff thread (auto-created on first call)
   const [myCos, setMyCos] = useState(null);
@@ -744,44 +748,67 @@ export default function OrgPage() {
                   {uploading && <div className="text-xs sp-subtle">Uploading…</div>}
                 </div>
 
-                {assets.length > 0 && (
-                  <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-3 mt-4">
-                    {assets.map((a) => {
-                      const Icon = KIND_ICONS[a.kind] || FileIcon;
-                      const isImg = a.kind === "image";
-                      const url = `${BACKEND_URL}${a.url}`;
-                      return (
-                        <div key={a.id} className="sp-glass rounded-xl p-3 flex flex-col gap-2" data-testid={`asset-card-${a.id}`}>
-                          <div className="flex items-start gap-2">
-                            <div className="w-9 h-9 rounded-lg sp-glass-strong flex items-center justify-center shrink-0">
-                              <Icon className="w-4 h-4" />
-                            </div>
-                            <div className="min-w-0 flex-1">
-                              <div className="text-sm font-medium truncate" title={a.original_name}>{a.original_name}</div>
-                              <div className="text-[11px] sp-subtle">
-                                {a.kind} · {formatBytes(a.size)} · by {a.uploaded_by_name}
+                {assets.length > 0 && (() => {
+                  const visible = assetsExpanded ? assets : assets.slice(0, ASSETS_INITIAL_LIMIT);
+                  const hidden = assets.length - visible.length;
+                  return (
+                    <>
+                      <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-3 mt-4">
+                        {visible.map((a) => {
+                          const Icon = KIND_ICONS[a.kind] || FileIcon;
+                          const isImg = a.kind === "image";
+                          const url = `${BACKEND_URL}${a.url}`;
+                          return (
+                            <div key={a.id} className="sp-glass rounded-xl p-3 flex flex-col gap-2" data-testid={`asset-card-${a.id}`}>
+                              <div className="flex items-start gap-2">
+                                <div className="w-9 h-9 rounded-lg sp-glass-strong flex items-center justify-center shrink-0">
+                                  <Icon className="w-4 h-4" />
+                                </div>
+                                <div className="min-w-0 flex-1">
+                                  <div className="text-sm font-medium truncate" title={a.original_name}>{a.original_name}</div>
+                                  <div className="text-[11px] sp-subtle">
+                                    {a.kind} · {formatBytes(a.size)} · by {a.uploaded_by_name}
+                                  </div>
+                                </div>
+                              </div>
+                              {a.description && <div className="text-xs sp-subtle line-clamp-2">{a.description}</div>}
+                              {isImg && (
+                                <a href={url} target="_blank" rel="noreferrer" className="block rounded-lg overflow-hidden border" style={{ borderColor: "var(--border-soft)" }}>
+                                  <img src={url} alt={a.original_name} loading="lazy" className="w-full max-h-32 object-cover" />
+                                </a>
+                              )}
+                              <div className="flex items-center justify-end gap-1 mt-auto">
+                                <a href={url} target="_blank" rel="noreferrer" className="sp-btn sp-btn-ghost text-xs" download>
+                                  <Download className="w-3 h-3" /> Open
+                                </a>
+                                <button onClick={() => removeAsset(a.id)} className="sp-btn sp-btn-ghost text-xs" data-testid={`asset-delete-${a.id}`}>
+                                  <Trash2 className="w-3 h-3" />
+                                </button>
                               </div>
                             </div>
-                          </div>
-                          {a.description && <div className="text-xs sp-subtle line-clamp-2">{a.description}</div>}
-                          {isImg && (
-                            <a href={url} target="_blank" rel="noreferrer" className="block rounded-lg overflow-hidden border" style={{ borderColor: "var(--border-soft)" }}>
-                              <img src={url} alt={a.original_name} loading="lazy" className="w-full max-h-32 object-cover" />
-                            </a>
-                          )}
-                          <div className="flex items-center justify-end gap-1 mt-auto">
-                            <a href={url} target="_blank" rel="noreferrer" className="sp-btn sp-btn-ghost text-xs" download>
-                              <Download className="w-3 h-3" /> Open
-                            </a>
-                            <button onClick={() => removeAsset(a.id)} className="sp-btn sp-btn-ghost text-xs" data-testid={`asset-delete-${a.id}`}>
-                              <Trash2 className="w-3 h-3" />
-                            </button>
-                          </div>
+                          );
+                        })}
+                      </div>
+                      {/* Show more / Show less toggle — only renders when
+                          there's something to hide. Keeps the org page calm
+                          even after teams stack up dozens of brand assets. */}
+                      {assets.length > ASSETS_INITIAL_LIMIT && (
+                        <div className="flex justify-center mt-4">
+                          <button
+                            type="button"
+                            onClick={() => setAssetsExpanded((v) => !v)}
+                            className="sp-btn sp-btn-ghost text-xs"
+                            data-testid="assets-toggle-more"
+                          >
+                            {assetsExpanded
+                              ? `Show fewer (collapse to ${ASSETS_INITIAL_LIMIT})`
+                              : `Show all ${assets.length} (${hidden} more)`}
+                          </button>
                         </div>
-                      );
-                    })}
-                  </div>
-                )}
+                      )}
+                    </>
+                  );
+                })()}
               </section>
 
               {/* Activity overview — metrics panel. Set aside for owners
