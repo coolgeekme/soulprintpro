@@ -919,6 +919,38 @@ async def _generate_company_soul(name: str, website_text: str, manual_hint: str 
         raise SoulGenError("empty_output", "Soul generator returned an empty result.")
     return soul
 
+# ── URL hygiene ────────────────────────────────────────────────────────
+# Users routinely enter a bare domain like "disciplinedos.com" instead
+# of "https://disciplinedos.com" — we should accept both. Also strip
+# trailing slashes / whitespace and silently normalise common slip-ups.
+def _normalise_user_url(raw: str) -> str:
+    """Coerce a user-typed URL into a fully-qualified one.
+
+    Accepts: "example.com", "www.example.com", "example.com/foo",
+    "http://example.com", "https://example.com/foo?bar=1".
+
+    Returns "" for empty / clearly-not-a-URL input. Defaults to
+    https:// scheme when none is supplied.
+    """
+    if not raw:
+        return ""
+    s = raw.strip()
+    if not s:
+        return ""
+    # Drop a "www." prefix only if the user wrote no scheme — not strictly
+    # necessary but keeps the persisted URL clean.
+    has_scheme = s.lower().startswith(("http://", "https://"))
+    if not has_scheme:
+        # Bare-domain heuristic: must contain a dot, no spaces, looks like
+        # a hostname or hostname/path. If it's clearly not a URL (e.g. a
+        # short label "test"), return as-is so downstream validation can
+        # reject it cleanly.
+        if "." not in s or " " in s:
+            return s
+        s = "https://" + s
+    return s
+
+
 async def _fetch_company_context(name: str, url: str) -> str:
     """Best-effort context for the Soul generator.
 
@@ -950,7 +982,7 @@ async def create_org(body: OrgCreateBody, u: dict = Depends(get_current_user)):
     # Org creation is forgiving: if scrape/LLM fails we still create the org with
     # an empty Soul so the user isn't blocked. They can re-synthesise from the
     # org page later.
-    website_url = (body.website_url or "").strip()
+    website_url = _normalise_user_url(body.website_url or "")
     manual = (body.soul_description or "").strip()
     website_text = await _fetch_company_context(body.name.strip(), website_url)
     try:
@@ -1168,7 +1200,7 @@ async def update_org(org_id: str, body: OrgUpdateBody, u: dict = Depends(get_cur
             raise HTTPException(400, "Name cannot be empty")
         update["name"] = n
     if body.website_url is not None:
-        update["website_url"] = body.website_url.strip()
+        update["website_url"] = _normalise_user_url(body.website_url)
     if body.soul_description is not None:
         update["soul_description"] = body.soul_description.strip()
 

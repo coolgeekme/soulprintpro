@@ -307,9 +307,13 @@ export default function OrgPage() {
             />
             <input
               data-testid="edit-org-url"
+              type="text"
+              inputMode="url"
+              autoCapitalize="off"
+              autoCorrect="off"
               value={editUrl}
               onChange={(e) => setEditUrl(e.target.value)}
-              placeholder="Company website (optional)"
+              placeholder="Company website — e.g. disciplinedos.com (optional)"
               className="w-full rounded-xl px-4 py-3 text-sm focus:sp-focus"
               style={{ background: "var(--input-bg)", border: "1px solid var(--input-border)", color: "var(--fg)" }}
             />

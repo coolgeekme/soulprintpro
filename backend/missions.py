@@ -704,19 +704,46 @@ def build_tools(
             if any(sig in lower for sig in time_signals):
                 freshness = "pm"   # Past month — aggressive but right for "latest"
 
-        # Brave first, Perplexity fallback. Both respect `freshness`.
+        # Routing: Brave is a better general-purpose index (evergreen
+        # research, long-tail queries). Perplexity Sonar is better for
+        # time-sensitive queries — it's optimized for real-time synthesis
+        # with citations rather than a raw result list. So:
+        #
+        #   - Time-sensitive  (freshness in pd/pw/pm): Perplexity FIRST,
+        #     Brave as fallback
+        #   - Evergreen (no freshness signal):         Brave FIRST,
+        #     Perplexity as fallback
+        #
+        # Either way we get real-time internet access on every mission
+        # search call — just via the engine that handles that kind of
+        # query best.
+        time_sensitive = freshness in ("pd", "pw", "pm")
         results = []
-        try:
-            results = await brave_search(q, count=5, freshness=freshness or None) or []
-        except Exception:
-            results = []
-        if not results and perplexity_available():
+        primary = "perplexity" if (time_sensitive and perplexity_available()) else "brave"
+        if primary == "perplexity":
             try:
                 results = await perplexity_web_search(
                     q, count=5, freshness=freshness or None,
                 ) or []
             except Exception:
                 results = []
+            if not results:
+                try:
+                    results = await brave_search(q, count=5, freshness=freshness or None) or []
+                except Exception:
+                    results = []
+        else:
+            try:
+                results = await brave_search(q, count=5, freshness=freshness or None) or []
+            except Exception:
+                results = []
+            if not results and perplexity_available():
+                try:
+                    results = await perplexity_web_search(
+                        q, count=5, freshness=freshness or None,
+                    ) or []
+                except Exception:
+                    results = []
         # Brave & Perplexity both return TypedDicts (`title`, `url`,
         # `snippet`, `published?`). Use `.get()`, not `getattr()` — they're
         # plain dicts at runtime.
