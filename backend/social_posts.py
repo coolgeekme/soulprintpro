@@ -433,11 +433,51 @@ def make_social_router(*, db, AGENTS, EMERGENT_LLM_KEY, LlmChat, UserMessage,
                        load_conv_or_403,
                        generate_image_via_nano_banana=None,
                        compose_logo_on_image=None,
-                       upload_dir=None):
-    """Build the /api/social router with closure-bound dependencies from server.py."""
+                       upload_dir=None,
+                       recover_bytes_from_gridfs=None):
+    """Build the /api/social router with closure-bound dependencies from server.py.
+
+    ``recover_bytes_from_gridfs`` is an async callable that, given an
+    on-disk filename, returns ``(bytes, mime, original_name)`` from
+    MongoDB GridFS — or ``(None, None, None)`` if we have no mirror.
+    Used to restore brand-asset / image files that were lost when a
+    Kubernetes pod restart wiped ephemeral disk storage. Without this
+    rehydration, the user gets "no logo available" / "image missing"
+    errors even though the source is safely persisted in Mongo.
+    """
     from bson import ObjectId as _OID
     from pathlib import Path as _Path
     r = APIRouter(prefix="/api")
+
+    async def _ensure_local(filename: str) -> Optional["_Path"]:
+        """Return a local Path for ``filename``, rehydrating from GridFS
+        if the disk copy was wiped by a redeploy. Returns None if the
+        file doesn't exist on disk AND can't be recovered from GridFS
+        (genuinely lost — e.g. user deleted the brand asset).
+        """
+        if not filename or not upload_dir:
+            return None
+        p = _Path(upload_dir) / filename
+        if p.is_file():
+            return p
+        # Try GridFS rehydration
+        if recover_bytes_from_gridfs is None:
+            return None
+        try:
+            blob, _mime, _orig = await recover_bytes_from_gridfs(filename)
+        except Exception as exc:
+            logger.warning("GridFS rehydrate failed for %s: %s", filename, exc)
+            return None
+        if not blob:
+            return None
+        try:
+            p.parent.mkdir(parents=True, exist_ok=True)
+            p.write_bytes(blob)
+            logger.info("Rehydrated %s from GridFS (%d bytes)", filename, len(blob))
+            return p
+        except Exception as exc:
+            logger.warning("Failed to write rehydrated %s to disk: %s", filename, exc)
+            return None
 
     async def _generate_post_image(post: dict, org_doc: dict, override_prompt: str = "") -> Optional[dict]:
         """Generate a cover image for a single post using Nano Banana, then
@@ -515,14 +555,21 @@ def make_social_router(*, db, AGENTS, EMERGENT_LLM_KEY, LlmChat, UserMessage,
             logger.warning("Social image: compose_logo_on_image helper missing — skipping overlay")
         else:
             try:
-                base_path = _Path(upload_dir) / fname
-                logo_path = _Path(upload_dir) / logo_filename
-                if not base_path.is_file():
-                    logger.warning("Social image: base file %s missing on disk", base_path)
-                elif not logo_path.is_file():
+                # Rehydrate from GridFS if either file got wiped by a
+                # pod restart. This is the production "no logo
+                # available" fix — disk is volatile, GridFS is durable.
+                base_path = await _ensure_local(fname)
+                logo_path = await _ensure_local(logo_filename)
+                if base_path is None:
                     logger.warning(
-                        "Social image: logo file %s missing on disk (org has stale brand_assets?)",
-                        logo_path,
+                        "Social image: base file %s missing on disk AND in GridFS",
+                        fname,
+                    )
+                elif logo_path is None:
+                    logger.warning(
+                        "Social image: logo file %s missing on disk AND in GridFS "
+                        "(brand asset truly lost — owner needs to re-upload)",
+                        logo_filename,
                     )
                 else:
                     composed = compose_logo_on_image(
@@ -911,8 +958,9 @@ def make_social_router(*, db, AGENTS, EMERGENT_LLM_KEY, LlmChat, UserMessage,
         with_logo = False
         if logo_filename and compose_logo_on_image:
             try:
-                logo_path = _Path(upload_dir) / logo_filename
-                if logo_path.is_file():
+                # Rehydrate the logo from GridFS if disk was wiped.
+                logo_path = await _ensure_local(logo_filename)
+                if logo_path is not None:
                     composed = compose_logo_on_image(
                         dest_path, logo_path,
                         position=post.get("logo_position") or "bottom-right",
@@ -1019,9 +1067,10 @@ def make_social_router(*, db, AGENTS, EMERGENT_LLM_KEY, LlmChat, UserMessage,
         with_logo = False
         if logo_filename and compose_logo_on_image:
             try:
-                base_path = _Path(upload_dir) / fname
-                logo_path = _Path(upload_dir) / logo_filename
-                if base_path.is_file() and logo_path.is_file():
+                # Rehydrate base + logo from GridFS if disk was wiped.
+                base_path = await _ensure_local(fname)
+                logo_path = await _ensure_local(logo_filename)
+                if base_path is not None and logo_path is not None:
                     composed = compose_logo_on_image(
                         base_path, logo_path,
                         position=post.get("logo_position") or "bottom-right",
@@ -1104,15 +1153,18 @@ def make_social_router(*, db, AGENTS, EMERGENT_LLM_KEY, LlmChat, UserMessage,
             )
         if compose_logo_on_image is None or not upload_dir:
             raise HTTPException(500, "Logo composite helper unavailable.")
-        base_path = _Path(upload_dir) / base_filename
-        logo_path = _Path(upload_dir) / logo_filename
-        if not logo_path.is_file():
+        # Rehydrate from GridFS so a redeploy that wiped ephemeral pod
+        # storage doesn't show "Your logo file is missing" — the user's
+        # logo IS safe in Mongo, we just need to restore the disk copy.
+        logo_path = await _ensure_local(logo_filename)
+        base_path = await _ensure_local(base_filename)
+        if logo_path is None:
             raise HTTPException(
                 422,
                 "Your logo file is missing from storage — please re-upload "
                 "the primary logo on the Org page.",
             )
-        if not base_path.is_file():
+        if base_path is None:
             raise HTTPException(
                 422,
                 "The original image file is missing from storage. Click "

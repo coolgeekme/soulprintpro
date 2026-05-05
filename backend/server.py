@@ -5793,6 +5793,7 @@ social_r = make_social_router(
     generate_image_via_nano_banana=generate_image_via_nano_banana,
     compose_logo_on_image=_compose_logo,
     upload_dir=UPLOAD_DIR,
+    recover_bytes_from_gridfs=recover_bytes_from_gridfs,
 )
 app.include_router(social_r)
 
