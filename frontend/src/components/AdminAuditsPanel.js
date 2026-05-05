@@ -42,6 +42,12 @@ export default function AdminAuditsPanel() {
   // the leads modal so admins can quickly toggle between "what does the
   // prospect see" and "who's been on the page".
   const [viewing, setViewing] = useState(null);
+  // Two-click delete — when a user clicks Trash, we set this to the
+  // audit id and the button switches to a red "Confirm?" state for 4s.
+  // A second click within that window actually deletes. Cleaner than
+  // window.confirm() which gets blocked in some browsers, and can't be
+  // mis-clicked away accidentally. Auto-resets via setTimeout.
+  const [confirmDeleteId, setConfirmDeleteId] = useState(null);
 
   const reload = useCallback(async () => {
     try {
