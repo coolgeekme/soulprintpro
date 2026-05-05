@@ -632,6 +632,11 @@ def make_social_router(*, db, AGENTS, EMERGENT_LLM_KEY, LlmChat, UserMessage,
                 img = await _generate_post_image(doc, ctx["org"])
                 if img:
                     doc["image"] = img
+                    # Stamp the resolved body prompt on the post so the
+                    # "Edit prompt" affordance shows what was actually
+                    # sent to Nano Banana (the post copy by default), not
+                    # an empty textarea. Cap matches `_generate_post_image`.
+                    doc["image_prompt"] = (doc.get("text") or "").strip()[:600]
             res = await db.social_posts.insert_one(doc)
             doc["_id"] = res.inserted_id
             docs.append(doc)
@@ -828,8 +833,20 @@ def make_social_router(*, db, AGENTS, EMERGENT_LLM_KEY, LlmChat, UserMessage,
         if not img:
             raise HTTPException(502, "Could not generate image. Try again in a moment.")
         update = {"image": img}
-        if override:
-            update["image_prompt"] = override
+        # Persist the resolved body prompt on EVERY successful generation,
+        # not just when the user explicitly typed an override. This way the
+        # "Edit prompt" affordance always shows the actual text Nano Banana
+        # used (be it the user's override, a previously-saved override, or
+        # the auto-derived post copy). Before this fix, auto-generated
+        # posts had `image_prompt = ""` and the editor opened blank, leaving
+        # users guessing what was sent.
+        resolved_body = (
+            override
+            or (post.get("image_prompt") or "").strip()
+            or (post.get("text") or "").strip()[:600]
+        )
+        if resolved_body:
+            update["image_prompt"] = resolved_body
         await db.social_posts.update_one(
             {"_id": _OID(post_id)}, {"$set": update},
         )

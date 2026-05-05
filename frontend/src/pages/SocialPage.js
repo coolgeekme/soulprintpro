@@ -810,12 +810,27 @@ function PostCoverImage({ post, orgId, onUpdate, onReplace }) {
   const [applyingLogo, setApplyingLogo] = useState(false);
   const [showPromptEditor, setShowPromptEditor] = useState(false);
   const [showAssetPicker, setShowAssetPicker] = useState(false);
-  const [promptDraft, setPromptDraft] = useState(post.image_prompt || "");
+  // The image prompt that was actually sent to Nano Banana for this post.
+  // We prefer the persisted `image_prompt` (set on every successful
+  // generation post-fix). For posts generated BEFORE the persistence
+  // fix landed, fall back to `post.text` — that's what the backend
+  // would have used as the body anyway, so showing it gives the user
+  // a real starting point rather than an empty textarea.
+  const initialPrompt = (post.image_prompt && post.image_prompt.trim())
+    || (post.text || "").trim()
+    || "";
+  const [promptDraft, setPromptDraft] = useState(initialPrompt);
 
   // Keep the local draft in sync if the parent re-fetches and the
   // persisted `image_prompt` on this post changes under us (e.g. another
-  // tab edited it, or generate overwrote it).
-  useEffect(() => { setPromptDraft(post.image_prompt || ""); }, [post.image_prompt]);
+  // tab edited it, or generate overwrote it). Same fallback applies.
+  useEffect(() => {
+    setPromptDraft(
+      (post.image_prompt && post.image_prompt.trim())
+        || (post.text || "").trim()
+        || ""
+    );
+  }, [post.image_prompt, post.text]);
 
   const generate = async (customPrompt = null) => {
     if (generating) return;
@@ -1060,16 +1075,23 @@ function PostCoverImage({ post, orgId, onUpdate, onReplace }) {
  */
 function SocialPromptEditor({ initial, postText, onSubmit, onCancel, generating, postId }) {
   const [draft, setDraft] = useState(initial || "");
+  // Detect whether the draft has diverged from the auto-derived starting
+  // point. If so, "Reset" puts us back to the post copy (which is the
+  // backend's default body when no override was ever authored).
+  const hasOverride = draft.trim() !== (postText || "").trim();
   return (
     <div className="mt-2 sp-glass rounded-xl p-3 border border-orange-500/20" data-testid={`social-prompt-editor-${postId}`}>
-      <div className="flex items-center justify-between mb-2">
-        <div className="text-[11px] sp-subtle uppercase tracking-widest">Image prompt</div>
-        {postText && (
+      <div className="flex items-center justify-between mb-2 gap-2">
+        <div className="text-[11px] sp-subtle uppercase tracking-widest">
+          Image prompt — what Nano Banana actually renders
+        </div>
+        {postText && hasOverride && (
           <button
             type="button"
-            onClick={() => setDraft("")}
-            className="text-[11px] sp-subtle hover:text-white"
-            title="Clear the override and use the post copy as the prompt body"
+            onClick={() => setDraft((postText || "").trim())}
+            className="text-[11px] sp-subtle hover:text-white shrink-0"
+            title="Restore the auto-derived prompt (the post copy)"
+            data-testid={`social-prompt-reset-${postId}`}
           >
             Reset to post copy
           </button>
@@ -1078,12 +1100,20 @@ function SocialPromptEditor({ initial, postText, onSubmit, onCancel, generating,
       <textarea
         value={draft}
         onChange={(e) => setDraft(e.target.value)}
-        placeholder={postText ? `Leave blank to use the post copy:\n"${(postText || "").slice(0, 140)}"` : "Describe the image you want…"}
-        className="w-full min-h-[90px] rounded-lg bg-black/30 border border-white/10 px-3 py-2 text-sm resize-y focus:outline-none focus:border-orange-500/50"
+        placeholder="Describe the image you want — subject, mood, composition, lighting…"
+        className="w-full min-h-[110px] rounded-lg bg-black/30 border border-white/10 px-3 py-2 text-sm resize-y focus:outline-none focus:border-orange-500/50"
         data-testid={`social-prompt-textarea-${postId}`}
       />
       <div className="text-[11px] sp-subtle mt-1.5 leading-relaxed">
-        Your company's brand Soul + visual style are prepended automatically; this is the scene / direction.
+        Your company's brand Soul + visual style are prepended automatically — this textarea is the scene / direction.
+        {postText && (
+          <>
+            {" "}
+            <span className="opacity-80">
+              Tip: this defaults to your post copy. Edit freely to focus on the visual you want.
+            </span>
+          </>
+        )}
       </div>
       <div className="flex items-center justify-end gap-2 mt-3">
         <button type="button" onClick={onCancel} disabled={generating}
@@ -1092,8 +1122,8 @@ function SocialPromptEditor({ initial, postText, onSubmit, onCancel, generating,
           Cancel
         </button>
         <button type="button"
-                onClick={() => onSubmit(draft)}
-                disabled={generating}
+                onClick={() => onSubmit(draft.trim())}
+                disabled={generating || !draft.trim()}
                 className="sp-btn sp-btn-primary text-xs disabled:opacity-50"
                 data-testid={`social-prompt-submit-${postId}`}>
           {generating ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Wand2 className="w-3.5 h-3.5" />}
