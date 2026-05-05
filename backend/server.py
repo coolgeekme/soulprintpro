@@ -2508,7 +2508,15 @@ _URL_IN_TEXT_RE = re.compile(
 )
 # Hard cap: avoid spending too much time on a single user message.
 _MAX_URLS_PER_TURN = 4
-_MAX_FETCH_TIMEOUT = 15  # seconds per URL
+# Per-URL fetch budget. Set generously because real-world pages on the
+# modern web (heavy JS, CDN cold caches, retries on flaky links) can
+# legitimately take 25-30s to render. We use 45s here so a slow page
+# isn't aborted before Playwright's own 30s nav timeout fires + the
+# 8s networkidle wait + the extract steps inside browse_url. If the
+# Playwright path still times out, we fall back to a static HTTP fetch
+# below — so the agent NEVER comes back empty-handed asking the user
+# for a "mirror".
+_MAX_FETCH_TIMEOUT = 45  # seconds per URL
 
 
 def _extract_urls(text: str) -> list[str]:
@@ -2543,34 +2551,81 @@ async def _fetch_url_for_chat(url: str) -> dict:
     """Single URL fetch with hard timeout. Returns
     {'url', 'title', 'text', 'final_url', 'status', 'error'}.
 
+    Strategy (in order):
+      1. Playwright (`browse_url`) — fully rendered, JS-aware. Best for
+         SPAs, paywalls, lazy-loaded content. Bounded by `_MAX_FETCH_TIMEOUT`.
+      2. On Playwright failure / timeout / empty body, fall back to a
+         static HTTP fetch via the existing `_fetch_url_text` helper
+         (raw HTML + meta-tag stitch). Even SPA shells return *something*
+         this way (title + description + manifest.json).
+
+    The two-tier strategy means agents almost never come back empty.
+    Before Feb 2026 a single Playwright timeout aborted the whole fetch
+    and the agent told the user "I couldn't access the site, do you
+    have a mirror?" — no fallback, no static HTML, nothing.
+
     `text` is truncated so a single chatty page can't blow the prompt
-    budget — agents need a representative excerpt, not the whole DOM."""
+    budget — agents need a representative excerpt, not the whole DOM.
+    """
     from browser_tools import browse_url as _browse
+    pw_error = ""
+    pw_timed_out = False
+    result: dict = {}
     try:
         result = await asyncio.wait_for(
             _browse(url, take_screenshot=False, upload_dir=None, mission_id=None),
             timeout=_MAX_FETCH_TIMEOUT,
         )
     except asyncio.TimeoutError:
-        return {"url": url, "title": "", "text": "",
-                "final_url": url, "status": 0,
-                "error": f"timed out after {_MAX_FETCH_TIMEOUT}s"}
+        pw_timed_out = True
+        pw_error = f"Playwright timed out after {_MAX_FETCH_TIMEOUT}s"
     except Exception as exc:
-        return {"url": url, "title": "", "text": "",
-                "final_url": url, "status": 0,
-                "error": f"{type(exc).__name__}: {exc}"[:200]}
-    text = (result.get("text") or "").strip()
-    # Truncate to ~6k chars per URL — enough for a real audit, leaves
-    # room for a few URLs + the rest of the prompt.
+        pw_error = f"{type(exc).__name__}: {exc}"[:200]
+
+    text = (result.get("text") or "").strip() if result else ""
+    title = (result.get("title") or "")[:240] if result else ""
+    final_url = (result.get("final_url") or url) if result else url
+    status = int((result.get("status") or 0)) if result else 0
+
+    # FALLBACK: Playwright timed out or returned nothing meaningful.
+    # The static HTTP path is much faster (~3-5s) and often enough for
+    # SEO/audit-style asks because it surfaces title, description,
+    # canonical, OG tags, manifest, and the first ~6k chars of body
+    # text from server-rendered HTML.
+    if (pw_error or len(text) < 80):
+        try:
+            static_text = await asyncio.wait_for(
+                _fetch_url_text(url, max_chars=8000),
+                timeout=12.0,
+            )
+        except Exception:
+            static_text = ""
+        if static_text:
+            text = static_text
+            if not title:
+                # Pull a title out of the static fetch if Playwright didn't.
+                m = re.search(r"<title[^>]*>([^<]+)</title>", static_text, re.I)
+                if m:
+                    title = m.group(1).strip()[:240]
+            # If we recovered useful content via fallback, status 200
+            # is a reasonable signal even if Playwright timed out.
+            if status == 0:
+                status = 200
+            # Keep the original Playwright error in the response so the
+            # caller can log / inspect, but downgrade severity since the
+            # fallback succeeded.
+            pw_error = f"(playwright fallback used: {pw_error})" if pw_error else ""
+
     if len(text) > 6000:
         text = text[:6000] + "\n…[truncated]"
+
     return {
         "url": url,
-        "title": (result.get("title") or "")[:240],
+        "title": title,
         "text": text,
-        "final_url": result.get("final_url") or url,
-        "status": int(result.get("status") or 0),
-        "error": (result.get("error") or "")[:200],
+        "final_url": final_url,
+        "status": status,
+        "error": pw_error[:200] if (pw_timed_out and not text) else pw_error[:200],
     }
 
 
@@ -2615,27 +2670,27 @@ async def fetch_user_supplied_urls(message: str) -> tuple[str, list[dict]]:
         if f["status"]:
             lines.append(f"HTTP status: {f['status']}")
         if f["error"]:
-            lines.append(f"Fetch error: {f['error']}")
-            lines.append(
-                "Because this fetch failed, you must NOT analyze this URL "
-                "as if you'd seen it. Tell the user the fetch failed and "
-                "ask whether they have alternate access (a public mirror, "
-                "a cached copy, an export, etc.)."
-            )
-        elif not f["text"]:
-            lines.append("(Page returned no readable text — likely a "
-                         "JavaScript-only SPA or a login wall.)")
-            lines.append(
-                "Because no text was extracted, you must NOT invent "
-                "metrics from this URL. Tell the user the page wouldn't "
-                "render server-side (login wall / SPA) and recommend "
-                "uploading a screenshot or a public-link copy."
-            )
-        else:
-            lines.append("Rendered content:")
+            lines.append(f"Fetch note: {f['error']}")
+        if f["text"]:
+            lines.append("Rendered content (or static HTML fallback):")
             lines.append("```")
             lines.append(f["text"])
             lines.append("```")
+        else:
+            lines.append("(No readable text recovered — JS-only SPA or login wall.)")
+            lines.append(
+                "Because no text was extracted, do NOT invent metrics for "
+                "this URL. Instead: (1) try a related public surface (e.g. "
+                "their LinkedIn / GitHub / Reddit if that's where their "
+                "audience is), (2) use what general public knowledge you "
+                "have about the site / brand to provide a useful "
+                "high-level audit / framework, or (3) ask the user a "
+                "specific clarifying question about what they want — never "
+                "ask them for a 'mirror' or 'cached copy' as a stock "
+                "fallback. The fetch system already tries multiple "
+                "strategies under the hood; if it failed, asking for a "
+                "mirror won't help."
+            )
         lines.append("")
     return "\n".join(lines), list(fetched)
 
