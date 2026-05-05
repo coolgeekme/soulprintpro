@@ -179,15 +179,6 @@ export default function AdminAuditsPanel() {
                       ) : (
                         <span className="sp-subtle text-xs">—</span>
                       )}
-                      {a.model_used && (
-                        <div
-                          className="text-[10px] sp-subtle mt-0.5 truncate max-w-[140px]"
-                          title={a.model_routing_reason || a.model_used}
-                          data-testid={`audit-model-${a.id}`}
-                        >
-                          via {a.model_used}
-                        </div>
-                      )}
                     </td>
                     <td className="px-4 py-3">
                       <span className={`inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[11px] border ${badge.cls}`}>
@@ -527,11 +518,6 @@ function ViewAuditModal({ audit, onClose }) {
                  className="text-xs sp-subtle hover:text-orange-300 inline-flex items-center gap-1 mt-1">
                 {audit.website_url} <ExternalLink className="w-3 h-3" />
               </a>
-            )}
-            {audit.model_used && (
-              <div className="text-[10px] sp-subtle mt-2" title={audit.model_routing_reason}>
-                Synthesized by <code className="bg-black/30 px-1.5 py-0.5 rounded">{audit.model_used}</code>
-              </div>
             )}
           </div>
           <div className="flex items-center gap-3 shrink-0">
