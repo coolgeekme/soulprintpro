@@ -352,7 +352,15 @@ async def run_mission_loop(
 
             iteration += 1
             await db.missions.update_one(
-                {"id": mission_id}, {"$set": {"iteration_count": iteration}},
+                {"id": mission_id},
+                {"$set": {
+                    "iteration_count": iteration,
+                    # Heartbeat — keeps `last_activity_at` fresh while
+                    # the LLM call is in flight (a slow 60-90s response
+                    # would otherwise look "stalled" to the UI watchdog
+                    # AND to the startup-recovery scan).
+                    "last_activity_at": datetime.now(timezone.utc),
+                }},
             )
 
             # Build loop memory from event history (truncated)

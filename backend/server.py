@@ -6229,6 +6229,56 @@ async def startup():
     await db.missions.create_index([("org_id", 1), ("started_at", -1)])
     await db.missions.create_index("status")
     await db.mission_events.create_index([("mission_id", 1), ("ts", 1)])
+    # ── Stuck-mission recovery ───────────────────────────────────────────
+    # Pod restarts / redeploys kill in-flight asyncio tasks, but the
+    # `missions` row keeps `status="running"` (or "awaiting_user") in
+    # Mongo. Without rehydration the user sees a "RUNNING" badge that
+    # never advances. We don't restart the loop (org/agent context is
+    # gone) — instead we fail any mission whose heartbeat is older than
+    # the safety window with a clear, actionable error so the user can
+    # retry. Heartbeat = `last_activity_at` (updated on every event); if
+    # missing we fall back to `updated_at` / `started_at`.
+    from datetime import timedelta as _td  # noqa: E402
+    stale_cutoff = datetime.now(timezone.utc) - _td(minutes=5)
+    stuck_q = {
+        "status": {"$in": ["running", "awaiting_user"]},
+        "$or": [
+            {"last_activity_at": {"$lt": stale_cutoff}},
+            {"last_activity_at": {"$exists": False},
+             "updated_at": {"$lt": stale_cutoff}},
+            {"last_activity_at": {"$exists": False},
+             "updated_at": {"$exists": False},
+             "started_at": {"$lt": stale_cutoff}},
+        ],
+    }
+    stuck_count = 0
+    async for stuck in db.missions.find(stuck_q, {"id": 1, "status": 1}):
+        mid = stuck.get("id") or str(stuck.get("_id"))
+        prev_status = stuck.get("status", "running")
+        await db.missions.update_one(
+            {"id": mid},
+            {"$set": {
+                "status": "failed",
+                "error": ("Mission was interrupted by a server restart and "
+                          "could not be auto-resumed — please re-run it. "
+                          "Your previous work log is preserved below."),
+                "finished_at": datetime.now(timezone.utc),
+            }},
+        )
+        try:
+            await db.mission_events.insert_one({
+                "mission_id": mid,
+                "kind": "system",
+                "text": (f"Server restart detected — mission was "
+                         f"`{prev_status}` with no recent activity, "
+                         "failed automatically so you can retry."),
+                "ts": datetime.now(timezone.utc),
+            })
+        except Exception:
+            pass
+        stuck_count += 1
+    if stuck_count:
+        logger.info("Reconciled %d stuck mission(s) on startup", stuck_count)
     # Boot the in-process scheduler and rehydrate persisted jobs
     if not scheduler.running:
         scheduler.start()
