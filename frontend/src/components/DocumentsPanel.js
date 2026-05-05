@@ -51,6 +51,12 @@ const niceDate = (iso) => {
   } catch { return ""; }
 };
 
+// Initial number of documents to show before the user expands the list. Org
+// libraries can balloon past 100+ artifacts very quickly once agents start
+// generating briefs / CSVs / calendar invites; rendering them all by default
+// makes the org page feel cluttered.
+const DOCS_INITIAL_LIMIT = 8;
+
 export default function DocumentsPanel({ orgId }) {
   const [docs, setDocs] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -58,6 +64,11 @@ export default function DocumentsPanel({ orgId }) {
   const [kind, setKind] = useState("");
   const [preview, setPreview] = useState(null); // {doc, content}
   const [previewBusy, setPreviewBusy] = useState(false);
+  const [expanded, setExpanded] = useState(false);
+
+  // Collapse back to the truncated view whenever the result set changes
+  // (search query / filter), so a new search starts compact again.
+  useEffect(() => { setExpanded(false); }, [q, kind]);
 
   const load = async () => {
     setLoading(true);
@@ -168,8 +179,9 @@ export default function DocumentsPanel({ orgId }) {
           </div>
         </div>
       ) : (
+        <>
         <ul className="grid sm:grid-cols-2 gap-2" data-testid="documents-list">
-          {docs.map((d) => {
+          {(expanded ? docs : docs.slice(0, DOCS_INITIAL_LIMIT)).map((d) => {
             const Icon = KIND_ICON[d.kind] || FileText;
             const url = d.url?.startsWith("http") ? d.url : `${BACKEND_URL}${d.url}`;
             return (
@@ -228,6 +240,24 @@ export default function DocumentsPanel({ orgId }) {
             );
           })}
         </ul>
+        {/* Show more / Show less — only renders when there's something
+            hidden. Keeps a quiet org page even after agents stack up
+            dozens of generated artifacts. */}
+        {docs.length > DOCS_INITIAL_LIMIT && (
+          <div className="flex justify-center mt-3">
+            <button
+              type="button"
+              onClick={() => setExpanded((v) => !v)}
+              className="sp-btn sp-btn-ghost text-xs"
+              data-testid="documents-toggle-more"
+            >
+              {expanded
+                ? `Show fewer (collapse to ${DOCS_INITIAL_LIMIT})`
+                : `Show all ${docs.length} (${docs.length - DOCS_INITIAL_LIMIT} more)`}
+            </button>
+          </div>
+        )}
+        </>
       )}
 
       {/* Inline preview drawer — text-like content rendered as <pre> */}
