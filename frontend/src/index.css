@@ -345,6 +345,47 @@ input:focus, textarea:focus, button:focus { outline: none; }
 }
 .sp-fade-up { animation: sp-fade-up 500ms cubic-bezier(.2,.6,.2,1) both; }
 
+/* Shimmer overlay — used on media-generation placeholders (image / music
+   pending bubbles) so users see continuous left-to-right motion during the
+   30–180s the model takes to deliver. The gradient tilts slightly off-axis
+   so it doesn't read as a static highlight strip. */
+.sp-shimmer {
+  background: linear-gradient(
+    115deg,
+    rgba(255, 255, 255, 0) 0%,
+    rgba(255, 255, 255, 0.05) 25%,
+    rgba(246, 64, 0, 0.18) 50%,
+    rgba(255, 255, 255, 0.05) 75%,
+    rgba(255, 255, 255, 0) 100%
+  );
+  background-size: 220% 100%;
+  background-position: 100% 0;
+  animation: sp-shimmer-sweep 2.4s linear infinite;
+}
+@keyframes sp-shimmer-sweep {
+  0%   { background-position: 100% 0; }
+  100% { background-position: -100% 0; }
+}
+:root[data-theme="light"] .sp-shimmer {
+  background: linear-gradient(
+    115deg,
+    rgba(0, 0, 0, 0) 0%,
+    rgba(0, 0, 0, 0.04) 25%,
+    rgba(246, 64, 0, 0.16) 50%,
+    rgba(0, 0, 0, 0.04) 75%,
+    rgba(0, 0, 0, 0) 100%
+  );
+  background-size: 220% 100%;
+}
+
+/* Music-bar equaliser — used inline in the music-generation placeholder.
+   Scales the bar's height continuously so the bubble visually reads as
+   "audio being made" without spinning a generic loader. */
+@keyframes sp-music-bar {
+  0%   { height: 25%; }
+  100% { height: 100%; }
+}
+
 /* Inputs themed */
 .sp-input,
 input[type="text"], input[type="email"], input[type="password"], textarea {

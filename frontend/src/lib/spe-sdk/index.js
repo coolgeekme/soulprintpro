@@ -12,17 +12,17 @@
  */
 
 export { detectIntent } from './intent-detector.js';
-export { selectChatModel, selectImageModel, selectVideoModel } from './model-router.js';
+export { selectChatModel, selectImageModel, selectVideoModel, selectMusicModel } from './model-router.js';
 export {
   setModels, resetModels,
-  getChatModels, getImageModels, getVideoModels,
-  getChatModel, getImageModel, getVideoModel,
+  getChatModels, getImageModels, getVideoModels, getMusicModels,
+  getChatModel, getImageModel, getVideoModel, getMusicModel,
   getPremiumChatModels, getStandardChatModels,
   getModelsByStrength,
 } from './model-registry.js';
 
 import { detectIntent } from './intent-detector.js';
-import { selectChatModel, selectImageModel, selectVideoModel } from './model-router.js';
+import { selectChatModel, selectImageModel, selectVideoModel, selectMusicModel } from './model-router.js';
 
 /**
  * All-in-one routing function.
@@ -59,6 +59,9 @@ export function route({ message, context = {}, options = {} }) {
       break;
     case 'video':
       modelResult = selectVideoModel(message, options);
+      break;
+    case 'music':
+      modelResult = selectMusicModel(message, options);
       break;
     case 'refused':
       // No model needed — user is complaining

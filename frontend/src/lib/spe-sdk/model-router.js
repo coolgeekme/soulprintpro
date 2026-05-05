@@ -7,7 +7,7 @@
  * Zero dependencies. Pure JavaScript.
  */
 
-import { getChatModels, getImageModels, getVideoModels } from './model-registry.js';
+import { getChatModels, getImageModels, getVideoModels, getMusicModels } from './model-registry.js';
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // CHAT MODEL SELECTION
@@ -266,6 +266,48 @@ export function selectVideoModel(prompt, options = {}) {
   // Default
   const defaultModel = models[0];
   return { model: defaultModel, reason: `🎥 General video — ${defaultModel.name} for versatile quality`, confidence: 'default' };
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// MUSIC MODEL SELECTION
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/**
+ * Select the best music model for a given prompt.
+ *
+ * Music routing is currently single-provider (Suno via kie.ai) — there's
+ * exactly one capable model in the registry. The function still respects
+ * `preferredModel` overrides and explicit name mentions so it stays
+ * forward-compatible when more music providers are added (Udio, Stable
+ * Audio, Riffusion, Mubert…).
+ *
+ * @param {string} prompt - The music generation prompt
+ * @param {object} [options]
+ * @param {string} [options.preferredModel] - User's preferred model key
+ * @returns {{ model: object, reason: string, confidence: string }}
+ */
+export function selectMusicModel(prompt, options = {}) {
+  const models = getMusicModels();
+
+  if (options.preferredModel && options.preferredModel !== 'smart') {
+    const preferred = models.find(m => m.key === options.preferredModel);
+    if (preferred) {
+      return { model: preferred, reason: `🎯 User selected ${preferred.name}`, confidence: 'user-selected' };
+    }
+  }
+
+  // Explicit model name in the prompt ("use Suno…")
+  const explicitModel = parseExplicitModel(prompt, models);
+  if (explicitModel) {
+    return { model: explicitModel, reason: `🎯 Explicitly requested ${explicitModel.name}`, confidence: 'high' };
+  }
+
+  // Default: the first music model (Suno today)
+  const defaultModel = models[0];
+  if (!defaultModel) {
+    return { model: null, reason: 'No music models registered', confidence: 'fallback' };
+  }
+  return { model: defaultModel, reason: `🎵 Music request — ${defaultModel.name}`, confidence: 'default' };
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════

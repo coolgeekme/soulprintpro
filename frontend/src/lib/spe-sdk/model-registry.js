@@ -67,21 +67,31 @@ const DEFAULT_VIDEO_MODELS = [
 ];
 
 // ═══════════════════════════════════════════════════════════════════════════════
+// MUSIC MODELS
+// ═══════════════════════════════════════════════════════════════════════════════
+
+const DEFAULT_MUSIC_MODELS = [
+  { key: 'suno', name: 'Suno', provider: 'kie', tier: 'premium', strengths: ['vocals', 'lyrics', 'song', 'jingle', 'soundtrack', 'instrumental', 'general'] },
+];
+
+// ═══════════════════════════════════════════════════════════════════════════════
 // MUTABLE STATE — override via setModels()
 // ═══════════════════════════════════════════════════════════════════════════════
 
 let chatModels  = [...DEFAULT_CHAT_MODELS];
 let imageModels = [...DEFAULT_IMAGE_MODELS];
 let videoModels = [...DEFAULT_VIDEO_MODELS];
+let musicModels = [...DEFAULT_MUSIC_MODELS];
 
 /**
  * Override default models. Pass only the categories you want to change.
- * @param {{ chat?: Array, image?: Array, video?: Array }} models
+ * @param {{ chat?: Array, image?: Array, video?: Array, music?: Array }} models
  */
 export function setModels(models = {}) {
   if (models.chat)  chatModels  = models.chat;
   if (models.image) imageModels = models.image;
   if (models.video) videoModels = models.video;
+  if (models.music) musicModels = models.music;
 }
 
 /** Reset to built-in defaults */
@@ -89,15 +99,18 @@ export function resetModels() {
   chatModels  = [...DEFAULT_CHAT_MODELS];
   imageModels = [...DEFAULT_IMAGE_MODELS];
   videoModels = [...DEFAULT_VIDEO_MODELS];
+  musicModels = [...DEFAULT_MUSIC_MODELS];
 }
 
 export function getChatModels()  { return chatModels; }
 export function getImageModels() { return imageModels; }
 export function getVideoModels() { return videoModels; }
+export function getMusicModels() { return musicModels; }
 
 export function getChatModel(key)  { return chatModels.find(m => m.key === key); }
 export function getImageModel(key) { return imageModels.find(m => m.key === key); }
 export function getVideoModel(key) { return videoModels.find(m => m.key === key); }
+export function getMusicModel(key) { return musicModels.find(m => m.key === key); }
 
 export function getPremiumChatModels()  { return chatModels.filter(m => m.tier === 'premium'); }
 export function getStandardChatModels() { return chatModels.filter(m => m.tier === 'standard'); }
@@ -107,5 +120,6 @@ export function getModelsByStrength(strength) {
     chat:  chatModels.filter(m => m.strengths.includes(strength)),
     image: imageModels.filter(m => m.strengths.includes(strength)),
     video: videoModels.filter(m => m.strengths.includes(strength)),
+    music: musicModels.filter(m => m.strengths.includes(strength)),
   };
 }

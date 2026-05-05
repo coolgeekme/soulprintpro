@@ -65,6 +65,12 @@ export default function ConversationPage() {
   // message list and older messages fold behind a "Show all" toggle.
   const [threadSummary, setThreadSummary] = useState(null);
   const [showAllMessages, setShowAllMessages] = useState(false);
+  // While a media-gen request is in flight, this carries "image" /
+  // "video" / "music" so the WorkingIndicator can switch its label and
+  // hints. Null when nothing is being generated, OR when the active
+  // request is a normal chat (the indicator falls back to its generic
+  // "Your agents are working" copy in that case).
+  const [activeGenType, setActiveGenType] = useState(null);
 
   const onScrollerScroll = () => {
     const el = scrollerRef.current;
@@ -253,10 +259,15 @@ export default function ConversationPage() {
   // extra 4-5s each cycle). Instead we track "is anything pending?" via a
   // ref that the message renderer updates, and spin a single interval while
   // the convId is mounted.
-  const hasPendingVideoRef = useRef(false);
+  // Tracks whether ANY pending media request is in flight (video, image,
+  // or music). The kie.ai universal `/generate-media` endpoint creates
+  // a placeholder message with `media_status: "pending"` for every type
+  // and a background task patches it to "ready" once the model returns.
+  const hasPendingMediaRef = useRef(false);
   useEffect(() => {
-    hasPendingVideoRef.current = messages.some(
-      (m) => m.media_type === "video" && m.media_status === "pending"
+    hasPendingMediaRef.current = messages.some(
+      (m) => ["video", "image", "music"].includes(m.media_type)
+        && m.media_status === "pending"
     );
   }, [messages]);
 
@@ -265,7 +276,7 @@ export default function ConversationPage() {
     let attempts = 0;
     const tick = async () => {
       if (cancelled) return;
-      if (!hasPendingVideoRef.current) return; // nothing to do right now
+      if (!hasPendingMediaRef.current) return; // nothing to do right now
       attempts += 1;
       try {
         const { data } = await api.get(`/conversations/${convId}/messages`);
@@ -504,8 +515,17 @@ export default function ConversationPage() {
         let modelKey = null;
         let mediaType = null;
         let routeReason = "";
-        if (decision.confidence === "high"
-            && (decision.intent.type === "image" || decision.intent.type === "video")) {
+        // Gate on INTENT confidence, not model-selection confidence.
+        // Intent confidence answers "how sure are we this is a media
+        // request"; model confidence answers "how sure are we this is
+        // the right model" (which can legitimately be 'default' even
+        // for high-confidence intents — e.g. music has only Suno, so
+        // model confidence is always 'default' but intent confidence
+        // is 'high' when the prompt clearly asks for music).
+        if (decision.intent.confidence === "high"
+            && (decision.intent.type === "image"
+                || decision.intent.type === "video"
+                || decision.intent.type === "music")) {
           mediaType = decision.intent.type;
           const userPref = routingPrefs[mediaType] || "auto";
           if (userPref === "auto") {
@@ -527,7 +547,9 @@ export default function ConversationPage() {
         if (modelKey && mediaType) {
           const wasText = text;
           setText("");
-          const icon = mediaType === "video" ? "🎬" : "🎨";
+          const icon = mediaType === "music"
+            ? "🎵"
+            : mediaType === "video" ? "🎬" : "🎨";
           const opt = {
             id: `tmp-sm-${Date.now()}`,
             conversation_id: convId,
@@ -539,11 +561,25 @@ export default function ConversationPage() {
             _smart_route_hint: routeReason,
           };
           setMessages((prev) => [...prev, opt]);
+          // Set `sending` so the WorkingIndicator renders below the
+          // message list — without this the page looks idle for the
+          // 30–180s the model takes to respond and users assume the
+          // request silently failed. The indicator is media-type aware
+          // (label + hints adapt) so the user sees "Generating image"
+          // / "Composing music" not just a generic spinner.
+          setSending(true);
+          // Tag what's being generated so the indicator and any other
+          // surfaces can adapt their copy. Stored on a ref-like ad-hoc
+          // state via setActiveGenType so we don't lose it on rerender.
+          setActiveGenType(mediaType);
           try {
             const { data } = await api.post(
               `/conversations/${convId}/generate-media`,
               { prompt: trimmed, model: modelKey, media_type: mediaType }
             );
+            // The server returns the placeholder agent message with
+            // `media_status: "pending"`. The polling effect will swap
+            // it for the ready version once the kie.ai task completes.
             setMessages((prev) => {
               const without = prev.filter((m) => m.id !== opt.id);
               return [...without, data];
@@ -553,6 +589,9 @@ export default function ConversationPage() {
             setMessages((prev) => prev.filter((m) => m.id !== opt.id));
             setText(wasText);
             toast.error(err?.response?.data?.detail || "Routing failed — try again");
+          } finally {
+            setSending(false);
+            setActiveGenType(null);
           }
           return;
         }
@@ -1233,6 +1272,23 @@ export default function ConversationPage() {
                       </ol>
                     </div>
                   )}
+                  {m.media_type === "image" && m.media_status === "pending" && (
+                    <div
+                      className="mt-3 rounded-xl overflow-hidden border border-white/10 bg-black/30 aspect-square max-w-[420px] flex flex-col items-center justify-center gap-3 relative"
+                      data-testid={`message-image-pending-${m.id}`}
+                    >
+                      {/* Sweep shimmer — gives the placeholder visible motion
+                          even at the periphery so users know we're working. */}
+                      <span
+                        aria-hidden
+                        className="absolute inset-0 sp-shimmer pointer-events-none"
+                      />
+                      <Loader2 className="w-8 h-8 animate-spin opacity-80" />
+                      <div className="text-xs sp-subtle px-3 text-center">
+                        Generating image — usually 10–40s.
+                      </div>
+                    </div>
+                  )}
                   {m.media_type === "image" && m.media_url && (
                     <div className="mt-3" data-testid={`message-image-${m.id}`}>
                       <a
@@ -1315,6 +1371,46 @@ export default function ConversationPage() {
                       Video generation failed. Try a different prompt or run it again.
                     </div>
                   )}
+                  {m.media_type === "music" && m.media_status === "pending" && (
+                    <div
+                      className="mt-3 rounded-xl border border-white/10 bg-black/30 px-4 py-5 flex items-center gap-4 relative overflow-hidden"
+                      data-testid={`message-music-pending-${m.id}`}
+                    >
+                      <span aria-hidden className="absolute inset-0 sp-shimmer pointer-events-none" />
+                      {/* Animated bars — visually reads as "audio being made" */}
+                      <div
+                        className="flex items-end gap-1 h-10 shrink-0"
+                        aria-hidden
+                        style={{ filter: "drop-shadow(0 0 6px rgba(246,64,0,0.35))" }}
+                      >
+                        {[0, 1, 2, 3, 4].map((i) => (
+                          <span
+                            key={i}
+                            className="block w-1.5 rounded-full bg-current opacity-80"
+                            style={{
+                              animation: `sp-music-bar 1s ease-in-out ${i * 0.12}s infinite alternate`,
+                              height: "30%",
+                              color: "var(--fg)",
+                            }}
+                          />
+                        ))}
+                      </div>
+                      <div className="min-w-0 flex-1">
+                        <div className="text-sm font-medium leading-tight">Composing your track</div>
+                        <div className="text-xs sp-subtle mt-0.5">
+                          Suno typically delivers in 30–120s. Stay on this page — the audio will appear here when ready.
+                        </div>
+                      </div>
+                    </div>
+                  )}
+                  {m.media_type === "music" && m.media_status === "failed" && (
+                    <div
+                      className="mt-3 rounded-xl border border-red-500/30 bg-red-500/10 px-3 py-2 text-xs text-red-200/90"
+                      data-testid={`message-music-failed-${m.id}`}
+                    >
+                      Music generation failed. Try a different prompt or run it again.
+                    </div>
+                  )}
                 </div>
                 {(canFork || canSocial) && (
                   <div className="absolute -bottom-2 right-3 flex items-center gap-1.5 opacity-0 group-hover/msg:opacity-100 focus-within:opacity-100 transition">
@@ -1355,26 +1451,61 @@ export default function ConversationPage() {
               </div>
             );
           })}
-          {(sending || uploading) && (
-            <div className="flex justify-start">
-              <div className="max-w-[min(560px,90%)] w-full">
-                <WorkingIndicator
-                  label={uploading ? "Uploading & briefing your agents" : "Your agents are working"}
-                  hints={uploading ? [
-                    "Streaming files to the agents…",
-                    "Reading attachments and lining up the right specialist…",
-                    "Almost there — large files sometimes need a few seconds more.",
-                  ] : [
-                    "Thinking…",
-                    "Drafting a careful answer — complex asks like PDFs / CSVs / images can take 15-45 seconds.",
-                    "Generating artifacts (PDF, CSV, image, etc.) — files will land in the chat as soon as they're ready.",
-                    "Almost there — the bigger the deliverable, the longer the final pass.",
-                  ]}
-                  testId="agent-working-indicator"
-                />
+          {(sending || uploading) && (() => {
+            // Media-aware indicator copy. When `activeGenType` is set we
+            // show a clear "Generating image / video / music" label with
+            // realistic ETA hints; otherwise we use the generic chat copy.
+            const mediaCopy = {
+              image: {
+                label: "Generating your image",
+                hints: [
+                  "Setting up the prompt and dispatching to the model…",
+                  "Rendering pixels — typical wait is 10–40 seconds.",
+                  "Almost there — high-resolution images take a few extra seconds.",
+                  "Hang tight — sometimes the queue is busy and we wait a bit longer.",
+                ],
+              },
+              video: {
+                label: "Rendering your video",
+                hints: [
+                  "Uploading prompt and queueing the render…",
+                  "Frame-by-frame synthesis in progress — most clips finish in 60–120s.",
+                  "Almost there — final encode and upload still to go.",
+                  "Hang tight — busy queue, a longer-than-usual wait is normal.",
+                ],
+              },
+              music: {
+                label: "Composing your track",
+                hints: [
+                  "Drafting melody and structure…",
+                  "Recording vocals and instrumentation — usually 30–90 seconds.",
+                  "Mastering and rendering MP3 — almost done.",
+                  "Hang tight — the model is putting the final touches on it.",
+                ],
+              },
+            };
+            const m = activeGenType ? mediaCopy[activeGenType] : null;
+            return (
+              <div className="flex justify-start">
+                <div className="max-w-[min(560px,90%)] w-full">
+                  <WorkingIndicator
+                    label={m?.label || (uploading ? "Uploading & briefing your agents" : "Your agents are working")}
+                    hints={m?.hints || (uploading ? [
+                      "Streaming files to the agents…",
+                      "Reading attachments and lining up the right specialist…",
+                      "Almost there — large files sometimes need a few seconds more.",
+                    ] : [
+                      "Thinking…",
+                      "Drafting a careful answer — complex asks like PDFs / CSVs / images can take 15-45 seconds.",
+                      "Generating artifacts (PDF, CSV, image, etc.) — files will land in the chat as soon as they're ready.",
+                      "Almost there — the bigger the deliverable, the longer the final pass.",
+                    ])}
+                    testId="agent-working-indicator"
+                  />
+                </div>
               </div>
-            </div>
-          )}
+            );
+          })()}
           {/* Sentinel for scrollIntoView({block: "end"}). Sits at the very
               bottom of the messages container so snap-to-latest targets
               the right point even when scrollHeight measurements lag

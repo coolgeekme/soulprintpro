@@ -7,6 +7,7 @@
  *   'chat'       — text conversation (question, task, creative writing, etc.)
  *   'image'      — image generation request
  *   'video'      — video generation request
+ *   'music'      — music / song / jingle generation request
  *   'image_edit' — edit/modify an existing image
  *   'refused'    — user is complaining about unwanted AI actions
  * 
@@ -14,6 +15,7 @@
  *   chat:       'question' | 'task' | 'creative' | 'code' | 'analysis' | 'web_search' | 'general'
  *   image:      'infographic' | 'logo' | 'photo' | 'art' | 'diagram' | 'general'
  *   video:      'cinematic' | 'talking' | 'dance' | 'animation' | 'general'
+ *   music:      'instrumental' | 'jingle' | 'lyrics' | 'soundtrack' | 'general'
  *   image_edit: 'aspect_ratio' | 'mask_edit' | 'style_change' | 'general'
  *
  * Zero dependencies. Pure JavaScript.
@@ -120,6 +122,33 @@ const EDIT_PATTERNS = [
 ];
 
 // ═══════════════════════════════════════════════════════════════════════════════
+// MUSIC INTENT
+// ═══════════════════════════════════════════════════════════════════════════════
+// Order note: the `MUSIC_PATTERNS` are checked AFTER `VIDEO_PATTERNS` in
+// `detectIntent`, so a phrase like "create a music video" still routes to
+// video (the video patterns include `music\s*video` in the dance subtype).
+// Pure music asks (no video keyword) fall through to here cleanly.
+
+const MUSIC_PATTERNS = [
+  // Verb + musical noun: "compose me a song", "write me a jingle", "produce a
+  // soundtrack". Allows up to 4 modifier words between the verb and the noun
+  // ("make me a calm lo-fi background track").
+  /^(?:please\s+)?(?:can you\s+)?(?:compose|generate|create|make|produce|build|craft|write\s+me|write|record|give\s+me|play)\s+(?:me\s+)?(?:a|an|the|some)?\s*(?:[\w-]+\s+){0,4}(?:song|songs|jingle|jingles|track|tracks|tune|tunes|melody|melodies|soundtrack|theme(?:\s+song|\s+tune)?|score|anthem|beat|beats|loop|riff|hymn|ballad|composition|background\s+music|instrumental(?:\s+track)?|vocal(?:\s+track)?)\b/i,
+  // Music style + musical noun: "lo-fi hip hop track", "edm beat", "jazz piano loop"
+  /\b(?:lo-?fi|hip\s*hop|edm|techno|house|jazz|classical|rock|pop|country|metal|indie|ambient|orchestral|trap|reggae|blues|funk|disco|punk|folk|chiptune|synthwave|vaporwave|cinematic|epic|electronic|acoustic|piano)\s+(?:song|track|beat|loop|tune|music|instrumental|score|melody)\b/i,
+  // Purpose-built music: "background music for my podcast", "intro music"
+  /\b(?:background|theme|intro|outro|elevator|jingle|podcast|ad|advert|commercial)\s+music\b/i,
+  // Song lyrics specifically — Suno generates these along with audio
+  /^(?:please\s+)?(?:can you\s+)?(?:write|create|generate|compose|make)\s+(?:me\s+)?(?:a|the|some)?\s*(?:song\s+)?lyrics\b/i,
+  // "I want / need a song / track / jingle / soundtrack"
+  /(?:i\s+)?(?:want|need|would\s+like)\s+(?:a|an|some)\s+(?:[\w-]+\s+){0,3}(?:song|track|jingle|tune|beat|loop|melody|soundtrack|theme|anthem|composition|instrumental|background\s+music)\b/i,
+  // "Instrumental for X" / "vocal for X"
+  /^(?:please\s+)?(?:can you\s+)?(?:generate|create|make|produce|compose)\s+(?:an?\s+)?(?:instrumental|vocal)\b/i,
+  // Suno mentioned by name
+  /\bsuno\b/i,
+];
+
+// ═══════════════════════════════════════════════════════════════════════════════
 // CHAT SUBTYPE DETECTION
 // ═══════════════════════════════════════════════════════════════════════════════
 
@@ -189,6 +218,13 @@ export function detectIntent(message, context = {}) {
     return { type: 'video', subtype: 'animation', confidence: 'medium' };
   }
 
+  // 3d. Music detection — runs AFTER video so "music video" still wins as
+  // video. Pure music asks ("compose me a jingle", "make a lo-fi beat",
+  // "write me a song about my dog") land here.
+  if (!isQuestion && MUSIC_PATTERNS.some(p => p.test(lower))) {
+    return { type: 'music', subtype: detectMusicSubtype(lower), confidence: 'high' };
+  }
+
   // 4. Image edit detection (before general image detection)
   if (!isQuestion && context.lastImageUrl) {
     if (ASPECT_RATIO_PATTERNS.some(p => p.test(text))) {
@@ -237,5 +273,13 @@ function detectVideoSubtype(lower) {
   if (/\b(talking|speaking|dialogue|lip\s*sync|speech|saying)\b/i.test(lower)) return 'talking';
   if (/\b(dance|dancing|choreography|movement|music\s*video)\b/i.test(lower)) return 'dance';
   if (/\b(animate|animation|animated|bring\s+to\s+life)\b/i.test(lower)) return 'animation';
+  return 'general';
+}
+
+function detectMusicSubtype(lower) {
+  if (/\binstrumental\b/i.test(lower)) return 'instrumental';
+  if (/\b(jingle|advert|commercial|ad\s+music)\b/i.test(lower)) return 'jingle';
+  if (/\blyrics?\b/i.test(lower)) return 'lyrics';
+  if (/\b(soundtrack|theme(?:\s+song|\s+tune)?|score|background\s+music|intro|outro)\b/i.test(lower)) return 'soundtrack';
   return 'general';
 }
