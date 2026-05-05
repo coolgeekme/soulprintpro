@@ -52,7 +52,48 @@ from bson import ObjectId
 from fastapi import APIRouter, Body, Depends, HTTPException, Request
 from pydantic import BaseModel, EmailStr, Field
 
+from perplexity_client import perplexity_company_summary
+
 logger = logging.getLogger(__name__)
+
+
+# Patterns that signal "we got an interstitial / bot-challenge page,
+# not the real site". Matched case-insensitively against the rendered
+# text; if any hits AND the text is short, we treat the fetch as failed
+# and route to the Perplexity fallback.
+_BOT_CHALLENGE_MARKERS = (
+    "robot challenge screen",
+    "checking the site connection security",
+    "checking your browser before accessing",
+    "just a moment",
+    "please verify you are human",
+    "enable javascript and cookies",
+    "cf-browser-verification",
+    "/cdn-cgi/",
+    "pardon our interruption",
+    "access denied",
+    "attention required",
+    "ddos protection by",
+    "this page requires cookies",
+)
+
+
+def _looks_blocked(text: str) -> bool:
+    """Return True if the text looks like a Cloudflare / bot-challenge
+    interstitial rather than real page content. We require BOTH a marker
+    AND a short body so a long real page that happens to contain the
+    word "cookies" doesn't trip the detector.
+    """
+    if not text:
+        return True
+    body = text.lower()
+    if len(body) < 600 and any(m in body for m in _BOT_CHALLENGE_MARKERS):
+        return True
+    # Sites that returned only nav-chrome (very short) — not blocked
+    # per se, but the LLM won't get useful signal from <300 chars.
+    if len(body) < 300:
+        return True
+    return False
 
 
 # ── Pydantic bodies ──────────────────────────────────────────────────────────
@@ -479,14 +520,58 @@ def make_audits_router(
                     return []
 
             async def _safe_browse():
+                """Fetch website text with a Cloudflare / bot-challenge
+                fallback chain:
+                  1. Playwright `browse_url` (renders JS, follows redirects)
+                  2. If it returns a bot-challenge interstitial OR <300
+                     chars of text, fall back to Perplexity Sonar's
+                     company summary (Perplexity has its own scraping
+                     infrastructure and isn't blocked the same way we are).
+                  3. If Perplexity ALSO returns nothing, surface whatever
+                     we got from Playwright so the synthesizer can at
+                     least say "site is behind a bot wall — limited data."
+                """
                 if not url:
                     return ""
+                playwright_text = ""
                 try:
                     snap = await browse_url(url, take_screenshot=False)
-                    return (snap or {}).get("text", "")
+                    playwright_text = (snap or {}).get("text", "") or ""
                 except Exception as exc:
                     logger.warning("browse %s failed: %s", url, exc)
-                    return ""
+
+                if not _looks_blocked(playwright_text):
+                    return playwright_text
+
+                logger.info(
+                    "Audit fetch for %s looks blocked / thin "
+                    "(%d chars) — falling back to Perplexity",
+                    url, len(playwright_text),
+                )
+                try:
+                    pplx_text = await perplexity_company_summary(brand, url)
+                except Exception as exc:
+                    logger.warning("Perplexity fallback failed for %s: %s", url, exc)
+                    pplx_text = ""
+
+                if pplx_text:
+                    # Combine: tag where each chunk came from so the LLM
+                    # can weight them appropriately. Playwright text is
+                    # often partial nav chrome — still worth keeping.
+                    parts = [
+                        "## Source: Perplexity Sonar (live web search; the "
+                        "site itself blocked our direct scraper)",
+                        pplx_text,
+                    ]
+                    if playwright_text.strip():
+                        parts += [
+                            "",
+                            "## Source: partial direct fetch (mostly nav / "
+                            "challenge text — use sparingly)",
+                            playwright_text.strip()[:1500],
+                        ]
+                    return "\n\n".join(parts)
+                return playwright_text
 
             website_text, brand_hits, reviews_hits, comp_hits = await asyncio.gather(
                 _safe_browse(),
