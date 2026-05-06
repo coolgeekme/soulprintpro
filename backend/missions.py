@@ -134,6 +134,9 @@ def serialize_mission(m: dict) -> dict:
         # CTA when a post-mission fails because no session was on file.
         "social_platform": m.get("social_platform", ""),
         "has_social_session": bool(m.get("has_social_session", False)),
+        # ChatGPT-style remote-browser control. True while a user has
+        # taken over the live Chromium stream (agent loop pauses).
+        "user_controls_browser": bool(m.get("user_controls_browser", False)),
         # User-uploaded attachments available to the mission at runtime.
         # We don't leak the filesystem path — only browser-reachable URLs.
         "attachments": [
@@ -162,6 +165,10 @@ def serialize_event(e: dict) -> dict:
         "result_preview": e.get("result_preview", ""),
         "artifact": e.get("artifact") or None,
         "iteration": e.get("iteration", 0),
+        # Remote-browser control hand-off marker (user|agent|None) so the
+        # work log can render a clear "you took control" / "agent resumed"
+        # row.
+        "control": e.get("control") or None,
     }
 
 
@@ -349,6 +356,14 @@ async def run_mission_loop(
                 await _append_event(db, mission_id, kind="system",
                                     text="Paused by user.", iteration=iteration)
                 return
+            # User has taken over the browser (ChatGPT-style agent mode).
+            # Hold the loop in place until they give control back so the
+            # agent isn't clicking while the human is typing a password.
+            # We poll every 2s instead of the long LLM call; when control
+            # is released, resume the next iteration normally.
+            if m.get("user_controls_browser"):
+                await asyncio.sleep(2)
+                continue
 
             iteration += 1
             await db.missions.update_one(

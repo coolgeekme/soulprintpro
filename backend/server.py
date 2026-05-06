@@ -6163,6 +6163,55 @@ missions_r = make_missions_router(
 )
 app.include_router(missions_r)
 
+# ── Remote browser live streaming (ChatGPT Agent Mode equivalent) ─────
+# Mounts a WebSocket at /api/missions/{mission_id}/browser-stream that
+# pipes Chromium's DevTools screencast to the frontend and forwards the
+# user's mouse/keyboard events back through CDP. See browser_stream.py.
+from browser_stream import register_browser_stream_routes  # noqa: E402
+
+
+async def _require_mission_member_ws(mission_id: str, token: str):
+    """Validate a bearer-like token passed via WS query string and
+    confirm the caller is a member of the mission's org.
+
+    Supports BOTH legacy HS256 JWTs and Firebase ID tokens — same
+    sniff / decode pipeline as `get_current_user`, minus the Request
+    object (websockets can't carry a cookie jar uniformly across
+    browsers, so the token is always passed as `?token=...`).
+    """
+    if not token:
+        raise ValueError("missing token")
+    user_doc: Optional[dict] = None
+    if _firebase_enabled() and _looks_like_firebase_token(token):
+        claims = verify_firebase_id_token(token)
+        resolved = await upsert_user_for_firebase_claims(db, claims)
+        user_doc = {
+            "id": resolved["id"], "email": resolved.get("email", ""),
+            "name": resolved.get("name", ""),
+        }
+    else:
+        payload = jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALGO])
+        user = await db.users.find_one({"_id": ObjectId(payload["sub"])})
+        if not user or user.get("is_disabled"):
+            raise ValueError("user not found or disabled")
+        user_doc = {
+            "id": str(user["_id"]), "email": user["email"],
+            "name": user.get("name", ""),
+        }
+    mission = await db.missions.find_one({"id": mission_id}, {"_id": 0})
+    if not mission:
+        raise ValueError("mission not found")
+    # Re-use the existing org-membership helper so the browser stream
+    # has exactly the same access policy as every other mission endpoint.
+    await require_org_member(mission["org_id"], user_doc["id"])
+    return mission, user_doc
+
+
+register_browser_stream_routes(
+    app=app, db=db,
+    require_mission_member=_require_mission_member_ws,
+)
+
 # Autonomous social posting — scheduled Missions that drive a headless
 # browser to publish a queued social post on the user's behalf. Uses the
 # same APScheduler instance as the cron-style schedules above. See

@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useRef, useState } from "react";
 import { useParams, Link, useNavigate } from "react-router-dom";
 import api, { BACKEND_URL, displayMissionGoal, downloadFile, errorMessage } from "../lib/api";
 import TopBar from "../components/TopBar";
+import BrowserStreamCanvas from "../components/BrowserStreamCanvas";
 import { toast } from "sonner";
 import {
   Rocket, Play, X, Loader2, ArrowLeft, Search, FileText, Wrench,
@@ -429,6 +430,11 @@ function MissionDetail({ orgId, missionId }) {
   const [continueOpen, setContinueOpen] = useState(false);
   const [continueText, setContinueText] = useState("");
   const [continueBusy, setContinueBusy] = useState(false);
+  // ChatGPT Agent Mode: live remote browser stream. Only meaningful while
+  // the mission is running. Auth token comes from localStorage so the WS
+  // can pass it as ?token=…
+  const [showBrowser, setShowBrowser] = useState(false);
+  const wsToken = (typeof localStorage !== "undefined" && localStorage.getItem("token")) || "";
   const continueRun = async () => {
     setContinueBusy(true);
     try {
@@ -530,6 +536,33 @@ function MissionDetail({ orgId, missionId }) {
                 <Trash2 className="w-3.5 h-3.5" /> Delete
               </button>
             </div>
+          </div>
+        )}
+
+        {/* ChatGPT Agent Mode — live remote browser stream. Only shown
+            while the mission is actively running so users don't see a
+            stale Chromium frame on a finished run. The "Watch live"
+            toggle lets users open the stream on demand to avoid
+            burning bandwidth on every detail-page view. */}
+        {isLive && (
+          <div className="mb-6">
+            {!showBrowser ? (
+              <button
+                type="button"
+                onClick={() => setShowBrowser(true)}
+                className="sp-btn sp-btn-ghost text-xs"
+                data-testid="mission-watch-browser-btn"
+                title="Open the remote browser feed and take control to log in"
+              >
+                <Search className="w-3.5 h-3.5" /> Watch live browser
+              </button>
+            ) : (
+              <BrowserStreamCanvas
+                missionId={missionId}
+                token={wsToken}
+                onClose={() => setShowBrowser(false)}
+              />
+            )}
           </div>
         )}
 
