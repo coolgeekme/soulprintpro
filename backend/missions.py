@@ -350,6 +350,36 @@ async def run_mission_loop(
     sys_prompt = build_lead_system_prompt(catalog)
 
     iteration = 0
+
+    # ── Mission-level heartbeat ──────────────────────────────────────
+    # A single background task that ticks `last_activity_at` every 30s
+    # while the mission is running. Lives for the entire lifetime of
+    # `run_mission_loop`, surviving slow LLM round-trips, lengthy
+    # browse_url calls (Google Maps interactions can take 60-90s), and
+    # artifact synthesis. Failures are silent — this is best-effort
+    # liveness reporting, not the source of truth.
+    heartbeat_stop = asyncio.Event()
+
+    async def _mission_heartbeat():
+        try:
+            while not heartbeat_stop.is_set():
+                try:
+                    await asyncio.wait_for(heartbeat_stop.wait(), timeout=30)
+                except asyncio.TimeoutError:
+                    try:
+                        await db.missions.update_one(
+                            {"id": mission_id, "status": "running"},
+                            {"$set": {
+                                "last_activity_at": datetime.now(timezone.utc),
+                            }},
+                        )
+                    except Exception:
+                        pass
+        except asyncio.CancelledError:
+            return
+
+    heartbeat_task = asyncio.create_task(_mission_heartbeat())
+
     try:
         while iteration < MAX_ITERATIONS:
             # Check cancellation / pause *before* hitting the LLM so we
@@ -718,6 +748,13 @@ async def run_mission_loop(
         logger.exception("mission %s crashed: %s", mission_id, exc)
         await _fail_mission(db, mission_id, str(exc)[:400])
     finally:
+        # Stop the mission-level heartbeat first so it doesn't keep
+        # ticking against a finished mission row.
+        try:
+            heartbeat_stop.set()
+            heartbeat_task.cancel()
+        except Exception:
+            pass
         # Release the sticky browser context (if any) so the Chromium
         # process doesn't accumulate one zombie context per mission.
         # Best-effort — losing the cleanup doesn't affect mission state.

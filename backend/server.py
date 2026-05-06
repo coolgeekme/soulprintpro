@@ -6434,7 +6434,7 @@ async def startup():
     # retry. Heartbeat = `last_activity_at` (updated on every event); if
     # missing we fall back to `updated_at` / `started_at`.
     from datetime import timedelta as _td  # noqa: E402
-    stale_cutoff = datetime.now(timezone.utc) - _td(minutes=5)
+    stale_cutoff = datetime.now(timezone.utc) - _td(minutes=15)
     stuck_q = {
         "status": {"$in": ["running", "awaiting_user"]},
         "$or": [
@@ -6495,7 +6495,15 @@ async def startup():
     # timeout, or got wedged inside a Playwright call — without waiting
     # for a pod restart. Threshold 5 minutes matches the startup scan.
     async def _watchdog_tick():
-        cutoff = datetime.now(timezone.utc) - timedelta(minutes=5)
+        # 15-minute window. Was 5 minutes, but legitimate browse-heavy
+        # missions (Google Maps interactions, multi-screenshot crawls,
+        # long LLM round-trips on slow Anthropic days) can legitimately
+        # iterate slower than that. We'd rather a truly-dead mission
+        # take a few extra minutes to reap than false-fail a working
+        # one. The in-loop heartbeat (`run_mission_loop` ticks
+        # last_activity_at at the start of every iteration AND on every
+        # event append) keeps the cadence accurate for normal paces.
+        cutoff = datetime.now(timezone.utc) - timedelta(minutes=15)
         try:
             cur = db.missions.find(
                 {
@@ -6514,9 +6522,9 @@ async def startup():
                     {"$set": {
                         "status": "failed",
                         "error": ("Mission stalled with no activity for "
-                                  "over 5 minutes and was auto-failed by "
-                                  "the watchdog. You can click Continue "
-                                  "to pick up where it left off."),
+                                  "over 15 minutes and was auto-failed "
+                                  "by the watchdog. You can click "
+                                  "Continue to pick up where it left off."),
                         "finished_at": datetime.now(timezone.utc),
                     }},
                 )
@@ -6525,8 +6533,8 @@ async def startup():
                         "mission_id": mid,
                         "kind": "system",
                         "text": ("Watchdog auto-failed this mission — no "
-                                 "heartbeat in 5+ minutes. Click Continue "
-                                 "to resume."),
+                                 "heartbeat in 15+ minutes. Click "
+                                 "Continue to resume."),
                         "ts": datetime.now(timezone.utc),
                     })
                 except Exception:
