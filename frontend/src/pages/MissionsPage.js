@@ -7,7 +7,7 @@ import { toast } from "sonner";
 import {
   Rocket, Play, X, Loader2, ArrowLeft, Search, FileText, Wrench,
   ChevronRight, Check, AlertTriangle, HelpCircle, Send, Download, Image as ImageIcon,
-  Trash2, CornerDownRight, UploadCloud,
+  Trash2, CornerDownRight, UploadCloud, Lock,
 } from "lucide-react";
 
 /**
@@ -435,6 +435,12 @@ function MissionDetail({ orgId, missionId }) {
   // can pass it as ?token=…
   const [showBrowser, setShowBrowser] = useState(false);
   const wsToken = (typeof localStorage !== "undefined" && localStorage.getItem("token")) || "";
+
+  // B3: when the agent hits a login wall, auto-open the live browser
+  // panel so the "Take control" button is one click away.
+  useEffect(() => {
+    if (mission?.needs_login_for) setShowBrowser(true);
+  }, [mission?.needs_login_for]);
   const continueRun = async () => {
     setContinueBusy(true);
     try {
@@ -486,6 +492,18 @@ function MissionDetail({ orgId, missionId }) {
                       <AlertTriangle className="w-3 h-3" />
                       Stalled · no activity for {Math.floor(stalledSeconds / 60)}m {stalledSeconds % 60}s
                     </span>
+                  )}
+                  {mission?.needs_login_for && (
+                    <button
+                      type="button"
+                      onClick={() => setShowBrowser(true)}
+                      className="sp-chip text-[10px] !bg-orange-400/20 !text-orange-200 flex items-center gap-1 hover:!bg-orange-400/30"
+                      data-testid="mission-needs-login-chip"
+                      title="Open the live browser and click Take control to log in"
+                    >
+                      <Lock className="w-3 h-3" />
+                      Login required for {mission.needs_login_for} · click to open
+                    </button>
                   )}
                   <span className="text-[11px] sp-subtle">
                     {mission.lead_agent_name} · {mission.iteration_count || 0}/{25} steps
@@ -560,6 +578,7 @@ function MissionDetail({ orgId, missionId }) {
               <BrowserStreamCanvas
                 missionId={missionId}
                 token={wsToken}
+                needsLoginFor={mission?.needs_login_for || ""}
                 onClose={() => setShowBrowser(false)}
               />
             )}

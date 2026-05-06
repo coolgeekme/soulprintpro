@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
-import { Loader2, MousePointer2, Hand, X, ExternalLink, Lock } from "lucide-react";
+import { Loader2, MousePointer2, Hand, X, ExternalLink, Lock, Save } from "lucide-react";
 
 /**
  * BrowserStreamCanvas — ChatGPT Agent Mode-style live remote browser.
@@ -25,12 +25,15 @@ export default function BrowserStreamCanvas({
   token,
   onClose,
   initiallyDrive = false,
+  needsLoginFor = "",
 }) {
   const canvasRef = useRef(null);
   const wsRef = useRef(null);
   const [mode, setMode] = useState(initiallyDrive ? "drive" : "watch");
   const [connected, setConnected] = useState(false);
   const [meta, setMeta] = useState({ url: "", title: "" });
+  const [savedHost, setSavedHost] = useState("");  // shows "✓ saved" toast inline
+  const [saving, setSaving] = useState(false);
   const remoteSize = useRef({ w: 1280, h: 800 });
 
   // Track whether we've sent the "take" control message — survives
@@ -66,6 +69,9 @@ export default function BrowserStreamCanvas({
         paintFrame(msg.data, msg.w, msg.h);
       } else if (msg.type === "hello") {
         setMeta({ url: msg.url || "", title: msg.title || "" });
+      } else if (msg.type === "credentials_saved") {
+        setSaving(false);
+        if (msg.ok) setSavedHost(msg.hostname || "");
       }
     };
 
@@ -199,8 +205,25 @@ export default function BrowserStreamCanvas({
     send({ type: "control", action: "release" });
   };
 
+  const saveCredentials = () => {
+    setSaving(true);
+    setSavedHost("");
+    send({ type: "save_credentials", hostname: needsLoginFor || "" });
+  };
+
   return (
     <div className="sp-glass-strong rounded-2xl overflow-hidden flex flex-col" data-testid="browser-stream">
+      {/* Login-required banner — only visible when the agent has paused
+          on a login wall. Tells the user exactly what to do. */}
+      {needsLoginFor && (
+        <div className="px-4 py-2 text-xs flex items-center gap-2 bg-orange-500/15 border-b border-orange-400/30 text-orange-100" data-testid="browser-needs-login-banner">
+          <Lock className="w-3.5 h-3.5 shrink-0" />
+          <span className="flex-1">
+            <b>Login required for {needsLoginFor}.</b>{" "}
+            Click <i>Take control</i>, sign in, then <i>Save login</i> so the agent can use this account on future missions.
+          </span>
+        </div>
+      )}
       {/* Address bar / status */}
       <div className="flex items-center gap-2 px-4 py-2 border-b border-white/5 text-xs">
         <div className={`h-2 w-2 rounded-full ${connected ? "bg-emerald-400" : "bg-amber-400 animate-pulse"}`} />
@@ -213,6 +236,19 @@ export default function BrowserStreamCanvas({
              title="Open in a real new tab">
             <ExternalLink className="w-3.5 h-3.5" />
           </a>
+        )}
+        {/* Save-login button — only meaningful while the user is driving
+            AND on a real (non-blank) page. Hidden in watch mode. */}
+        {mode === "drive" && meta.url && (
+          <button type="button" onClick={saveCredentials} disabled={saving}
+                  className="sp-btn sp-btn-ghost text-xs"
+                  data-testid="browser-save-login"
+                  title="Encrypt and save this login so the agent can re-use it on future missions">
+            {saving
+              ? <Loader2 className="w-3.5 h-3.5 animate-spin" />
+              : <Save className="w-3.5 h-3.5" />}
+            {savedHost ? `Saved · ${savedHost}` : "Save login"}
+          </button>
         )}
         {mode === "watch" ? (
           <button type="button" onClick={takeControl}

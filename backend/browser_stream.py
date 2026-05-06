@@ -209,6 +209,15 @@ async def _append_control_event(db, mission_id: str, who: str, user_id: str) -> 
     flag on the mission doc so the agent loop can check before its next
     iteration."""
     now = datetime.now(timezone.utc)
+    update: Dict[str, Any] = {
+        "user_controls_browser": (who == "user"),
+        "last_activity_at": now,
+    }
+    # Releasing control while a login wall was flagged means the user
+    # just successfully authenticated — clear the needs_login marker so
+    # the loop can resume cleanly on the next tick.
+    if who == "agent":
+        update["needs_login_for"] = ""
     try:
         await db.mission_events.insert_one({
             "mission_id": mission_id,
@@ -222,15 +231,51 @@ async def _append_control_event(db, mission_id: str, who: str, user_id: str) -> 
             "user_id": user_id,
             "ts": now,
         })
-        await db.missions.update_one(
-            {"id": mission_id},
-            {"$set": {
-                "user_controls_browser": (who == "user"),
-                "last_activity_at": now,
-            }},
-        )
+        await db.missions.update_one({"id": mission_id}, {"$set": update})
     except Exception as exc:
         logger.warning("control event append failed: %s", exc)
+
+
+async def _capture_and_save_credentials(
+    db, *, mission_id: str, user_id: str, hostname_hint: str = "",
+) -> Optional[str]:
+    """Grab the mission Chromium context's current storage_state and
+    persist it, encrypted, in the credential vault keyed by (org_id,
+    eTLD+1). Triggered when the user explicitly clicks "Save login" in
+    the live browser overlay AFTER a successful authentication.
+
+    Returns the eTLD+1 we keyed under, or None on failure.
+    """
+    from credential_vault import save_credentials, host_to_etld_plus_one
+    try:
+        mission = await db.missions.find_one({"id": mission_id}, {"_id": 0})
+        if not mission:
+            return None
+        org_id = mission.get("org_id")
+        # Reach into the live Chromium context for this mission.
+        from browser_tools import _MISSION_PAGES  # noqa: F401 — intentional
+        entry = _MISSION_PAGES.get(mission_id)
+        if not entry:
+            return None
+        page = entry["page"]
+        ctx = page.context
+        state = await ctx.storage_state()
+        # Prefer the user-provided hostname (from the take-control hint),
+        # fall back to the current page URL.
+        host_source = hostname_hint or page.url
+        host = host_to_etld_plus_one(
+            host_source.split("://", 1)[-1].split("/", 1)[0]
+            if "://" in host_source else host_source
+        )
+        if not host:
+            return None
+        return await save_credentials(
+            db=db, org_id=org_id, hostname=host,
+            storage_state=state, user_id=user_id, label=host,
+        )
+    except Exception as exc:
+        logger.warning("credential capture failed for %s: %s", mission_id, exc)
+        return None
 
 
 # ── Public entrypoint — registered on the FastAPI app ─────────────────
@@ -293,6 +338,22 @@ def register_browser_stream_routes(
                     # {action: "take" | "release"}
                     who = "user" if raw.get("action") == "take" else "agent"
                     await _append_control_event(db, mission_id, who, user_id)
+                elif kind == "save_credentials":
+                    # {hostname?: "google.com"} — persist current
+                    # storage_state encrypted in the vault for re-use
+                    # on future missions.
+                    saved_host = await _capture_and_save_credentials(
+                        db, mission_id=mission_id, user_id=user_id,
+                        hostname_hint=str(raw.get("hostname") or ""),
+                    )
+                    try:
+                        await ws.send_json({
+                            "type": "credentials_saved",
+                            "hostname": saved_host or "",
+                            "ok": bool(saved_host),
+                        })
+                    except Exception:
+                        pass
                 elif kind == "ping":
                     await ws.send_json({"type": "pong"})
         except WebSocketDisconnect:

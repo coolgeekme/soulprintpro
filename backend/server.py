@@ -6212,6 +6212,28 @@ register_browser_stream_routes(
     require_mission_member=_require_mission_member_ws,
 )
 
+# ── B4: Credential vault HTTP endpoints (list / delete) ─────────────
+# The save flow happens through the WebSocket (`save_credentials`
+# message). These REST endpoints let the org owner audit and revoke
+# saved logins from a settings page.
+from credential_vault import list_credentials as _vault_list  # noqa: E402
+from credential_vault import delete_credentials as _vault_delete  # noqa: E402
+
+
+@app.get("/api/orgs/{org_id}/saved-logins")
+async def list_saved_logins(org_id: str, u: dict = Depends(get_current_user)):
+    await require_org_member(org_id, u["id"])
+    return await _vault_list(db, org_id=org_id)
+
+
+@app.delete("/api/orgs/{org_id}/saved-logins/{hostname}")
+async def delete_saved_login(
+    org_id: str, hostname: str, u: dict = Depends(get_current_user),
+):
+    await require_org_member(org_id, u["id"])
+    ok = await _vault_delete(db, org_id=org_id, hostname=hostname)
+    return {"ok": bool(ok), "hostname": hostname}
+
 # Autonomous social posting — scheduled Missions that drive a headless
 # browser to publish a queued social post on the user's behalf. Uses the
 # same APScheduler instance as the cron-style schedules above. See
@@ -6278,6 +6300,10 @@ async def startup():
     await db.missions.create_index([("org_id", 1), ("started_at", -1)])
     await db.missions.create_index("status")
     await db.mission_events.create_index([("mission_id", 1), ("ts", 1)])
+    # B4 credential vault — one (org, hostname) entry max.
+    await db.domain_credentials.create_index(
+        [("org_id", 1), ("hostname", 1)], unique=True,
+    )
     # ── Stuck-mission recovery ───────────────────────────────────────────
     # Pod restarts / redeploys kill in-flight asyncio tasks, but the
     # `missions` row keeps `status="running"` (or "awaiting_user") in

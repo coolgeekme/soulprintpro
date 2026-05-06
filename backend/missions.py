@@ -137,6 +137,11 @@ def serialize_mission(m: dict) -> dict:
         # ChatGPT-style remote-browser control. True while a user has
         # taken over the live Chromium stream (agent loop pauses).
         "user_controls_browser": bool(m.get("user_controls_browser", False)),
+        # Login-wall auto-pause (B3): set to the eTLD+1 (e.g. "google.com")
+        # when the agent's last browser action landed on a login page.
+        # The frontend renders a "Login required for X — Take control"
+        # chip when this is non-empty.
+        "needs_login_for": m.get("needs_login_for", "") or "",
         # User-uploaded attachments available to the mission at runtime.
         # We don't leak the filesystem path — only browser-reachable URLs.
         "attachments": [
@@ -634,6 +639,59 @@ async def run_mission_loop(
                     {"id": mission_id},
                     {"$push": {"artifacts": artifact}},
                 )
+
+            # ── B3: Login-wall auto-pause ────────────────────────────
+            # If the just-completed browser tool landed on a login page,
+            # transparently flip the mission into "needs login" state so
+            # the UI shows a clear "Login required — click Take control"
+            # chip and the next iteration's loop check pauses the agent.
+            if (
+                isinstance(result, dict)
+                and tool_name in {"browse_url", "browse_click", "browse_fill",
+                                  "browse_submit", "screenshot_url"}
+            ):
+                final_url = result.get("final_url") or ""
+                title = result.get("title") or ""
+                text = result.get("text") or result.get("text_preview") or ""
+                try:
+                    from credential_vault import looks_like_login_page, host_to_etld_plus_one
+                    if final_url and looks_like_login_page(final_url, title, text):
+                        host = host_to_etld_plus_one(
+                            final_url.split("://", 1)[-1].split("/", 1)[0]
+                        )
+                        await db.missions.update_one(
+                            {"id": mission_id},
+                            {"$set": {
+                                "needs_login_for": host,
+                                "user_controls_browser": True,
+                            }},
+                        )
+                        await _append_event(
+                            db, mission_id, kind="system",
+                            text=(
+                                f"Login required for {host}. Pausing the "
+                                "agent — open the live browser and click "
+                                "**Take control** to sign in. The loop "
+                                "will resume automatically when you hand "
+                                "control back, and your session will be "
+                                "saved for next time."
+                            ),
+                            iteration=iteration,
+                        )
+                        # Inject a synthetic last-tool-result so the LLM
+                        # (when it eventually resumes) understands what
+                        # happened.
+                        await _append_event(
+                            db, mission_id, kind="system",
+                            text=(
+                                "Once login completes the page should "
+                                "advance past the auth wall — re-run the "
+                                "same browse_url to continue."
+                            ),
+                            iteration=iteration,
+                        )
+                except Exception as exc:
+                    logger.debug("Login-wall check failed: %s", exc)
 
         # iteration cap reached
         await _append_event(db, mission_id, kind="system",
@@ -1861,6 +1919,33 @@ def make_missions_router(
                     "mission: failed to load social sessions for org %s: %s",
                     org_id, exc,
                 )
+        # ── B4: pull saved per-domain credentials that match URLs in
+        # the goal so the agent boots logged-in to every site the user
+        # has previously authenticated for.
+        try:
+            from credential_vault import merge_credentials_for_mission
+            urls_in_goal = re.findall(
+                r"https?://[^\s\)]+", body.goal or "",
+            )
+            vault_state = await merge_credentials_for_mission(
+                db=db, org_id=org_id, urls=urls_in_goal,
+            )
+            if vault_state:
+                if not merged_state:
+                    merged_state = {"cookies": [], "origins": []}
+                merged_state["cookies"] = (
+                    (merged_state.get("cookies") or [])
+                    + (vault_state.get("cookies") or [])
+                )
+                merged_state["origins"] = (
+                    (merged_state.get("origins") or [])
+                    + (vault_state.get("origins") or [])
+                )
+        except Exception as exc:
+            logger.warning(
+                "mission: failed to merge domain credentials for %s: %s",
+                org_id, exc,
+            )
         goal_with_context = body.goal.strip()
         if detected_platform:
             composer = PLATFORM_COMPOSERS.get(detected_platform, "")
