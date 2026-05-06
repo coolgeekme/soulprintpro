@@ -39,6 +39,7 @@ Removal:
 from __future__ import annotations
 
 import logging
+import os
 import secrets
 from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
@@ -46,6 +47,8 @@ from typing import Any, Optional
 from bson import ObjectId
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, EmailStr, Field
+
+from email_service import send_resend_email
 
 logger = logging.getLogger(__name__)
 
@@ -492,11 +495,105 @@ def make_workspaces_router(
             "used_by": None,
         }
         await db.workspace_invites.insert_one(doc)
+        # Fire-and-forget email notification. We don't block the
+        # response on delivery — if Resend is unreachable the invite
+        # row is already persisted and the inviter can still "Copy link".
+        if body.email:
+            try:
+                frontend = (os.environ.get("FRONTEND_URL") or "").rstrip("/")
+                invite_url = f"{frontend}/invite/{code}"
+                ws = await db.workspaces.find_one(
+                    {"_id": ObjectId(ws_id)}, {"name": 1},
+                )
+                ws_name = (ws or {}).get("name") or "a workspace"
+                # Enrich org-grants with display names for the email body.
+                org_lines_text: list[str] = []
+                org_lines_html: list[str] = []
+                if body.org_grants:
+                    org_ids = [
+                        ObjectId(g.org_id) for g in body.org_grants
+                        if len(g.org_id) == 24
+                    ]
+                    org_names: dict[str, str] = {}
+                    if org_ids:
+                        async for o in db.organizations.find(
+                            {"_id": {"$in": org_ids}}, {"name": 1},
+                        ):
+                            org_names[str(o["_id"])] = o.get("name", "")
+                    for g in body.org_grants:
+                        n = org_names.get(g.org_id) or "an organization"
+                        org_lines_text.append(f"  • {n} — {g.role}")
+                        org_lines_html.append(
+                            f"<li style='margin:4px 0'>"
+                            f"<b>{n}</b> "
+                            f"<span style='color:#888;font-size:12px;"
+                            f"text-transform:uppercase;letter-spacing:0.05em'>"
+                            f"{g.role}</span></li>"
+                        )
+                inviter_name = u.get("name") or (u.get("email") or "").split("@", 1)[0]
+                org_list_text = "\n".join(org_lines_text) if org_lines_text else \
+                    "  (no org access yet — the owner will grant it after you join)"
+                org_list_html = (
+                    f"<ul style='padding-left:18px;margin:8px 0'>{''.join(org_lines_html)}</ul>"
+                    if org_lines_html
+                    else "<p style='color:#666;font-size:13px'>No org access yet "
+                         "— the owner will grant it after you join.</p>"
+                )
+                subject = f"{inviter_name} invited you to {ws_name}"
+                text = (
+                    f"Hi,\n\n"
+                    f"{inviter_name} has invited you to join {ws_name} on "
+                    f"SoulPrint Engine as a workspace {body.ws_role}.\n\n"
+                    f"You'll get access to:\n{org_list_text}\n\n"
+                    f"Accept your invite:\n{invite_url}\n\n"
+                    f"This link expires in 14 days. If you weren't expecting "
+                    f"this, you can safely ignore the email.\n"
+                )
+                html = (
+                    f"<div style='font-family:-apple-system,Segoe UI,Roboto,"
+                    f"sans-serif;max-width:520px;margin:0 auto;padding:24px;"
+                    f"color:#222'>"
+                    f"<p style='font-size:13px;color:#888;text-transform:"
+                    f"uppercase;letter-spacing:0.1em;margin:0 0 8px'>"
+                    f"Workspace invitation</p>"
+                    f"<h2 style='font-size:22px;margin:0 0 16px;"
+                    f"line-height:1.3'>{inviter_name} has invited you to "
+                    f"join <b>{ws_name}</b></h2>"
+                    f"<p style='font-size:14px;line-height:1.6;margin:0 0 4px'>"
+                    f"You'll join as a workspace "
+                    f"<b>{body.ws_role}</b> with access to:</p>"
+                    f"{org_list_html}"
+                    f"<div style='margin:24px 0'>"
+                    f"<a href='{invite_url}' "
+                    f"style='display:inline-block;background:#f97316;"
+                    f"color:#fff;padding:12px 22px;border-radius:999px;"
+                    f"text-decoration:none;font-weight:600;font-size:14px'>"
+                    f"Accept invitation</a></div>"
+                    f"<p style='font-size:12px;color:#888;margin:16px 0 0'>"
+                    f"Or copy this link: "
+                    f"<a href='{invite_url}' style='color:#f97316'>"
+                    f"{invite_url}</a></p>"
+                    f"<p style='font-size:12px;color:#888;margin:8px 0 0'>"
+                    f"This link expires in 14 days.</p>"
+                    f"</div>"
+                )
+                import asyncio as _aio
+                _aio.create_task(send_resend_email(
+                    to=body.email, subject=subject, html=html, text=text,
+                    reply_to=u.get("email") or None,
+                ))
+                logger.info(
+                    "Workspace invite email queued to %s for workspace %s",
+                    body.email, ws_id,
+                )
+            except Exception as exc:
+                logger.warning("Invite email prep failed: %s", exc)
         return {
             "code": code,
             "ws_role": body.ws_role,
             "org_grants": [g.model_dump() for g in body.org_grants],
             "expires_at": doc["expires_at"].isoformat(),
+            "email_sent": bool(body.email),
         }
 
     @r.get("/{ws_id}/invites")

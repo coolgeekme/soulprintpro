@@ -94,7 +94,11 @@ export default function WorkspaceSettingsPage() {
       ]);
       setInviteEmail("");
       setInviteGrants({});
-      toast.success("Invite created");
+      toast.success(
+        data.email_sent
+          ? `Invite sent to ${inviteEmail.trim()}`
+          : "Invite link created",
+      );
     } catch (err) {
       toast.error(err?.response?.data?.detail || "Could not create invite");
     } finally {

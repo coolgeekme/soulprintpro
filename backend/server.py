@@ -19,7 +19,7 @@ from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
 from pathlib import Path
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, EmailStr
 from typing import List, Optional, Literal
 from datetime import datetime, timezone, timedelta
 from bson import ObjectId
@@ -417,6 +417,10 @@ class SoulPrintBody(BaseModel):
 
 class InviteCreateBody(BaseModel):
     role: Literal["admin", "member"] = "member"
+    # Optional — if provided, we email the accept link to this address
+    # via Resend (see email_service.send_resend_email). The invite row is
+    # persisted regardless so the inviter always gets a copy-able link.
+    email: Optional[EmailStr] = None
 
 class InviteAcceptBody(BaseModel):
     code: str
@@ -1472,7 +1476,62 @@ async def create_invite(org_id: str, body: InviteCreateBody, u: dict = Depends(g
         "used_by": None,
     }
     await db.invites.insert_one(doc)
-    return {"code": code, "role": body.role, "expires_at": doc["expires_at"].isoformat()}
+    # Optional: email the invite link via Resend when the inviter gave
+    # us an address. Best-effort — persistence already happened, caller
+    # still gets the code to paste if Resend is unreachable.
+    if body.email:
+        try:
+            from email_service import send_resend_email
+            frontend = (os.environ.get("FRONTEND_URL") or "").rstrip("/")
+            invite_url = f"{frontend}/invite/{code}"
+            org_doc = await db.organizations.find_one(
+                {"_id": ObjectId(org_id)}, {"name": 1},
+            )
+            org_name = (org_doc or {}).get("name") or "an organization"
+            inviter_name = u.get("name") or (u.get("email") or "").split("@", 1)[0]
+            subject = f"{inviter_name} invited you to {org_name}"
+            text = (
+                f"Hi,\n\n"
+                f"{inviter_name} has invited you to join {org_name} on "
+                f"SoulPrint Engine as a {body.role}.\n\n"
+                f"Accept your invite:\n{invite_url}\n\n"
+                f"This link expires in 14 days.\n"
+            )
+            html = (
+                f"<div style='font-family:-apple-system,Segoe UI,Roboto,"
+                f"sans-serif;max-width:520px;margin:0 auto;padding:24px;"
+                f"color:#222'>"
+                f"<p style='font-size:13px;color:#888;text-transform:"
+                f"uppercase;letter-spacing:0.1em;margin:0 0 8px'>"
+                f"Organization invitation</p>"
+                f"<h2 style='font-size:22px;margin:0 0 12px;line-height:1.3'>"
+                f"{inviter_name} has invited you to join "
+                f"<b>{org_name}</b></h2>"
+                f"<p style='font-size:14px;line-height:1.6;margin:0 0 16px'>"
+                f"You'll join as a <b>{body.role}</b>.</p>"
+                f"<div style='margin:24px 0'>"
+                f"<a href='{invite_url}' "
+                f"style='display:inline-block;background:#f97316;color:#fff;"
+                f"padding:12px 22px;border-radius:999px;text-decoration:none;"
+                f"font-weight:600;font-size:14px'>Accept invitation</a></div>"
+                f"<p style='font-size:12px;color:#888;margin:16px 0 0'>"
+                f"Or copy this link: "
+                f"<a href='{invite_url}' style='color:#f97316'>"
+                f"{invite_url}</a></p>"
+                f"<p style='font-size:12px;color:#888;margin:8px 0 0'>"
+                f"This link expires in 14 days.</p></div>"
+            )
+            asyncio.create_task(send_resend_email(
+                to=body.email, subject=subject, html=html, text=text,
+                reply_to=u.get("email") or None,
+            ))
+        except Exception as exc:
+            logger.warning("Org invite email prep failed: %s", exc)
+    return {
+        "code": code, "role": body.role,
+        "expires_at": doc["expires_at"].isoformat(),
+        "email_sent": bool(body.email),
+    }
 
 @org_r.get("/{org_id}/invites")
 async def list_invites(org_id: str, u: dict = Depends(get_current_user)):

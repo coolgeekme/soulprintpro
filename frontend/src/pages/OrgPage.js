@@ -206,11 +206,27 @@ export default function OrgPage() {
     }
   };
 
+  // Optional email address — when filled, the API fires a Resend email
+  // to the invitee with the accept link. When blank, we just persist
+  // the invite and the owner copies the link manually.
+  const [inviteEmail, setInviteEmail] = useState("");
+
   const createInvite = async (role) => {
     try {
-      const { data } = await api.post(`/orgs/${orgId}/invites`, { role });
-      setInvites((prev) => [{ code: data.code, role, expires_at: data.expires_at }, ...prev]);
-      toast.success(`Invite created (${role})`);
+      const emailRaw = inviteEmail.trim().toLowerCase();
+      const { data } = await api.post(`/orgs/${orgId}/invites`, {
+        role, email: emailRaw || undefined,
+      });
+      setInvites((prev) => [{
+        code: data.code, role, expires_at: data.expires_at,
+        email: emailRaw || "",
+      }, ...prev]);
+      setInviteEmail("");
+      toast.success(
+        data.email_sent
+          ? `Invite sent to ${emailRaw}`
+          : `Invite created (${role})`,
+      );
     } catch (err) {
       toast.error(err?.response?.data?.detail || "Failed");
     }
@@ -589,9 +605,16 @@ export default function OrgPage() {
 
         {showInviteTools && canInvite && (
           <div className="sp-glass-strong rounded-2xl p-6 mb-10" data-testid="invite-tools">
-            <div className="flex items-center justify-between mb-4">
+            <div className="flex items-center justify-between mb-4 flex-wrap gap-2">
               <h3 className="text-sm uppercase tracking-widest sp-subtle">Invites</h3>
-              <div className="flex items-center gap-2">
+              <div className="flex items-center gap-2 flex-wrap">
+                <input
+                  type="email" value={inviteEmail}
+                  onChange={(e) => setInviteEmail(e.target.value)}
+                  placeholder="email (optional — we'll send the link)"
+                  className="sp-input text-xs"
+                  data-testid="invite-email-input"
+                />
                 <button className="sp-btn sp-btn-ghost text-xs" onClick={() => createInvite("member")} data-testid="invite-member-btn">+ Member invite</button>
                 <button className="sp-btn sp-btn-ghost text-xs" onClick={() => createInvite("admin")} data-testid="invite-admin-btn">+ Admin invite</button>
               </div>
@@ -604,6 +627,7 @@ export default function OrgPage() {
                 return (
                   <div key={inv.code} className="flex flex-wrap items-center gap-2 p-3 rounded-xl sp-glass">
                     <span className="sp-chip">{inv.role}</span>
+                    {inv.email && <span className="text-xs sp-subtle truncate">→ {inv.email}</span>}
                     <code className="text-xs text-white/80">{inv.code}</code>
                     <span className="flex-1" />
                     <button onClick={() => copy(inv.code)} className="sp-btn sp-btn-ghost text-xs"><Copy className="w-3 h-3"/> code</button>
