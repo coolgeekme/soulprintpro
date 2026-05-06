@@ -16,6 +16,7 @@ import WorkspaceSettingsPage from "./pages/WorkspaceSettingsPage";
 import SocialPage from "./pages/SocialPage";
 import MissionsPage from "./pages/MissionsPage";
 import AboutPage from "./pages/AboutPage";
+import AccountPage from "./pages/AccountPage";
 import AdminDashboard from "./pages/AdminDashboard";
 import PublicAuditPage from "./pages/PublicAuditPage";
 import ErrorBoundary from "./components/ErrorBoundary";
@@ -54,6 +55,7 @@ function App() {
                 <Route path="/auth" element={<PublicOnly><AuthPage /></PublicOnly>} />
                 <Route path="/invite/:code" element={<Protected><AcceptInvitePage /></Protected>} />
                 <Route path="/app" element={<Protected><AppHome /></Protected>} />
+                <Route path="/app/account" element={<Protected><AccountPage /></Protected>} />
                 <Route path="/app/org/:orgId" element={<Protected><OrgPage /></Protected>} />
                 <Route path="/app/ws/:wsId" element={<Protected><WorkspaceSettingsPage /></Protected>} />
                 <Route path="/app/org/:orgId/map" element={<Protected><OrgMapPage /></Protected>} />

@@ -634,6 +634,16 @@ async def me(u: dict = Depends(get_current_user)):
     # me response so the form renders the right initial values.
     u["phone"] = (full or {}).get("phone", "") or ""
     u["timezone"] = (full or {}).get("timezone", "") or ""
+    u["firebase_uid"] = (full or {}).get("firebase_uid", "") or ""
+    # Tells the frontend whether a local password exists (so AccountPage
+    # knows to show the change-password form). Firebase-only sign-ups
+    # have no `password_hash` and should manage their password through
+    # Google instead. Use a count() query so we never leak the hash itself.
+    has_pwd = await db.users.count_documents(
+        {"_id": ObjectId(u["id"]), "password_hash": {"$exists": True, "$ne": ""}},
+        limit=1,
+    )
+    u["has_password"] = bool(has_pwd)
     return u
 
 

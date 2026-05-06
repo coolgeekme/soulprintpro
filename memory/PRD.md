@@ -208,3 +208,10 @@ pattern. Users must be able to:
 - **P2** Live `next_run_at` in `_serialize_schedule` (read from APScheduler instead of stored doc)
 - **P2** Mission Mode Phase 3 — user-controlled remote browser streaming (noVNC / browserless) for interactive logins, plus `browse_attach` so agents can upload artifacts to file-input form fields
 - **P2** SocialPage Session panel: swap native `<select>` for shadcn Select for visual consistency (cosmetic, flagged by testing agent iteration_9)
+
+- ✅ **Account Settings page + Workspace Rename wired end-to-end** (Feb 6, 2026) — finished the previously orphaned `/app/account` route. Three small but high-leverage fixes:
+  1. `AccountPage.js` (already built) is now imported and registered in `App.js` at `/app/account` (Protected route).
+  2. New `Account settings` link in the TopBar user-dropdown (UserCog icon) — routes to `/app/account` from anywhere in the app, persistent in every screen.
+  3. `/api/auth/me` now returns `has_password: bool` and `firebase_uid: str` so `AccountPage` can correctly distinguish Firebase-only users (who manage passwords through Google) from legacy bcrypt accounts. The `has_password` flag is computed via a separate `count_documents` query so the password hash itself never leaves the server.
+  - **Workspace Rename** (already shipped previously) confirmed working end-to-end via curl + UI screenshot — inline edit on the Workspace Settings page (`/app/ws/:wsId`) hits `PATCH /api/workspaces/{ws_id}`, owner/admin gated.
+  - Verified end-to-end: legacy login → /app/account prefills name/email/phone(`+15551234567`)/timezone(`America/New_York`) → PATCH `/auth/me` updates persisted → POST `/auth/me/password` rejects wrong current pwd (403) and accepts correct one → re-login with new pwd works → workspace rename round-trips ("Reggie Lab Renamed" → revert).

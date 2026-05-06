@@ -1,5 +1,4 @@
 import React, { useEffect, useState } from "react";
-import { useNavigate } from "react-router-dom";
 import { toast } from "sonner";
 import {
   User, Mail, Phone, Globe2, Lock, Loader2, Save, Eye, EyeOff,
@@ -27,7 +26,6 @@ import { useAuth } from "../context/AuthContext";
  */
 export default function AccountPage() {
   const { user, refresh } = useAuth();
-  const nav = useNavigate();
 
   // Profile draft — initialised from the auth context's hydrated user.
   const [name, setName] = useState("");

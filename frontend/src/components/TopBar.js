@@ -2,7 +2,7 @@ import React, { useState, useEffect } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { useAuth } from "../context/AuthContext";
 import { useTheme } from "../context/ThemeContext";
-import { LogOut, Sun, Moon, MapPin, ChevronDown, HelpCircle, ShieldCheck } from "lucide-react";
+import { LogOut, Sun, Moon, MapPin, ChevronDown, HelpCircle, ShieldCheck, UserCog } from "lucide-react";
 import Logo from "./Logo";
 import DynamicIntelligencePicker from "./DynamicIntelligencePicker";
 import { captureUserLocation, getCachedLocation, setCachedLocation } from "../lib/api";
@@ -120,6 +120,15 @@ export default function TopBar({ children, right = null }) {
                     )}
                   </div>
                 </DropdownMenuLabel>
+                <DropdownMenuSeparator />
+                <DropdownMenuItem
+                  onSelect={() => nav("/app/account")}
+                  data-testid="topbar-menu-account"
+                  className="cursor-pointer"
+                >
+                  <UserCog className="w-4 h-4 mr-2" />
+                  Account settings
+                </DropdownMenuItem>
                 <DropdownMenuSeparator />
                 {/* Moved from top-bar surface to the menu (UX audit #1):
                     location toggle + About link live here so the nav only
