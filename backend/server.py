@@ -1117,6 +1117,10 @@ async def list_my_orgs(u: dict = Depends(get_current_user)):
         if org:
             o = serialize_org(org)
             o["role"] = m["role"]
+            # Cheap counts so the AppHome org cards can show team /
+            # member metadata without N extra round-trips (UX audit #3).
+            o["team_count"] = await db.teams.count_documents({"org_id": str(org["_id"])})
+            o["member_count"] = await db.org_members.count_documents({"org_id": str(org["_id"])})
             out.append(o)
     return out
 

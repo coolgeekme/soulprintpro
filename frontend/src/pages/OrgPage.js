@@ -3,7 +3,7 @@ import { useParams, Link, useNavigate, useLocation } from "react-router-dom";
 import api, { BACKEND_URL } from "../lib/api";
 import TopBar from "../components/TopBar";
 import { toast } from "sonner";
-import { Plus, Users, ArrowRight, Copy, UserPlus, FileText, Image as ImageIcon, FileBox, Trash2, UploadCloud, Download, File as FileIcon, MessageCircle, Pencil, Save, X as XIcon, RefreshCw, Megaphone, Paperclip, Send, Loader2, Rocket, Network, Minimize2 } from "lucide-react";
+import { Plus, Users, ArrowRight, Copy, UserPlus, FileText, Image as ImageIcon, FileBox, Trash2, UploadCloud, Download, File as FileIcon, MessageCircle, Pencil, Save, X as XIcon, RefreshCw, Megaphone, Paperclip, Send, Loader2, Rocket, Network, Minimize2, ChevronRight } from "lucide-react";
 import BrandAssetsPanel from "../components/BrandAssetsPanel";
 import ActivityOverview from "../components/ActivityOverview";
 import DocumentsPanel from "../components/DocumentsPanel";
@@ -314,23 +314,62 @@ export default function OrgPage() {
 
       <main className="max-w-6xl mx-auto px-4 sm:px-6 py-8 sm:py-10">
         <div className="flex flex-col gap-2 mb-8">
-          <span className="sp-chip">{org.role}</span>
           <div className="flex items-center justify-between gap-3 flex-wrap">
-            <h1 className="sp-display text-4xl md:text-5xl">{org.name}</h1>
+            <div className="flex items-center gap-3 flex-wrap min-w-0">
+              <h1 className="sp-display text-4xl md:text-5xl truncate">{org.name}</h1>
+              {/* UX audit #6: OWNER role rendered as a small inline pill
+                  next to the org name instead of a full-width banner.
+                  Members aren't shown a role chip (they only see one if
+                  they're admin or owner). */}
+              {(org.role === "owner" || org.role === "admin") && (
+                <span
+                  className={`sp-chip text-[10px] !px-2 !py-0.5 ${
+                    org.role === "owner"
+                      ? "!bg-orange-400/20 !text-orange-200 !border-orange-400/30"
+                      : "!bg-sky-400/15 !text-sky-200 !border-sky-400/30"
+                  }`}
+                  data-testid="org-role-badge"
+                >
+                  {org.role.toUpperCase()}
+                </span>
+              )}
+            </div>
             {canEdit && !editOpen && (
               <div className="flex items-center gap-2">
                 <button onClick={openEdit} className="sp-btn sp-btn-ghost text-xs" data-testid="edit-org-btn">
                   <Pencil className="w-3.5 h-3.5" /> Edit
                 </button>
                 {canDelete && (
-                  <button onClick={removeOrg} className="sp-btn sp-btn-ghost text-xs hover:!text-red-300" data-testid="delete-org-btn">
+                  /* UX audit #4: Delete is destructive — keep it ghost-
+                     weight (not equal to Edit), stamp it with a red
+                     outline to read clearly as dangerous, and require
+                     an explicit window.confirm before firing. */
+                  <button
+                    onClick={() => {
+                      const ok = window.confirm(
+                        `Delete "${org.name}"? This cannot be undone — every team, conversation, and document will be permanently removed.`,
+                      );
+                      if (ok) removeOrg();
+                    }}
+                    className="sp-btn sp-btn-ghost text-xs !text-red-300 !border-red-400/30 hover:!bg-red-400/10 hover:!text-red-200"
+                    data-testid="delete-org-btn"
+                  >
                     <Trash2 className="w-3.5 h-3.5" /> Delete
                   </button>
                 )}
               </div>
             )}
           </div>
-          <p className="sp-subtle">Spin up a team for each squad, brand, or project. Each team has its own SoulPrint.</p>
+          {/* UX audit #7: pull the org's actual Mission from Company
+              Soul as the subtitle. Falls back to a prompt encouraging
+              the owner to fill it in. */}
+          <p className="sp-subtle text-sm leading-relaxed max-w-3xl">
+            {org?.soul?.mission
+              ? (org.soul.mission.length > 140 ? `${org.soul.mission.slice(0, 137)}…` : org.soul.mission)
+              : (canEdit
+                ? "Add a mission statement to complete your Company Soul →"
+                : "Spin up a team for each squad, brand, or project.")}
+          </p>
         </div>
 
         {editOpen && (
@@ -521,27 +560,28 @@ export default function OrgPage() {
             {teams.filter((t) => t.id !== org.general_team_id).map((t) => {
               const isClosed = t.visibility === "closed";
               const canJoin = t.can_join;
-              return (
-              <div key={t.id} className="sp-glass rounded-2xl p-6 hover:border-white/20 transition group relative" data-testid={`team-card-${t.id}`}>
-                {canEdit && (
-                  <button
-                    onClick={(e) => { e.preventDefault(); e.stopPropagation(); removeTeam(t); }}
-                    className="absolute top-3 right-3 sp-btn sp-btn-ghost !p-1.5 opacity-0 group-hover:opacity-100 transition hover:!text-red-300"
-                    data-testid={`delete-team-${t.id}`}
-                    title="Delete team"
-                  >
-                    <Trash2 className="w-3.5 h-3.5" />
-                  </button>
-                )}
-                <Link to={canJoin ? "#" : `/app/team/${t.id}`}
-                      onClick={(e) => { if (canJoin) e.preventDefault(); }}
-                      className="block">
-                  <div className="w-10 h-10 rounded-xl sp-glass-strong flex items-center justify-center mb-3">
-                    <Users className="w-5 h-5 text-white/90" />
-                  </div>
-                  <div className="flex items-center gap-2 flex-wrap">
-                    <span className="text-white font-medium text-lg truncate">{t.name}</span>
-                    {/* Visibility pill */}
+              // UX audit #8: full-card link target. The whole card
+              // navigates to the team workspace; a chevron on the right
+              // signals "tap to open" universally. Inner buttons (Join,
+              // Delete) stop propagation so they don't trigger the
+              // outer navigation.
+              const cardClasses = "sp-glass rounded-2xl p-5 hover:border-white/30 hover:bg-white/[0.04] transition group relative flex flex-col cursor-pointer";
+              const Inner = (
+                <>
+                  {canEdit && (
+                    <button
+                      onClick={(e) => { e.preventDefault(); e.stopPropagation(); removeTeam(t); }}
+                      className="absolute top-3 right-3 sp-btn sp-btn-ghost !p-1.5 opacity-0 group-hover:opacity-100 transition hover:!text-red-300"
+                      data-testid={`delete-team-${t.id}`}
+                      title="Delete team"
+                    >
+                      <Trash2 className="w-3.5 h-3.5" />
+                    </button>
+                  )}
+                  <div className="flex items-start justify-between gap-2 mb-3">
+                    <div className="w-9 h-9 rounded-lg sp-glass-strong flex items-center justify-center shrink-0">
+                      <Users className="w-4 h-4 text-white/90" />
+                    </div>
                     <span
                       className="text-[9px] uppercase tracking-widest px-1.5 py-0.5 rounded"
                       style={{
@@ -556,8 +596,19 @@ export default function OrgPage() {
                       {isClosed ? "Closed" : "Open"}
                     </span>
                   </div>
-                  {t.description && <div className="text-xs sp-subtle mt-1 line-clamp-2">{t.description}</div>}
-                  <div className="flex items-center gap-2 mt-4 text-xs sp-subtle group-hover:text-white/80">
+                  <div className="text-white font-medium text-base truncate">{t.name}</div>
+                  {t.description && (
+                    <div className="text-xs sp-subtle mt-1 line-clamp-2">{t.description}</div>
+                  )}
+                  <div className="flex items-center gap-3 mt-3 text-[11px] sp-subtle">
+                    {typeof t.member_count === "number" && (
+                      <span className="inline-flex items-center gap-1"><Users className="w-3 h-3" />{t.member_count}</span>
+                    )}
+                    {typeof t.agent_count === "number" && t.agent_count > 0 && (
+                      <span className="inline-flex items-center gap-1">{t.agent_count} agents</span>
+                    )}
+                  </div>
+                  <div className="mt-auto pt-3 flex items-center justify-between gap-2">
                     {canJoin ? (
                       <button
                         type="button"
@@ -568,12 +619,31 @@ export default function OrgPage() {
                         Join team <ArrowRight className="w-3.5 h-3.5" />
                       </button>
                     ) : (
-                      <>Open workspace <ArrowRight className="w-3.5 h-3.5" /></>
+                      <span className="inline-flex items-center gap-1 text-[11px] sp-subtle group-hover:text-white">
+                        Open workspace
+                      </span>
+                    )}
+                    {!canJoin && (
+                      <ChevronRight className="w-4 h-4 sp-subtle group-hover:text-white shrink-0" />
                     )}
                   </div>
+                </>
+              );
+              return canJoin ? (
+                <div key={t.id} className={cardClasses + " !cursor-default"} data-testid={`team-card-${t.id}`}>
+                  {Inner}
+                </div>
+              ) : (
+                <Link
+                  key={t.id}
+                  to={`/app/team/${t.id}`}
+                  className={cardClasses}
+                  data-testid={`team-card-${t.id}`}
+                >
+                  {Inner}
                 </Link>
-              </div>
-            );})}
+              );
+            })}
             {teams.filter((t) => t.id !== org.general_team_id).length === 0 && (
               <div className="sp-glass rounded-2xl p-6 col-span-full text-center text-sm sp-subtle">
                 No specialised teams yet — create one in <span className="text-white/80">Org setup</span> below.
@@ -674,6 +744,21 @@ export default function OrgPage() {
                   <div className="flex items-center gap-2 mb-3">
                     <Logo className="w-4 h-4 text-white/80" />
                     <h3 className="text-sm uppercase tracking-widest sp-subtle">Company Soul</h3>
+                    {/* UX audit #11: Owners + admins get an "Edit Soul"
+                        button right in the section header so updating the
+                        company's mission/values is one click, not buried
+                        in settings. */}
+                    {(isOwner || canEdit) && (
+                      <button
+                        type="button"
+                        onClick={openEdit}
+                        className="sp-btn sp-btn-ghost text-[11px] !text-orange-300 hover:!bg-orange-400/10"
+                        data-testid="edit-soul-btn"
+                        title="Open the org settings drawer to update Soul fields"
+                      >
+                        <Pencil className="w-3 h-3" /> Edit Soul
+                      </button>
+                    )}
                     {org.website_url && (
                       <a href={org.website_url.startsWith("http") ? org.website_url : `https://${org.website_url}`}
                          target="_blank" rel="noreferrer"

@@ -162,7 +162,12 @@ export default function DocumentsPanel({ orgId }) {
             data-testid={`documents-filter-${f.key || "all"}`}
           >
             {f.label}
-            {f.key && counts[f.key] ? <span className="opacity-60 ml-1">· {counts[f.key]}</span> : null}
+            {/* UX audit #9: every filter chip — including "All" — shows
+                a count so it never appears blank. The All count is the
+                total of every kind. */}
+            {f.key
+              ? (counts[f.key] ? <span className="opacity-60 ml-1">· {counts[f.key]}</span> : null)
+              : <span className="opacity-60 ml-1">· {Object.values(counts).reduce((a, b) => a + b, 0)}</span>}
           </button>
         ))}
       </div>

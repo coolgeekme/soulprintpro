@@ -96,7 +96,16 @@ export default function RecentConversations({ orgId }) {
               <div className="min-w-0 flex-1">
                 <div className="flex items-center gap-2 mb-0.5">
                   <span className="text-sm font-medium truncate">{c.title}</span>
-                  {c.is_direct && <Lock className="w-2.5 h-2.5 opacity-60 shrink-0" />}
+                  {c.is_direct && (
+                    <span
+                      className="inline-flex items-center gap-0.5 text-[9px] uppercase tracking-widest sp-subtle px-1 py-0.5 rounded shrink-0"
+                      style={{ background: "rgba(255,255,255,0.06)", border: "1px solid rgba(255,255,255,0.1)" }}
+                      title="Direct chat — only you and the agent can see this thread"
+                    >
+                      <Lock className="w-2.5 h-2.5 opacity-70" />
+                      Private
+                    </span>
+                  )}
                 </div>
                 <div className="text-[11px] sp-subtle truncate">
                   {c.agent_name ? `${c.agent_name} · ` : ""}

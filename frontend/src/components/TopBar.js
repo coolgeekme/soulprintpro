@@ -71,23 +71,15 @@ export default function TopBar({ children, right = null }) {
           </div>
           <div className="flex items-center gap-2">
             {right}
-            {/* Global Dynamic Intelligence indicator — visible on every
-                page so users always know the current routing mode and
-                can change it from anywhere in the org. */}
+            {/* Global Dynamic Intelligence indicator. `nowrap` + max-width
+                with ellipsis so the pill never wraps and doubles the bar
+                height on narrow laptop viewports. */}
             {user && (
-              <div className="hidden sm:block" data-testid="topbar-dynamic-intelligence">
+              <div className="hidden sm:block whitespace-nowrap overflow-hidden text-ellipsis max-w-[180px]" data-testid="topbar-dynamic-intelligence">
                 <DynamicIntelligencePicker compact />
               </div>
             )}
-            <button
-              onClick={askLocation}
-              className={`sp-btn text-xs ${loc ? "sp-btn-primary" : "sp-btn-ghost"}`}
-              data-testid="location-toggle"
-              title={loc ? `Sharing ${loc} with agents — click to stop` : "Share my location with agents (for accurate local time / regional answers)"}
-            >
-              <MapPin className="w-4 h-4" />
-              <span className="hidden md:inline truncate max-w-[120px]">{loc || "Use my location"}</span>
-            </button>
+            {/* Icon-only theme toggle — label removed to reclaim space. */}
             <button
               onClick={toggle}
               className="sp-btn sp-btn-ghost text-xs"
@@ -97,16 +89,6 @@ export default function TopBar({ children, right = null }) {
             >
               {mode === "dark" ? <Sun className="w-4 h-4" /> : <Moon className="w-4 h-4" />}
             </button>
-            <Link
-              to="/about"
-              className="sp-btn sp-btn-ghost text-xs"
-              data-testid="topbar-about"
-              aria-label="What is SoulPrint Engine Pro?"
-              title="What is SoulPrint Engine Pro?"
-            >
-              <HelpCircle className="w-4 h-4" />
-              <span className="hidden lg:inline">About</span>
-            </Link>
             <DropdownMenu>
               <DropdownMenuTrigger asChild>
                 <button
@@ -138,6 +120,18 @@ export default function TopBar({ children, right = null }) {
                     )}
                   </div>
                 </DropdownMenuLabel>
+                <DropdownMenuSeparator />
+                {/* Moved from top-bar surface to the menu (UX audit #1):
+                    location toggle + About link live here so the nav only
+                    carries essentials. */}
+                <DropdownMenuItem
+                  onSelect={askLocation}
+                  data-testid="topbar-menu-location"
+                  className="cursor-pointer"
+                >
+                  <MapPin className={`w-4 h-4 mr-2 ${loc ? "text-orange-400" : ""}`} />
+                  {loc ? `Location · ${loc}` : "Share my location"}
+                </DropdownMenuItem>
                 <DropdownMenuSeparator />
                 {user?.is_superadmin && (
                   <>

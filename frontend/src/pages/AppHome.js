@@ -3,7 +3,7 @@ import { Link, useNavigate } from "react-router-dom";
 import api from "../lib/api";
 import TopBar from "../components/TopBar";
 import { toast } from "sonner";
-import { Plus, Building2, ArrowRight, Ticket, MessageCircle, Settings } from "lucide-react";
+import { Plus, ArrowRight, Ticket, MessageCircle, Settings, Users, LayoutGrid } from "lucide-react";
 
 export default function AppHome() {
   const [orgs, setOrgs] = useState([]);
@@ -78,11 +78,30 @@ export default function AppHome() {
     <div className="min-h-screen">
       <TopBar>Your organizations</TopBar>
 
-      <main className="max-w-5xl mx-auto px-4 sm:px-6 py-8 sm:py-12">
-        <div className="flex flex-col gap-3 mb-10">
-          <span className="sp-chip">Workspaces</span>
-          <h1 className="sp-display text-4xl md:text-5xl">Where do you want to work today?</h1>
-          <p className="sp-subtle max-w-xl">Pick an organization below, create a new one for a different company, or accept a teammate's invite.</p>
+      <main className="max-w-5xl mx-auto px-4 sm:px-6 py-5 sm:py-7" data-testid="app-home">
+        {/* Compact header (UX audit #2) — single row title + workspace
+            stats + primary actions, replacing the previous huge display
+            block that pushed the org grid below the fold. */}
+        <div className="flex items-center justify-between gap-3 mb-5 flex-wrap" data-testid="apphome-compact-header">
+          <div className="min-w-0">
+            <span className="sp-chip">Workspaces</span>
+            <h1 className="text-2xl sm:text-3xl font-medium tracking-tight mt-1.5">
+              Your organizations
+              {workspaces.length > 0 && (
+                <span className="ml-2 text-xs sp-subtle font-normal">
+                  · {workspaces.reduce((a, w) => a + (w.org_count || 0), 0)} orgs · {workspaces.reduce((a, w) => a + (w.member_count || 0), 0)} members
+                </span>
+              )}
+            </h1>
+          </div>
+          <div className="flex items-center gap-1.5 shrink-0">
+            <a href="#new-org" className="sp-btn sp-btn-primary text-xs" data-testid="apphome-new-org-shortcut">
+              <Plus className="w-3.5 h-3.5" /> New org
+            </a>
+            <a href="#join-invite" className="sp-btn sp-btn-ghost text-xs" data-testid="apphome-join-shortcut">
+              <Ticket className="w-3.5 h-3.5" /> Join
+            </a>
+          </div>
         </div>
 
         {/* Workspace strip — shows every workspace the user belongs to
@@ -90,7 +109,7 @@ export default function AppHome() {
             they invite teammates and grant per-org access. Hidden if
             the user has no workspaces yet (new accounts). */}
         {workspaces.length > 0 && (
-          <section className="mb-8" data-testid="workspace-strip">
+          <section className="mb-6" data-testid="workspace-strip">
             <div className="text-[10px] uppercase tracking-widest sp-subtle mb-2">Your workspaces</div>
             <div className="flex flex-wrap gap-2">
               {workspaces.map((w) => (
@@ -108,51 +127,85 @@ export default function AppHome() {
           </section>
         )}
 
-        <div className="grid md:grid-cols-3 gap-4 mb-10">
-          {loading && [0,1,2].map((i) => <div key={i} className="sp-glass rounded-2xl p-6 h-36 animate-pulse" />)}
+        <div className="grid md:grid-cols-3 gap-4 mb-8">
+          {loading && [0,1,2].map((i) => <div key={i} className="sp-glass rounded-2xl p-5 h-36 animate-pulse" />)}
 
           {!loading && orgs.map((o) => {
-            // Primary action on every card is "jump into General chat" so the
-            // user is one click from talking to their agents. Org dashboard /
-            // teams / members stay reachable via the small "Manage" link.
-            // Primary click target: the org dashboard page — where the
-            // owner can see Soul, assets, documents, teams, recent
-            // activity, schedules, etc. The General chat is still
-            // reachable via the secondary "Open General chat" row below.
+            // Whole card is one tap target (UX audit #3) — clicking
+            // anywhere lands on the org dashboard. Inside, the small
+            // "Chief of Staff" shortcut is a nested-but-stop-prop link.
             const primaryHref = `/app/org/${o.id}`;
             const chatHref = (o.general_team_id && o.general_conversation_id)
               ? `/app/team/${o.general_team_id}/c/${o.general_conversation_id}`
               : null;
+            const mission = o?.soul?.mission || "";
+            const subtitle = mission
+              ? mission.length > 110 ? `${mission.slice(0, 107)}…` : mission
+              : "";
+            const initials = (o.name || "?")
+              .split(/\s+/).filter(Boolean).slice(0, 2)
+              .map((s) => s[0].toUpperCase()).join("") || "•";
+            // Status: minimal heuristic for now — Active when org has a
+            // soul.mission, Setup otherwise. Future statuses (Paused
+            // etc.) can land here when we add a real org.status field.
+            const status = mission
+              ? { label: "Active", cls: "!bg-emerald-400/15 !text-emerald-200" }
+              : { label: "Setup",  cls: "!bg-orange-400/20 !text-orange-200" };
             return (
-              <div
+              <Link
+                to={primaryHref}
                 key={o.id}
-                className="sp-glass rounded-2xl p-6 hover:border-white/20 transition group"
+                className="sp-glass rounded-2xl p-5 hover:border-white/30 hover:bg-white/[0.04] transition cursor-pointer flex flex-col group"
                 data-testid={`org-card-${o.id}`}
               >
-                <div className="flex items-center justify-between mb-4">
-                  <div className="w-10 h-10 rounded-xl sp-glass-strong flex items-center justify-center">
-                    <Building2 className="w-5 h-5 text-white/90" />
+                <div className="flex items-center justify-between mb-3 gap-2">
+                  <div className="w-9 h-9 rounded-lg sp-glass-strong flex items-center justify-center shrink-0 text-[12px] font-medium">
+                    {o.brand_assets?.primary_logo?.url
+                      ? <img src={o.brand_assets.primary_logo.url} alt={o.name} className="w-9 h-9 rounded-lg object-cover" />
+                      : <span className="text-white/85">{initials}</span>}
                   </div>
-                  <span className="sp-chip">{o.role}</span>
+                  <div className="flex items-center gap-1">
+                    <span className={`sp-chip text-[10px] ${status.cls}`} data-testid={`org-card-status-${o.id}`}>
+                      {status.label}
+                    </span>
+                    <span className="sp-chip text-[10px]">{o.role}</span>
+                  </div>
                 </div>
-                <Link to={primaryHref} className="block" data-testid={`org-card-open-${o.id}`}>
-                  <div className="text-white font-medium text-lg truncate">{o.name}</div>
-                  <div className="flex items-center gap-2 mt-4 text-xs sp-subtle group-hover:text-white/80">
-                    <Settings className="w-3.5 h-3.5" />
-                    Open organization
-                    <ArrowRight className="w-3.5 h-3.5" />
+                <div className="text-white font-medium text-base sm:text-lg truncate group-hover:text-white">
+                  {o.name}
+                </div>
+                {/* UX audit #7: pull mission from soul as the subtitle so
+                    every org has a distinct identity instead of "Manage
+                    your organization" boilerplate. */}
+                {subtitle ? (
+                  <div className="text-[12px] sp-subtle leading-snug mt-1 line-clamp-2">
+                    {subtitle}
                   </div>
-                </Link>
-                {chatHref && (
-                  <Link
-                    to={chatHref}
-                    className="inline-flex items-center gap-1.5 mt-3 text-[11px] sp-subtle hover:text-white transition"
-                    data-testid={`org-card-chat-${o.id}`}
-                  >
-                    <MessageCircle className="w-3 h-3" /> Open Chief of Staff chat
-                  </Link>
+                ) : (
+                  <div className="text-[12px] text-orange-300/90 mt-1">
+                    Add a mission statement to complete your Company Soul →
+                  </div>
                 )}
-              </div>
+                <div className="flex items-center gap-3 mt-3 text-[11px] sp-subtle">
+                  <span className="inline-flex items-center gap-1"><Users className="w-3 h-3" />{o.member_count ?? 1}</span>
+                  <span className="inline-flex items-center gap-1"><LayoutGrid className="w-3 h-3" />{o.team_count ?? 0} teams</span>
+                </div>
+                <div className="mt-auto pt-4 flex items-center justify-between">
+                  <span className="inline-flex items-center gap-1.5 text-[11px] sp-subtle group-hover:text-white">
+                    Open organization <ArrowRight className="w-3 h-3" />
+                  </span>
+                  {chatHref && (
+                    <Link
+                      to={chatHref}
+                      onClick={(e) => e.stopPropagation()}
+                      className="inline-flex items-center gap-1 text-[11px] sp-subtle hover:text-orange-300 transition"
+                      data-testid={`org-card-chat-${o.id}`}
+                    >
+                      <MessageCircle className="w-3 h-3" /> Chief of Staff
+                    </Link>
+                  )}
+                </div>
+              </Link>
             );
           })}
 
@@ -164,7 +217,7 @@ export default function AppHome() {
         </div>
 
         <div className="grid md:grid-cols-2 gap-4">
-          <form onSubmit={createOrg} className="sp-glass rounded-2xl p-6">
+          <form onSubmit={createOrg} id="new-org" className="sp-glass rounded-2xl p-6 scroll-mt-20">
             <div className="flex items-center gap-2 mb-3">
               <Plus className="w-4 h-4 text-white/80" />
               <h3 className="text-sm uppercase tracking-widest sp-subtle">New organization</h3>
@@ -208,7 +261,7 @@ export default function AppHome() {
             </button>
           </form>
 
-          <form onSubmit={acceptInvite} className="sp-glass rounded-2xl p-6">
+          <form onSubmit={acceptInvite} id="join-invite" className="sp-glass rounded-2xl p-6 scroll-mt-20">
             <div className="flex items-center gap-2 mb-3">
               <Ticket className="w-4 h-4 text-white/80" />
               <h3 className="text-sm uppercase tracking-widest sp-subtle">Join with invite code</h3>
