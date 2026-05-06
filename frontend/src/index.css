@@ -179,6 +179,19 @@ code, pre {
     var(--shadow);
 }
 
+/* Brief outline pulse used when the user lands on a page via a hash
+   anchor (e.g. /app/org/:id#documents from a mission "Open in Documents"
+   button). Adds a 1.6s glow so the user immediately sees where the page
+   scrolled to. */
+.sp-anchor-flash {
+  animation: sp-anchor-flash 1.6s ease-out 1;
+}
+@keyframes sp-anchor-flash {
+  0%   { box-shadow: 0 0 0 0 rgba(251,146,60,0); }
+  20%  { box-shadow: 0 0 0 4px rgba(251,146,60,0.55); }
+  100% { box-shadow: 0 0 0 0 rgba(251,146,60,0); }
+}
+
 .sp-hairline { border: 1px solid var(--border-soft); }
 
 /* grain overlay: adds texture without weight */

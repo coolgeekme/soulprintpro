@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from "react";
-import { useParams, Link, useNavigate } from "react-router-dom";
+import { useParams, Link, useNavigate, useLocation } from "react-router-dom";
 import api, { BACKEND_URL } from "../lib/api";
 import TopBar from "../components/TopBar";
 import { toast } from "sonner";
@@ -27,6 +27,28 @@ const KIND_ICONS = { image: ImageIcon, pdf: FileText, doc: FileText, text: FileT
 export default function OrgPage() {
   const { orgId } = useParams();
   const nav = useNavigate();
+  const location = useLocation();
+  // When the user arrives via `Open in Documents` (link with #documents),
+  // React Router doesn't auto-scroll. We do it manually after the panel
+  // has had a chance to mount + load. Small retry loop so it works even
+  // if the data is still fetching when we land.
+  useEffect(() => {
+    const hash = (location.hash || "").replace("#", "");
+    if (!hash) return undefined;
+    let attempts = 0;
+    const tick = () => {
+      const el = document.getElementById(hash);
+      if (el) {
+        el.scrollIntoView({ behavior: "smooth", block: "start" });
+        // Brief highlight ring so the user notices where the page jumped.
+        el.classList.add("sp-anchor-flash");
+        setTimeout(() => el.classList.remove("sp-anchor-flash"), 1800);
+        return;
+      }
+      if (++attempts < 12) setTimeout(tick, 250);  // ~3 seconds total
+    };
+    tick();
+  }, [location.hash]);
   const [org, setOrg] = useState(null);
   const [teams, setTeams] = useState([]);
   const [members, setMembers] = useState([]);

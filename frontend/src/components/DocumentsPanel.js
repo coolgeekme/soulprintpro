@@ -127,7 +127,7 @@ export default function DocumentsPanel({ orgId }) {
   }, [docs]);
 
   return (
-    <section className="sp-glass-strong rounded-2xl p-6 mb-8" data-testid="documents-panel">
+    <section id="documents" className="sp-glass-strong rounded-2xl p-6 mb-8" data-testid="documents-panel">
       <div className="flex items-start justify-between gap-4 mb-4 flex-wrap">
         <div className="min-w-0">
           <div className="flex items-center gap-2 mb-1">

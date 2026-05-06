@@ -603,10 +603,10 @@ function MissionDetail({ orgId, missionId }) {
               </div>
               <div className="flex items-center gap-2">
                 <Link
-                  to={`/app/org/${orgId}/documents`}
+                  to={`/app/org/${orgId}#documents`}
                   className="sp-btn sp-btn-ghost text-[11px]"
                   data-testid="mission-outcome-docs-link"
-                  title="See this mission's deliverables in your Documents library"
+                  title="Jump to your Documents library on the Org page"
                 >
                   <FileText className="w-3.5 h-3.5" /> Open in Documents
                 </Link>
