@@ -17,6 +17,7 @@ import SocialPage from "./pages/SocialPage";
 import MissionsPage from "./pages/MissionsPage";
 import AboutPage from "./pages/AboutPage";
 import AccountPage from "./pages/AccountPage";
+import DeckPage from "./pages/DeckPage";
 import AdminDashboard from "./pages/AdminDashboard";
 import PublicAuditPage from "./pages/PublicAuditPage";
 import ErrorBoundary from "./components/ErrorBoundary";
@@ -52,6 +53,7 @@ function App() {
               <Routes>
                 <Route path="/" element={<PublicOnly><LandingPage /></PublicOnly>} />
                 <Route path="/about" element={<AboutPage />} />
+                <Route path="/deck" element={<DeckPage />} />
                 <Route path="/auth" element={<PublicOnly><AuthPage /></PublicOnly>} />
                 <Route path="/invite/:code" element={<Protected><AcceptInvitePage /></Protected>} />
                 <Route path="/app" element={<Protected><AppHome /></Protected>} />
