@@ -612,7 +612,7 @@ def make_social_router(*, db, AGENTS, EMERGENT_LLM_KEY, LlmChat, UserMessage,
             "url": f"/api/files/{final_filename}",
             "with_logo": with_logo,
             "raw_filename": fname,  # un-composited base, kept so we can re-anchor logo cheaply
-            "model_used": source_model,  # "kie:flux-kontext-pro" or "nano-banana" — admin trail
+            "model_used": source_model,  # "nano-banana" (default) or "kie:flux-kontext-pro" (fallback) — admin trail
         }
 
     async def _generate_post_image_via_kie_then_fallback(
@@ -625,15 +625,28 @@ def make_social_router(*, db, AGENTS, EMERGENT_LLM_KEY, LlmChat, UserMessage,
         Returns ``(filename, model_label)``. Raises only if BOTH backends
         fail, so the caller can surface a single clear error.
 
-        Why this layout (kie-first, NB fallback) — not the reverse:
-          • Switching on success is a no-op (fast path stays fast).
-          • Falling back on failure means the user always gets a cover.
-          • If kie.ai is having a bad day (Suno's already 404ing in our
-            logs), social-post drafts don't go out unstyled.
+        Why Nano Banana primary (May 2026 onwards):
+          • Social posts frequently bake brand text into the cover (CTA,
+            tagline, product name). Flux Kontext often produces "almost
+            right" typography with subtle spelling errors — unfit for
+            published content. Nano Banana's text rendering is the
+            current best-in-class for image-with-text generation, so we
+            promoted it to primary on user feedback.
+          • Flux stays as the safety-net so a Nano Banana outage still
+            yields a cover instead of a broken draft.
         """
+        # Try Nano Banana first — best typography in the field.
+        try:
+            fname, _caption = await generate_image_via_nano_banana(prompt, system_message)
+            if fname:
+                return fname, "nano-banana"
+            logger.warning("Nano Banana returned no filename — falling back to Flux")
+        except Exception as exc:
+            logger.warning("Nano Banana social-cover gen failed: %s — falling back to Flux", exc)
+
+        # Fallback: kie.ai Flux Kontext Pro. Same pipeline as before
+        # (download + GridFS mirror) since their URLs expire in ~7-14 days.
         from kie_client import generate_via_kie, kie_provider_info  # local import keeps boot light
-        # kie.ai's Flux Kontext doesn't take a system message — fold it
-        # into the prompt so the brand direction still lands.
         full_prompt = f"{system_message.strip()}\n\n{prompt.strip()}" if system_message else prompt
         try:
             if kie_provider_info("flux-kontext-pro"):
@@ -641,9 +654,6 @@ def make_social_router(*, db, AGENTS, EMERGENT_LLM_KEY, LlmChat, UserMessage,
                     model_key="flux-kontext-pro", prompt=full_prompt,
                 )
                 if urls:
-                    # Download the image and persist locally so we have a
-                    # stable filename. kie.ai URLs expire in 7-14 days
-                    # which would break old social posts.
                     import httpx
                     async with httpx.AsyncClient(timeout=30) as client:
                         resp = await client.get(urls[0])
@@ -654,9 +664,6 @@ def make_social_router(*, db, AGENTS, EMERGENT_LLM_KEY, LlmChat, UserMessage,
                             target = Path(upload_dir) / filename
                             target.parent.mkdir(parents=True, exist_ok=True)
                             target.write_bytes(resp.content)
-                        # Mirror to GridFS so a pod restart doesn't lose
-                        # the image. The persist helper is the same one
-                        # the rest of the app uses for media durability.
                         try:
                             from server import persist_bytes  # late import, app startup ordering
                             await persist_bytes(
@@ -664,17 +671,18 @@ def make_social_router(*, db, AGENTS, EMERGENT_LLM_KEY, LlmChat, UserMessage,
                                 original_name=filename, mime="image/png",
                             )
                         except Exception:
-                            pass  # GridFS mirror is best-effort
+                            pass
                         return filename, "kie:flux-kontext-pro"
                     logger.warning("kie.ai returned URL but download failed (%s)", resp.status_code)
                 else:
-                    logger.warning("kie.ai flux-kontext-pro returned no URLs — falling back")
+                    logger.warning("kie.ai flux-kontext-pro returned no URLs")
         except Exception as exc:
-            logger.warning("kie.ai social-cover gen failed: %s — falling back to Nano Banana", exc)
-        # Fallback: Nano Banana (the original path). Any failure here
-        # propagates up so the outer try/except reports it once cleanly.
-        fname, _caption = await generate_image_via_nano_banana(prompt, system_message)
-        return fname, "nano-banana"
+            logger.warning("kie.ai social-cover fallback also failed: %s", exc)
+        # Both backends failed — surface a clean error.
+        raise RuntimeError(
+            "Image generation unavailable — both Nano Banana and Flux "
+            "Kontext fallback failed. Please try again in a moment.",
+        )
 
     @r.post("/orgs/{org_id}/social/draft")
     async def draft_social_posts(
