@@ -6341,6 +6341,64 @@ async def startup():
         await rehydrate_autopost_jobs(db=db, router=social_autopost_r)
     except Exception as exc:
         logger.warning("Autopost rehydrate failed: %s", exc)
+
+    # ── Continuous stuck-mission watchdog ────────────────────────────
+    # Runs every 2 minutes while the pod is alive (in addition to the
+    # one-shot startup scan above). Catches missions whose asyncio
+    # task died silently, whose LLM call blew past every internal
+    # timeout, or got wedged inside a Playwright call — without waiting
+    # for a pod restart. Threshold 5 minutes matches the startup scan.
+    async def _watchdog_tick():
+        cutoff = datetime.now(timezone.utc) - timedelta(minutes=5)
+        try:
+            cur = db.missions.find(
+                {
+                    "status": "running",
+                    "last_activity_at": {"$lt": cutoff},
+                },
+                {"id": 1, "status": 1},
+            )
+            reaped = 0
+            async for stuck in cur:
+                mid = stuck.get("id")
+                if not mid:
+                    continue
+                await db.missions.update_one(
+                    {"id": mid, "status": "running"},
+                    {"$set": {
+                        "status": "failed",
+                        "error": ("Mission stalled with no activity for "
+                                  "over 5 minutes and was auto-failed by "
+                                  "the watchdog. You can click Continue "
+                                  "to pick up where it left off."),
+                        "finished_at": datetime.now(timezone.utc),
+                    }},
+                )
+                try:
+                    await db.mission_events.insert_one({
+                        "mission_id": mid,
+                        "kind": "system",
+                        "text": ("Watchdog auto-failed this mission — no "
+                                 "heartbeat in 5+ minutes. Click Continue "
+                                 "to resume."),
+                        "ts": datetime.now(timezone.utc),
+                    })
+                except Exception:
+                    pass
+                reaped += 1
+            if reaped:
+                logger.warning("Watchdog reaped %d stalled mission(s)", reaped)
+        except Exception as exc:
+            logger.warning("Watchdog tick failed: %s", exc)
+
+    scheduler.add_job(
+        _watchdog_tick,
+        trigger="interval",
+        minutes=2,
+        id="mission_watchdog",
+        replace_existing=True,
+        next_run_time=datetime.now(timezone.utc) + timedelta(seconds=60),
+    )
     # ── Brand-logo GridFS backfill ───────────────────────────────────────
     # Older logos were saved to disk only and vanish on pod redeploys
     # (the ephemeral container fs gets wiped). Mirror any logo that's
