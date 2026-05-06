@@ -167,7 +167,8 @@ KIE_PROVIDERS: dict[str, dict] = {
     "sora-2":         {"family": "sora",     "type": "video", "label": "Sora 2"},
     "runway-aleph":   {"family": "runway",   "type": "video", "label": "Runway Aleph"},
     # ── Music / audio ───────────────────────────────────────────────
-    "suno":           {"family": "suno",     "type": "music", "label": "Suno"},
+    "suno":           {"family": "generate", "type": "music", "label": "Suno",
+                       "no_family_path": True},
 }
 
 
@@ -221,6 +222,28 @@ async def submit_kie_task(
     if info.get("family") == "flux/kontext":
         body.setdefault("aspectRatio", "1:1")
         body.setdefault("outputFormat", "png")
+    # Suno (kie.ai's only audio model) lives at the bare /api/v1/generate
+    # path — there is no /api/v1/suno/generate endpoint. The body shape
+    # is also different: it requires `customMode` (false = prompt-only,
+    # true = style+title+lyrics control). For a generic "make me a song"
+    # we default to customMode=false so the user gets something even
+    # with no extra prompt direction.
+    if info.get("family") == "generate":
+        body.setdefault("customMode", False)
+        # `instrumental` is required even in non-custom mode. Default
+        # to instrumental=True for ambiguous prompts ("Generate a song")
+        # since vocals require explicit lyrics direction to sound good.
+        body.setdefault("instrumental", True)
+        body.setdefault("model", "V5")
+        body.setdefault(
+            "callBackUrl",
+            os.environ.get(
+                "KIE_SUNO_CALLBACK_URL",
+                "https://example.com/no-op-callback",
+            ),
+        )
+        if body.get("model") == "suno":
+            body["model"] = "V5"
     # Image input (for image-to-image / video-from-image flows)
     if image_url:
         body["image_url"] = image_url
@@ -233,12 +256,17 @@ async def submit_kie_task(
     if extra:
         body.update(extra)
     family = info["family"]
+    # Suno: kie.ai exposes it at the bare `/api/v1/generate` (no family
+    # segment), unlike every other model. Honour the `no_family_path`
+    # marker to skip the segment.
+    submit_url = (
+        f"{KIE_BASE}/api/v1/{family}"
+        if info.get("no_family_path")
+        else f"{KIE_BASE}/api/v1/{family}/generate"
+    )
     try:
         async with httpx.AsyncClient(timeout=DEFAULT_TIMEOUT) as client:
-            resp = await client.post(
-                f"{KIE_BASE}/api/v1/{family}/generate",
-                headers=headers, json=body,
-            )
+            resp = await client.post(submit_url, headers=headers, json=body)
         if resp.status_code != 200:
             log.warning("Kie %s submit %s: %s", family, resp.status_code, resp.text[:300])
             return None
@@ -264,11 +292,15 @@ async def get_kie_task_status(model_key: str, task_id: str) -> dict:
         return {}
     family = info["family"]
     headers = {"Authorization": f"Bearer {key}"}
+    # Suno status: same `no_family_path` rule — the endpoint is
+    # /api/v1/generate/record-info (not /api/v1/suno/record-info).
+    status_url = (
+        f"{KIE_BASE}/api/v1/{family}/record-info"
+    )
     try:
         async with httpx.AsyncClient(timeout=DEFAULT_TIMEOUT) as client:
             resp = await client.get(
-                f"{KIE_BASE}/api/v1/{family}/record-info",
-                headers=headers, params={"taskId": task_id},
+                status_url, headers=headers, params={"taskId": task_id},
             )
         if resp.status_code != 200:
             log.warning("Kie %s status %s: %s", family, resp.status_code, resp.text[:300])
@@ -296,12 +328,30 @@ def _extract_kie_urls(data: dict) -> list[str]:
     urls = response.get("resultUrls") or []
     if isinstance(urls, list) and urls:
         return [u for u in urls if isinstance(u, str)]
+    # Suno (kie.ai's audio generator) returns a `sunoData` array of
+    # variant clip objects, each with multiple URL fields. We surface
+    # the playable audioUrl for every variant so the UI can offer them
+    # all (Suno typically returns 2 takes per request).
+    suno_data = response.get("sunoData")
+    if isinstance(suno_data, list) and suno_data:
+        out = []
+        for clip in suno_data:
+            if isinstance(clip, dict):
+                u = (
+                    clip.get("audioUrl")
+                    or clip.get("streamAudioUrl")
+                    or clip.get("sourceAudioUrl")
+                )
+                if isinstance(u, str) and u:
+                    out.append(u)
+        if out:
+            return out
     # Single-URL forms used by various kie.ai providers
     single = (
         response.get("resultImageUrl")     # Flux Kontext
         or response.get("imageUrl")        # Imagen / Ideogram / GPT Image
         or response.get("videoUrl")        # Some video providers
-        or response.get("audioUrl")        # Suno
+        or response.get("audioUrl")        # Suno (single-clip mode)
         or response.get("url")             # Generic
         or data.get("url")
     )
@@ -324,7 +374,12 @@ async def wait_for_kie_task(
     while elapsed < total_timeout:
         data = await get_kie_task_status(model_key, task_id)
         flag = data.get("successFlag")
-        if flag == 1:
+        # Some kie families (Suno) populate the result payload before
+        # setting `successFlag`, while others don't expose the flag at
+        # all. Treat "URLs are ready" as the universal success marker
+        # alongside the explicit flag, so we don't poll forever after
+        # the audio is already playable.
+        if flag == 1 or (flag is None and _extract_kie_urls(data)):
             return _extract_kie_urls(data)
         if flag in (2, 3):
             log.warning("Kie %s task failed: %s", info["family"], data)
