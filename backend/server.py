@@ -622,7 +622,7 @@ async def me(u: dict = Depends(get_current_user)):
     # Hydrate the routing preferences (per-type Dynamic Intelligence config).
     # We persist these on the user doc so they survive logout / device hops.
     # Default = "auto" for every media type (Dynamic Intelligence on).
-    full = await db.users.find_one({"_id": ObjectId(u["id"])}, {"_id": 0, "password": 0})
+    full = await db.users.find_one({"_id": ObjectId(u["id"])}, {"_id": 0, "password": 0, "password_hash": 0})
     prefs = (full or {}).get("routing_preferences") or {}
     u["routing_preferences"] = {
         "chat":  prefs.get("chat",  "auto"),
@@ -630,7 +630,91 @@ async def me(u: dict = Depends(get_current_user)):
         "video": prefs.get("video", "auto"),
         "music": prefs.get("music", "auto"),
     }
+    # Profile fields (editable on /app/account). Always present in the
+    # me response so the form renders the right initial values.
+    u["phone"] = (full or {}).get("phone", "") or ""
+    u["timezone"] = (full or {}).get("timezone", "") or ""
     return u
+
+
+class ProfileUpdateBody(BaseModel):
+    """Editable profile fields. Phone is normalised to a simple E.164-ish
+    string client-side; we just persist verbatim."""
+    name: Optional[str] = Field(None, min_length=1, max_length=80)
+    email: Optional[EmailStr] = None
+    phone: Optional[str] = Field(None, max_length=40)
+    timezone: Optional[str] = Field(None, max_length=80)
+
+
+@auth_r.patch("/me")
+async def update_my_profile(
+    body: ProfileUpdateBody, u: dict = Depends(get_current_user),
+):
+    update: dict = {}
+    if body.name is not None:
+        update["name"] = body.name.strip()
+    if body.phone is not None:
+        update["phone"] = body.phone.strip()
+    if body.timezone is not None:
+        update["timezone"] = body.timezone.strip()
+    if body.email is not None:
+        new_email = str(body.email).lower().strip()
+        if new_email and new_email != u.get("email", "").lower():
+            # Email is the login key — block if another user already
+            # owns the new address (case-insensitive).
+            clash = await db.users.find_one({
+                "email": new_email,
+                "_id": {"$ne": ObjectId(u["id"])},
+            })
+            if clash:
+                raise HTTPException(409, "That email is already in use")
+            update["email"] = new_email
+    if not update:
+        return {"ok": True, "unchanged": True}
+    await db.users.update_one(
+        {"_id": ObjectId(u["id"])}, {"$set": update},
+    )
+    full = await db.users.find_one(
+        {"_id": ObjectId(u["id"])},
+        {"_id": 0, "password": 0, "password_hash": 0},
+    )
+    return {"ok": True, "user": {
+        "id": u["id"],
+        "name": (full or {}).get("name", ""),
+        "email": (full or {}).get("email", ""),
+        "phone": (full or {}).get("phone", ""),
+        "timezone": (full or {}).get("timezone", ""),
+    }}
+
+
+class PasswordChangeBody(BaseModel):
+    current_password: str = Field(..., min_length=1, max_length=200)
+    new_password: str = Field(..., min_length=8, max_length=200)
+
+
+@auth_r.post("/me/password")
+async def change_my_password(
+    body: PasswordChangeBody, u: dict = Depends(get_current_user),
+):
+    user_doc = await db.users.find_one({"_id": ObjectId(u["id"])})
+    if not user_doc:
+        raise HTTPException(404, "User not found")
+    # Firebase-auth users don't have a local password_hash — they
+    # change passwords through Firebase, not through us. Tell them
+    # explicitly instead of silently failing.
+    if not user_doc.get("password_hash"):
+        raise HTTPException(
+            400,
+            "This account uses Google sign-in. Manage your password "
+            "through your Google account.",
+        )
+    if not verify_password(body.current_password, user_doc["password_hash"]):
+        raise HTTPException(403, "Current password is incorrect")
+    await db.users.update_one(
+        {"_id": ObjectId(u["id"])},
+        {"$set": {"password_hash": hash_password(body.new_password)}},
+    )
+    return {"ok": True}
 
 
 class RoutingPreferencesBody(BaseModel):

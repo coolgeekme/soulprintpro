@@ -3,7 +3,7 @@ import { useParams, Link } from "react-router-dom";
 import { toast } from "sonner";
 import {
   Users, Building, Mail, Copy, Trash2, UserPlus, Loader2,
-  ArrowRight, Check, Shield, X as XIcon, ChevronDown, ChevronRight,
+  ArrowRight, Check, Shield, X as XIcon, ChevronDown, ChevronRight, Pencil,
 } from "lucide-react";
 import api from "../lib/api";
 import TopBar from "../components/TopBar";
@@ -36,6 +36,32 @@ export default function WorkspaceSettingsPage() {
 
   // Per-member access editor — map of user_id → { open, pending }
   const [editing, setEditing] = useState({});
+
+  // Workspace rename — inline-edit on the header. Only owners/admins
+  // see the pencil + save button.
+  const [renaming, setRenaming] = useState(false);
+  const [nameDraft, setNameDraft] = useState("");
+  const [savingName, setSavingName] = useState(false);
+  const beginRename = () => {
+    setNameDraft(ws?.name || "");
+    setRenaming(true);
+  };
+  const cancelRename = () => setRenaming(false);
+  const saveRename = async () => {
+    const next = nameDraft.trim();
+    if (!next || next === ws?.name) { setRenaming(false); return; }
+    setSavingName(true);
+    try {
+      const { data } = await api.patch(`/workspaces/${wsId}`, { name: next });
+      setWs(data);
+      toast.success("Workspace renamed");
+      setRenaming(false);
+    } catch (err) {
+      toast.error(err?.response?.data?.detail || "Could not rename");
+    } finally {
+      setSavingName(false);
+    }
+  };
 
   const refresh = async () => {
     try {
@@ -187,7 +213,50 @@ export default function WorkspaceSettingsPage() {
         {/* Header */}
         <div className="mb-8">
           <div className="text-[10px] uppercase tracking-widest sp-subtle">Workspace</div>
-          <h1 className="text-3xl sm:text-4xl font-medium tracking-tight">{ws?.name}</h1>
+          {renaming ? (
+            <div className="flex items-center gap-2 mt-1.5 max-w-xl" data-testid="ws-rename-form">
+              <input
+                value={nameDraft}
+                onChange={(e) => setNameDraft(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") saveRename();
+                  if (e.key === "Escape") cancelRename();
+                }}
+                autoFocus maxLength={120}
+                className="sp-input flex-1 text-2xl sm:text-3xl font-medium tracking-tight"
+                data-testid="ws-rename-input"
+              />
+              <button
+                type="button" onClick={saveRename} disabled={savingName}
+                className="sp-btn sp-btn-primary"
+                data-testid="ws-rename-save"
+              >
+                {savingName ? <Loader2 className="w-4 h-4 animate-spin" /> : <Check className="w-4 h-4" />}
+                Save
+              </button>
+              <button
+                type="button" onClick={cancelRename}
+                className="sp-btn sp-btn-ghost"
+                data-testid="ws-rename-cancel"
+              >
+                <XIcon className="w-4 h-4" /> Cancel
+              </button>
+            </div>
+          ) : (
+            <h1 className="text-3xl sm:text-4xl font-medium tracking-tight flex items-center gap-2 flex-wrap">
+              {ws?.name}
+              {isAdmin && (
+                <button
+                  type="button" onClick={beginRename}
+                  className="sp-btn sp-btn-ghost text-[11px] !text-orange-300 hover:!bg-orange-400/10"
+                  data-testid="ws-rename-btn"
+                  title="Rename workspace"
+                >
+                  <Pencil className="w-3 h-3" /> Rename
+                </button>
+              )}
+            </h1>
+          )}
           <div className="text-xs sp-subtle mt-1 flex items-center gap-3 flex-wrap">
             <span className="inline-flex items-center gap-1"><Building className="w-3 h-3" /> {ws?.org_count} orgs</span>
             <span className="inline-flex items-center gap-1"><Users className="w-3 h-3" /> {ws?.member_count} members</span>
