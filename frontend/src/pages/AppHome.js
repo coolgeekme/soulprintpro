@@ -7,6 +7,7 @@ import { Plus, Building2, ArrowRight, Ticket, MessageCircle, Settings } from "lu
 
 export default function AppHome() {
   const [orgs, setOrgs] = useState([]);
+  const [workspaces, setWorkspaces] = useState([]);
   const [loading, setLoading] = useState(true);
   const [name, setName] = useState("");
   const [websiteUrl, setWebsiteUrl] = useState("");
@@ -19,8 +20,12 @@ export default function AppHome() {
   const load = async () => {
     setLoading(true);
     try {
-      const { data } = await api.get("/orgs");
-      setOrgs(data);
+      const [orgsR, wsR] = await Promise.all([
+        api.get("/orgs"),
+        api.get("/workspaces").catch(() => ({ data: [] })),
+      ]);
+      setOrgs(orgsR.data);
+      setWorkspaces(wsR.data);
     } catch (e) {
       toast.error("Could not load organizations");
     } finally {
@@ -58,15 +63,10 @@ export default function AppHome() {
     if (!code.trim()) return;
     setJoining(true);
     try {
-      const { data } = await api.post("/invites/accept", { code: code.trim() });
-      toast.success(data.already_member ? "Already a member" : "Joined organization");
-      // Drop the user straight into General chat when we can. Falls back to
-      // the org page for legacy orgs that never auto-created a General team.
-      if (data.general_team_id && data.general_conversation_id) {
-        nav(`/app/team/${data.general_team_id}/c/${data.general_conversation_id}`);
-      } else {
-        nav(`/app/org/${data.org_id}`);
-      }
+      // Workspace invites (W3) are richer than org invites and should
+      // show the user which orgs they're about to join. Route them
+      // through the dedicated AcceptInvitePage which handles both types.
+      nav(`/invite/${code.trim()}`);
     } catch (err) {
       toast.error(err?.response?.data?.detail || "Invalid invite");
     } finally {
@@ -84,6 +84,29 @@ export default function AppHome() {
           <h1 className="sp-display text-4xl md:text-5xl">Where do you want to work today?</h1>
           <p className="sp-subtle max-w-xl">Pick an organization below, create a new one for a different company, or accept a teammate's invite.</p>
         </div>
+
+        {/* Workspace strip — shows every workspace the user belongs to
+            (owner or admin) with a quick jump to the manage page where
+            they invite teammates and grant per-org access. Hidden if
+            the user has no workspaces yet (new accounts). */}
+        {workspaces.length > 0 && (
+          <section className="mb-8" data-testid="workspace-strip">
+            <div className="text-[10px] uppercase tracking-widest sp-subtle mb-2">Your workspaces</div>
+            <div className="flex flex-wrap gap-2">
+              {workspaces.map((w) => (
+                <Link key={w.id} to={`/app/ws/${w.id}`}
+                      className="sp-glass rounded-xl px-3 py-2 inline-flex items-center gap-2 text-sm hover:border-white/30"
+                      data-testid={`workspace-link-${w.id}`}>
+                  <Settings className="w-3.5 h-3.5 shrink-0" />
+                  <span className="font-medium truncate max-w-[180px]">{w.name}</span>
+                  <span className="text-[10px] uppercase tracking-widest sp-subtle">
+                    {w.org_count} org{w.org_count === 1 ? "" : "s"} · {w.member_count} mbr{w.member_count === 1 ? "" : "s"}
+                  </span>
+                </Link>
+              ))}
+            </div>
+          </section>
+        )}
 
         <div className="grid md:grid-cols-3 gap-4 mb-10">
           {loading && [0,1,2].map((i) => <div key={i} className="sp-glass rounded-2xl p-6 h-36 animate-pulse" />)}

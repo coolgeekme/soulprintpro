@@ -1016,6 +1016,35 @@ async def create_org(body: OrgCreateBody, u: dict = Depends(get_current_user)):
         "soul": soul,                # structured fields injected into agents
         "created_at": now,
     }
+    # Workspace layer: every new Org belongs to its owner's personal
+    # workspace. Create / fetch that workspace lazily so a fresh user
+    # doesn't need an extra call before creating an org.
+    owner_ws = await db.workspaces.find_one(
+        {"owner_id": u["id"], "kind": "personal"},
+    )
+    if not owner_ws:
+        ws_doc = {
+            "name": f"{u.get('name') or u['email'].split('@', 1)[0]}'s Workspace",
+            "owner_id": u["id"],
+            "kind": "personal",
+            "plan": "free",
+            "created_at": now,
+        }
+        ws_res = await db.workspaces.insert_one(ws_doc)
+        ws_id = str(ws_res.inserted_id)
+        await db.workspace_members.update_one(
+            {"workspace_id": ws_id, "user_id": u["id"]},
+            {"$setOnInsert": {
+                "workspace_id": ws_id,
+                "user_id": u["id"],
+                "role": "owner",
+                "joined_at": now,
+            }},
+            upsert=True,
+        )
+    else:
+        ws_id = str(owner_ws["_id"])
+    doc["workspace_id"] = ws_id
     res = await db.organizations.insert_one(doc)
     oid = str(res.inserted_id)
     await db.org_members.insert_one({
@@ -5791,6 +5820,19 @@ app.include_router(base_r)
 app.include_router(auth_r)
 app.include_router(org_r)
 app.include_router(invite_r)
+# Workspace layer (NEW) — sits above Orgs. See workspaces.py.
+from workspaces import (  # noqa: E402
+    make_workspaces_router,
+    make_workspace_invite_accept_router,
+    migrate_existing_orgs_to_workspaces,
+)
+app.include_router(make_workspaces_router(
+    db=db, get_current_user=get_current_user,
+    require_org_member=require_org_member,
+))
+app.include_router(make_workspace_invite_accept_router(
+    db=db, get_current_user=get_current_user,
+))
 app.include_router(team_r)
 app.include_router(conv_r)
 app.include_router(assets_r)
@@ -6304,6 +6346,21 @@ async def startup():
     await db.domain_credentials.create_index(
         [("org_id", 1), ("hostname", 1)], unique=True,
     )
+    # Workspace layer indexes + one-time migration for existing orgs.
+    await db.workspaces.create_index([("owner_id", 1), ("kind", 1)])
+    await db.workspace_members.create_index(
+        [("workspace_id", 1), ("user_id", 1)], unique=True,
+    )
+    await db.workspace_members.create_index("user_id")
+    await db.workspace_invites.create_index("code", unique=True)
+    await db.workspace_invites.create_index([("workspace_id", 1), ("used_by", 1)])
+    await db.organizations.create_index("workspace_id")
+    try:
+        migrated = await migrate_existing_orgs_to_workspaces(db)
+        if migrated:
+            logger.info("Workspace startup: migrated %d legacy org(s)", migrated)
+    except Exception as exc:
+        logger.warning("Workspace migration failed: %s", exc)
     # ── Stuck-mission recovery ───────────────────────────────────────────
     # Pod restarts / redeploys kill in-flight asyncio tasks, but the
     # `missions` row keeps `status="running"` (or "awaiting_user") in
