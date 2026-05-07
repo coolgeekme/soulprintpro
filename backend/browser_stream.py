@@ -482,6 +482,15 @@ def register_browser_stream_routes(
                     # {action: "take" | "release"}
                     who = "user" if raw.get("action") == "take" else "agent"
                     await _append_control_event(db, mission_id, who, user_id)
+                    # When the user hands control BACK to the agent, snapshot
+                    # the fresh storage_state — they may have just signed in,
+                    # and we want those cookies preserved across restarts.
+                    if who == "agent":
+                        try:
+                            from browser_tools import _persist_mission_state
+                            await _persist_mission_state(mission_id, hub.page)
+                        except Exception:
+                            pass
                 elif kind == "save_credentials":
                     # {hostname?: "google.com"} — persist current
                     # storage_state encrypted in the vault for re-use

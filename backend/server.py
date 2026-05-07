@@ -6503,6 +6503,30 @@ async def startup():
     await db.domain_credentials.create_index(
         [("org_id", 1), ("hostname", 1)], unique=True,
     )
+    # Per-mission encrypted storage_state — survives backend restarts so
+    # the live remote browser revives EXACTLY where the agent left off
+    # (cookies, localStorage, last URL — fully authenticated).
+    try:
+        from mission_browser_state import ensure_indexes as _mbs_indexes
+        await _mbs_indexes(db)
+    except Exception as exc:
+        logger.warning("mission_browser_state index init failed: %s", exc)
+    # Wire browser_tools to the persistence layer so every navigation /
+    # form interaction snapshots the page state to MongoDB. The lookup
+    # closure resolves a mission's org_id without coupling browser_tools
+    # to the server's data model.
+    try:
+        import browser_tools as _bt
+
+        async def _mission_org_lookup(mid: str) -> str:
+            try:
+                m = await db.missions.find_one({"id": mid}, {"_id": 0, "org_id": 1})
+                return (m or {}).get("org_id", "") or ""
+            except Exception:
+                return ""
+        _bt.set_persistence(db, _mission_org_lookup)
+    except Exception as exc:
+        logger.warning("browser_tools persistence wiring failed: %s", exc)
     # Workspace layer indexes + one-time migration for existing orgs.
     await db.workspaces.create_index([("owner_id", 1), ("kind", 1)])
     await db.workspace_members.create_index(

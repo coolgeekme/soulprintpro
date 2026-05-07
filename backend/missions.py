@@ -763,6 +763,13 @@ async def run_mission_loop(
             await cleanup_mission_page(mission_id)
         except Exception as exc:
             logger.warning("mission %s browser cleanup failed: %s", mission_id, exc)
+        # Purge the encrypted storage_state row now the mission is done —
+        # no need to retain cookies for missions that won't run again.
+        try:
+            from mission_browser_state import purge_mission_state
+            await purge_mission_state(db, mission_id=mission_id)
+        except Exception:
+            pass
         try:
             reset_call_context(_ctx_token)
         except Exception:

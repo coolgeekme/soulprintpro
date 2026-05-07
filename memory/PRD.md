@@ -235,3 +235,16 @@ pattern. Users must be able to:
   3. WS `/api/missions/{id}/browser-stream` calls the restore right after creating the hub. Hello message now includes `restored: bool` and `restored_url: str`.
   4. Frontend `BrowserStreamCanvas.js` shows a blue informational banner when restoration happened: "Session restored to https://... (the original browser was lost on a server restart)". So the page change is no longer silent and confusing.
   - This means: even after a deploy, opening Watch live browser drops the user back at the exact login wall they were on, ready to sign in and save credentials. The fallback snapshot loop from fix #1 then paints the page within ~2.5s. Backend lint clean, FE lint clean.
+
+- ✅ **Remote-browser fix #4: continuous session-state persistence — fully resilient to backend restarts** (Feb 7, 2026) — completes the resilience trio. Where fix #3 only restored the *URL*, this restores the FULL authenticated state (cookies + localStorage + IndexedDB metadata) so missions truly survive deploys without user intervention.
+  - **New module** `/app/backend/mission_browser_state.py`: dedicated collection `mission_browser_states` keyed by `mission_id`, Fernet-encrypted `storage_state` (reuses `credential_vault._fernet()` so the same `SOULPRINT_VAULT_KEY` rotates everything atomically), TTL index auto-purges rows after 7d, 512KB cipher cap, graceful corrupt-cipher handling (delete + log warn + return None — same pattern as the credential vault).
+  - **`browser_tools.set_persistence(db, org_lookup)`** — clean dependency-injection so server.py wires the persistence at startup without coupling browser_tools to the data model. The `org_lookup` is an `async (mission_id) -> org_id` closure.
+  - **Continuous capture**: `_persist_mission_state(mission_id, page)` is fired after every successful `browse_url`, `browse_click`, `browse_fill`, AND `browse_submit` so any cookie change the agent encounters survives a restart. Best-effort + non-blocking: failures log at debug level and never raise.
+  - **Driver hand-off capture**: when the user releases control via the live browser stream (which is the moment they've just signed in), `browser_stream.py` calls `_persist_mission_state` so those cookies are immediately preserved.
+  - **Full-state restore on page recreate**: `_get_or_create_mission_page` now loads the persisted `storage_state` into the new Chromium context AND auto-navigates to the persisted `last_url`. So after a deploy, the very first call to any browser tool — or the first WS connect — comes back authenticated to the same page.
+  - **Terminal-state cleanup**: `missions.py:run_mission_loop` finally-block + cancel handler purge the row when a mission reaches finished/cancelled/failed so cookies aren't kept around longer than needed.
+  - **Verified end-to-end** with a Python smoke test against MongoDB:
+    1. save → load round-trip preserves 1 cookie + last_url ✓
+    2. purge deletes the row ✓
+    3. corrupt cipher (key rotation) handled gracefully (warn + delete + None) ✓
+  - **Net effect**: autopost / sign-in missions can now survive an unlimited number of backend deploys with zero user re-intervention. The user logs into Instagram once → cookies persist forever (or until mission ends or 7 days, whichever first) → every subsequent deploy revives the page authenticated.

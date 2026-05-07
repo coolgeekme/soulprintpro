@@ -74,6 +74,24 @@ _playwright = None
 # the loop uses asyncio.create_task for artifacts so belt + braces).
 _MISSION_PAGES: Dict[str, Dict[str, Any]] = {}
 
+# Optional persistence layer for cross-restart session survival. server.py
+# wires this up at startup via `set_persistence(db, org_lookup)`. When set,
+# every successful navigation saves the page's storage_state to MongoDB
+# encrypted at rest, and `_get_or_create_mission_page` will rehydrate
+# from it on a fresh boot. Without it, browser_tools behaves exactly as
+# before — the persistence is fully optional.
+_PERSIST_DB = None
+_ORG_LOOKUP = None  # async callable: mission_id -> org_id (or "")
+
+
+def set_persistence(db, org_lookup) -> None:
+    """Register a Mongo db handle + an async lookup `mission_id -> org_id`
+    so browser_tools can persist + restore Chromium session state across
+    backend restarts. Called once from server.py at startup."""
+    global _PERSIST_DB, _ORG_LOOKUP
+    _PERSIST_DB = db
+    _ORG_LOOKUP = org_lookup
+
 # Per-mission Playwright storage_state to pre-load into the context so the
 # mission's browser starts already logged in to a target platform. Used by
 # the autonomous social-posting flow where the user has previously uploaded
@@ -226,12 +244,74 @@ async def _get_or_create_mission_page(mission_id: str):
     if pre_state:
         ctx_kwargs["storage_state"] = pre_state
         logger.info("Mission %s: loading pre-registered storage_state", mission_id)
+    # Continuous-persistence revival: if a previous run of this mission
+    # captured its state to disk before a backend restart, reload it now
+    # so the live browser comes up authenticated. Best-effort — if the
+    # row is missing or corrupt the page just starts fresh.
+    restore_url = ""
+    if not pre_state and _PERSIST_DB is not None:
+        try:
+            from mission_browser_state import load_mission_state  # local to avoid bootstrap cycles
+            saved = await load_mission_state(_PERSIST_DB, mission_id=mission_id)
+            if saved and saved.get("storage_state"):
+                ctx_kwargs["storage_state"] = saved["storage_state"]
+                restore_url = saved.get("last_url") or ""
+                logger.info(
+                    "Mission %s: restored persisted storage_state (%d cookies, last=%s)",
+                    mission_id,
+                    len(saved["storage_state"].get("cookies") or []),
+                    restore_url or "<blank>",
+                )
+        except Exception as exc:
+            logger.warning("Mission %s: persisted-state restore failed: %s", mission_id, exc)
     ctx = await browser.new_context(**ctx_kwargs)
     page = await ctx.new_page()
+    # If we restored a known-good URL, navigate to it now so the canvas
+    # paints immediately. We deliberately don't block on networkidle —
+    # the snapshot loop will refresh as the page loads.
+    if restore_url:
+        try:
+            await page.goto(restore_url, wait_until="domcontentloaded", timeout=20000)
+        except Exception as exc:
+            logger.debug("Mission %s: post-restore goto failed: %s", mission_id, exc)
     entry = {"context": ctx, "page": page, "lock": asyncio.Lock()}
     _MISSION_PAGES[mission_id] = entry
     logger.info("Mission %s: new sticky browser page", mission_id)
     return entry
+
+
+async def _persist_mission_state(mission_id: str, page) -> None:
+    """Snapshot the current Chromium context to MongoDB (encrypted).
+
+    Fires after every successful navigation/click/fill/submit so a
+    backend restart can fully revive the session. Best-effort — never
+    raises; never blocks the agent flow.
+    """
+    if not mission_id or _PERSIST_DB is None or _ORG_LOOKUP is None:
+        return
+    try:
+        ctx = page.context
+        state = await ctx.storage_state()
+    except Exception as exc:
+        logger.debug("Mission %s: storage_state grab failed: %s", mission_id, exc)
+        return
+    try:
+        cur_url = (page.url or "").strip()
+    except Exception:
+        cur_url = ""
+    try:
+        org_id = await _ORG_LOOKUP(mission_id) or ""
+    except Exception:
+        org_id = ""
+    try:
+        from mission_browser_state import save_mission_state  # local import to avoid cycles
+        await save_mission_state(
+            _PERSIST_DB,
+            mission_id=mission_id, org_id=org_id,
+            storage_state=state, last_url=cur_url,
+        )
+    except Exception as exc:
+        logger.debug("Mission %s: persist failed: %s", mission_id, exc)
 
 
 async def cleanup_mission_page(mission_id: str) -> None:
@@ -269,11 +349,15 @@ async def browse_url(
     if mission_id:
         entry = await _get_or_create_mission_page(mission_id)
         async with entry["lock"]:
-            return await _drive_navigate(
+            result = await _drive_navigate(
                 entry["page"], normalized,
                 take_screenshot=take_screenshot, upload_dir=upload_dir,
                 keep_page_open=True,
             )
+            # Snapshot the post-navigation state so a backend restart
+            # can revive the page with cookies + last URL intact.
+            await _persist_mission_state(mission_id, entry["page"])
+            return result
     # Ephemeral path — existing Layer A behaviour.
     browser = await _ensure_browser()
     ctx = await browser.new_context(
@@ -590,6 +674,7 @@ async def browse_click(
                 pass
             snap = await _snapshot_mission_page(page, upload_dir)
             snap["clicked"] = target_desc
+            await _persist_mission_state(mission_id, page)
             return snap
         except Exception as exc:
             return {"error": f"browse_click crash: {exc}"}
@@ -674,6 +759,7 @@ async def browse_fill(
         snap = await _snapshot_mission_page(page, upload_dir)
         snap["filled"] = filled
         snap["not_found"] = not_found
+        await _persist_mission_state(mission_id, page)
         return snap
 
 
@@ -735,6 +821,7 @@ async def browse_submit(
                 pass
             snap = await _snapshot_mission_page(page, upload_dir)
             snap["submitted_via"] = clicked
+            await _persist_mission_state(mission_id, page)
             return snap
         except Exception as exc:
             return {"error": f"browse_submit crash: {exc}"}
