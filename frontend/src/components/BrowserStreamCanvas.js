@@ -31,10 +31,12 @@ export default function BrowserStreamCanvas({
   const wsRef = useRef(null);
   const [mode, setMode] = useState(initiallyDrive ? "drive" : "watch");
   const [connected, setConnected] = useState(false);
+  const [closeInfo, setCloseInfo] = useState("");  // surfaced if WS dies
   const [meta, setMeta] = useState({ url: "", title: "" });
   const [savedHost, setSavedHost] = useState("");  // shows "✓ saved" toast inline
   const [saving, setSaving] = useState(false);
   const remoteSize = useRef({ w: 1280, h: 800 });
+  const retryRef = useRef({ attempt: 0, timer: null });
 
   // Track whether we've sent the "take" control message — survives
   // remounts so a quick toggle doesn't double-fire events.
@@ -42,41 +44,85 @@ export default function BrowserStreamCanvas({
   useEffect(() => { drivingRef.current = mode === "drive"; }, [mode]);
 
   // ── Connect WS ────────────────────────────────────────────────────
+  // Pulled into a stable ref so onclose can reschedule itself.
   useEffect(() => {
     if (!missionId || !token) return undefined;
-    const proto = window.location.protocol === "https:" ? "wss" : "ws";
-    const apiBase = (process.env.REACT_APP_BACKEND_URL || "").replace(/^https?:/, `${proto}:`);
-    const url = `${apiBase}/api/missions/${missionId}/browser-stream?token=${encodeURIComponent(token)}`;
-    const ws = new WebSocket(url);
-    wsRef.current = ws;
 
-    ws.onopen = () => {
-      setConnected(true);
-      // If the parent wanted to start in drive mode, send the take
-      // control packet immediately so the agent loop pauses on
-      // reconnect.
-      if (drivingRef.current) {
-        ws.send(JSON.stringify({ type: "control", action: "take" }));
-      }
-    };
-    ws.onclose = () => setConnected(false);
-    ws.onerror = () => setConnected(false);
+    let cancelled = false;
 
-    ws.onmessage = (ev) => {
-      let msg;
-      try { msg = JSON.parse(ev.data); } catch { return; }
-      if (msg.type === "frame") {
-        paintFrame(msg.data, msg.w, msg.h);
-      } else if (msg.type === "hello") {
-        setMeta({ url: msg.url || "", title: msg.title || "" });
-      } else if (msg.type === "credentials_saved") {
-        setSaving(false);
-        if (msg.ok) setSavedHost(msg.hostname || "");
-      }
+    const connect = () => {
+      if (cancelled) return;
+      const proto = window.location.protocol === "https:" ? "wss" : "ws";
+      const apiBase = (process.env.REACT_APP_BACKEND_URL || "").replace(/^https?:/, `${proto}:`);
+      const url = `${apiBase}/api/missions/${missionId}/browser-stream?token=${encodeURIComponent(token)}`;
+      const ws = new WebSocket(url);
+      wsRef.current = ws;
+
+      ws.onopen = () => {
+        retryRef.current.attempt = 0;
+        setCloseInfo("");
+        setConnected(true);
+        // If the parent wanted to start in drive mode, send the take
+        // control packet immediately so the agent loop pauses on
+        // reconnect.
+        if (drivingRef.current) {
+          ws.send(JSON.stringify({ type: "control", action: "take" }));
+        }
+      };
+
+      ws.onclose = (ev) => {
+        setConnected(false);
+        // Surface the close code so the user knows whether it was an
+        // auth issue (4403), a server crash (1006), or a clean close.
+        const reason = ev?.reason || "";
+        const code = ev?.code || 0;
+        if (cancelled) return;
+        // Don't auto-retry on auth failures — the token's bad and
+        // hammering won't fix it.
+        if (code === 4403) {
+          setCloseInfo("Forbidden — please refresh and sign in again.");
+          return;
+        }
+        // Otherwise retry up to 3 times with backoff.
+        const attempt = retryRef.current.attempt + 1;
+        retryRef.current.attempt = attempt;
+        if (attempt > 3) {
+          setCloseInfo(
+            `Disconnected (${code}${reason ? ` · ${reason}` : ""}). ` +
+            `Tap close, then re-open the live browser to retry.`
+          );
+          return;
+        }
+        const delay = Math.min(8000, 800 * 2 ** (attempt - 1));
+        setCloseInfo(`Reconnecting (try ${attempt}/3 in ${Math.round(delay / 1000)}s)…`);
+        retryRef.current.timer = setTimeout(connect, delay);
+      };
+
+      ws.onerror = () => { /* close handler will fire next */ };
+
+      ws.onmessage = (ev) => {
+        let msg;
+        try { msg = JSON.parse(ev.data); } catch { return; }
+        if (msg.type === "frame") {
+          paintFrame(msg.data, msg.w, msg.h);
+        } else if (msg.type === "hello") {
+          setMeta({ url: msg.url || "", title: msg.title || "" });
+        } else if (msg.type === "credentials_saved") {
+          setSaving(false);
+          if (msg.ok) setSavedHost(msg.hostname || "");
+        }
+      };
     };
+
+    connect();
 
     return () => {
-      try { ws.close(); } catch { /* ignore */ }
+      cancelled = true;
+      if (retryRef.current.timer) {
+        clearTimeout(retryRef.current.timer);
+        retryRef.current.timer = null;
+      }
+      try { wsRef.current?.close(); } catch { /* ignore */ }
       wsRef.current = null;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -288,8 +334,18 @@ export default function BrowserStreamCanvas({
           data-testid="browser-stream-canvas"
         />
         {!connected && (
-          <div className="absolute inset-0 flex items-center justify-center bg-black/50 text-xs sp-subtle">
-            <Loader2 className="w-4 h-4 animate-spin mr-2" /> Connecting to remote browser…
+          <div className="absolute inset-0 flex items-center justify-center bg-black/50 text-xs sp-subtle px-4 text-center" data-testid="browser-stream-overlay">
+            <div className="flex flex-col items-center gap-2">
+              <div className="flex items-center">
+                <Loader2 className="w-4 h-4 animate-spin mr-2" />
+                {closeInfo || "Connecting to remote browser…"}
+              </div>
+              {closeInfo && (
+                <div className="text-[10px] sp-subtle opacity-70 max-w-xs">
+                  If this keeps happening, close and re-open the live browser, or refresh the page.
+                </div>
+              )}
+            </div>
           </div>
         )}
         {mode === "drive" && (

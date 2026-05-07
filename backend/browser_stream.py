@@ -64,6 +64,14 @@ class _StreamHub:
         self._clients_lock = asyncio.Lock()
         self._started = False
         self._start_lock = asyncio.Lock()
+        # Track the last time we observed a real screencast frame. CDP
+        # only emits frames on paint events, so a fully-idle page (login
+        # wall, post-load static content) can sit there for minutes
+        # without firing one. We use this to drive a fallback "snapshot
+        # every N seconds" loop so the user ALWAYS sees the current
+        # viewport, not a black canvas + spinner.
+        self._last_frame_at: float = 0.0
+        self._fallback_task: Optional[asyncio.Task] = None
 
     async def _ensure_started(self) -> None:
         if self._started:
@@ -85,8 +93,64 @@ class _StreamHub:
                 "everyNthFrame": 1,
             })
             self._started = True
+            # Spawn the static-page fallback watcher so the canvas
+            # always reflects the current viewport even when nothing
+            # is repainting.
+            if self._fallback_task is None or self._fallback_task.done():
+                self._fallback_task = asyncio.create_task(self._fallback_snapshot_loop())
             logger.info("Mission %s: screencast started (%d client(s))",
                         self.mission_id, len(self._clients))
+
+    async def _push_snapshot(self) -> None:
+        """Grab a one-shot screenshot via CDP and broadcast it as a
+        synthetic 'frame' message so connected clients always have a
+        recent view of the page — even when the screencast itself is
+        idle."""
+        if not self._cdp:
+            return
+        try:
+            res = await self._cdp.send("Page.captureScreenshot", {
+                "format": "jpeg", "quality": 60, "captureBeyondViewport": False,
+            })
+        except Exception as exc:
+            logger.debug("Mission %s: snapshot capture failed: %s", self.mission_id, exc)
+            return
+        # Best-effort viewport size — falls back to the configured maxes
+        # which match what Page.startScreencast uses.
+        w = h = 0
+        try:
+            metrics = await self._cdp.send("Page.getLayoutMetrics")
+            v = metrics.get("cssVisualViewport") or {}
+            w = int(v.get("clientWidth") or 0)
+            h = int(v.get("clientHeight") or 0)
+        except Exception:
+            pass
+        await self._fan_out({
+            "type": "frame",
+            "data": res.get("data", ""),
+            "w": w or 1280,
+            "h": h or 800,
+            "ts": 0,
+            "snapshot": True,
+        })
+
+    async def _fallback_snapshot_loop(self) -> None:
+        """Periodically push a fresh screenshot whenever the screencast
+        itself has been silent for >2.5s. Cheap (one CDP call every few
+        seconds) and the only thing standing between a static login
+        wall and a blank canvas. Exits when no clients remain."""
+        try:
+            while self._started:
+                await asyncio.sleep(2.5)
+                async with self._clients_lock:
+                    if not self._clients:
+                        return
+                now = asyncio.get_event_loop().time()
+                if now - self._last_frame_at < 2.5:
+                    continue
+                await self._push_snapshot()
+        except Exception as exc:
+            logger.debug("Mission %s: fallback loop ended: %s", self.mission_id, exc)
 
     def _on_frame(self, frame: Dict[str, Any]) -> None:
         # CDP delivers frames with a `sessionId` we must ACK (or the
@@ -95,6 +159,12 @@ class _StreamHub:
         data_b64 = frame.get("data", "")
         metadata = frame.get("metadata") or {}
         asyncio.create_task(self._ack(session_id))
+        # Mark we got a real screencast frame so the fallback loop
+        # knows it can stay quiet for a couple of seconds.
+        try:
+            self._last_frame_at = asyncio.get_event_loop().time()
+        except Exception:
+            pass
         # Broadcast to every client. Drop frames to dead clients — they'll
         # be reaped by their own disconnect handler.
         payload = {
@@ -130,6 +200,13 @@ class _StreamHub:
         async with self._clients_lock:
             self._clients.add(ws)
         await self._ensure_started()
+        # Push an immediate one-shot snapshot to the new client so they
+        # see the current viewport right away — even if Page.startScreencast
+        # hasn't fired a frame yet (login walls / fully-static pages).
+        try:
+            await self._push_snapshot()
+        except Exception:
+            pass
 
     async def remove_client(self, ws: WebSocket) -> None:
         async with self._clients_lock:
@@ -146,6 +223,9 @@ class _StreamHub:
                 pass
             self._cdp = None
             self._started = False
+            if self._fallback_task and not self._fallback_task.done():
+                self._fallback_task.cancel()
+            self._fallback_task = None
             _CDP_STREAMS.pop(self.mission_id, None)
             logger.info("Mission %s: screencast stopped (no clients)", self.mission_id)
 
