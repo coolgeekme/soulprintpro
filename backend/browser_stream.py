@@ -87,7 +87,11 @@ class _StreamHub:
             self._cdp.on("Page.screencastFrame", self._on_frame)
             await self._cdp.send("Page.startScreencast", {
                 "format": "jpeg",
-                "quality": 60,
+                # Slightly lower quality — frames render fast on the
+                # canvas and JPEG compression artefacts are invisible
+                # at 1280×800 anyway. Smaller bytes = faster fan-out
+                # = lower perceived input lag.
+                "quality": 50,
                 "maxWidth": 1280,
                 "maxHeight": 800,
                 "everyNthFrame": 1,
@@ -262,11 +266,20 @@ class _StreamHub:
             logger.debug("Mouse dispatch failed: %s", exc)
 
     async def dispatch_key(self, kind: str, key: str = "", code: str = "",
-                           text: str = "", modifiers: int = 0) -> None:
+                           text: str = "", modifiers: int = 0,
+                           windows_virtual_key_code: int = 0) -> None:
         """Forward a keyboard event to Chromium via CDP.
 
         kind = "keyDown" | "keyUp" | "char" (rawKeyDown is also valid).
         modifiers = bitmask: Alt=1, Ctrl=2, Meta/Command=4, Shift=8.
+
+        For non-character keys (ArrowLeft/Right/Up/Down, Backspace, Delete,
+        Tab, Enter, Escape, Home/End/PageUp/PageDown) Chromium requires
+        ``windowsVirtualKeyCode`` to be set or it silently drops the event.
+        For printable characters we additionally fire a `char` event so
+        the actual `<input>` receives the typed text — `keyDown` alone
+        only fires the keydown handler and most React-controlled inputs
+        won't update their value.
         """
         if not self._cdp:
             return
@@ -280,8 +293,26 @@ class _StreamHub:
             payload["code"] = code
         if text:
             payload["text"] = text
+        if windows_virtual_key_code:
+            payload["windowsVirtualKeyCode"] = windows_virtual_key_code
+            # `nativeVirtualKeyCode` mirrors windowsVirtualKeyCode on
+            # Chromium's Linux build — without it Down/Up sometimes
+            # behave inconsistently inside form fields.
+            payload["nativeVirtualKeyCode"] = windows_virtual_key_code
         try:
             await self._cdp.send("Input.dispatchKeyEvent", payload)
+            # For printable single-character keyDown events, dispatch a
+            # follow-up `char` event so React-controlled inputs receive
+            # the value via input/composition events, not just keydown.
+            # This is what Playwright's keyboard.type does internally.
+            if kind == "keyDown" and text and len(text) == 1:
+                await self._cdp.send("Input.dispatchKeyEvent", {
+                    "type": "char",
+                    "modifiers": modifiers,
+                    "text": text,
+                    "key": text,
+                    "unmodifiedText": text,
+                })
         except Exception as exc:
             logger.debug("Key dispatch failed: %s", exc)
 
@@ -510,6 +541,7 @@ def register_browser_stream_routes(
                         code=raw.get("code", ""),
                         text=raw.get("text", ""),
                         modifiers=int(raw.get("modifiers", 0)),
+                        windows_virtual_key_code=int(raw.get("windowsVirtualKeyCode", 0) or 0),
                     )
                 elif kind == "control":
                     # {action: "take" | "release"}

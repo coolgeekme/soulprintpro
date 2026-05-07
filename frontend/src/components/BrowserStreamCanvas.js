@@ -43,6 +43,33 @@ export default function BrowserStreamCanvas({
   const drivingRef = useRef(initiallyDrive);
   useEffect(() => { drivingRef.current = mode === "drive"; }, [mode]);
 
+  // Windows virtual-key codes for the special keys that CDP can't
+  // interpret from `key`/`code` alone. Without these, ArrowLeft /
+  // Backspace / Delete / Tab / Enter get silently dropped by Chromium.
+  // Source: https://docs.microsoft.com/en-us/windows/win32/inputdev/virtual-key-codes
+  const VK_CODES = {
+    Backspace: 8,  Tab: 9,        Enter: 13,    Shift: 16,
+    Control: 17,   Alt: 18,       Pause: 19,    CapsLock: 20,
+    Escape: 27,    Space: 32,     PageUp: 33,   PageDown: 34,
+    End: 35,       Home: 36,
+    ArrowLeft: 37, ArrowUp: 38,   ArrowRight: 39, ArrowDown: 40,
+    Insert: 45,    Delete: 46,
+    Meta: 91,      ContextMenu: 93,
+    F1: 112,  F2: 113,  F3: 114,  F4: 115,  F5: 116,  F6: 117,
+    F7: 118,  F8: 119,  F9: 120,  F10: 121, F11: 122, F12: 123,
+  };
+  const vkCode = (e) => {
+    if (VK_CODES[e.key] != null) return VK_CODES[e.key];
+    if (e.key && e.key.length === 1) {
+      const ch = e.key.toUpperCase();
+      const cc = ch.charCodeAt(0);
+      // ASCII letters / digits map cleanly to their Windows VK codes
+      // (which deliberately mirror ASCII for these ranges).
+      if ((cc >= 0x30 && cc <= 0x39) || (cc >= 0x41 && cc <= 0x5A)) return cc;
+    }
+    return 0;
+  };
+
   // ── Connect WS ────────────────────────────────────────────────────
   // Pulled into a stable ref so onclose can reschedule itself.
   useEffect(() => {
@@ -180,19 +207,51 @@ export default function BrowserStreamCanvas({
   }, []);
 
   // ── Mouse handlers ───────────────────────────────────────────────
+  // ── Mouse handlers ───────────────────────────────────────────────
+  // Throttle mouseMove forwarding to ~60 Hz (every 16ms). Without this
+  // we flood the WS with hundreds of messages per second, which
+  // backpressures the screencast frames and makes the whole UI feel
+  // sluggish. 16ms is fine-grained enough for hover/drag UX.
+  const lastMoveAt = useRef(0);
   const onMouseMove = useCallback((e) => {
     if (!drivingRef.current) return;
+    const now = performance.now();
+    if (now - lastMoveAt.current < 16) return;
+    lastMoveAt.current = now;
     const { x, y } = translatePoint(e);
     send({ type: "mouse", action: "mouseMoved", x, y });
   }, [send, translatePoint]);
 
+  // Visual feedback for clicks — paint an immediate fading ring at the
+  // cursor location so the user gets sub-millisecond confirmation that
+  // their click registered, without waiting for the screencast frame
+  // to paint the focus ring back to them.
+  const [clickRing, setClickRing] = useState(null);
+  const showClickRing = useCallback((evt) => {
+    const canv = canvasRef.current;
+    if (!canv) return;
+    const rect = canv.getBoundingClientRect();
+    setClickRing({
+      x: evt.clientX - rect.left,
+      y: evt.clientY - rect.top,
+      id: Math.random(),
+    });
+  }, []);
+  useEffect(() => {
+    if (!clickRing) return undefined;
+    const t = setTimeout(() => setClickRing(null), 450);
+    return () => clearTimeout(t);
+  }, [clickRing]);
+
   const onMouseDown = useCallback((e) => {
     if (!drivingRef.current) return;
     e.preventDefault();
+    canvasRef.current?.focus();
+    showClickRing(e);
     const { x, y } = translatePoint(e);
     const button = e.button === 2 ? "right" : (e.button === 1 ? "middle" : "left");
     send({ type: "mouse", action: "mousePressed", x, y, button, clicks: 1 });
-  }, [send, translatePoint]);
+  }, [send, translatePoint, showClickRing]);
 
   const onMouseUp = useCallback((e) => {
     if (!drivingRef.current) return;
@@ -232,7 +291,12 @@ export default function BrowserStreamCanvas({
       send({
         type: "key", action: "keyDown",
         key: e.key, code: e.code,
-        text: e.key.length === 1 ? e.key : "",
+        // Single-character keys (letters/digits/punctuation) carry the
+        // text payload. Special keys (Backspace, ArrowLeft, etc.)
+        // leave text empty so Chromium dispatches a keydown without
+        // synthesising a char event.
+        text: e.key && e.key.length === 1 ? e.key : "",
+        windowsVirtualKeyCode: vkCode(e),
         modifiers: modifiers(e),
       });
     };
@@ -243,7 +307,9 @@ export default function BrowserStreamCanvas({
       e.preventDefault();
       send({
         type: "key", action: "keyUp",
-        key: e.key, code: e.code, modifiers: modifiers(e),
+        key: e.key, code: e.code,
+        windowsVirtualKeyCode: vkCode(e),
+        modifiers: modifiers(e),
       });
     };
     window.addEventListener("keydown", onKeyDown, true);
@@ -252,6 +318,7 @@ export default function BrowserStreamCanvas({
       window.removeEventListener("keydown", onKeyDown, true);
       window.removeEventListener("keyup", onKeyUp, true);
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [mode, send]);
 
   // ── Take / release control ───────────────────────────────────────
@@ -355,10 +422,28 @@ export default function BrowserStreamCanvas({
           onWheel={onWheel}
           onContextMenu={onContextMenu}
           className={`block w-full h-auto outline-none ${
-            mode === "drive" ? "cursor-crosshair" : "cursor-default pointer-events-none"
+            mode === "drive" ? "cursor-text" : "cursor-default pointer-events-none"
           }`}
           data-testid="browser-stream-canvas"
         />
+        {/* Instant click-ring — paints sub-millisecond local feedback so
+            the user knows their click registered without waiting for
+            the round-trip frame to come back. Pure CSS animation, no
+            JS work after initial setState. */}
+        {clickRing && (
+          <div
+            key={clickRing.id}
+            className="absolute pointer-events-none"
+            style={{
+              left: clickRing.x - 14,
+              top: clickRing.y - 14,
+              width: 28, height: 28,
+              borderRadius: "50%",
+              border: "2px solid rgba(246,64,0,0.85)",
+              animation: "spClickRing 450ms ease-out forwards",
+            }}
+          />
+        )}
         {!connected && (
           <div className="absolute inset-0 flex items-center justify-center bg-black/50 text-xs sp-subtle px-4 text-center" data-testid="browser-stream-overlay">
             <div className="flex flex-col items-center gap-2">
@@ -380,6 +465,14 @@ export default function BrowserStreamCanvas({
           </div>
         )}
       </div>
+      {/* Scoped keyframes so we don't pollute index.css for one component. */}
+      <style>{`
+        @keyframes spClickRing {
+          0%   { transform: scale(0.55); opacity: 1; }
+          80%  { opacity: 0.7; }
+          100% { transform: scale(1.4);  opacity: 0; }
+        }
+      `}</style>
     </div>
   );
 }
