@@ -166,21 +166,39 @@ async def _ensure_browser():
         # candidate list. Order: env override, system Chromium, bundled
         # Playwright Chromium versions.
         import os as _os
-        launch_kwargs = dict(
-            headless=True,
-            args=["--no-sandbox", "--disable-dev-shm-usage"],
-        )
+        # Stealth flags. Combined with the navigator.webdriver init script
+        # below, these silence the most common automation detection vectors
+        # (Instagram, LinkedIn, Cloudflare, etc.) so the live browser shows
+        # actual content instead of a blank/challenge page.
+        launch_args = [
+            "--no-sandbox",
+            "--disable-dev-shm-usage",
+            "--disable-blink-features=AutomationControlled",
+            "--disable-features=IsolateOrigins,site-per-process",
+            "--no-first-run",
+            "--no-default-browser-check",
+        ]
+        launch_kwargs = dict(headless=True, args=launch_args)
         candidates = []
         env_exe = _os.environ.get("PLAYWRIGHT_CHROME_EXECUTABLE_PATH")
         if env_exe:
             candidates.append(env_exe)
+        # System Chrome / Chromium FIRST — these are full builds that
+        # render heavy SPAs (Instagram, LinkedIn) correctly. The
+        # bundled Playwright "headless_shell" is a stripped-down build
+        # that often shows blank pages on these sites and should ONLY
+        # be used as a last-ditch fallback.
+        candidates.append("/usr/bin/google-chrome")
         candidates.append("/usr/bin/chromium")
         candidates.append("/usr/bin/chromium-browser")
-        candidates.append("/usr/bin/google-chrome")
+        # Full Chromium from Playwright's own bundle (if a newer pod
+        # has it) — preferred over headless_shell.
         for root in ("/pw-browsers", "/root/.cache/ms-playwright"):
-            for sub in ("chromium-1217", "chromium-1208", "chromium-1167",
-                        "chromium_headless_shell-1217", "chromium_headless_shell-1208"):
+            for sub in ("chromium-1217", "chromium-1208", "chromium-1167"):
                 candidates.append(f"{root}/{sub}/chrome-linux/chrome")
+        # Headless-shell variants as a last-ditch fallback.
+        for root in ("/pw-browsers", "/root/.cache/ms-playwright"):
+            for sub in ("chromium_headless_shell-1217", "chromium_headless_shell-1208"):
                 candidates.append(f"{root}/{sub}/chrome-linux/headless_shell")
         for cand in candidates:
             if cand and Path(cand).is_file():
@@ -265,15 +283,74 @@ async def _get_or_create_mission_page(mission_id: str):
         except Exception as exc:
             logger.warning("Mission %s: persisted-state restore failed: %s", mission_id, exc)
     ctx = await browser.new_context(**ctx_kwargs)
+    # Stealth init script — hides the most common automation tells so
+    # sites like Instagram / LinkedIn / Cloudflare let the page render
+    # normally instead of serving a blank/challenge wall.
+    try:
+        await ctx.add_init_script(
+            """
+            Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
+            // Common Chrome runtime checks
+            window.chrome = window.chrome || { runtime: {} };
+            // navigator.plugins / languages bare-bones spoof
+            Object.defineProperty(navigator, 'plugins', {get: () => [1,2,3,4,5]});
+            Object.defineProperty(navigator, 'languages', {get: () => ['en-US','en']});
+            // Permissions API quirk that headless Chrome trips on
+            const _origQuery = navigator.permissions && navigator.permissions.query;
+            if (_origQuery) {
+              navigator.permissions.query = (p) => (
+                p && p.name === 'notifications'
+                  ? Promise.resolve({ state: Notification.permission })
+                  : _origQuery.call(navigator.permissions, p)
+              );
+            }
+            """
+        )
+    except Exception as exc:
+        logger.debug("Mission %s: stealth init script failed: %s", mission_id, exc)
     page = await ctx.new_page()
     # If we restored a known-good URL, navigate to it now so the canvas
     # paints immediately. We deliberately don't block on networkidle —
-    # the snapshot loop will refresh as the page loads.
+    # the snapshot loop will refresh as the page loads. We also
+    # tolerate 4xx/5xx responses (Instagram et al sometimes 403 a
+    # cookie-less request — the page chrome still renders so the user
+    # can sign in).
     if restore_url:
+        nav_ok = False
         try:
-            await page.goto(restore_url, wait_until="domcontentloaded", timeout=20000)
+            try:
+                resp = await page.goto(restore_url, wait_until="commit", timeout=20000)
+                nav_ok = True
+                if resp:
+                    logger.info(
+                        "Mission %s: restored to %s (status=%s)",
+                        mission_id, restore_url, resp.status,
+                    )
+            except Exception:
+                # If `commit` somehow still races, fall back to a bare
+                # navigation that lets us at least paint whatever is in
+                # the viewport.
+                await page.goto(restore_url, timeout=20000)
+                nav_ok = True
         except Exception as exc:
             logger.debug("Mission %s: post-restore goto failed: %s", mission_id, exc)
+        # If the deep link 4xx'd (Instagram refuses cookie-less redirect
+        # paths with a hard ERR_HTTP_RESPONSE_CODE_FAILURE), fall back
+        # to the site root — every site renders SOMETHING from its
+        # bare URL, even if it's just a login form.
+        if not nav_ok:
+            try:
+                from urllib.parse import urlparse
+                pu = urlparse(restore_url)
+                if pu.scheme in ("http", "https") and pu.netloc:
+                    fallback = f"{pu.scheme}://{pu.netloc}/"
+                    await page.goto(fallback, timeout=15000)
+                    logger.info(
+                        "Mission %s: deep-link blocked; navigated to root %s",
+                        mission_id, fallback,
+                    )
+            except Exception:
+                pass
     entry = {"context": ctx, "page": page, "lock": asyncio.Lock()}
     _MISSION_PAGES[mission_id] = entry
     logger.info("Mission %s: new sticky browser page", mission_id)

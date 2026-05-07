@@ -109,8 +109,21 @@ class _StreamHub:
         if not self._cdp:
             return
         try:
+            # Guard against pages that haven't even reached
+            # DOMContentLoaded yet — captureScreenshot returns blank
+            # data before that happens. Wait briefly so the first
+            # snapshot is meaningful instead of pure white.
+            try:
+                await self.page.wait_for_load_state(
+                    "domcontentloaded", timeout=4000,
+                )
+            except Exception:
+                pass
             res = await self._cdp.send("Page.captureScreenshot", {
-                "format": "jpeg", "quality": 60, "captureBeyondViewport": False,
+                "format": "jpeg",
+                "quality": 70,
+                "captureBeyondViewport": False,
+                "fromSurface": True,
             })
         except Exception as exc:
             logger.debug("Mission %s: snapshot capture failed: %s", self.mission_id, exc)
@@ -325,18 +338,38 @@ async def _restore_page_if_blank(db, mission_id: str, page) -> str:
     target = await _last_browsed_url(db, mission_id)
     if not target:
         return ""
+    nav_ok = False
     try:
-        # Best-effort navigation. We deliberately don't wait for
-        # networkidle — a slow page shouldn't block the live stream
-        # from displaying. The fallback snapshot loop will paint
-        # whatever's on screen as soon as it's available.
-        await page.goto(target, wait_until="domcontentloaded", timeout=20000)
+        # Best-effort navigation. We use `wait_until="commit"` so even
+        # a 4xx/5xx response (Instagram etc. sometimes 403 cookie-less
+        # requests) still paints whatever the server returns instead of
+        # raising before any frame can be captured.
+        try:
+            await page.goto(target, wait_until="commit", timeout=20000)
+            nav_ok = True
+        except Exception:
+            await page.goto(target, timeout=20000)
+            nav_ok = True
         logger.info("Mission %s: restored sticky page to %s", mission_id, target)
-        return target
     except Exception as exc:
         logger.warning("Mission %s: page restore to %s failed: %s",
                        mission_id, target, exc)
+    # If the deep link is hard-blocked (Instagram's ?next=… etc.), fall
+    # back to the site root — the user can still sign in there.
+    if not nav_ok:
+        try:
+            from urllib.parse import urlparse
+            pu = urlparse(target)
+            if pu.scheme in ("http", "https") and pu.netloc:
+                fallback = f"{pu.scheme}://{pu.netloc}/"
+                await page.goto(fallback, timeout=15000)
+                logger.info("Mission %s: deep-link blocked; using root %s",
+                            mission_id, fallback)
+                return fallback
+        except Exception:
+            pass
         return ""
+    return target
 
 
 async def _append_control_event(db, mission_id: str, who: str, user_id: str) -> None:
