@@ -541,8 +541,11 @@ async def save_artifacts(
                 # fall back to saving the raw Markdown with a `.md` extension
                 # so the user still gets the content — never a broken file.
                 try:
-                    from artifact_synthesis import synthesize as _synth
-                    data, mime_override = _synth(content, ext, title=b.get("title") or b["name"])
+                    from artifact_synthesis import synthesize_async as _synth_async
+                    data, mime_override = await _synth_async(
+                        content, ext, title=b.get("title") or b["name"],
+                        db=db, org_id=org_id,
+                    )
                     b["mime"] = mime_override
                 except Exception as exc:
                     logger.warning("Falling back to .md for failed %s synthesis: %s", ext, exc)

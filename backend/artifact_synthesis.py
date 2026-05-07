@@ -463,9 +463,52 @@ MIME_FOR = {
 
 def synthesize(body_md: str, ext: str, title: str = "") -> Tuple[bytes, str]:
     """Convert a Markdown body to binary bytes for the requested ext.
-    Returns (bytes, mime). Raises ValueError for unsupported exts."""
+    Returns (bytes, mime). Raises ValueError for unsupported exts.
+
+    Sync path — uses reportlab for PDF and python-docx for DOCX. Kept
+    for backwards compatibility / when no async event loop is running.
+    Prefer ``synthesize_async`` when an org_id is available — it
+    routes PDFs through the branded Playwright renderer for a polished,
+    business-grade document.
+    """
     ext = (ext or "").lower().lstrip(".")
     if ext == "pdf":
+        return _render_pdf(body_md, title=title), MIME_FOR["pdf"]
+    if ext == "docx":
+        return _render_docx(body_md, title=title), MIME_FOR["docx"]
+    raise ValueError(f"Unsupported binary artifact extension: {ext}")
+
+
+async def synthesize_async(
+    body_md: str, ext: str, title: str = "", *,
+    db=None, org_id: str = "",
+) -> Tuple[bytes, str]:
+    """Async synthesis with brand-aware rendering.
+
+    For PDF: renders a branded HTML document via Playwright using the
+    org's logo + primary colour + tagline. Falls back to the reportlab
+    path if Playwright is unavailable or any step fails — never raises,
+    always returns valid bytes.
+
+    For DOCX: delegates to the sync ``_render_docx`` path (no
+    branded-DOCX template yet — that's a Phase 1.5 follow-up).
+    """
+    ext = (ext or "").lower().lstrip(".")
+    if ext == "pdf":
+        try:
+            from pdf_branded import render_branded_pdf
+            data = await render_branded_pdf(
+                body_md=body_md, title=title, db=db, org_id=org_id,
+            )
+            if data and len(data) > 200:
+                return data, MIME_FOR["pdf"]
+            # Fall through to reportlab if the renderer returned
+            # something suspiciously small (broken Chromium etc.)
+        except Exception as exc:
+            import logging
+            logging.getLogger(__name__).warning(
+                "Branded PDF render failed (%s) — using reportlab fallback", exc,
+            )
         return _render_pdf(body_md, title=title), MIME_FOR["pdf"]
     if ext == "docx":
         return _render_docx(body_md, title=title), MIME_FOR["docx"]
