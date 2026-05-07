@@ -299,3 +299,22 @@ pattern. Users must be able to:
   4. Address bar updates immediately on `reset_complete` message so the user sees the new URL without waiting for the next hello.
   - Useful when: Instagram shows a checkpoint, LinkedIn rate-limits, a session goes white after a deploy, or any case where the persisted state is corrupt/poisoned. The agent's next tool call gets the fresh context too — no service restart required.
   - Backend lint clean, frontend lint clean.
+
+- ✅ **Comprehensive stealth profile — Instagram silent-reject login fix** (Feb 7, 2026) — direct response to user reporting that even with the correct password, Instagram refused to sign them in (no error message, no CAPTCHA — silent reject). Root cause: the previous bare-bones stealth script (5 patches) left a dozen detectable fingerprint tells. Anti-bot systems flag the session BEFORE the login form submits, then reject the password without asking for a CAPTCHA. Built a full `/app/backend/browser_stealth.py` (~200 LOC) with 13 categories of patches:
+  1. **navigator.webdriver** — getter returns `undefined` AND its `toString` is patched to return `function get webdriver() { [native code] }` so `Function.prototype.toString` checks see native source. Without this last detail any sophisticated detector still flags.
+  2. **navigator.plugins** — fakes the canonical 5-entry PDF viewer trio (PDF Viewer / Chrome PDF Viewer / Chromium PDF Viewer / Microsoft Edge PDF Viewer / WebKit built-in PDF) so `length === 5` matches real Mac Chrome.
+  3. **navigator.mimeTypes** — adds `application/pdf` + `text/pdf` entries.
+  4. **navigator.languages** — `['en-US', 'en']` matches Accept-Language.
+  5. **navigator.hardwareConcurrency** — `8` (matches Mac).
+  6. **navigator.deviceMemory** — `8`.
+  7. **navigator.platform** — `'MacIntel'`.
+  8. **window.chrome** — adds `runtime`, `app`, `csi`, `loadTimes` stubs.
+  9. **WebGL vendor/renderer** — patches `getParameter(37445)` to `'Google Inc. (Apple)'` and `getParameter(37446)` to `'ANGLE (Apple, Apple M2, OpenGL 4.1)'`. THIS IS HUGE — headless Chrome reported `ANGLE/SwiftShader` which is the single biggest tell that you're not on real hardware.
+  10. **navigator.permissions.query** — `notifications` returns `'default'` (not `'denied'`).
+  11. **Notification.permission** — sanitised to `'default'`.
+  12. **navigator.getBattery / navigator.connection** — fake plausible values (charging, 92%, 4G/50ms RTT/10Mbps).
+  13. **screen.colorDepth / pixelDepth** — `30` (Mac retina value, not 24).
+  14. **iframe.contentWindow.chrome** — also patched in nested frames.
+  - Bumped User-Agent: Chrome 130 → 132 (current major). Added matching `sec-ch-ua` / `sec-ch-ua-mobile` / `sec-ch-ua-platform` Client Hints headers — anti-bot systems cross-check UA against CH-UA and flag mismatches. Added `timezone_id: America/New_York` + matching `geolocation` so geo-fingerprint is consistent.
+  - **Verified**: Playwright smoke test against the live stealth profile confirmed all 13 patches landed AND `webdriver` getter's `toString` correctly returns native-looking source. Pre-fix the fingerprint screamed bot; post-fix it looks like a normal Mac Chrome 132 session.
+  - **Net effect**: when the user retries Instagram login, they should either be signed in cleanly OR shown an actual CAPTCHA challenge (which a human can complete) instead of getting a silent password reject. The session is no longer auto-flagged as a bot before the login form submits.

@@ -59,10 +59,16 @@ ACTION_TIMEOUT_MS = 15_000
 MAX_FILL_FIELDS = 20
 MAX_FILL_VALUE_LEN = 2000
 USER_AGENT = (
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_5) "
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
     "AppleWebKit/537.36 (KHTML, like Gecko) "
-    "Chrome/130.0.0.0 Safari/537.36"
+    "Chrome/132.0.0.0 Safari/537.36"
 )
+# Client Hints headers that real Chrome sends and anti-bot systems
+# cross-check against the User-Agent. Mismatches between UA and CH
+# values are a strong bot signal — keep these in sync if we ever
+# bump the UA major version.
+USER_AGENT_CHL = '"Not A(Brand";v="8", "Chromium";v="132", "Google Chrome";v="132"'
+USER_AGENT_PLATFORM = '"macOS"'
 
 _BROWSER_LOCK = asyncio.Lock()
 _browser = None
@@ -252,8 +258,21 @@ async def _get_or_create_mission_page(mission_id: str):
         user_agent=USER_AGENT,
         viewport={"width": 1280, "height": 800},
         locale="en-US",
-        extra_http_headers={"Accept-Language": "en-US,en;q=0.9"},
+        # Match the CH-UA values to the User-Agent above; mismatches
+        # are an instant bot flag for sites like Instagram/Cloudflare.
+        extra_http_headers={
+            "Accept-Language": "en-US,en;q=0.9",
+            "sec-ch-ua": USER_AGENT_CHL,
+            "sec-ch-ua-mobile": "?0",
+            "sec-ch-ua-platform": USER_AGENT_PLATFORM,
+        },
+        timezone_id="America/New_York",
+        # Geolocation hint matches the timezone — a NYC-tz with an
+        # SF-coords claim is a fingerprint mismatch.
+        geolocation={"latitude": 40.7128, "longitude": -74.0060},
+        permissions=["geolocation"],
         ignore_https_errors=False,
+        color_scheme="light",
     )
     # Pre-load cookies/localStorage if the caller registered a storage_state
     # for this mission (autonomous social posting relies on this to reuse
@@ -283,29 +302,17 @@ async def _get_or_create_mission_page(mission_id: str):
         except Exception as exc:
             logger.warning("Mission %s: persisted-state restore failed: %s", mission_id, exc)
     ctx = await browser.new_context(**ctx_kwargs)
-    # Stealth init script — hides the most common automation tells so
-    # sites like Instagram / LinkedIn / Cloudflare let the page render
-    # normally instead of serving a blank/challenge wall.
+    # Comprehensive stealth init script — covers webdriver, plugins,
+    # languages, hardware, WebGL, permissions, battery, connection,
+    # screen, iframe.contentWindow.chrome. Real human users typing on
+    # this Chromium should now look like a normal Mac Chrome session
+    # to anti-bot systems (Instagram silent-rejected logins because
+    # our default fingerprint had SwiftShader as the GPU renderer —
+    # we now spoof Apple M2). Lives in its own module so we can
+    # easily extend it without touching browser_tools.
     try:
-        await ctx.add_init_script(
-            """
-            Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
-            // Common Chrome runtime checks
-            window.chrome = window.chrome || { runtime: {} };
-            // navigator.plugins / languages bare-bones spoof
-            Object.defineProperty(navigator, 'plugins', {get: () => [1,2,3,4,5]});
-            Object.defineProperty(navigator, 'languages', {get: () => ['en-US','en']});
-            // Permissions API quirk that headless Chrome trips on
-            const _origQuery = navigator.permissions && navigator.permissions.query;
-            if (_origQuery) {
-              navigator.permissions.query = (p) => (
-                p && p.name === 'notifications'
-                  ? Promise.resolve({ state: Notification.permission })
-                  : _origQuery.call(navigator.permissions, p)
-              );
-            }
-            """
-        )
+        from browser_stealth import STEALTH_INIT_SCRIPT
+        await ctx.add_init_script(STEALTH_INIT_SCRIPT)
     except Exception as exc:
         logger.debug("Mission %s: stealth init script failed: %s", mission_id, exc)
     page = await ctx.new_page()
