@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
-import { Loader2, MousePointer2, Hand, X, ExternalLink, Lock, Save } from "lucide-react";
+import { Loader2, MousePointer2, Hand, X, ExternalLink, Lock, Save, RotateCcw } from "lucide-react";
 
 /**
  * BrowserStreamCanvas — ChatGPT Agent Mode-style live remote browser.
@@ -151,6 +151,11 @@ export default function BrowserStreamCanvas({
         } else if (msg.type === "credentials_saved") {
           setSaving(false);
           if (msg.ok) setSavedHost(msg.hostname || "");
+        } else if (msg.type === "reset_complete") {
+          setResetting(false);
+          // Backend confirms the new URL — keep the address bar in
+          // sync without waiting for the next hello.
+          if (msg.url) setMeta((m) => ({ ...m, url: msg.url, restored: false }));
         }
       };
     };
@@ -338,6 +343,38 @@ export default function BrowserStreamCanvas({
     send({ type: "save_credentials", hostname: needsLoginFor || "" });
   };
 
+  // Hard-reset the live browser: wipes cookies / persisted state and
+  // navigates to a fresh page. Use when a site has flagged the
+  // session (suspicious-login challenge, rate limit, white page).
+  // Confirms once because losing the typed-in state is annoying if
+  // it's clicked by mistake.
+  const [resetting, setResetting] = useState(false);
+  const resetBrowser = () => {
+    if (resetting) return;
+    // Pre-fill with the hostname they were on — keeps them on the
+    // same site without triggering an Instagram-style ?next=… deep
+    // link that causes our 4xx fallback path.
+    let target = "about:blank";
+    try {
+      if (meta.url) {
+        const u = new URL(meta.url);
+        target = `${u.protocol}//${u.host}/`;
+      }
+    } catch {  // eslint-disable-line no-empty
+      // If meta.url isn't a valid URL we just fall back to about:blank.
+    }
+    if (!window.confirm(
+      "Reset the live browser?\n\nThis clears cookies, saved sessions, " +
+      "and any in-progress login. You'll start fresh — useful when a site " +
+      "blocks the session or shows a checkpoint."
+    )) return;
+    setResetting(true);
+    send({ type: "reset", url: target });
+    // The handler in onmessage will flip resetting back to false on
+    // `reset_complete`. As a safety net also clear after 8s.
+    setTimeout(() => setResetting(false), 8000);
+  };
+
   return (
     <div className="sp-glass-strong rounded-2xl overflow-hidden flex flex-col" data-testid="browser-stream">
       {/* Login-required banner — only visible when the agent has paused
@@ -387,6 +424,20 @@ export default function BrowserStreamCanvas({
               ? <Loader2 className="w-3.5 h-3.5 animate-spin" />
               : <Save className="w-3.5 h-3.5" />}
             {savedHost ? `Saved · ${savedHost}` : "Save login"}
+          </button>
+        )}
+        {/* Hard-reset — wipes cookies + persisted state. Lives next to
+            Take/Release so users can find it when the session is stuck
+            (white pages, checkpoint walls, rate-limited responses). */}
+        {connected && (
+          <button type="button" onClick={resetBrowser} disabled={resetting}
+                  className="sp-btn sp-btn-ghost text-xs"
+                  data-testid="browser-reset"
+                  title="Clear cookies and start over (use when a site blocks the session)">
+            {resetting
+              ? <Loader2 className="w-3.5 h-3.5 animate-spin" />
+              : <RotateCcw className="w-3.5 h-3.5" />}
+            Reset
           </button>
         )}
         {mode === "watch" ? (

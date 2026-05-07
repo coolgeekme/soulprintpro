@@ -348,6 +348,62 @@ async def _last_browsed_url(db, mission_id: str) -> str:
     return ""
 
 
+async def _reset_mission_browser(db, *, mission_id: str, target_url: str, hub) -> str:
+    """Hard-reset the mission's live browser session.
+
+    Used when a site has flagged the session as suspicious / rate-limited
+    and the user wants to start over with a clean fingerprint. We:
+      1. Purge the encrypted storage_state row in MongoDB (no more
+         restore-to-this-URL on next reopen).
+      2. Tear down the existing Chromium context entirely so cookies +
+         localStorage + IndexedDB are gone.
+      3. Create a fresh sticky page.
+      4. Navigate to the requested URL (or about:blank) so the user
+         sees the fresh state immediately.
+      5. Re-attach the screencast hub to the new page so the existing
+         WS stays useful.
+
+    Returns the URL we ended up on. Best-effort — any failure logs and
+    returns "" so the caller can recover.
+    """
+    # 1. Purge persisted state so reopens don't restore the old session.
+    try:
+        from mission_browser_state import purge_mission_state
+        await purge_mission_state(db, mission_id=mission_id)
+    except Exception as exc:
+        logger.debug("Mission %s: state purge during reset failed: %s", mission_id, exc)
+    # 2 + 3. Tear down + recreate the page.
+    try:
+        from browser_tools import cleanup_mission_page, _get_or_create_mission_page
+        await cleanup_mission_page(mission_id)
+        entry = await _get_or_create_mission_page(mission_id)
+        new_page = entry["page"]
+    except Exception as exc:
+        logger.warning("Mission %s: reset failed to recreate page: %s", mission_id, exc)
+        return ""
+    # 4. Navigate. Default to about:blank if no target — gives the user
+    # a clean canvas to type a URL into.
+    try:
+        url = target_url or "about:blank"
+        await new_page.goto(url, timeout=15000)
+    except Exception as exc:
+        logger.debug("Mission %s: post-reset goto failed: %s", mission_id, exc)
+        url = (new_page.url or "").strip()
+    # 5. Re-bind the hub to the new page + restart the screencast.
+    hub.page = new_page
+    try:
+        if hub._cdp:  # pylint: disable=protected-access
+            await hub._cdp.detach()  # pylint: disable=protected-access
+    except Exception:
+        pass
+    hub._cdp = None  # pylint: disable=protected-access
+    hub._started = False  # pylint: disable=protected-access
+    await hub._ensure_started()  # pylint: disable=protected-access
+    await hub._push_snapshot()  # pylint: disable=protected-access
+    logger.info("Mission %s: reset complete — new page at %s", mission_id, url)
+    return url
+
+
 async def _restore_page_if_blank(db, mission_id: str, page) -> str:
     """If the mission's sticky Chromium page is sitting on about:blank
     (typical state after a backend restart), look up the last URL the
@@ -568,6 +624,25 @@ def register_browser_stream_routes(
                         pass
                 elif kind == "ping":
                     await ws.send_json({"type": "pong"})
+                elif kind == "reset":
+                    # User requested a hard reset of the live browser —
+                    # clear cookies/localStorage AND the persisted state
+                    # AND any saved credentials for this mission's
+                    # hostname, then navigate to a fresh blank page so
+                    # they can start over (typical when a site flagged
+                    # the session as suspicious or rate-limited).
+                    target = (raw.get("url") or "").strip()
+                    new_url = await _reset_mission_browser(
+                        db, mission_id=mission_id, target_url=target, hub=hub,
+                    )
+                    try:
+                        await ws.send_json({
+                            "type": "reset_complete",
+                            "url": new_url,
+                            "ok": True,
+                        })
+                    except Exception:
+                        pass
         except WebSocketDisconnect:
             pass
         except Exception as exc:

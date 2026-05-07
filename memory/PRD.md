@@ -291,3 +291,11 @@ pattern. Users must be able to:
   - Backend lint clean, FE lint clean. Will deploy to production for retesting.
 
 - ✅ **Remote-browser fix #7: double-typed characters** (Feb 7, 2026) — direct response to user screenshot showing typing "discipline" produced "ddiisscciipplliinnee". Each character was being inserted twice. Root cause: my previous fix dispatched a `keyDown` event with `text="d"` AND a synthesized `char` follow-up event with `text="d"`. Chromium inserts the character on BOTH — once on the keyDown (because we set `text`) and once on the char event. Fix: remove the synthetic `char` follow-up — Chromium correctly inserts the character on a single `keyDown` event when `text` is set. Also added `unmodifiedText` mirror for React framework input/composition events. Backend lint clean. Net: typing now produces "discipline" instead of "ddiisscciipplliinnee".
+
+- ✅ **Remote-browser Reset button — escape hatch for stuck sessions** (Feb 7, 2026) — direct response to user reporting white pages and stuck states on production after Instagram challenges. Without a way to start fresh, every reopen tried to restore the same flagged session → infinite loop of white pages. Fix: new "Reset" button next to Take/Release that:
+  1. Sends `{type: "reset", url: "..."}` on the live WS — frontend pre-fills the host root (e.g. `https://www.instagram.com/`) so the user lands on a clean URL instead of a deep-link 4xx.
+  2. Backend `_reset_mission_browser()` purges the encrypted storage_state row, tears down the entire Chromium context (cookies/localStorage/IndexedDB all gone), creates a fresh sticky page, navigates to the requested URL, and re-binds the screencast hub to the new page.
+  3. Frontend confirms via a single `window.confirm` (so an accidental click doesn't wipe a 5-min sign-in attempt) and shows a spinner while the reset runs.
+  4. Address bar updates immediately on `reset_complete` message so the user sees the new URL without waiting for the next hello.
+  - Useful when: Instagram shows a checkpoint, LinkedIn rate-limits, a session goes white after a deploy, or any case where the persisted state is corrupt/poisoned. The agent's next tool call gets the fresh context too — no service restart required.
+  - Backend lint clean, frontend lint clean.
