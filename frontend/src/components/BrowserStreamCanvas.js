@@ -115,7 +115,12 @@ export default function BrowserStreamCanvas({
         if (msg.type === "frame") {
           paintFrame(msg.data, msg.w, msg.h);
         } else if (msg.type === "hello") {
-          setMeta({ url: msg.url || "", title: msg.title || "" });
+          setMeta({
+            url: msg.url || "",
+            title: msg.title || "",
+            restored: Boolean(msg.restored),
+            restoredUrl: msg.restored_url || "",
+          });
         } else if (msg.type === "credentials_saved") {
           setSaving(false);
           if (msg.ok) setSavedHost(msg.hostname || "");
@@ -276,6 +281,18 @@ export default function BrowserStreamCanvas({
           <span className="flex-1">
             <b>Login required for {needsLoginFor}.</b>{" "}
             Click <i>Take control</i>, sign in, then <i>Save login</i> so the agent can use this account on future missions.
+          </span>
+        </div>
+      )}
+      {/* Session-restored banner — shown when the backend revived the
+          sticky page from the last known URL after a deploy/restart.
+          Without this banner the page change is silent and confusing. */}
+      {meta.restored && meta.restoredUrl && (
+        <div className="px-4 py-2 text-xs flex items-center gap-2 bg-blue-500/15 border-b border-blue-400/30 text-blue-100" data-testid="browser-restored-banner">
+          <Lock className="w-3.5 h-3.5 shrink-0" />
+          <span className="flex-1">
+            Session restored to <b className="break-all">{meta.restoredUrl}</b>{" "}
+            (the original browser was lost on a server restart).
           </span>
         </div>
       )}

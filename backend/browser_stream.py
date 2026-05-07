@@ -283,6 +283,62 @@ async def _hub_for(mission_id: str) -> _StreamHub:
     return hub
 
 
+async def _last_browsed_url(db, mission_id: str) -> str:
+    """Find the most recent URL the mission has actually navigated to.
+
+    The agent loop persists a `tool_call` event per browse_url / browse_click
+    / browse_fill / browse_submit. We walk newest-first and pick the first
+    one that yields a usable URL. This lets the WS endpoint auto-restore
+    the live browser after a backend restart wipes the in-memory page —
+    without it, users land on `about:blank` and can't continue the session.
+    """
+    try:
+        cursor = db.mission_events.find(
+            {"mission_id": mission_id, "kind": "tool_call"},
+            {"_id": 0, "tool": 1, "args": 1, "result": 1, "ts": 1},
+        ).sort("ts", -1).limit(20)
+        async for ev in cursor:
+            args = ev.get("args") or {}
+            result = ev.get("result") or {}
+            # Prefer the post-action URL (forms / clicks may redirect).
+            for key in ("final_url", "url"):
+                cand = result.get(key) or args.get(key)
+                if isinstance(cand, str) and cand.startswith(("http://", "https://")):
+                    return cand
+    except Exception as exc:
+        logger.debug("last-URL lookup failed for %s: %s", mission_id, exc)
+    return ""
+
+
+async def _restore_page_if_blank(db, mission_id: str, page) -> str:
+    """If the mission's sticky Chromium page is sitting on about:blank
+    (typical state after a backend restart), look up the last URL the
+    agent was on and navigate there. Returns the URL we navigated to,
+    or "" if no restore happened.
+    """
+    try:
+        cur_url = (page.url or "").strip()
+    except Exception:
+        cur_url = ""
+    if cur_url and cur_url not in ("about:blank", "chrome://newtab/", "chrome://new-tab-page/"):
+        return ""
+    target = await _last_browsed_url(db, mission_id)
+    if not target:
+        return ""
+    try:
+        # Best-effort navigation. We deliberately don't wait for
+        # networkidle — a slow page shouldn't block the live stream
+        # from displaying. The fallback snapshot loop will paint
+        # whatever's on screen as soon as it's available.
+        await page.goto(target, wait_until="domcontentloaded", timeout=20000)
+        logger.info("Mission %s: restored sticky page to %s", mission_id, target)
+        return target
+    except Exception as exc:
+        logger.warning("Mission %s: page restore to %s failed: %s",
+                       mission_id, target, exc)
+        return ""
+
+
 async def _append_control_event(db, mission_id: str, who: str, user_id: str) -> None:
     """Persist a control-handoff event on the mission so the UI timeline
     shows when the user took control / gave it back. Also sets a quick
@@ -378,6 +434,12 @@ def register_browser_stream_routes(
             return
         await ws.accept()
         hub = await _hub_for(mission_id)
+        # If the page is sitting on about:blank (typical after a backend
+        # restart wipes the in-memory Chromium context), try to restore
+        # it to the agent's last known URL so the user can resume the
+        # session — sign in to the same login wall, save credentials,
+        # etc. Best-effort: if it fails, the canvas just shows blank.
+        restored_url = await _restore_page_if_blank(db, mission_id, hub.page)
         await hub.add_client(ws)
         # Initial hello so the frontend knows it's connected + shows the
         # mission's current URL in the address-bar display.
@@ -387,6 +449,8 @@ def register_browser_stream_routes(
                 "mission_id": mission_id,
                 "url": hub.page.url,
                 "title": await hub.page.title(),
+                "restored": bool(restored_url),
+                "restored_url": restored_url,
             })
         except Exception:
             pass
