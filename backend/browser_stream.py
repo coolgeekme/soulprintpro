@@ -276,10 +276,12 @@ class _StreamHub:
         For non-character keys (ArrowLeft/Right/Up/Down, Backspace, Delete,
         Tab, Enter, Escape, Home/End/PageUp/PageDown) Chromium requires
         ``windowsVirtualKeyCode`` to be set or it silently drops the event.
-        For printable characters we additionally fire a `char` event so
-        the actual `<input>` receives the typed text — `keyDown` alone
-        only fires the keydown handler and most React-controlled inputs
-        won't update their value.
+
+        For printable characters we set `text` on the keyDown event, which
+        causes Chromium to fire keydown AND insert the character into the
+        focused input in one shot. We deliberately do NOT also fire a
+        follow-up `char` event — that would cause every keystroke to
+        register twice (e.g. typing "discipline" produces "ddiisscciipplliinnee").
         """
         if not self._cdp:
             return
@@ -293,6 +295,10 @@ class _StreamHub:
             payload["code"] = code
         if text:
             payload["text"] = text
+            # `unmodifiedText` mirrors `text` for printable chars and is
+            # required for some web frameworks (notably React) to fire
+            # the right input/composition events.
+            payload["unmodifiedText"] = text
         if windows_virtual_key_code:
             payload["windowsVirtualKeyCode"] = windows_virtual_key_code
             # `nativeVirtualKeyCode` mirrors windowsVirtualKeyCode on
@@ -301,18 +307,6 @@ class _StreamHub:
             payload["nativeVirtualKeyCode"] = windows_virtual_key_code
         try:
             await self._cdp.send("Input.dispatchKeyEvent", payload)
-            # For printable single-character keyDown events, dispatch a
-            # follow-up `char` event so React-controlled inputs receive
-            # the value via input/composition events, not just keydown.
-            # This is what Playwright's keyboard.type does internally.
-            if kind == "keyDown" and text and len(text) == 1:
-                await self._cdp.send("Input.dispatchKeyEvent", {
-                    "type": "char",
-                    "modifiers": modifiers,
-                    "text": text,
-                    "key": text,
-                    "unmodifiedText": text,
-                })
         except Exception as exc:
             logger.debug("Key dispatch failed: %s", exc)
 

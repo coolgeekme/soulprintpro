@@ -289,3 +289,5 @@ pattern. Users must be able to:
     - **Auto-focus the canvas on mousedown** so keyboard events route correctly without needing an explicit click on the canvas chrome first.
     - **Screencast quality 60→50** — smaller JPEG frames = less time on the wire = lower perceived lag; visual difference is invisible at 1280×800.
   - Backend lint clean, FE lint clean. Will deploy to production for retesting.
+
+- ✅ **Remote-browser fix #7: double-typed characters** (Feb 7, 2026) — direct response to user screenshot showing typing "discipline" produced "ddiisscciipplliinnee". Each character was being inserted twice. Root cause: my previous fix dispatched a `keyDown` event with `text="d"` AND a synthesized `char` follow-up event with `text="d"`. Chromium inserts the character on BOTH — once on the keyDown (because we set `text`) and once on the char event. Fix: remove the synthetic `char` follow-up — Chromium correctly inserts the character on a single `keyDown` event when `text` is set. Also added `unmodifiedText` mirror for React framework input/composition events. Backend lint clean. Net: typing now produces "discipline" instead of "ddiisscciipplliinnee".
