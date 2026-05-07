@@ -1,8 +1,10 @@
 import "./App.css";
+import { useEffect } from "react";
 import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
 import { AuthProvider, useAuth } from "./context/AuthContext";
 import { ThemeProvider } from "./context/ThemeContext";
 import { Toaster } from "./components/ui/sonner";
+import { installClipboardSanitiser } from "./lib/clipboard";
 
 import LandingPage from "./pages/LandingPage";
 import AuthPage from "./pages/AuthPage";
@@ -44,6 +46,10 @@ const PublicOnly = ({ children }) => {
 };
 
 function App() {
+  // Strip dark-theme colours / backgrounds from anything the user copies
+  // so pasting into Notion / Gmail / Docs renders as black-on-white
+  // instead of unreadable white-on-grey. Idempotent install.
+  useEffect(() => { installClipboardSanitiser(); }, []);
   return (
     <ThemeProvider>
       <div className="App sp-grain min-h-screen">
