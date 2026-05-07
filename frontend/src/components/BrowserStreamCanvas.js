@@ -46,7 +46,16 @@ export default function BrowserStreamCanvas({
   // ── Connect WS ────────────────────────────────────────────────────
   // Pulled into a stable ref so onclose can reschedule itself.
   useEffect(() => {
-    if (!missionId || !token) return undefined;
+    if (!missionId) return undefined;
+    if (!token) {
+      // Surface the auth gap clearly instead of just sitting on
+      // "Connecting…" forever — usually means the user signed in via
+      // Google and the parent component hasn't resolved the Firebase
+      // ID token yet (or is reading the wrong localStorage key).
+      setCloseInfo("Waiting for auth token…");
+      return undefined;
+    }
+    setCloseInfo("");
 
     let cancelled = false;
 

@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { useParams, Link, useNavigate } from "react-router-dom";
-import api, { BACKEND_URL, displayMissionGoal, downloadFile, errorMessage } from "../lib/api";
+import api, { BACKEND_URL, displayMissionGoal, downloadFile, errorMessage, getToken } from "../lib/api";
+import { getCurrentIdToken, FIREBASE_ENABLED } from "../lib/firebase";
 import TopBar from "../components/TopBar";
 import BrowserStreamCanvas from "../components/BrowserStreamCanvas";
 import { toast } from "sonner";
@@ -431,10 +432,28 @@ function MissionDetail({ orgId, missionId }) {
   const [continueText, setContinueText] = useState("");
   const [continueBusy, setContinueBusy] = useState(false);
   // ChatGPT Agent Mode: live remote browser stream. Only meaningful while
-  // the mission is running. Auth token comes from localStorage so the WS
-  // can pass it as ?token=…
+  // the mission is running. Auth token must match what the backend's
+  // `_require_mission_member_ws` accepts — that's either the legacy
+  // bcrypt JWT we persist under `soulprint_token` OR a freshly-minted
+  // Firebase ID token. We resolve it asynchronously so Google sign-in
+  // users also get a working stream.
   const [showBrowser, setShowBrowser] = useState(false);
-  const wsToken = (typeof localStorage !== "undefined" && localStorage.getItem("token")) || "";
+  const [wsToken, setWsToken] = useState("");
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      // Prefer Firebase ID token when the user signed in with Google
+      // (legacy token may be empty in that case). Otherwise fall back
+      // to the bcrypt JWT in localStorage.
+      let token = "";
+      if (FIREBASE_ENABLED) {
+        try { token = await getCurrentIdToken(); } catch { /* ignore */ }
+      }
+      if (!token) token = getToken();
+      if (!cancelled) setWsToken(token || "");
+    })();
+    return () => { cancelled = true; };
+  }, []);
 
   // B3: when the agent hits a login wall, auto-open the live browser
   // panel so the "Take control" button is one click away.
