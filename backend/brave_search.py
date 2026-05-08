@@ -64,11 +64,31 @@ async def brave_web_search(
     try:
         async with httpx.AsyncClient(timeout=timeout) as client:
             resp = await client.get(f"{BRAVE_BASE}/web/search", headers=headers, params=params)
+        # Track every successful + failed Brave call so admin spend
+        # dashboard reflects real-world usage. Fire-and-forget — never
+        # block the caller on a Mongo write.
+        try:
+            from external_api_costs import log_external_call_fire_and_forget
+            log_external_call_fire_and_forget(
+                provider="brave.search", kind_label="web_search",
+                calls=1, success=(resp.status_code == 200),
+                error=None if resp.status_code == 200 else f"HTTP {resp.status_code}",
+            )
+        except Exception:
+            pass
         if resp.status_code != 200:
             log.warning("Brave search %s: %s", resp.status_code, resp.text[:200])
             return []
         data = resp.json() or {}
     except (httpx.HTTPError, ValueError) as exc:
+        try:
+            from external_api_costs import log_external_call_fire_and_forget
+            log_external_call_fire_and_forget(
+                provider="brave.search", kind_label="web_search",
+                calls=1, success=False, error=str(exc)[:200],
+            )
+        except Exception:
+            pass
         log.warning("Brave search error: %s", exc)
         return []
 

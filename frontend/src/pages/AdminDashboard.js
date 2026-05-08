@@ -244,6 +244,85 @@ function LlmPanel() {
           ))}
         </div>
       </div>
+
+      {/* ── External APIs (non-LLM) ───────────────────────────────────
+          Brave / Perplexity / Resend / kie.ai. Tracked via the
+          `external_api_calls` collection, aggregated server-side. */}
+      <div className="border-t border-white/10 pt-6 mt-2 space-y-4">
+        <div className="flex items-baseline gap-3 flex-wrap">
+          <h2 className="text-lg font-medium">External API spend</h2>
+          <span className="text-xs sp-subtle">
+            Brave · Perplexity · Resend · kie.ai (Suno/Veo/etc.)
+          </span>
+          <span className="ml-auto text-xs sp-subtle italic">
+            Combined LLM + external: <strong>{cur(data.grand_total_cost || 0)}</strong>
+          </span>
+        </div>
+        <div className="grid sm:grid-cols-3 gap-3">
+          <StatCard icon={DollarSign} label="External cost (est.)"
+                    value={cur((data.external?.totals?.cost) || 0)}
+                    sub={`${fmt((data.external?.totals?.calls) || 0)} calls`} />
+          <StatCard icon={Activity} label="External calls"
+                    value={fmt((data.external?.totals?.calls) || 0)}
+                    sub={`${fmt((data.external?.totals?.ok) || 0)} successful`} />
+          <StatCard icon={DollarSign} label="$ / external call"
+                    value={cur(
+                      (data.external?.totals?.calls)
+                        ? (data.external.totals.cost / data.external.totals.calls)
+                        : 0,
+                    )} />
+        </div>
+
+        <div className="grid lg:grid-cols-2 gap-3">
+          <div className="sp-glass-strong rounded-2xl p-5">
+            <h3 className="text-sm uppercase tracking-widest sp-subtle mb-3">By provider</h3>
+            <table className="w-full text-sm">
+              <thead className="sp-subtle text-xs uppercase tracking-widest">
+                <tr><th className="text-left pb-2">Provider</th>
+                    <th className="text-right">Calls</th>
+                    <th className="text-right">Cost</th></tr>
+              </thead>
+              <tbody>
+                {((data.external?.by_provider) || []).map((p) => (
+                  <tr key={p.provider} className="border-t border-white/5"
+                      data-testid={`admin-ext-row-${p.provider}`}>
+                    <td className="py-1.5 font-mono text-xs">{p.provider}</td>
+                    <td className="text-right">{fmt(p.calls)}</td>
+                    <td className="text-right font-medium">{cur(p.cost)}</td>
+                  </tr>
+                ))}
+                {!((data.external?.by_provider) || []).length && (
+                  <tr><td colSpan="3" className="text-center py-4 sp-subtle text-xs italic">
+                    No external API calls yet in this window.
+                  </td></tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+
+          <div className="sp-glass-strong rounded-2xl p-5">
+            <h3 className="text-sm uppercase tracking-widest sp-subtle mb-3">Pricing reference</h3>
+            <p className="text-xs sp-subtle mb-3 leading-relaxed">
+              Public list rates we apply when computing estimated cost.
+              Update <code>EXTERNAL_API_RATES</code> when providers
+              change pricing.
+            </p>
+            <ul className="space-y-1 text-xs">
+              {((data.external?.rates) || []).map((r) => (
+                <li key={r.provider} className="flex justify-between gap-3 border-t border-white/5 py-1">
+                  <span className="font-mono">{r.provider}</span>
+                  <span className="sp-subtle">{r.rate_summary}</span>
+                </li>
+              ))}
+              {!((data.external?.rates) || []).length && (
+                <li className="text-center py-3 sp-subtle italic">
+                  Pricing table unavailable.
+                </li>
+              )}
+            </ul>
+          </div>
+        </div>
+      </div>
     </div>
   );
 }

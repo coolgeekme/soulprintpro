@@ -406,7 +406,41 @@ async def generate_via_kie(
     )
     if not task_id:
         return []
-    return await wait_for_kie_task(model_key, task_id, total_timeout=total_timeout)
+    urls = await wait_for_kie_task(model_key, task_id, total_timeout=total_timeout)
+    # Per-call cost log so the admin dashboard reflects every kie.ai
+    # generation. We map model_key → provider rate, defaulting to the
+    # generic image/video bucket if unknown.
+    try:
+        from external_api_costs import log_external_call_fire_and_forget
+        # Provider routing: kie.suno, kie.veo3_fast, kie.veo3, ... else
+        # kie.image.default / kie.video.default depending on the model.
+        prov = f"kie.{model_key}"
+        VIDEO_KEYS = {"veo3", "veo3_fast", "veo3_lite", "sora-2",
+                      "kling-3", "kling-3-pro", "wan-2-6", "seedance-1-5",
+                      "runway-aleph"}
+        if model_key == "suno":
+            prov = "kie.suno"
+        elif model_key in VIDEO_KEYS and prov not in {
+            f"kie.{k}" for k in ("veo3", "veo3_fast", "veo3_lite", "sora-2",
+                                  "kling-3", "kling-3-pro")
+        }:
+            prov = "kie.video.default"
+        elif model_key not in {"suno"} and model_key not in VIDEO_KEYS:
+            prov = "kie.image.default"
+        # Estimate seconds for video calls based on the duration the
+        # caller asked for (defaults to 8s — Veo3's standard length).
+        seconds = 0.0
+        if "video" in prov or model_key in VIDEO_KEYS:
+            seconds = float((extra or {}).get("duration") or (extra or {}).get("seconds") or 8)
+        log_external_call_fire_and_forget(
+            provider=prov, kind_label=f"kie:{model_key}",
+            calls=1, seconds=seconds,
+            success=bool(urls),
+            extra={"model_key": model_key, "task_id": task_id},
+        )
+    except Exception:
+        pass
+    return urls
 
 
 __all__ = [

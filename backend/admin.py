@@ -30,6 +30,35 @@ def _iso(d):
     return d
 
 
+def _public_rates_table() -> list[dict]:
+    """Return a flat, dashboard-friendly view of every external-API rate
+    we know about. The frontend renders this as a "Pricing reference"
+    table so admins can see exactly what each provider charges (and
+    cross-check it against their own bill)."""
+    try:
+        from external_api_costs import EXTERNAL_API_RATES
+    except Exception:
+        return []
+    rows = []
+    for provider, rate in sorted(EXTERNAL_API_RATES.items()):
+        # Render each rate in a single human-readable line.
+        parts = []
+        if "per_call" in rate:
+            v = rate["per_call"]
+            parts.append("free" if v == 0 else f"${v:.4g}/call")
+        if "per_second" in rate:
+            parts.append(f"${rate['per_second']:.4g}/sec")
+        if "input" in rate:
+            parts.append(f"${rate['input']:.4g}/1k input tok")
+        if "output" in rate:
+            parts.append(f"${rate['output']:.4g}/1k output tok")
+        rows.append({
+            "provider": provider,
+            "rate_summary": " · ".join(parts) or "—",
+        })
+    return rows
+
+
 def _hash_password(p: str) -> str:
     return bcrypt.hashpw(p.encode(), bcrypt.gensalt()).decode()
 
@@ -261,6 +290,56 @@ def make_admin_router(*, db, get_current_user) -> APIRouter:
                 "cost": round(row["cost"] or 0, 4),
             })
 
+        # ── External APIs (Brave / Perplexity / Resend / kie.ai) ─────
+        # Same time window, separate collection, aggregated three ways
+        # so the dashboard can render per-provider, per-kind, and a
+        # combined grand total alongside LLM spend.
+        ext_total_pipe = [
+            {"$match": {"ts": {"$gte": since}}},
+            {"$group": {
+                "_id": None,
+                "calls": {"$sum": "$calls"},
+                "ok":    {"$sum": {"$cond": ["$success", 1, 0]}},
+                "cost":  {"$sum": "$cost_usd"},
+            }},
+        ]
+        ext_total_agg = [x async for x in db.external_api_calls.aggregate(ext_total_pipe)]
+        ext_totals = (
+            ext_total_agg[0] if ext_total_agg
+            else {"calls": 0, "ok": 0, "cost": 0}
+        )
+        ext_totals.pop("_id", None)
+        ext_totals["cost"] = round(ext_totals.get("cost", 0) or 0, 4)
+
+        ext_by_provider_pipe = [
+            {"$match": {"ts": {"$gte": since}}},
+            {"$group": {
+                "_id": "$provider",
+                "calls": {"$sum": "$calls"},
+                "cost":  {"$sum": "$cost_usd"},
+            }},
+            {"$sort": {"cost": -1}},
+        ]
+        ext_by_provider = [
+            {"provider": x["_id"] or "unknown",
+             "calls": x["calls"], "cost": round(x["cost"] or 0, 4)}
+            async for x in db.external_api_calls.aggregate(ext_by_provider_pipe)
+        ]
+
+        ext_daily_pipe = [
+            {"$match": {"ts": {"$gte": since}}},
+            {"$group": {
+                "_id": {"$dateToString": {"format": "%Y-%m-%d", "date": "$ts"}},
+                "calls": {"$sum": "$calls"},
+                "cost":  {"$sum": "$cost_usd"},
+            }},
+            {"$sort": {"_id": 1}},
+        ]
+        ext_daily_series = [
+            {"date": x["_id"], "calls": x["calls"], "cost": round(x["cost"] or 0, 4)}
+            async for x in db.external_api_calls.aggregate(ext_daily_pipe)
+        ]
+
         return {
             "since": _iso(since),
             "totals": totals,
@@ -268,6 +347,20 @@ def make_admin_router(*, db, get_current_user) -> APIRouter:
             "by_kind": by_kind,
             "daily_series": daily_series,
             "top_orgs": top_orgs,
+            # New: non-LLM third-party API spend (Brave / Perplexity /
+            # Resend / kie.ai). Frontend renders these in their own
+            # cards next to the LLM cards.
+            "external": {
+                "totals": ext_totals,
+                "by_provider": ext_by_provider,
+                "daily_series": ext_daily_series,
+                "rates": _public_rates_table(),
+            },
+            # Combined grand total — LLM + external — so users have a
+            # single "what did this cost me" number.
+            "grand_total_cost": round(
+                (totals.get("cost") or 0) + (ext_totals.get("cost") or 0), 4
+            ),
         }
 
     # ── Orgs table ───────────────────────────────────────────────────────

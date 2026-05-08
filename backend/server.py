@@ -6511,6 +6511,18 @@ async def startup():
         await _mbs_indexes(db)
     except Exception as exc:
         logger.warning("mission_browser_state index init failed: %s", exc)
+    # External-API cost tracking — Brave / Perplexity / Resend / kie.ai.
+    # The admin spend dashboard aggregates these alongside `llm_calls`
+    # for a complete cost picture per org/mission/user.
+    try:
+        from external_api_costs import (
+            ensure_indexes as _ext_indexes,
+            set_db as _ext_set_db,
+        )
+        await _ext_indexes(db)
+        _ext_set_db(db)
+    except Exception as exc:
+        logger.warning("external_api_costs init failed: %s", exc)
     # Wire browser_tools to the persistence layer so every navigation /
     # form interaction snapshots the page state to MongoDB. The lookup
     # closure resolves a mission's org_id without coupling browser_tools

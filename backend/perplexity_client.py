@@ -72,11 +72,42 @@ async def _chat(
             resp = await client.post(
                 f"{PPLX_BASE}/chat/completions", headers=headers, json=payload
             )
-        if resp.status_code != 200:
+        # Capture token counts from the API response so the admin
+        # dashboard reflects real per-call cost (Perplexity bills
+        # tokens AND a per-request fee).
+        ok = resp.status_code == 200
+        usage = {}
+        try:
+            usage = (resp.json() or {}).get("usage") or {} if ok else {}
+        except Exception:
+            pass
+        try:
+            from external_api_costs import log_external_call_fire_and_forget
+            # Match provider key to model (sonar-pro vs sonar plain)
+            prov = "perplexity.sonar-pro" if "pro" in (model or "").lower() else "perplexity.sonar"
+            log_external_call_fire_and_forget(
+                provider=prov, kind_label="research_synth",
+                calls=1, success=ok,
+                input_tokens=int(usage.get("prompt_tokens") or 0),
+                output_tokens=int(usage.get("completion_tokens") or 0),
+                error=None if ok else f"HTTP {resp.status_code}",
+            )
+        except Exception:
+            pass
+        if not ok:
             log.warning("Perplexity %s: %s", resp.status_code, resp.text[:300])
             return "", []
         data = resp.json() or {}
     except (httpx.HTTPError, ValueError) as exc:
+        try:
+            from external_api_costs import log_external_call_fire_and_forget
+            prov = "perplexity.sonar-pro" if "pro" in (model or "").lower() else "perplexity.sonar"
+            log_external_call_fire_and_forget(
+                provider=prov, kind_label="research_synth",
+                calls=1, success=False, error=str(exc)[:200],
+            )
+        except Exception:
+            pass
         log.warning("Perplexity error: %s", exc)
         return "", []
 

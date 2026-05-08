@@ -49,13 +49,31 @@ async def send_resend_email(
                 },
                 json=payload,
             )
-        if resp.status_code >= 300:
+        ok = resp.status_code < 300
+        try:
+            from external_api_costs import log_external_call_fire_and_forget
+            log_external_call_fire_and_forget(
+                provider="resend.email", kind_label="transactional",
+                calls=1, success=ok,
+                error=None if ok else f"HTTP {resp.status_code}",
+            )
+        except Exception:
+            pass
+        if not ok:
             logger.warning(
                 "Resend send failed %s: %s", resp.status_code, resp.text[:300],
             )
             return False
         return True
     except Exception as exc:
+        try:
+            from external_api_costs import log_external_call_fire_and_forget
+            log_external_call_fire_and_forget(
+                provider="resend.email", kind_label="transactional",
+                calls=1, success=False, error=str(exc)[:200],
+            )
+        except Exception:
+            pass
         logger.warning("Resend send exception: %s", exc)
         return False
 
