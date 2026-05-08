@@ -593,6 +593,14 @@ async def register(body: RegisterBody, resp: Response):
     uid = str(res.inserted_id)
     token = create_access_token(uid, email)
     set_auth_cookies(resp, token)
+    # Welcome email — fire-and-forget so a Resend outage / missing API
+    # key never blocks the registration flow. The helper itself logs at
+    # warning level if delivery fails.
+    try:
+        from email_service import send_welcome_email
+        asyncio.create_task(send_welcome_email(name=doc["name"], email=email))
+    except Exception:
+        pass
     return {"id": uid, "name": doc["name"], "email": email,
             "is_superadmin": bool(doc.get("is_superadmin")),
             "access_token": token}
@@ -1858,6 +1866,44 @@ async def my_chief_of_staff(org_id: str, u: dict = Depends(get_current_user)):
     conv = await get_or_create_private_cos(db, org=org, user_id=u["id"], user_name=u.get("name", ""))
     if not conv:
         raise HTTPException(500, "Could not provision a private Chief of Staff thread")
+    return {
+        "conversation_id": str(conv["_id"]),
+        "team_id": conv["team_id"],
+        "title": conv.get("title") or "My Chief of Staff",
+        "kind": conv.get("kind") or PRIVATE_COS_KIND,
+        "owner_user_id": conv.get("owner_user_id") or u["id"],
+        "deeplink": f"/app/team/{conv['team_id']}/c/{str(conv['_id'])}",
+    }
+
+
+@team_r.get("/orgs/{org_id}/my-cos/threads")
+async def my_chief_of_staff_threads(org_id: str, u: dict = Depends(get_current_user)):
+    """List the caller's private CoS threads in this org, newest first.
+
+    The OrgPage UI uses this to render an expandable thread picker on
+    the "Your private Chief of Staff" card so users can either resume
+    an old thread or start a fresh one (`+ New chat`)."""
+    ctx = await require_org_member(org_id, u["id"])
+    from team_access import list_private_cos_threads
+    threads = await list_private_cos_threads(db, org=ctx["org"], user_id=u["id"])
+    return {"threads": threads}
+
+
+@team_r.post("/orgs/{org_id}/my-cos/new")
+async def my_chief_of_staff_new(org_id: str, u: dict = Depends(get_current_user)):
+    """Create a brand-new private CoS thread for the caller.
+
+    Used by the `+ New chat` button on the OrgPage and by the
+    GeneralChatCard composer when the user explicitly wants to start
+    a fresh conversation rather than appending to the most recent one.
+    """
+    ctx = await require_org_member(org_id, u["id"])
+    from team_access import create_new_private_cos
+    conv = await create_new_private_cos(
+        db, org=ctx["org"], user_id=u["id"], user_name=u.get("name", ""),
+    )
+    if not conv:
+        raise HTTPException(500, "Could not provision a new Chief of Staff thread")
     return {
         "conversation_id": str(conv["_id"]),
         "team_id": conv["team_id"],

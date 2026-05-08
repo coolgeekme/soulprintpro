@@ -797,7 +797,7 @@ def make_audits_router(
         )
 
         # Fire-and-forget admin notification email
-        notify_to = os.environ.get("AUDIT_NOTIFY_EMAIL", "").strip() or "reggie@coolgeek.me"
+        notify_to = os.environ.get("AUDIT_NOTIFY_EMAIL", "").strip() or "team@archeforge.com"
         subject = f"🔥 New audit lead: {body.name} from {body.company}"
         text = (
             f"You have a new audit lead.\n\n"

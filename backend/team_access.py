@@ -158,6 +158,76 @@ async def get_or_create_private_cos(db, *, org: dict, user_id: str,
     return await db.conversations.find_one({"_id": res.inserted_id})
 
 
+async def create_new_private_cos(db, *, org: dict, user_id: str,
+                                  user_name: str = "",
+                                  title: str = "") -> dict:
+    """Always create a fresh private Chief of Staff thread, even if the
+    user already has one. Use this for the "+ New chat" affordance —
+    every click should yield an empty starting point.
+
+    The new thread is auto-titled with a short timestamp suffix so the
+    list view can distinguish "your chief of staff" from "your chief
+    of staff (Feb 8, 4:32 PM)" etc. — until the first user message
+    triggers our regular auto-title logic.
+    """
+    general_team_id = org.get("general_team_id") or ""
+    if not general_team_id:
+        return None
+
+    now = datetime.now(timezone.utc)
+    # Title: prefer the caller-supplied one, else stamp with a short
+    # human-readable timestamp so threads don't all collide on the list.
+    if not title:
+        base = "My Chief of Staff" if not user_name else f"{user_name}'s Chief of Staff"
+        title = f"{base} · {now.strftime('%b %-d, %-I:%M %p')}"
+
+    doc = {
+        "team_id": general_team_id,
+        "type": "group",
+        "title": title,
+        "kind": PRIVATE_COS_KIND,
+        "owner_user_id": str(user_id),
+        "agent_ids": [],
+        "member_ids": [str(user_id)],
+        "auto_respond": True,
+        "smart_expand": True,
+        "created_by": str(user_id),
+        "created_at": now,
+        "last_message_at": now,
+    }
+    res = await db.conversations.insert_one(doc)
+    return await db.conversations.find_one({"_id": res.inserted_id})
+
+
+async def list_private_cos_threads(db, *, org: dict, user_id: str,
+                                    limit: int = 30) -> list[dict]:
+    """Return the user's CoS threads in this org, newest-first by
+    last activity. Empty list when the user has none — caller decides
+    whether to auto-create one. Trimmed to `limit` so a power user
+    with thousands of threads doesn't blow up the UI."""
+    general_team_id = org.get("general_team_id") or ""
+    if not general_team_id:
+        return []
+    cursor = db.conversations.find({
+        "team_id": general_team_id,
+        "kind": PRIVATE_COS_KIND,
+        "owner_user_id": str(user_id),
+    }, {
+        "_id": 1, "team_id": 1, "title": 1, "kind": 1,
+        "owner_user_id": 1, "created_at": 1, "last_message_at": 1,
+    }).sort("last_message_at", -1).limit(int(limit))
+    out = []
+    async for c in cursor:
+        out.append({
+            "conversation_id": str(c["_id"]),
+            "team_id": c.get("team_id") or general_team_id,
+            "title": c.get("title") or "My Chief of Staff",
+            "created_at": c.get("created_at"),
+            "last_message_at": c.get("last_message_at"),
+        })
+    return out
+
+
 def can_user_access_private_cos(*, conv: dict, org: dict, user_id: str) -> bool:
     """Private CoS conversations are visible only to:
        - The user who owns the thread (`owner_user_id`)

@@ -237,6 +237,15 @@ async def upsert_user_for_firebase_claims(db, claims: dict) -> dict:
         "created_at": now,
     })
     fresh = await db.users.find_one({"_id": res.inserted_id})
+    # First-time Firebase signup → fire welcome email + team notify.
+    # Best-effort; same fire-and-forget pattern as the legacy register
+    # path so a flaky Resend doesn't break Google-sign-in flows.
+    try:
+        import asyncio as _asyncio
+        from email_service import send_welcome_email
+        _asyncio.create_task(send_welcome_email(name=name, email=email))
+    except Exception:
+        pass
     return _serialize_user(fresh)
 
 

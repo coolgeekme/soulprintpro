@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import logging
 import os
+from datetime import datetime, timezone
 from typing import Optional
 
 import httpx
@@ -78,4 +79,92 @@ async def send_resend_email(
         return False
 
 
-__all__ = ["send_resend_email"]
+__all__ = ["send_resend_email", "send_welcome_email"]
+
+
+async def send_welcome_email(*, name: str, email: str) -> bool:
+    """Send a friendly welcome email to a newly registered user AND a
+    notification copy to the SoulPrint team. Best-effort + never raises
+    — the caller's registration flow MUST NOT break if the email
+    provider is having a bad day.
+
+    The "team" address is configurable via `WELCOME_NOTIFY_EMAIL` and
+    defaults to `team@archeforge.com` (the canonical owner inbox).
+
+    Idempotency:
+      - Sender enforces nothing — duplicates are caller's responsibility.
+        The register path only fires this once per inserted user_id, so
+        in practice we won't double-send.
+    """
+    if not email:
+        return False
+    safe_name = (name or email.split("@")[0] or "there").strip()
+    team_addr = (os.environ.get("WELCOME_NOTIFY_EMAIL") or "team@archeforge.com").strip()
+
+    user_html = f"""
+      <div style="font-family:'Inter',-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;
+                  color:#1a1a22;max-width:560px;margin:0 auto;line-height:1.55;padding:32px 24px;">
+        <h1 style="font-family:'IBM Plex Serif',Georgia,serif;font-size:28px;
+                   color:#F64000;margin:0 0 16px;line-height:1.15;">
+          Welcome to SoulPrint Engine Pro, {safe_name}.
+        </h1>
+        <p style="font-size:15px;color:#2a2a35;">
+          You now have access to a 169-agent team that already knows how
+          to build inside your brand voice — strategists, copywriters,
+          researchers, designers, engineers, the works.
+        </p>
+        <p style="font-size:15px;color:#2a2a35;">
+          A great first step: paste your website (or just describe your
+          business) into a fresh organization. We'll synthesize your
+          Soul — mission, voice, audience, visual style — and your
+          Chief of Staff agent will spin up a plan for what to ship next.
+        </p>
+        <p style="margin-top:28px;">
+          <a href="https://pro.soulprintengine.ai/app"
+             style="display:inline-block;background:linear-gradient(135deg,#F64000,#FF8E3A);
+                    color:white;padding:12px 24px;border-radius:999px;
+                    text-decoration:none;font-weight:600;font-size:14px;">
+            Open your dashboard →
+          </a>
+        </p>
+        <p style="font-size:13px;color:#888;margin-top:32px;">
+          Questions? Reply to this email — a real human reads it.<br/>
+          — The SoulPrint Engine Pro team
+        </p>
+      </div>
+    """
+    user_text = (
+        f"Welcome to SoulPrint Engine Pro, {safe_name}.\n\n"
+        f"You now have access to a 169-agent team that already knows how to build inside your brand voice.\n\n"
+        f"Open your dashboard: https://pro.soulprintengine.ai/app\n\n"
+        f"Questions? Reply to this email — a real human reads it.\n— The SoulPrint Engine Pro team"
+    )
+    user_ok = await send_resend_email(
+        to=email,
+        subject="Welcome to SoulPrint Engine Pro",
+        html=user_html, text=user_text,
+    )
+
+    # Internal team notification — short, scannable, no marketing fluff.
+    team_html = (
+        f'<div style="font-family:Inter,Arial,sans-serif;font-size:14px;color:#1a1a22;">'
+        f'<p><strong>New user signed up</strong></p>'
+        f'<table style="border-collapse:collapse;font-size:14px;">'
+        f'<tr><td style="padding:4px 12px 4px 0;color:#888;">Name</td><td>{safe_name}</td></tr>'
+        f'<tr><td style="padding:4px 12px 4px 0;color:#888;">Email</td><td>{email}</td></tr>'
+        f'<tr><td style="padding:4px 12px 4px 0;color:#888;">Time (UTC)</td>'
+        f'<td>{datetime.now(timezone.utc).isoformat(timespec="seconds")}</td></tr>'
+        f'</table></div>'
+    )
+    team_text = (
+        f"New user signed up.\n"
+        f"Name: {safe_name}\nEmail: {email}\n"
+        f"Time (UTC): {datetime.now(timezone.utc).isoformat(timespec='seconds')}\n"
+    )
+    await send_resend_email(
+        to=team_addr,
+        subject=f"[SoulPrint] New signup — {safe_name} <{email}>",
+        html=team_html, text=team_text,
+    )
+
+    return bool(user_ok)
