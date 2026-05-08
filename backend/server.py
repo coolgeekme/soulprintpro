@@ -304,6 +304,28 @@ async def get_current_user(request: Request) -> dict:
         "is_superadmin": bool(user.get("is_superadmin")),
     }
 
+
+async def get_user_or_none(request: Request) -> Optional[dict]:
+    """Like ``get_current_user`` but returns ``None`` instead of
+    raising 401. Used by public-safe endpoints that branch on auth
+    state (e.g. /api/trial/status, which surfaces the trial timer to
+    a signed-in caller and gracefully falls back to anonymous for
+    visitors). Also augments the dict with the trial fields so the
+    SPA can show a countdown banner without an extra round-trip.
+    """
+    try:
+        u = await get_current_user(request)
+    except HTTPException:
+        return None
+    # Pull the trial fields off the live row — get_current_user only
+    # returns the slim public profile.
+    full = await db.users.find_one({"_id": ObjectId(u["id"])},
+                                   {"_id": 0, "trial_started_at": 1,
+                                    "trial_expires_at": 1, "trial_source": 1})
+    if full:
+        u.update(full)
+    return u
+
 # ── Per-request user context (timezone + approximate location) ──────────────
 # Set in `get_current_user` from the X-User-Timezone / X-User-Location headers
 # the frontend injects on every request, then read inside `generate_agent_reply`
@@ -684,6 +706,16 @@ async def me(u: dict = Depends(get_current_user)):
         limit=1,
     )
     u["has_password"] = bool(has_pwd)
+    # Trial state — surfaces a 24h countdown banner in TopBar and
+    # gates "trial expired" upsells. Both fields are ISO-strings or
+    # null. Never falsifies a trial (we only project the fields if
+    # they were stamped at trial-redeem time).
+    if (full or {}).get("trial_started_at"):
+        ts = full["trial_started_at"]
+        u["trial_started_at"] = ts.isoformat() if isinstance(ts, datetime) else str(ts)
+    if (full or {}).get("trial_expires_at"):
+        te = full["trial_expires_at"]
+        u["trial_expires_at"] = te.isoformat() if isinstance(te, datetime) else str(te)
     return u
 
 
@@ -6057,6 +6089,17 @@ app.include_router(base_r)
 app.include_router(auth_r)
 app.include_router(org_r)
 app.include_router(invite_r)
+
+# Self-serve 24-hour trial — request a code, redeem it as registration,
+# clock starts at redeem time. See trial.py.
+from trial import make_trial_router  # noqa: E402
+from workspaces import _public_origin  # noqa: E402
+app.include_router(make_trial_router(
+    db=db,
+    set_auth_cookies=set_auth_cookies,
+    create_access_token=create_access_token,
+    public_origin=_public_origin,
+))
 # Workspace layer (NEW) — sits above Orgs. See workspaces.py.
 from workspaces import (  # noqa: E402
     make_workspaces_router,

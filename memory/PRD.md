@@ -604,3 +604,63 @@ pattern. Users must be able to:
   - Verified via direct unit test: 5/5 cases pass (preview-only,
     XFH→prod, Origin header, XFH chain, hostile proto rejected).
 
+
+- ✅ **Audit → trial conversion funnel** (May 8, 2026) — turns the
+  audit reader into a subscriber/client. Three-path CTA at the bottom
+  of every audit, all working end-to-end:
+
+  **Backend** (`/app/backend/trial.py`):
+  - `POST /api/trial/request-code` — issues a one-time code, mails it
+    via Resend (with a clean styled template + redeem CTA button),
+    persists in `trial_codes` collection. Idempotent within the 14-day
+    TTL — re-requesting the same email reuses the pending code (with
+    a 60s anti-bombard cooldown). Already-registered emails get a
+    polite "sign in instead" hint instead of issuing a redundant code.
+    In dev environments without Resend the response surfaces
+    `dev_code` so testing isn't gated on email delivery.
+  - `POST /api/trial/redeem` — consumes the code, creates a real user
+    account (bcrypt password, email_verified_at stamped), starts the
+    24h clock (`trial_started_at` + `trial_expires_at` on the user row),
+    mints an access token + cookie, returns the full login payload.
+    Handles every failure mode cleanly: bad code (404), already-redeemed
+    (400), expired (400), email-collision-race (409).
+  - `GET /api/trial/status` — public-safe lookup. Returns
+    `{signed_in, has_trial, trial_active, trial_started_at,
+    trial_expires_at}` so the SPA can branch without a pre-login round
+    trip.
+  - Wired into `/api/auth/me` so the login response and `/me` calls
+    both surface trial fields out of the box.
+
+  **Frontend**:
+  - `<AuditConversionCTA>` — bottom of every audit. Personalised hero
+    that adapts to the audit's score (low score → "We found N issues,
+    want SPE Pro to draft fixes?"; high score → "You're already ahead;
+    SPE Pro keeps you there"; no recs → generic). Three cards:
+    (1) **Try free for 24h** with inline name+email form that POSTs to
+    `/api/trial/request-code` and shows a clean success state.
+    (2) **Book a demo** — opens a modal that embeds the Cal.com /
+    Calendly URL from `REACT_APP_DEMO_BOOKING_URL` env (with a clean
+    mailto fallback if the env isn't set yet).
+    (3) **Take the audit & download the PDF** — graceful exit. Trust
+    strip across the bottom (Bitcoin-anchored proofs, encrypted vault,
+    "never trained on your data") with a "Full security policy →" link
+    to `/trust`.
+  - `/trial/redeem?code=XXX` (`TrialRedeemPage.js`) — pre-fills the
+    code from the URL query, takes name + email + password, calls
+    `/api/trial/redeem`, drops the bearer in via `setToken()`, refreshes
+    AuthContext, lands the user signed-in at `/app`. Code field auto-
+    uppercases so paste-from-email never fails on case.
+  - `<TrialCountdownBadge>` in `TopBar.js` — shows "Trial · 18h left"
+    pill while a trial is active. Tints orange under 4 hours for
+    urgency. Hidden once expired.
+  - Verified end-to-end with curl (request → code in Mongo → redeem →
+    /me has trial fields → idempotency works → already-registered
+    branch works) and Playwright screenshots: audit CTA renders
+    correctly with personalised hero, trial-redeem page loads with
+    code pre-filled.
+
+  **Setup user has to do once after redeploy**: set `REACT_APP_DEMO_BOOKING_URL`
+  on the frontend env to their Cal.com / Calendly URL. Until then the
+  "Book a demo" modal falls back to a `mailto:team@archeforge.com`
+  with a "Demo request" subject and the audit slug embedded.
+

@@ -7,6 +7,7 @@ import {
 import { toast } from "sonner";
 import api from "../lib/api";
 import AuditFullReport from "../components/AuditFullReport";
+import AuditConversionCTA from "../components/AuditConversionCTA";
 
 /**
  * PublicAuditPage — the prospect-facing landing page for a generated
@@ -148,6 +149,10 @@ export default function PublicAuditPage() {
         ) : (
           <>
             <AuditFullReport audit={audit} />
+            {/* Conversion bar — three-path CTA after the prospect has
+                read the full audit. Personalised hero, 24-hour trial
+                request form, demo modal, PDF exit. */}
+            <AuditConversionCTA audit={{ ...audit, slug }} />
             <PdfDownload slug={slug} leadId={unlocked.leadId} />
           </>
         )}
