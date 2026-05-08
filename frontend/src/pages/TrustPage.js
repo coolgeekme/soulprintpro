@@ -540,7 +540,7 @@ function FinalCTA() {
           </a>
           <Link to="/auth?mode=register" className="sp-btn sp-btn-ghost text-sm"
                 data-testid="trust-final-cta-start">
-            Start a free workspace <ArrowRight className="w-4 h-4" />
+            Start a workspace <ArrowRight className="w-4 h-4" />
           </Link>
           <Link to="/security" className="sp-btn sp-btn-ghost text-sm">
             Read the technical policy
