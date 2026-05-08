@@ -108,8 +108,13 @@ class LeadSubmitBody(BaseModel):
     name: str = Field(..., min_length=1, max_length=120)
     email: EmailStr
     phone: str = Field(..., min_length=4, max_length=40)
-    company: str = Field(..., min_length=1, max_length=160)
-    role: str = Field(..., min_length=1, max_length=120)
+    # Company / role were originally required. We now collect only the
+    # essentials (name, email, phone) so prospects unlock the audit
+    # faster — every extra field measurably drops conversion. Both
+    # are kept on the schema as optional in case a future admin tool
+    # wants to volunteer them.
+    company: str = Field("", max_length=160)
+    role: str = Field("", max_length=120)
 
 
 # ── Helpers ──────────────────────────────────────────────────────────────────

@@ -222,21 +222,18 @@ function LeadGate({ slug, onUnlock }) {
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
   const [phone, setPhone] = useState("");
-  const [company, setCompany] = useState("");
-  const [role, setRole] = useState("");
   const [submitting, setSubmitting] = useState(false);
 
   const submit = async (e) => {
     e.preventDefault();
-    if (!name.trim() || !email.trim() || !phone.trim() || !company.trim() || !role.trim()) {
-      toast.error("All fields required");
+    if (!name.trim() || !email.trim() || !phone.trim()) {
+      toast.error("Name, email and phone are required");
       return;
     }
     setSubmitting(true);
     try {
       const { data } = await api.post(`/public/audits/${slug}/lead`, {
         name: name.trim(), email: email.trim(), phone: phone.trim(),
-        company: company.trim(), role: role.trim(),
       });
       onUnlock({ audit: data.audit, leadId: data.lead_id });
       toast.success("Unlocked — your full report is below.");
@@ -260,10 +257,8 @@ function LeadGate({ slug, onUnlock }) {
       <form onSubmit={submit} className="grid sm:grid-cols-2 gap-3">
         <Field label="Full name" value={name} onChange={setName} placeholder="Jane Doe" testid="lead-name" />
         <Field label="Work email" type="email" value={email} onChange={setEmail} placeholder="jane@company.com" testid="lead-email" />
-        <Field label="Phone" type="tel" value={phone} onChange={setPhone} placeholder="(555) 123-4567" testid="lead-phone" />
-        <Field label="Company" value={company} onChange={setCompany} placeholder="Acme Inc." testid="lead-company" />
         <div className="sm:col-span-2">
-          <Field label="Role / title" value={role} onChange={setRole} placeholder="Head of Marketing" testid="lead-role" />
+          <Field label="Phone" type="tel" value={phone} onChange={setPhone} placeholder="(555) 123-4567" testid="lead-phone" />
         </div>
         <button
           type="submit"
