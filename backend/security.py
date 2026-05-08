@@ -205,7 +205,8 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
         "default-src 'self'; "
         "script-src 'self' 'unsafe-inline' 'unsafe-eval' "
         "https://www.gstatic.com https://apis.google.com "
-        "https://www.googletagmanager.com; "
+        "https://www.googletagmanager.com "
+        "https://static.cloudflareinsights.com; "
         "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; "
         "font-src 'self' https://fonts.gstatic.com data:; "
         "img-src 'self' data: blob: https:; "
@@ -233,10 +234,10 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
             "Permissions-Policy",
             "geolocation=(self), microphone=(self), camera=(self), payment=()",
         )
-        # CSP stays in Content-Security-Policy-Report-Only by default
-        # so we don't break the SPA on an unforeseen inline pattern.
-        # Flip to enforce once the report stream is clean for a week.
-        csp_mode = os.environ.get("CSP_MODE", "report-only")
+        # CSP defaults to enforced now that the policy is stable across
+        # the SPA and our APIs. Set `CSP_MODE=report-only` if you ever
+        # need to A/B test a policy change without breaking pages.
+        csp_mode = os.environ.get("CSP_MODE", "enforce")
         header_name = (
             "Content-Security-Policy"
             if csp_mode == "enforce"

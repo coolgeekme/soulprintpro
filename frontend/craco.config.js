@@ -61,6 +61,45 @@ let webpackConfig = {
 };
 
 webpackConfig.devServer = (devServerConfig) => {
+  // Production-grade security headers on every dev/preview response.
+  // The hosted platform's edge serves the SPA via its own Express layer
+  // in production — we can't set headers there from code, so for prod
+  // these come from a Cloudflare Transform Rule (or platform support).
+  // In dev / preview we set them right on the webpack-dev-server so the
+  // SPA matches the backend's `SecurityHeadersMiddleware` posture.
+  //
+  // `frame-ancestors 'self'` here is the modern equivalent of
+  // X-Frame-Options: SAMEORIGIN — Mozilla Observatory accepts the CSP
+  // form for the X-Frame-Options test.
+  const SECURITY_HEADERS = [
+    { key: "Strict-Transport-Security", value: "max-age=63072000; includeSubDomains; preload" },
+    { key: "X-Content-Type-Options", value: "nosniff" },
+    { key: "X-Frame-Options", value: "SAMEORIGIN" },
+    { key: "Referrer-Policy", value: "strict-origin-when-cross-origin" },
+    { key: "Permissions-Policy", value: "geolocation=(self), microphone=(self), camera=(self), payment=()" },
+    {
+      key: "Content-Security-Policy",
+      value: [
+        "default-src 'self'",
+        "script-src 'self' 'unsafe-inline' 'unsafe-eval' https://www.gstatic.com https://apis.google.com https://www.googletagmanager.com https://customer-assets.emergentagent.com https://static.cloudflareinsights.com",
+        "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
+        "font-src 'self' https://fonts.gstatic.com data:",
+        "img-src 'self' data: blob: https:",
+        "media-src 'self' blob: https:",
+        "connect-src 'self' https: wss: ws:",
+        "frame-src 'self' https://*.firebaseapp.com https://accounts.google.com",
+        "frame-ancestors 'self'",
+        "object-src 'none'",
+        "base-uri 'self'",
+        "form-action 'self'",
+      ].join("; "),
+    },
+  ];
+  devServerConfig.headers = {
+    ...(devServerConfig.headers || {}),
+    ...Object.fromEntries(SECURITY_HEADERS.map((h) => [h.key, h.value])),
+  };
+
   // Add health check endpoints if enabled
   if (config.enableHealthCheck && setupHealthEndpoints && healthPluginInstance) {
     const originalSetupMiddlewares = devServerConfig.setupMiddlewares;

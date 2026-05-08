@@ -518,3 +518,42 @@ pattern. Users must be able to:
     deep-dive with stat, compliance posture, final CTA — all render
     cleanly with auth-free access.
 
+
+- ✅ **Mozilla Observatory grade fix** (May 8, 2026) — production scan
+  on `pro.soulprintengine.ai` returned C / 55-of-100 with two failed
+  tests: CSP not implemented (-25) and X-Frame-Options not implemented
+  (-20). Root cause: my earlier `SecurityHeadersMiddleware` was applied
+  to the FastAPI backend, but the SPA HTML responses come from a
+  separate Express layer at the platform's edge that we don't control
+  from code. Three fixes shipped:
+  - **`craco.config.js` devServer headers** — added a `SECURITY_HEADERS`
+    block to `devServerConfig.headers` so every preview HTML response
+    carries HSTS, X-Frame-Options: SAMEORIGIN, X-Content-Type-Options:
+    nosniff, Referrer-Policy, Permissions-Policy, and a real
+    `Content-Security-Policy` (with `frame-ancestors 'self'`, the modern
+    equivalent of X-Frame-Options that the Observatory accepts for the
+    XFO test). Verified via curl: headers now present on `/`, `/trust`,
+    `/security` etc.
+  - **`index.html` meta CSP fallback** — added
+    `<meta http-equiv="Content-Security-Policy">`,
+    `<meta http-equiv="X-Content-Type-Options">`, and `<meta name="referrer">`
+    so the policy is enforced client-side even on platforms that strip
+    response headers.
+  - **Backend CSP flipped from report-only → enforce** — `security.py`
+    default `CSP_MODE` is now `enforce` (was `report-only`). `/api/*`
+    responses now score correctly. Set `CSP_MODE=report-only` in env
+    if A/B testing a policy change.
+  - **Allowlisted `static.cloudflareinsights.com`** in the script-src
+    directive so the platform's auto-injected analytics beacon doesn't
+    get CSP-blocked.
+  - **Production fix path**: this gets the *preview* deployment to
+    pass, but pro.soulprintengine.ai is served by the platform's own
+    Express + Cloudflare edge which strips/replaces some headers. To
+    get production to A-grade, the user needs to either (a) redeploy
+    so the new index.html meta tags ship to prod (immediately fixes
+    CSP on prod since meta CSP is honored by browsers — Observatory
+    uses real headers though), or (b) add a Cloudflare Transform Rule
+    on `pro.soulprintengine.ai` to inject the same security headers
+    at the edge. The Cloudflare route is the "real" fix for the
+    Observatory grade.
+

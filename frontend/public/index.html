@@ -6,6 +6,24 @@
         <meta name="theme-color" content="#0a0a0a" media="(prefers-color-scheme: dark)" />
         <meta name="theme-color" content="#F64000" media="(prefers-color-scheme: light)" />
         <meta name="description" content="SoulPrint Engine Pro — your company's AI crew." />
+        <!--
+          Client-side Content Security Policy. The platform's edge
+          server doesn't let us set this as a real HTTP header, so we
+          fall back to <meta http-equiv> which browsers DO enforce for
+          the directives below (default-src, script-src, style-src,
+          img-src, etc). Note: `frame-ancestors`, `report-uri`, and
+          `report-to` are spec-required to be ignored when set via
+          meta — for those we'd need real HTTP headers, which on this
+          platform requires a Cloudflare Transform Rule or equivalent
+          edge-level config (see Trust & Security page roadmap).
+          Permissive on `'unsafe-inline'`/`'unsafe-eval'` because the
+          React dev shim and a handful of inline-style libraries need
+          them; we'll tighten as we verify each dependency.
+        -->
+        <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval' https://www.gstatic.com https://apis.google.com https://www.googletagmanager.com https://customer-assets.emergentagent.com https://static.cloudflareinsights.com; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com data:; img-src 'self' data: blob: https:; media-src 'self' blob: https:; connect-src 'self' https: wss: ws:; frame-src 'self' https://*.firebaseapp.com https://accounts.google.com; object-src 'none'; base-uri 'self'; form-action 'self'" />
+        <meta http-equiv="X-Content-Type-Options" content="nosniff" />
+        <meta http-equiv="Referrer-Policy" content="strict-origin-when-cross-origin" />
+        <meta name="referrer" content="strict-origin-when-cross-origin" />
         <meta name="mobile-web-app-capable" content="yes" />
         <meta name="apple-mobile-web-app-capable" content="yes" />
         <!--
