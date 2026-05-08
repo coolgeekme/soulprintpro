@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from "react";
 import api from "../lib/api";
-import { ShieldCheck, Loader2, ExternalLink, Copy, Check } from "lucide-react";
+import { ShieldCheck, Loader2, ExternalLink, Copy, Check, Link as LinkIcon } from "lucide-react";
 
 /**
  * Tamper-evident integrity badge for any agent-generated artifact.
@@ -22,6 +22,7 @@ export default function IntegrityBadge({ gridfsId, compact = false }) {
   const [missing, setMissing] = useState(false);
   const [open, setOpen] = useState(false);
   const [copied, setCopied] = useState(false);
+  const [linkCopied, setLinkCopied] = useState(false);
 
   useEffect(() => {
     if (!gridfsId) return;
@@ -83,6 +84,17 @@ export default function IntegrityBadge({ gridfsId, compact = false }) {
                        setCopied(true);
                        setTimeout(() => setCopied(false), 1500);
                      }}
+                     linkCopied={linkCopied}
+                     onCopyLink={() => {
+                       // Build the public, share-safe verify URL. Anyone
+                       // (no login) can paste this into their browser
+                       // and confirm the Bitcoin anchor — perfect for
+                       // RFP responses, compliance docs, or sales.
+                       const url = `${window.location.origin}/v/${gridfsId}`;
+                       navigator.clipboard.writeText(url);
+                       setLinkCopied(true);
+                       setTimeout(() => setLinkCopied(false), 1800);
+                     }}
         />
       )}
     </div>
@@ -90,7 +102,7 @@ export default function IntegrityBadge({ gridfsId, compact = false }) {
 }
 
 
-function ProofPopover({ proof, gridfsId, onClose, onUpgrade, copied, onCopyDigest }) {
+function ProofPopover({ proof, gridfsId, onClose, onUpgrade, copied, onCopyDigest, linkCopied, onCopyLink }) {
   const anchored = proof.status === "anchored";
   return (
     <>
@@ -124,12 +136,23 @@ function ProofPopover({ proof, gridfsId, onClose, onUpgrade, copied, onCopyDiges
         </div>
 
         <div className="flex items-center gap-2 mt-3 pt-3 border-t border-white/10">
+          <button
+            type="button"
+            onClick={onCopyLink}
+            className="sp-btn sp-btn-primary text-[11px] flex-1"
+            title="Copy a public, share-safe verify URL — anyone can confirm this proof without a SoulPrint account"
+            data-testid={`copy-verify-link-${gridfsId}`}
+          >
+            {linkCopied ? <Check className="w-3 h-3" /> : <LinkIcon className="w-3 h-3" />}
+            {linkCopied ? "Copied!" : "Copy verify link"}
+          </button>
           <a
             href={`/api/integrity-proofs/${proof.id}/proof.ots`}
-            className="sp-btn sp-btn-ghost text-[11px] flex-1"
+            className="sp-btn sp-btn-ghost text-[11px]"
             data-testid={`download-ots-${gridfsId}`}
+            title="Download the standard .ots proof file"
           >
-            <ExternalLink className="w-3 h-3" /> Download .ots
+            <ExternalLink className="w-3 h-3" /> .ots
           </a>
           {!anchored && (
             <button

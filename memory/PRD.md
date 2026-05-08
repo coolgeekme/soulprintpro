@@ -458,3 +458,32 @@ pattern. Users must be able to:
   - **Dependencies added**: `opentimestamps==0.4.5`, `pycryptodomex==3.23.0`,
     `python-bitcoinlib==0.12.2` in `requirements.txt`.
 
+
+- ✅ **Public, share-safe Verify URL `/v/<file_id>`** (May 8, 2026) — turns
+  Proof of Integrity into a sales / RFP / compliance tool. Anyone (no
+  login) can hit the URL and confirm the artifact is Bitcoin-anchored.
+  - **Backend**: 3 new public endpoints, all unauthenticated:
+    - `GET /api/public/v/{gridfs_id}` — public-safe proof status
+    - `GET /api/public/v/{gridfs_id}/proof.ots` — standard `.ots` proof bytes
+    - `POST /api/public/v/{gridfs_id}/upgrade` — poll calendars (still
+      rate-limited to 1 per 5min server-side)
+    - All strip `extra` (filename label) and `subject_id` from responses
+      so business names like "Acme_Q3_audit.pdf" can't leak via the
+      public endpoint. Digest, calendars, timestamps, and proof bytes
+      are all content-free without the original file.
+  - **Frontend**: new `/v/:fileId` route → `VerifyPublicPage.js` with
+    minimal auth-free header, status banner (green "Bitcoin-anchored"
+    or orange "Anchoring in progress"), full proof details (digest,
+    stamped/anchored timestamps, clickable calendar URLs, .ots download),
+    and a 3-step verify-yourself CLI walkthrough with copy-paste-ready
+    `pip install`, `curl`, and `ots verify` commands. CTA at the bottom
+    routes prospects to /about.
+  - **`IntegrityBadge` enhanced** with a primary "Copy verify link"
+    button that copies `${origin}/v/<gridfs_id>` to the clipboard so
+    customers can paste the share-safe URL into RFP responses,
+    compliance packets, sales emails, etc.
+  - Verified end-to-end: public endpoints return 200 without auth, leak-
+    protected (no `extra`, no `subject_id`), bogus ids return 404,
+    `.ots` download streams 500 bytes with correct mimetype, /v/ page
+    renders cleanly with cleared cookies.
+

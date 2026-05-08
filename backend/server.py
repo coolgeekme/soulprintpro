@@ -6564,6 +6564,77 @@ async def get_security_policy():
 import proof_of_integrity as poi  # noqa: E402
 
 
+# ── Public, share-safe verify endpoints ─────────────────────────────────
+# These are intentionally UNAUTHENTICATED. The data they return — a hex
+# digest, OTS proof bytes, calendar list, timestamps — is content-free
+# without the original file. A digest can't be reversed back to bytes,
+# so leaking these to the public web is the entire POINT of the feature
+# (so prospective customers can verify a file before signing up).
+#
+# We DO suppress `extra` (which contains filename labels and Merkle
+# manifests) since those can leak business names like "Acme_Q3_audit.pdf".
+def _publicly_safe_proof(row: dict) -> dict:
+    """Strip anything that could leak business context. Keep only the
+    cryptographic primitives needed to verify the file independently."""
+    if not row:
+        return {}
+    pub = poi._public_proof_row(row)
+    pub.pop("extra", None)        # filenames, manifests
+    pub.pop("subject_id", None)   # GridFS id (caller already knows it)
+    return pub
+
+
+@app.get("/api/public/v/{gridfs_id}")
+async def public_verify_file(gridfs_id: str):
+    """Public, no-auth proof lookup. Returns just the cryptographic
+    primitives — anyone (a prospect, an auditor, a journalist) can hit
+    this URL with a file_id from a `/v/<id>` share-link and confirm the
+    file is Bitcoin-anchored without needing a SoulPrint account.
+    """
+    row = await poi.get_proof_for_subject(db, kind="file", subject_id=gridfs_id)
+    if not row:
+        raise HTTPException(404, "No integrity proof for this file")
+    return _publicly_safe_proof(row)
+
+
+@app.get("/api/public/v/{gridfs_id}/proof.ots")
+async def public_download_proof_ots(gridfs_id: str):
+    """Public download of the standard `.ots` proof file. Bytes are
+    useless without the original file (which we never expose here), so
+    this is safe to share. Lets a third party run
+    `ots verify file.ots --file the_original` themselves.
+    """
+    row = await poi.get_proof_for_subject(db, kind="file", subject_id=gridfs_id)
+    if not row:
+        raise HTTPException(404, "No integrity proof for this file")
+    full = await db.integrity_proofs.find_one({"id": row["id"]})
+    proof_bytes = (full or {}).get("proof_bytes") or b""
+    return Response(
+        content=proof_bytes,
+        media_type="application/vnd.opentimestamps.ots",
+        headers={
+            "Content-Disposition": f'attachment; filename="{gridfs_id}.ots"',
+            # Cache aggressively — the proof bytes only ever grow more
+            # complete (pending → anchored), and 5 minutes is a fine
+            # window for the rare upgrade case.
+            "Cache-Control": "public, max-age=300",
+        },
+    )
+
+
+@app.post("/api/public/v/{gridfs_id}/upgrade")
+async def public_upgrade_file_proof(gridfs_id: str):
+    """Public-safe poll for pending → Bitcoin-anchored upgrade. The
+    server already rate-limits one calendar poll per 5 min per record,
+    so anyone can hit this without DOS risk to the OTS calendars.
+    """
+    row = await poi.get_proof_for_subject(db, kind="file", subject_id=gridfs_id)
+    if not row:
+        raise HTTPException(404, "No integrity proof for this file")
+    refreshed = await poi.try_upgrade_pending(db, record_id=row["id"])
+    return _publicly_safe_proof(refreshed) if refreshed else _publicly_safe_proof(row)
+
+
 @app.get("/api/files/{gridfs_id}/proof")
 async def get_file_proof(gridfs_id: str, u: dict = Depends(get_current_user)):
     """Return the current proof status for an artifact stored in GridFS.
