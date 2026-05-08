@@ -329,3 +329,16 @@ pattern. Users must be able to:
   - Also fixed: `iframe.contentWindow.chrome` patch was preserved + tightened.
   - **Why we didn't go with CloakBrowser**: their binary is free for personal use but their OEM/SaaS license clause explicitly covers "running the Binary on your infrastructure to serve third-party customers" which is exactly SoulPrint Engine Pro. Pricing requires emailing them. For now Option C closes ~70-80% of the gap with zero licensing exposure. If their OEM pricing is reasonable in 6-12 months when monetisation is live, the swap is one import change away.
   - Backend lint clean. Will deploy to production.
+
+- ✅ **Chat "Message failed: Network Error" — quick fix path** (Feb 8, 2026) — direct response to user reporting consistent <30s "Network Error" toasts during conversations. Three improvements:
+  1. **180s axios timeout** (`lib/api.js`) — was unset, now 180000ms. Cloudflare cuts ~100s but the explicit client timeout gives us a clean `ECONNABORTED` instead of vague "Network Error", AND fails fast when the backend really crashed mid-LLM-call.
+  2. **Precise error classification** (`ConversationPage.js`) — replaced the single generic toast with 7 cases mapped from axios error shape:
+     - 401/403 → "Your session expired. Refresh and sign in again."
+     - 402 / "budget" → top-up budget instructions
+     - 429 → rate limit
+     - 5xx → server error with status
+     - ECONNABORTED → "Reply took >180s. Retry or break up the request."
+     - ERR_NETWORK / "Network Error" → "Connection dropped before agent finished. Reply may still arrive — refresh to check, or retry."
+     - Anything else → server-detail or generic
+  3. **Failed message stays visible with Retry pill** — instead of dropping the optimistic bubble and stuffing the text back into the input (loses thread context), we keep the bubble with a red ring + the precise failure reason + a Retry button. One click resends. Far better UX than "type it again."
+  - Backend lint clean, frontend lint clean. Conversation page verified to still render normally.

@@ -79,6 +79,12 @@ const userTimezone = () => {
 
 const api = axios.create({
   baseURL: `${BACKEND_URL}/api`,
+  // 180-second timeout — covers multi-agent replies + web-search-grounded
+  // agents that occasionally cross 100s. Cloudflare itself will sever
+  // anything beyond ~100s upstream, but the explicit client-side timeout
+  // gives us a clean ECONNABORTED instead of a vague "Network Error",
+  // and a faster fail when the backend really did crash mid-request.
+  timeout: 180000,
   // No `withCredentials` — we authenticate with a Bearer token from
   // localStorage (set in the request interceptor below). Enabling cookie
   // credentials forces the browser to require *credentialed* CORS headers

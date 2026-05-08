@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useParams, Link, useNavigate } from "react-router-dom";
 import api, { BACKEND_URL } from "../lib/api";
 import { compressImageFile, formatBytes } from "../lib/imageCompress";
@@ -699,29 +699,73 @@ export default function ConversationPage() {
         api.post(`/conversations/${convId}/cancel`).catch(() => {});
         return;
       }
-      // Surface the actual reason instead of a generic toast so the user
-      // can act on it (top up budget, retry, etc.). Special-case the
-      // Emergent LLM "Budget has been exceeded" error since the fix is a
-      // one-click top-up in the user's profile.
+      // Classify the failure so we can show a precise message + decide
+      // whether retry is safe. axios surfaces three distinct shapes:
+      //   1. err.response  → the server responded with a non-2xx (we
+      //      have a status + JSON detail; backend got the message).
+      //   2. err.request   → the request was made but no response came
+      //      back (timeout, connection severed by ingress, server
+      //      crashed mid-LLM-call). User intent likely WAS persisted
+      //      backend-side but the agent reply is unknown.
+      //   3. neither       → something blew up before the request
+      //      went out (CORS, DNS, browser offline). Retry is safe.
+      const status = err?.response?.status;
       const detail = err?.response?.data?.detail || err?.message || "";
       const txt = String(detail);
-      if (/budget/i.test(txt)) {
-        toast.error(
-          "Your Emergent LLM key budget is empty. Profile → Universal Key → Add Balance, then try again.",
-          { duration: 8000 },
-        );
+      let toastMsg;
+      if (status === 401 || status === 403) {
+        toastMsg = "Your session expired. Refresh the page and sign in again.";
+      } else if (status === 402 || /budget/i.test(txt)) {
+        toastMsg = "Your Emergent LLM key budget is empty. Profile → Universal Key → Add Balance, then retry.";
+      } else if (status === 429) {
+        toastMsg = "Rate limit hit — wait a few seconds and retry.";
+      } else if (status && status >= 500) {
+        toastMsg = `Server error (${status}). Retry, or check the agent didn't crash.`;
+      } else if (err?.code === "ECONNABORTED" || /timeout/i.test(err?.message || "")) {
+        toastMsg = "Reply took too long (>180s). Retry, or break the request into smaller asks.";
+      } else if (err?.code === "ERR_NETWORK" || err?.message === "Network Error") {
+        // Most common cause on production: Cloudflare severed an LLM
+        // call that ran longer than the edge timeout. Backend likely
+        // DID start working but we didn't get the reply.
+        toastMsg = "Connection dropped before the agent finished. The reply may still arrive — refresh to check, or retry.";
       } else if (txt) {
-        toast.error(`Message failed: ${txt}`.slice(0, 220));
+        toastMsg = `Message failed: ${txt}`.slice(0, 220);
       } else {
-        toast.error("Message failed — check your connection and try again.");
+        toastMsg = "Message failed — check your connection and retry.";
       }
-      setMessages((prev) => prev.filter(m => m.id !== optimistic.id));
-      setText(toSend);
+      toast.error(toastMsg, { duration: 6000 });
+      // Keep the optimistic message visible with a `_failed` flag + the
+      // text we tried to send, so the user can click Retry from the
+      // bubble itself instead of re-typing. Far better UX than
+      // disappearing the message and stuffing the input back.
+      setMessages((prev) => prev.map((m) =>
+        m.id === optimistic.id
+          ? { ...m, _failed: true, _failedReason: toastMsg, _retryText: toSend }
+          : m
+      ));
     } finally {
       sendAbortRef.current = null;
       setSending(false);
     }
   };
+
+  /** Re-send a message that previously failed. Wired to the Retry pill
+   *  rendered next to a failed bubble. We swap the failure flags off
+   *  the existing optimistic and feed the original text back through
+   *  the normal send path so the same classifier handles a second
+   *  failure cleanly. */
+  const retryFailedMessage = useCallback((failedMsg) => {
+    if (!failedMsg?._retryText) return;
+    setMessages((prev) => prev.filter((m) => m.id !== failedMsg.id));
+    setText(failedMsg._retryText);
+    // Defer the actual send by one tick so React commits the new text
+    // state before the controlled input sees it. The send button
+    // handler reads `text` from state, not from the call-site arg.
+    setTimeout(() => {
+      const btn = document.querySelector('[data-testid="send-message-btn"]');
+      if (btn && !btn.disabled) btn.click();
+    }, 0);
+  }, []);
 
   // Stop the agent's in-flight reply. Aborts the axios request
   // (immediate UX feedback) AND tells the backend to drop any remaining
@@ -1110,7 +1154,7 @@ export default function ConversationPage() {
             return (
               <div key={m.id} className={`flex ${mine ? "justify-end" : "justify-start"} sp-fade-up group/msg`}>
                 <div className="relative max-w-[92%] sm:max-w-[88%]">
-                <div className={`rounded-2xl px-4 sm:px-5 py-3 sm:py-3.5 ${mine ? "sp-bubble-user" : "sp-bubble-agent"}`}>
+                <div className={`rounded-2xl px-4 sm:px-5 py-3 sm:py-3.5 ${mine ? "sp-bubble-user" : "sp-bubble-agent"} ${m._failed ? "ring-1 ring-red-500/40 bg-red-500/5" : ""}`}>
                   <div className="flex items-center gap-2 mb-1.5">
                     {isAgent && a && <span className="sp-dot" style={{ background: a.accent }} />}
                     <span className="text-sm font-medium">
@@ -1120,6 +1164,25 @@ export default function ConversationPage() {
                     <span className="text-[11px] sp-subtle ml-auto">{formatTime(m.timestamp)}</span>
                   </div>
                   <div className="whitespace-pre-wrap text-[16px] leading-[1.6]">{m.text}</div>
+                  {/* Failed-send pill — shows the precise reason and a
+                      one-click Retry. Far better UX than dropping the
+                      bubble + restoring the input box, which loses the
+                      conversational thread. */}
+                  {m._failed && (
+                    <div className="mt-2 flex flex-wrap items-center gap-2 text-[11px]" data-testid="message-failed-pill">
+                      <span className="text-red-300/90 leading-snug max-w-md">
+                        {m._failedReason || "Message failed."}
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() => retryFailedMessage(m)}
+                        className="sp-btn sp-btn-ghost text-[11px] py-1 px-2"
+                        data-testid="message-retry-btn"
+                      >
+                        Retry
+                      </button>
+                    </div>
+                  )}
                   {/* Multi-attachment renderer — handles both the new
                       `attachments` array and the legacy `attachment_*`
                       mirror fields (kept on the message for back-compat). */}
