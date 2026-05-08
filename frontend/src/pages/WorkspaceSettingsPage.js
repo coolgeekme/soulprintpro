@@ -350,6 +350,11 @@ export default function WorkspaceSettingsPage() {
                   Leaving all unchecked creates a workspace-level invite with no org access yet — you can grant it later from the members list.
                 </div>
               )}
+              <div className="text-[11px] sp-subtle mt-2 leading-relaxed" data-testid="ws-invite-already-member-hint">
+                Already a workspace member? You don't need a new invite — scroll
+                down to <b>Members</b> and click <b>Edit access</b> on their row
+                to grant additional orgs instantly.
+              </div>
             </div>
             <button
               onClick={createInvite} disabled={creatingInvite}

@@ -36,8 +36,16 @@ export default function AcceptInvitePage() {
         // single-org accept endpoint.
         try {
           const { data } = await api.post("/invites/accept", { code });
-          toast.success(data.already_member ? "You're already a member" : "Joined organization");
-          setTimeout(() => nav(`/app/org/${data.org_id}`), 600);
+          if (data.already_member) {
+            toast.message("You're already a member of that organization.");
+          } else {
+            toast.success("Joined organization", { duration: 4500 });
+          }
+          // Land on /app so the user sees every org they can access,
+          // not just the one they just joined. Re-invitees previously
+          // got bounced into the new org's chat and didn't realize the
+          // others (from earlier invites) were still there.
+          setTimeout(() => nav("/app"), 700);
           setPhase("ok");
         } catch (err2) {
           setError(err2?.response?.data?.detail || err?.response?.data?.detail
@@ -52,10 +60,32 @@ export default function AcceptInvitePage() {
     setPhase("accepting");
     try {
       const { data } = await api.post("/workspace-invites/accept", { code });
-      toast.success(`Joined ${preview?.workspace_name || "workspace"}`);
-      // Land on the first granted org if any, else the org picker.
-      const target = data.first_org_id ? `/app/org/${data.first_org_id}` : "/app";
-      setTimeout(() => nav(target), 600);
+      const added = data.orgs_added || [];
+      const already = data.orgs_already_member || [];
+      const wsName = preview?.workspace_name || "workspace";
+      // Show a precise toast so the user knows EXACTLY what just happened —
+      // critical when an existing member is re-invited to additional orgs
+      // (otherwise the redirect to a single org hides the fact that
+      // multiple were just granted).
+      if (added.length > 0) {
+        const names = added.map((o) => o.name || "Untitled").join(", ");
+        toast.success(
+          `Joined ${wsName} — ${added.length} new org${added.length > 1 ? "s" : ""} added: ${names}`,
+          { duration: 6000 },
+        );
+      } else if (already.length > 0) {
+        toast.message(
+          `You already have access to all ${already.length} org${already.length > 1 ? "s" : ""} in this invite.`,
+          { duration: 5000 },
+        );
+      } else {
+        toast.success(`Joined ${wsName}`);
+      }
+      // Always land on /app so the invitee SEES every org they can
+      // access, not just the first one. Previously we redirected to
+      // `data.first_org_id` which made re-invitees think only one new
+      // org was added when in fact several were.
+      setTimeout(() => nav("/app"), 700);
       setPhase("ok");
     } catch (err) {
       setError(err?.response?.data?.detail || "Could not accept invite");

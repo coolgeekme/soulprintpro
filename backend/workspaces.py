@@ -704,20 +704,29 @@ def make_workspace_invite_accept_router(
         # Add Org memberships for each grant that still belongs to this
         # workspace (grants are validated at create time, but we re-check
         # here to survive an Org being moved between workspaces later).
-        org_ids_in_ws = {
-            str(o["_id"]) async for o in db.organizations.find(
-                {"workspace_id": ws_id}, {"_id": 1},
-            )
-        }
+        # Pre-fetch the orgs in this workspace WITH names so the response
+        # can tell the UI exactly which orgs the user gained access to —
+        # critical when the invite re-invites an existing workspace member
+        # to additional orgs (otherwise the redirect target hides which
+        # orgs were just added).
+        orgs_in_ws_cur = db.organizations.find(
+            {"workspace_id": ws_id}, {"_id": 1, "name": 1},
+        )
+        orgs_in_ws_map: dict[str, str] = {}
+        async for o in orgs_in_ws_cur:
+            orgs_in_ws_map[str(o["_id"])] = o.get("name", "")
         first_org_id = ""
+        orgs_added: list[dict[str, str]] = []
+        orgs_already_member: list[dict[str, str]] = []
         for g in (inv.get("org_grants") or []):
             org_id = g.get("org_id", "")
-            if org_id not in org_ids_in_ws:
+            if org_id not in orgs_in_ws_map:
                 continue
             role = g.get("role") if g.get("role") in {"admin", "member"} else "member"
             existing = await db.org_members.find_one(
                 {"org_id": org_id, "user_id": u["id"]},
             )
+            org_name = orgs_in_ws_map.get(org_id, "")
             if existing:
                 # Upgrade role if needed, never downgrade a pre-existing owner.
                 if existing.get("role") != "owner" and existing.get("role") != role:
@@ -725,11 +734,13 @@ def make_workspace_invite_accept_router(
                         {"_id": existing["_id"]},
                         {"$set": {"role": role}},
                     )
+                orgs_already_member.append({"id": org_id, "name": org_name})
             else:
                 await db.org_members.insert_one({
                     "org_id": org_id, "user_id": u["id"],
                     "role": role, "joined_at": now,
                 })
+                orgs_added.append({"id": org_id, "name": org_name})
             if not first_org_id:
                 first_org_id = org_id
         # Mark invite used.
@@ -739,6 +750,8 @@ def make_workspace_invite_accept_router(
         return {
             "workspace_id": ws_id,
             "first_org_id": first_org_id,
+            "orgs_added": orgs_added,            # newly granted on this accept
+            "orgs_already_member": orgs_already_member,  # already had access
         }
 
     return r
