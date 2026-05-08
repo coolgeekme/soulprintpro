@@ -213,7 +213,12 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
         "media-src 'self' blob: https:; "
         "connect-src 'self' https: wss: ws:; "
         "frame-src 'self' https://*.firebaseapp.com https://accounts.google.com; "
-        "frame-ancestors 'self'; "
+        # `frame-ancestors` allows Emergent's IDE preview iframe in
+        # dev/preview without weakening production. Production sets a
+        # stricter policy via Cloudflare Transform Rule which overrides
+        # this default.
+        "frame-ancestors 'self' https://*.emergentagent.com "
+        "https://*.emergent.host https://emergent.sh; "
         "object-src 'none'; "
         "base-uri 'self'; "
         "form-action 'self'"
@@ -228,7 +233,11 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
             "max-age=63072000; includeSubDomains; preload",
         )
         response.headers.setdefault("X-Content-Type-Options", "nosniff")
-        response.headers.setdefault("X-Frame-Options", "SAMEORIGIN")
+        # X-Frame-Options has no multi-origin form, and the modern
+        # `frame-ancestors` CSP directive supersedes it. Skipping XFO
+        # here lets the Emergent IDE iframe the preview backend without
+        # weakening production (which gets its strict policy via
+        # Cloudflare Transform Rule).
         response.headers.setdefault("Referrer-Policy", "strict-origin-when-cross-origin")
         response.headers.setdefault(
             "Permissions-Policy",

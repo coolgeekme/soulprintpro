@@ -68,13 +68,21 @@ webpackConfig.devServer = (devServerConfig) => {
   // In dev / preview we set them right on the webpack-dev-server so the
   // SPA matches the backend's `SecurityHeadersMiddleware` posture.
   //
-  // `frame-ancestors 'self'` here is the modern equivalent of
-  // X-Frame-Options: SAMEORIGIN — Mozilla Observatory accepts the CSP
-  // form for the X-Frame-Options test.
+  // IMPORTANT: the Emergent IDE renders the preview app inside its own
+  // iframe — so we must NOT set X-Frame-Options here (it has no
+  // multi-origin form) and the CSP `frame-ancestors` directive must
+  // explicitly allow `*.emergentagent.com` and `*.emergent.host`.
+  // Production gets the strict `frame-ancestors 'self'` via the
+  // platform-level Cloudflare Transform Rule.
+  const PREVIEW_ALLOWED_FRAMERS = [
+    "'self'",
+    "https://*.emergentagent.com",
+    "https://*.emergent.host",
+    "https://emergent.sh",
+  ].join(" ");
   const SECURITY_HEADERS = [
     { key: "Strict-Transport-Security", value: "max-age=63072000; includeSubDomains; preload" },
     { key: "X-Content-Type-Options", value: "nosniff" },
-    { key: "X-Frame-Options", value: "SAMEORIGIN" },
     { key: "Referrer-Policy", value: "strict-origin-when-cross-origin" },
     { key: "Permissions-Policy", value: "geolocation=(self), microphone=(self), camera=(self), payment=()" },
     {
@@ -88,7 +96,7 @@ webpackConfig.devServer = (devServerConfig) => {
         "media-src 'self' blob: https:",
         "connect-src 'self' https: wss: ws:",
         "frame-src 'self' https://*.firebaseapp.com https://accounts.google.com",
-        "frame-ancestors 'self'",
+        `frame-ancestors ${PREVIEW_ALLOWED_FRAMERS}`,
         "object-src 'none'",
         "base-uri 'self'",
         "form-action 'self'",
