@@ -209,6 +209,17 @@ STEALTH_INIT_SCRIPT = r"""
       get: _nativeWrap(() => 30, 'get pixelDepth'),
       configurable: true,
     });
+    // Real browsers: outerHeight = innerHeight + ~74px (browser chrome).
+    // Headless reports 0 / 0 which is a huge tell. Cap to plausible
+    // values without breaking sites that read the deltas.
+    Object.defineProperty(window, 'outerHeight', {
+      get: _nativeWrap(() => window.innerHeight + 74, 'get outerHeight'),
+      configurable: true,
+    });
+    Object.defineProperty(window, 'outerWidth', {
+      get: _nativeWrap(() => window.innerWidth, 'get outerWidth'),
+      configurable: true,
+    });
   } catch (_) { /* ignore */ }
 
   // 13. iframe contentWindow.chrome — anti-bot checks nested frames too.
@@ -231,6 +242,150 @@ STEALTH_INIT_SCRIPT = r"""
     };
     _nativeWrap(_patched, 'createElement');
     document.createElement = _patched;
+  } catch (_) { /* ignore */ }
+
+  // 14. Canvas fingerprint noise — anti-bot systems hash the pixel
+  // output of `toDataURL` / `getImageData`. Real GPUs produce minor
+  // sub-pixel variance (anti-aliasing, driver quirks); headless
+  // produces identical pixels every call, which is itself a tell.
+  // We inject 1-bit-of-LSB noise into the alpha channel only — invisible
+  // to the user, but enough to make the canvas hash different on every
+  // call AND different from any cached "headless Chrome canvas hash"
+  // signature the detector has on file.
+  try {
+    const _origToDataURL = HTMLCanvasElement.prototype.toDataURL;
+    const _patchedToDataURL = function (...args) {
+      try {
+        const ctx = this.getContext('2d');
+        if (ctx && this.width > 0 && this.height > 0) {
+          // Only nudge a single random pixel's alpha — invisible but
+          // changes every byte downstream of it in a JPEG/PNG encoder.
+          const x = Math.floor(Math.random() * this.width);
+          const y = Math.floor(Math.random() * this.height);
+          const px = ctx.getImageData(x, y, 1, 1);
+          // Bump alpha by a single LSB tick (clamp at 254 so we don't
+          // overflow). The pixel still renders identically to humans.
+          px.data[3] = px.data[3] === 0 ? 0 : Math.max(1, px.data[3] - 1);
+          ctx.putImageData(px, x, y);
+        }
+      } catch (_) { /* ignore */ }
+      return _origToDataURL.apply(this, args);
+    };
+    _nativeWrap(_patchedToDataURL, 'toDataURL');
+    HTMLCanvasElement.prototype.toDataURL = _patchedToDataURL;
+
+    // Same for getImageData (used directly by FingerprintJS canvas test).
+    const _origGetImageData = CanvasRenderingContext2D.prototype.getImageData;
+    const _patchedGetImageData = function (...args) {
+      const data = _origGetImageData.apply(this, args);
+      try {
+        // Nudge one random pixel's R channel by ±1. Imperceptible.
+        if (data && data.data && data.data.length >= 4) {
+          const idx = (Math.floor(Math.random() * (data.data.length / 4))) * 4;
+          data.data[idx] = (data.data[idx] + 1) & 0xff;
+        }
+      } catch (_) { /* ignore */ }
+      return data;
+    };
+    _nativeWrap(_patchedGetImageData, 'getImageData');
+    CanvasRenderingContext2D.prototype.getImageData = _patchedGetImageData;
+  } catch (_) { /* ignore */ }
+
+  // 15. AudioContext fingerprint noise — same idea as canvas. Anti-bot
+  // systems run a known sine-wave through `OfflineAudioContext` and
+  // hash the output samples. Headless produces identical samples every
+  // run (deterministic). We add inaudible LSB noise so the hash varies
+  // per call AND doesn't match the detector's "headless Chrome audio
+  // hash" signature.
+  try {
+    const _origGetChannelData = AudioBuffer.prototype.getChannelData;
+    const _patchedGetChannelData = function (channel) {
+      const data = _origGetChannelData.call(this, channel);
+      try {
+        if (data && data.length > 0) {
+          // Add 1e-7 noise to a few samples — way below human hearing
+          // threshold (~1e-4) but enough to change the hash.
+          for (let i = 0; i < 5; i++) {
+            const idx = Math.floor(Math.random() * data.length);
+            data[idx] = data[idx] + (Math.random() * 2 - 1) * 1e-7;
+          }
+        }
+      } catch (_) { /* ignore */ }
+      return data;
+    };
+    _nativeWrap(_patchedGetChannelData, 'getChannelData');
+    AudioBuffer.prototype.getChannelData = _patchedGetChannelData;
+  } catch (_) { /* ignore */ }
+
+  // 16. speechSynthesis.getVoices — headless returns 0 voices, real
+  // browsers report 10-30. We fake the canonical macOS Chrome voice
+  // list so detectors checking voice count get a plausible number.
+  try {
+    if (window.speechSynthesis) {
+      const fakeVoices = [
+        { name: 'Alex',            lang: 'en-US', voiceURI: 'Alex',            localService: true,  default: true  },
+        { name: 'Samantha',        lang: 'en-US', voiceURI: 'Samantha',        localService: true,  default: false },
+        { name: 'Daniel',          lang: 'en-GB', voiceURI: 'Daniel',          localService: true,  default: false },
+        { name: 'Karen',           lang: 'en-AU', voiceURI: 'Karen',           localService: true,  default: false },
+        { name: 'Moira',           lang: 'en-IE', voiceURI: 'Moira',           localService: true,  default: false },
+        { name: 'Tessa',           lang: 'en-ZA', voiceURI: 'Tessa',           localService: true,  default: false },
+        { name: 'Veena',           lang: 'en-IN', voiceURI: 'Veena',           localService: true,  default: false },
+        { name: 'Google US English', lang: 'en-US', voiceURI: 'Google US English', localService: false, default: false },
+      ];
+      const _origGetVoices = window.speechSynthesis.getVoices.bind(window.speechSynthesis);
+      const _patchedGetVoices = function () {
+        const real = _origGetVoices();
+        return (real && real.length > 0) ? real : fakeVoices;
+      };
+      _nativeWrap(_patchedGetVoices, 'getVoices');
+      window.speechSynthesis.getVoices = _patchedGetVoices;
+    }
+  } catch (_) { /* ignore */ }
+
+  // 17. enumerateDevices — fake a normal Mac with a webcam + mic.
+  // Headless reports 0 devices; real users have at least 1 audioinput,
+  // 1 audiooutput, 1 videoinput.
+  try {
+    if (navigator.mediaDevices && navigator.mediaDevices.enumerateDevices) {
+      const _origEnum = navigator.mediaDevices.enumerateDevices.bind(navigator.mediaDevices);
+      const _patchedEnum = async function () {
+        const real = await _origEnum();
+        if (real && real.length > 0) return real;
+        return [
+          { deviceId: 'default',     groupId: 'default-grp', kind: 'audioinput',  label: '' },
+          { deviceId: 'communications', groupId: 'comms-grp', kind: 'audioinput', label: '' },
+          { deviceId: 'default',     groupId: 'default-grp', kind: 'audiooutput', label: '' },
+          { deviceId: 'cam',         groupId: 'cam-grp',     kind: 'videoinput',  label: '' },
+        ];
+      };
+      _nativeWrap(_patchedEnum, 'enumerateDevices');
+      navigator.mediaDevices.enumerateDevices = _patchedEnum;
+    }
+  } catch (_) { /* ignore */ }
+
+  // 18. navigator.userAgentData — Client Hints API. Real Chrome 132
+  // reports brand=Chromium 132 / Google Chrome 132 / Not A(Brand 8.
+  // Headless leaves this with the headless brand, which is detected.
+  try {
+    if (navigator.userAgentData) {
+      const fakeBrands = [
+        { brand: 'Not A(Brand', version: '8' },
+        { brand: 'Chromium',    version: '132' },
+        { brand: 'Google Chrome', version: '132' },
+      ];
+      Object.defineProperty(navigator.userAgentData, 'brands', {
+        get: _nativeWrap(() => fakeBrands, 'get brands'),
+        configurable: true,
+      });
+      Object.defineProperty(navigator.userAgentData, 'mobile', {
+        get: _nativeWrap(() => false, 'get mobile'),
+        configurable: true,
+      });
+      Object.defineProperty(navigator.userAgentData, 'platform', {
+        get: _nativeWrap(() => 'macOS', 'get platform'),
+        configurable: true,
+      });
+    }
   } catch (_) { /* ignore */ }
 })();
 """
