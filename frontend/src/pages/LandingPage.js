@@ -43,7 +43,7 @@ export default function LandingPage() {
           <a href="#agents" className="hover:text-white transition-colors">Agents</a>
           <a href="#teams" className="hover:text-white transition-colors">Teams</a>
           <Link to="/about" className="hover:text-white transition-colors" data-testid="nav-about">What is SoulPrint Engine Pro?</Link>
-          <Link to="/security" className="hover:text-white transition-colors" data-testid="nav-security">Security</Link>
+          <Link to="/trust" className="hover:text-white transition-colors" data-testid="nav-trust">Trust &amp; Security</Link>
         </nav>
         <div className="flex items-center gap-2">
           <Link

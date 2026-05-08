@@ -487,3 +487,34 @@ pattern. Users must be able to:
     `.ots` download streams 500 bytes with correct mimetype, /v/ page
     renders cleanly with cleared cookies.
 
+
+- ✅ **`/trust` — Marketing-facing security page** (May 8, 2026) — built as
+  a sales / B2B-procurement asset. Distinct from `/security` (which is the
+  structured policy doc auto-rendered from `/api/security`):
+  - **Hero** with gradient "say yes" highlight and 3 CTAs (Compare,
+    Technical policy, Talk to security).
+  - **4 pillar cards** — Encrypted everywhere, Tamper-evident,
+    Per-org isolation, Privacy that means it.
+  - **Comparison table** — 11 rows of "Most platforms vs SoulPrint Engine"
+    with green ✓ / red ✕ / amber "Varies" cells; honest about which
+    rows are partial elsewhere (e.g. brute-force lockout, isolation,
+    no-training).
+  - **4 differentiator deep-dives** — Proof of Integrity (0¢ cost stat),
+    Credential Vault (AES-128 stat), Private CoS (0 other-members stat),
+    Brute-force defence (8 / 15m stat). Each section has its own accent
+    color (orange/violet/green/amber), big stat block, plain-language
+    explanation, and contextual links.
+  - **Encryption** — 3 layers in 3 cards (at rest / in transit / vault).
+  - **Compliance posture** — honest framing: SOC 2 Type II in progress,
+    GDPR right-to-erasure honored, no training on customer data, "open
+    questions welcome" with mailto.
+  - **Final CTA** — orange-gradient panel: Talk to security · Start a
+    free workspace · Read the technical policy.
+  - Landing page nav now links to `/trust` (renamed from "Security"
+    to "Trust & Security"). Technical `/security` page still exists,
+    linked from `/trust`'s top-bar and CTAs for buyers who want the
+    JSON-queryable policy.
+  - Verified by Playwright screenshots: hero, comparison table, PoI
+    deep-dive with stat, compliance posture, final CTA — all render
+    cleanly with auth-free access.
+
