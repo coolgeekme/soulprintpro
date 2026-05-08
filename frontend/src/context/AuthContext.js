@@ -18,15 +18,54 @@ export const AuthProvider = ({ children }) => {
   const [loading, setLoading] = useState(true);
 
   const refresh = useCallback(async () => {
-    try {
-      const { data } = await api.get("/auth/me");
-      setUser(data);
-      return data;
-    } catch (_) {
-      setUser(false);
-      return null;
+    // Up to 3 attempts on transient failures (network/502/503/504/timeout)
+    // — covers the 5-10s window during a backend redeploy where the
+    // load balancer returns 5xx before the new pod is healthy.
+    // Importantly we DO NOT retry on 401/403 because that's the signal
+    // that the JWT is genuinely invalid.
+    const maxAttempts = 3;
+    let lastErr;
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      try {
+        const { data } = await api.get("/auth/me");
+        setUser(data);
+        return data;
+      } catch (err) {
+        lastErr = err;
+        const status = err?.response?.status;
+        if (status === 401 || status === 403) {
+          // Definitive logout — token is invalid.
+          setUser(false);
+          return null;
+        }
+        // Transient error → wait and retry. 800ms / 1.6s / 3.2s backoff.
+        if (attempt < maxAttempts) {
+          await new Promise((r) => setTimeout(r, 800 * 2 ** (attempt - 1)));
+        }
+      }
     }
+    // All retries exhausted. Keep the existing user (so refreshes
+    // during the deploy window don't bounce a signed-in user to /auth)
+    // and let the next interval-driven refresh recover the session.
+    // Note: on initial load with no prior user, this leaves `user`
+    // at the previous value (null). The Protected route still
+    // redirects in that case — which is the safe fallback when we
+    // genuinely can't reach the backend at all.
+    if (lastErr && process.env.NODE_ENV !== "production") {
+      // eslint-disable-next-line no-console
+      console.warn("[auth] /auth/me failed after retries:", lastErr?.message);
+    }
+    return null;
   }, []);
+
+  // Periodic background re-validation. Without this, the token may
+  // silently expire (30 days) while the user is sitting on the
+  // dashboard. We probe /auth/me every 5 minutes — cheap, and any 401
+  // here will properly sign them out via the branch above.
+  useEffect(() => {
+    const id = setInterval(() => { refresh(); }, 5 * 60 * 1000);
+    return () => clearInterval(id);
+  }, [refresh]);
 
   // Re-pull /auth/me whenever the Firebase ID token changes (sign-in,
   // sign-out, refresh). The axios interceptor already picks the freshest
