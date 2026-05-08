@@ -163,6 +163,18 @@ export default function TopBar({ children, right = null }) {
                   <HelpCircle className="w-4 h-4 mr-2" />
                   What is SoulPrint Engine Pro?
                 </DropdownMenuItem>
+                {/* Trust & Security — same dropdown slot as About so
+                    it's discoverable for in-app users (and easy to show
+                    a prospect during a screen-share demo) without
+                    cluttering the working top bar. */}
+                <DropdownMenuItem
+                  onSelect={() => nav("/trust")}
+                  data-testid="topbar-menu-trust"
+                  className="cursor-pointer"
+                >
+                  <ShieldCheck className="w-4 h-4 mr-2" />
+                  Trust &amp; Security
+                </DropdownMenuItem>
                 <DropdownMenuSeparator />
                 <DropdownMenuItem
                   onSelect={async () => { await logout(); nav("/"); }}

@@ -1602,7 +1602,7 @@ async def list_org_members(org_id: str, u: dict = Depends(get_current_user)):
     return out
 
 @org_r.post("/{org_id}/invites")
-async def create_invite(org_id: str, body: InviteCreateBody, u: dict = Depends(get_current_user)):
+async def create_invite(org_id: str, body: InviteCreateBody, request: Request, u: dict = Depends(get_current_user)):
     ctx = await require_org_member(org_id, u["id"])
     if ctx["member"]["role"] not in ("owner", "admin"):
         raise HTTPException(403, "Only owners/admins can invite")
@@ -1620,7 +1620,8 @@ async def create_invite(org_id: str, body: InviteCreateBody, u: dict = Depends(g
     if body.email:
         try:
             from email_service import send_resend_email
-            frontend = (os.environ.get("FRONTEND_URL") or "").rstrip("/")
+            from workspaces import _public_origin
+            frontend = _public_origin(request)
             invite_url = f"{frontend}/invite/{code}"
             org_doc = await db.organizations.find_one(
                 {"_id": ObjectId(org_id)}, {"name": 1},

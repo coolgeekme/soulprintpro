@@ -45,7 +45,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 
 from bson import ObjectId
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, EmailStr, Field
 
 from email_service import send_resend_email
@@ -83,6 +83,48 @@ class MemberOrgAccessPatch(BaseModel):
 
 
 # ── Helpers ──────────────────────────────────────────────────────────
+
+
+def _public_origin(request: Request) -> str:
+    """Compute the correct public-facing origin (scheme://host) for
+    building share links in emails. We can't trust a hardcoded
+    `FRONTEND_URL` env var because the same backend image runs in
+    BOTH preview and production — a single env var would always be
+    wrong in one of them.
+
+    Priority:
+      1. ``X-Forwarded-Host`` + ``X-Forwarded-Proto`` (set by the
+         platform's ingress/Cloudflare → uvicorn). When the request
+         arrives at `pro.soulprintengine.ai`, these headers reflect
+         that origin and the resulting invite URL points at the right
+         deployment.
+      2. ``Origin`` request header — set by the browser's fetch from
+         the SPA. Useful when the platform layer doesn't forward host.
+      3. ``Host`` header (always present).
+      4. Final fallback: ``FRONTEND_URL`` env var (last-ditch).
+
+    Returns a string like ``"https://pro.soulprintengine.ai"`` with no
+    trailing slash. Always validates the scheme is http/https to avoid
+    header-injection attacks producing ``javascript:`` links.
+    """
+    fwd_host = (request.headers.get("x-forwarded-host") or "").strip()
+    if fwd_host:
+        # X-Forwarded-Host can be a comma-separated chain — first entry
+        # is the original client-facing hostname.
+        fwd_host = fwd_host.split(",")[0].strip()
+    fwd_proto = (request.headers.get("x-forwarded-proto") or "").strip().split(",")[0].strip()
+    if fwd_host:
+        scheme = "https" if fwd_proto in {"https", ""} else fwd_proto
+        if scheme in {"http", "https"}:
+            return f"{scheme}://{fwd_host}"
+    origin = (request.headers.get("origin") or "").strip().rstrip("/")
+    if origin.startswith("http://") or origin.startswith("https://"):
+        return origin
+    host = (request.headers.get("host") or "").strip()
+    if host:
+        return f"https://{host}"
+    return (os.environ.get("FRONTEND_URL") or "").rstrip("/")
+
 
 async def _load_workspace(db, ws_id: str) -> dict:
     try:
@@ -456,6 +498,7 @@ def make_workspaces_router(
     @r.post("/{ws_id}/invites")
     async def create_ws_invite(
         ws_id: str, body: WorkspaceInviteBody,
+        request: Request,
         u: dict = Depends(get_current_user),
     ):
         await require_workspace_member(db, ws_id, u["id"], required_role="admin")
@@ -500,7 +543,7 @@ def make_workspaces_router(
         # row is already persisted and the inviter can still "Copy link".
         if body.email:
             try:
-                frontend = (os.environ.get("FRONTEND_URL") or "").rstrip("/")
+                frontend = _public_origin(request)
                 invite_url = f"{frontend}/invite/{code}"
                 ws = await db.workspaces.find_one(
                     {"_id": ObjectId(ws_id)}, {"name": 1},
