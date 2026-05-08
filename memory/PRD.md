@@ -557,3 +557,50 @@ pattern. Users must be able to:
     at the edge. The Cloudflare route is the "real" fix for the
     Observatory grade.
 
+
+- ✅ **Audit fetcher upgraded to mission-grade stealth** (May 8, 2026) —
+  user reported several websites couldn't be reviewed by the audit
+  flow. Root cause: the ephemeral `browse_url` path used a stripped-
+  down Playwright context (no matched `sec-ch-ua`, no timezone, no
+  geolocation, no `STEALTH_INIT_SCRIPT`), so Cloudflare / Akamai /
+  PerimeterX flagged the traffic instantly. Fix:
+  - Extracted shared `_hardened_context_kwargs()` and
+    `apply_stealth_init(ctx)` helpers in `browser_tools.py`. Both the
+    mission and ephemeral paths now build their context identically:
+    matched CH-UA, sec-ch-ua-mobile, sec-ch-ua-platform, NYC timezone,
+    NYC geolocation hint, light color scheme, full
+    `STEALTH_INIT_SCRIPT` (18 fingerprint patches: webdriver, plugins,
+    languages, hardware, WebGL/Apple M2 spoof, permissions, battery,
+    connection, screen, iframe.contentWindow.chrome).
+  - Added Cloudflare/Akamai challenge-passthrough in `_drive_navigate`:
+    detects "Checking your browser…", "Just a moment…", "Verifying you
+    are human" interstitials in the early DOM and waits up to 12s
+    (`page.wait_for_function`) for the challenge JS to evaluate the
+    fingerprint and replace itself with real content. Real CF
+    challenges resolve in 4-7s; the 12s ceiling avoids hanging on
+    permanently-blocked traffic.
+  - **Verified** against 3 sites: LinkedIn (was blocking audits, now
+    returns 2749 chars of rendered text), Instagram (was blocking,
+    now returns 830 chars including the login form), example.com
+    (baseline, still works). All three return status 200 with real
+    content.
+- ✅ **Trust & Security in user dropdown** (May 8, 2026) — added a new
+  menu item next to "What is SoulPrint Engine Pro?" in the user-avatar
+  dropdown (`TopBar.js`). ShieldCheck icon, routes to `/trust`. Visible
+  to every logged-in user.
+- ✅ **Invite email URLs derive from the live request** (May 8, 2026) —
+  user reported invite emails contained the preview URL even when
+  sent from production. Root cause: `FRONTEND_URL` was hardcoded in
+  `backend/.env` to the preview URL, but the same backend image runs
+  in BOTH environments — no static env value works. Fix:
+  - New `_public_origin(request)` helper in `workspaces.py` derives
+    the origin from the live request, in priority order: (1)
+    `X-Forwarded-Host`+`X-Forwarded-Proto` set by ingress/Cloudflare,
+    (2) `Origin` header, (3) `Host` header, (4) `FRONTEND_URL` last
+    fallback. XSS-hardened: only `http`/`https` schemes accepted,
+    comma-separated XFH chain handled (first entry wins), hostile
+    `javascript:` proto rejected.
+  - Wired into both invite-create paths (workspace + legacy single-org).
+  - Verified via direct unit test: 5/5 cases pass (preview-only,
+    XFH→prod, Origin header, XFH chain, hostile proto rejected).
+

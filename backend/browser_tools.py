@@ -412,6 +412,49 @@ async def cleanup_mission_page(mission_id: str) -> None:
 
 
 # ── Public API: Layer A (read-only) ────────────────────────────────────────
+def _hardened_context_kwargs() -> Dict[str, Any]:
+    """Shared Playwright context kwargs that survive Cloudflare /
+    Akamai / PerimeterX bot detection. The original ephemeral
+    ``browse_url`` path used a stripped-down version (no matched
+    sec-ch-ua, no timezone, no geolocation, no color scheme), which
+    meant audit fetches got ``challenge-failed`` walls on a bunch
+    of sites that the mission browser sailed through.
+
+    Now both code paths build their context from this helper and call
+    ``apply_stealth_init(ctx)`` afterwards so they look identical to
+    a real Mac Chrome session — which is exactly what the mission
+    browser stealth pass was designed to spoof.
+    """
+    return dict(
+        user_agent=USER_AGENT,
+        viewport={"width": 1280, "height": 800},
+        locale="en-US",
+        extra_http_headers={
+            "Accept-Language": "en-US,en;q=0.9",
+            "sec-ch-ua": USER_AGENT_CHL,
+            "sec-ch-ua-mobile": "?0",
+            "sec-ch-ua-platform": USER_AGENT_PLATFORM,
+        },
+        timezone_id="America/New_York",
+        geolocation={"latitude": 40.7128, "longitude": -74.0060},
+        permissions=["geolocation"],
+        ignore_https_errors=False,
+        color_scheme="light",
+    )
+
+
+async def apply_stealth_init(ctx) -> None:
+    """Inject the comprehensive fingerprint-spoofing init script onto
+    a freshly-created Playwright context. Best-effort — failure here
+    just means a slightly weaker fingerprint, never a navigation
+    error."""
+    try:
+        from browser_stealth import STEALTH_INIT_SCRIPT
+        await ctx.add_init_script(STEALTH_INIT_SCRIPT)
+    except Exception as exc:
+        logger.debug("stealth init script failed: %s", exc)
+
+
 async def browse_url(
     url: str,
     *,
@@ -424,6 +467,12 @@ async def browse_url(
     If `mission_id` is supplied, navigation happens on the mission's sticky
     page so follow-up `browse_fill` / `browse_click` / `browse_submit` calls
     operate on the same loaded page.
+
+    Both the mission and ephemeral paths now share the same stealth-hardened
+    context (matched CH-UA, timezone, geolocation, color scheme, plus the
+    full STEALTH_INIT_SCRIPT) so audit fetches survive the same anti-bot
+    walls (Cloudflare, Akamai, PerimeterX) that mission browsing already
+    bypasses.
     """
     ok, normalized = _is_safe_url(url)
     if not ok:
@@ -442,15 +491,10 @@ async def browse_url(
             # can revive the page with cookies + last URL intact.
             await _persist_mission_state(mission_id, entry["page"])
             return result
-    # Ephemeral path — existing Layer A behaviour.
+    # Ephemeral path — now identically hardened to the mission path.
     browser = await _ensure_browser()
-    ctx = await browser.new_context(
-        user_agent=USER_AGENT,
-        viewport={"width": 1280, "height": 800},
-        locale="en-US",
-        extra_http_headers={"Accept-Language": "en-US,en;q=0.9"},
-        ignore_https_errors=False,
-    )
+    ctx = await browser.new_context(**_hardened_context_kwargs())
+    await apply_stealth_init(ctx)
     page = await ctx.new_page()
     try:
         return await _drive_navigate(
@@ -483,8 +527,66 @@ async def _drive_navigate(page, url: str, *, take_screenshot: bool,
         await page.wait_for_load_state("networkidle", timeout=8000)
     except Exception:
         pass
+    # Cloudflare / Akamai bot-challenge pass-through: when the first
+    # snapshot looks like an interstitial ("Checking your browser…",
+    # "Just a moment…", "Verifying you are human"), wait for the
+    # challenge to finish JS-evaluating the fingerprint and reload
+    # itself. Real Cloudflare challenges resolve in 4-7 seconds; we
+    # poll up to 12s for the challenge text to disappear from the DOM
+    # before snapshotting again. Saves us from logging 503 walls as
+    # "thin content" on legitimate sites.
+    try:
+        early_text = (await asyncio.wait_for(
+            page.evaluate("() => document.body ? document.body.innerText : ''"),
+            timeout=4,
+        )) or ""
+    except Exception:
+        early_text = ""
+    if early_text and _looks_like_bot_challenge(early_text):
+        logger.info("Bot challenge detected on %s — waiting up to 12s for resolution", url)
+        try:
+            # Wait for the challenge text to be replaced by real content.
+            await page.wait_for_function(
+                """() => {
+                    const t = (document.body && document.body.innerText || '').toLowerCase();
+                    if (!t || t.length < 200) return false;
+                    return !t.includes('checking your browser')
+                        && !t.includes('just a moment')
+                        && !t.includes('verifying you are human')
+                        && !t.includes('verify you are human');
+                }""",
+                timeout=12000,
+            )
+            try:
+                await page.wait_for_load_state("networkidle", timeout=4000)
+            except Exception:
+                pass
+        except Exception:
+            # Challenge didn't resolve in time — snapshot whatever we have.
+            logger.info("Bot challenge on %s did not resolve in 12s", url)
     await _populate_snapshot(page, out, take_screenshot, upload_dir)
     return out
+
+
+# Tiny in-module classifier — kept private to avoid leaking heuristics into
+# the public surface. The audit's `_looks_blocked` does deeper triage on
+# the FINAL text; this version just checks for the early-stage challenge
+# wall so we know whether to wait it out.
+def _looks_like_bot_challenge(text: str) -> bool:
+    t = (text or "").lower()
+    if not t:
+        return False
+    markers = (
+        "checking your browser",
+        "just a moment",
+        "verifying you are human",
+        "verify you are human",
+        "enable javascript and cookies to continue",
+        "performance & security by cloudflare",
+        "ddos protection by cloudflare",
+        "this site has been blocked",
+    )
+    return any(m in t for m in markers)
 
 
 async def _populate_snapshot(page, out: dict, take_screenshot: bool,
