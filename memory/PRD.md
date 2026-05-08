@@ -342,3 +342,22 @@ pattern. Users must be able to:
      - Anything else → server-detail or generic
   3. **Failed message stays visible with Retry pill** — instead of dropping the optimistic bubble and stuffing the text back into the input (loses thread context), we keep the bubble with a red ring + the precise failure reason + a Retry button. One click resends. Far better UX than "type it again."
   - Backend lint clean, frontend lint clean. Conversation page verified to still render normally.
+
+- ✅ **Multi-thread Chief of Staff picker on Org page** (May 8, 2026) — replaced the
+  single-link private CoS card with an expandable thread picker. New
+  `MyChiefOfStaffCard` component on `OrgPage.js`: shows the most recently active
+  thread as the primary click target (preserves existing 1-click behaviour),
+  surfaces a "X threads" pill + "+ New chat" button, and reveals every other
+  thread (with relative timestamps) under a chevron. Backend routes
+  (`GET /orgs/{id}/my-cos/threads`, `POST /orgs/{id}/my-cos/new`) were already
+  shipped; this wires the UI. Verified end-to-end with curl + Playwright
+  screenshots: collapsed card, expanded picker showing prior threads, "+ New
+  chat" creates a fresh conversation and routes into it.
+- ✅ **Verified Admin Audit Leads modal** (May 8, 2026) — the "leads" modal in
+  `AdminAuditsPanel.js` was correctly built; the user's empty-modal complaint
+  was caused by testing on Production (which had captured leads) vs Preview
+  (which had zero). Submitted a synthetic lead via `POST /api/public/audits/{slug}/lead`,
+  confirmed `GET /api/admin/audits/{id}/leads` returns the row with all fields
+  (name, email, phone, company, role, submitted_at), and screenshotted the
+  modal rendering correctly. Test lead cleaned up after verification.
+

@@ -59,8 +59,14 @@ export default function OrgPage() {
   const ASSETS_INITIAL_LIMIT = 6;
   const [assetsExpanded, setAssetsExpanded] = useState(false);
   const [loading, setLoading] = useState(true);
-  // Per-user PRIVATE Chief of Staff thread (auto-created on first call)
+  // Per-user PRIVATE Chief of Staff threads. The backend auto-creates the
+  // first thread on demand; users can spin up additional threads via
+  // the "+ New chat" button so long-running CoS conversations don't get
+  // tangled into a single endless message log.
   const [myCos, setMyCos] = useState(null);
+  const [myCosThreads, setMyCosThreads] = useState([]);
+  const [cosExpanded, setCosExpanded] = useState(false);
+  const [cosCreating, setCosCreating] = useState(false);
   const [newTeam, setNewTeam] = useState("");
   const [newTeamDesc, setNewTeamDesc] = useState("");
   const [newTeamVisibility, setNewTeamVisibility] = useState("open");
@@ -158,11 +164,16 @@ export default function OrgPage() {
         } catch (_) {}
       }
       // Lazy-create the caller's PRIVATE Chief of Staff thread for this
-      // org. Idempotent on the backend — first call provisions, every
-      // call after returns the same conversation id.
+      // org and fetch the full list of their threads in parallel. The
+      // /my-cos call is idempotent — first call provisions, every call
+      // after returns the most-recent thread.
       try {
-        const { data } = await api.get(`/orgs/${orgId}/my-cos`);
-        setMyCos(data);
+        const [cosRes, threadsRes] = await Promise.all([
+          api.get(`/orgs/${orgId}/my-cos`),
+          api.get(`/orgs/${orgId}/my-cos/threads`).catch(() => ({ data: { threads: [] } })),
+        ]);
+        setMyCos(cosRes.data);
+        setMyCosThreads(threadsRes.data?.threads || []);
       } catch (_) { /* non-fatal — user can still use the shared CoS */ }
     } catch (err) {
       toast.error("Failed to load organization");
@@ -492,28 +503,41 @@ export default function OrgPage() {
           <ArrowRight className="w-4 h-4 text-white/60 group-hover:text-white transition" />
         </Link>
 
-        {/* Your private Chief of Staff — per-user thread visible only
+        {/* Your private Chief of Staff — per-user threads visible only
             to you (and the org owner for audit). Always shown, even for
-            the owner (they get their own private CoS too). */}
+            the owner (they get their own private CoS too). Multi-thread
+            picker: tap the card to expand the thread list, or click
+            "+ New chat" to start a fresh conversation rather than piling
+            everything into one ever-growing thread. */}
         {myCos && (
-          <Link
-            to={myCos.deeplink}
-            className="sp-glass rounded-2xl p-5 mb-3 flex items-center gap-4 hover:border-white/25 transition group"
-            data-testid="my-chief-of-staff-card"
-          >
-            <div className="w-10 h-10 rounded-xl flex items-center justify-center shrink-0"
-                 style={{ background: "linear-gradient(160deg, rgba(251,146,60,0.55), rgba(251,146,60,0.08))" }}>
-              <MessageCircle className="w-4 h-4 text-white" />
-            </div>
-            <div className="flex-1 min-w-0">
-              <div className="flex items-center gap-2">
-                <span className="text-white font-medium">Your Chief of Staff</span>
-                <span className="text-[9px] uppercase tracking-widest px-1.5 py-0.5 rounded sp-glass-strong">Private</span>
-              </div>
-              <div className="text-xs sp-subtle">A private thread just for you. The org owner can audit it for moderation, but no other member sees it.</div>
-            </div>
-            <ArrowRight className="w-4 h-4 text-white/60 group-hover:text-white transition" />
-          </Link>
+          <MyChiefOfStaffCard
+            orgId={orgId}
+            primary={myCos}
+            threads={myCosThreads}
+            expanded={cosExpanded}
+            onToggle={() => setCosExpanded((v) => !v)}
+            creating={cosCreating}
+            onNewThread={async () => {
+              if (cosCreating) return;
+              setCosCreating(true);
+              try {
+                const { data } = await api.post(`/orgs/${orgId}/my-cos/new`);
+                // Refresh the thread list so the picker reflects the
+                // new conversation, then jump straight into it.
+                setMyCosThreads((prev) => [{
+                  conversation_id: data.conversation_id,
+                  team_id: data.team_id,
+                  title: data.title,
+                  created_at: new Date().toISOString(),
+                  last_message_at: new Date().toISOString(),
+                }, ...prev]);
+                setMyCos(data);
+                nav(data.deeplink);
+              } catch (err) {
+                toast.error(err?.response?.data?.detail || "Could not start a new thread");
+              } finally { setCosCreating(false); }
+            }}
+          />
         )}
 
         {/* Mind map — live picture of the org's brain (teams, agents,
@@ -1022,6 +1046,125 @@ export default function OrgPage() {
           );
         })()}
       </main>
+    </div>
+  );
+}
+
+
+// ── Private Chief of Staff card with multi-thread picker ──────────────────
+// Replaces the old single-link CoS card so users can keep multiple
+// long-running threads cleanly separated instead of piling every
+// conversation onto one endless message log. The most recent thread
+// is the primary click target (matches old behaviour); expanding the
+// picker reveals every thread with relative timestamps + a "+ New chat"
+// button to start fresh.
+function MyChiefOfStaffCard({ orgId: _orgId, primary, threads, expanded, onToggle, creating, onNewThread }) {
+  const list = (threads && threads.length) ? threads : [
+    // Fall back to the single primary thread when the threads endpoint
+    // hasn't loaded yet (or returned an empty list — shouldn't happen
+    // since /my-cos auto-creates one, but defensive).
+    {
+      conversation_id: primary.conversation_id,
+      team_id: primary.team_id,
+      title: primary.title,
+      last_message_at: null,
+    },
+  ];
+  const top = list[0];
+  const others = list.slice(1);
+  const count = list.length;
+
+  const fmtRel = (iso) => {
+    if (!iso) return "";
+    const d = new Date(iso);
+    if (Number.isNaN(d.getTime())) return "";
+    const diff = Math.max(0, Date.now() - d.getTime());
+    const m = Math.floor(diff / 60000);
+    if (m < 1) return "just now";
+    if (m < 60) return `${m}m ago`;
+    const h = Math.floor(m / 60);
+    if (h < 24) return `${h}h ago`;
+    const days = Math.floor(h / 24);
+    if (days < 7) return `${days}d ago`;
+    return d.toLocaleDateString();
+  };
+
+  return (
+    <div className="sp-glass rounded-2xl mb-3" data-testid="my-chief-of-staff-card">
+      <div className="flex items-center gap-4 p-5">
+        <Link
+          to={`/app/team/${top.team_id}/c/${top.conversation_id}`}
+          className="flex-1 min-w-0 flex items-center gap-4 group"
+          data-testid="my-cos-open-latest"
+        >
+          <div className="w-10 h-10 rounded-xl flex items-center justify-center shrink-0"
+               style={{ background: "linear-gradient(160deg, rgba(251,146,60,0.55), rgba(251,146,60,0.08))" }}>
+            <MessageCircle className="w-4 h-4 text-white" />
+          </div>
+          <div className="flex-1 min-w-0">
+            <div className="flex items-center gap-2 flex-wrap">
+              <span className="text-white font-medium">Your Chief of Staff</span>
+              <span className="text-[9px] uppercase tracking-widest px-1.5 py-0.5 rounded sp-glass-strong">Private</span>
+              {count > 1 && (
+                <span className="text-[10px] sp-subtle">{count} threads</span>
+              )}
+            </div>
+            <div className="text-xs sp-subtle truncate">
+              {top.title || "My Chief of Staff"}
+              {top.last_message_at && <span className="ml-2 opacity-70">· {fmtRel(top.last_message_at)}</span>}
+            </div>
+          </div>
+          <ArrowRight className="w-4 h-4 text-white/60 group-hover:text-white transition shrink-0" />
+        </Link>
+        <div className="flex items-center gap-1 shrink-0">
+          <button
+            type="button"
+            onClick={onNewThread}
+            disabled={creating}
+            className="sp-btn sp-btn-ghost text-[11px] px-2 py-1 disabled:opacity-50"
+            title="Start a fresh Chief of Staff thread (your existing threads are preserved)"
+            data-testid="my-cos-new-thread-btn"
+          >
+            {creating ? <Loader2 className="w-3 h-3 animate-spin" /> : <Plus className="w-3 h-3" />}
+            New chat
+          </button>
+          {others.length > 0 && (
+            <button
+              type="button"
+              onClick={onToggle}
+              className="sp-btn sp-btn-ghost text-[11px] px-1.5 py-1"
+              title={expanded ? "Hide other threads" : `Show ${others.length} other thread${others.length > 1 ? "s" : ""}`}
+              data-testid="my-cos-toggle-threads"
+            >
+              <ChevronRight className={`w-3 h-3 transition-transform ${expanded ? "rotate-90" : ""}`} />
+            </button>
+          )}
+        </div>
+      </div>
+      {expanded && others.length > 0 && (
+        <div className="border-t border-white/10 px-5 py-3">
+          <div className="text-[10px] uppercase tracking-widest sp-subtle mb-2">Other threads</div>
+          <div className="flex flex-col gap-1.5">
+            {others.map((t) => (
+              <Link
+                key={t.conversation_id}
+                to={`/app/team/${t.team_id}/c/${t.conversation_id}`}
+                className="sp-glass rounded-xl px-3 py-2 flex items-center gap-3 hover:border-white/20 transition group"
+                data-testid={`my-cos-thread-${t.conversation_id}`}
+              >
+                <MessageCircle className="w-3.5 h-3.5 sp-subtle shrink-0" />
+                <div className="flex-1 min-w-0">
+                  <div className="text-sm text-white truncate">{t.title || "My Chief of Staff"}</div>
+                </div>
+                {t.last_message_at && (
+                  <div className="text-[10px] sp-subtle tabular-nums shrink-0">{fmtRel(t.last_message_at)}</div>
+                )}
+                <ArrowRight className="w-3 h-3 sp-subtle group-hover:text-white transition shrink-0" />
+              </Link>
+            ))}
+          </div>
+        </div>
+      )}
     </div>
   );
 }
