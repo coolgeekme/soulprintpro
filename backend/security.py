@@ -250,7 +250,7 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
 
 
 SECURITY_POLICY_DOC = {
-    "version": "1.0",
+    "version": "1.1",
     "last_reviewed": "2026-05-08",
     "data_residency": {
         "primary_region": "US",
@@ -316,6 +316,35 @@ SECURITY_POLICY_DOC = {
             "Every superadmin action (audit re-runs, member removals, "
             "invite revocations) is logged with actor, action, target, "
             "timestamp."
+        ),
+    },
+    "proof_of_integrity": {
+        "tier1_per_file": (
+            "Every agent-generated artifact (PDFs, briefs, audits, "
+            "exported reports) is hashed with SHA-256 and the digest "
+            "is submitted to the OpenTimestamps public calendar "
+            "network. Within ~1-6 hours that digest is anchored into "
+            "the Bitcoin blockchain — a tamper-evident record that "
+            "the file existed at exactly those bytes at exactly that "
+            "moment. Customers can download the standard `.ots` proof "
+            "and verify independently with the OpenTimestamps CLI; "
+            "no SoulPrint cooperation is required."
+        ),
+        "tier2_daily_merkle": (
+            "Every 24 hours, a Merkle tree is built over key business "
+            "records written that day (mission events, workspace "
+            "invite acceptances, org member additions, audit leads). "
+            "The Merkle root is anchored on Bitcoin via OpenTimestamps. "
+            "Customers can re-hash any individual record and walk the "
+            "Merkle path stored in the anchor manifest to prove the "
+            "record was part of that day's anchored state."
+        ),
+        "ledger": "Bitcoin (via OpenTimestamps shared calendar servers)",
+        "cost_to_customer": "Free.",
+        "verifiability": (
+            "All proofs are downloadable as standard `.ots` files and "
+            "verifiable with the OpenTimestamps reference CLI: "
+            "`ots verify --file <doc> <doc>.ots`."
         ),
     },
     "incident_response": {

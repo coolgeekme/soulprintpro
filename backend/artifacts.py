@@ -566,7 +566,13 @@ async def save_artifacts(
             # primary (faster + zero-overhead in dev), GridFS is the
             # fallback when the on-disk file disappears after a redeploy.
             from file_storage import save_blob_to_gridfs  # noqa: E402
-            gridfs_id = await save_blob_to_gridfs(db, data, b["name"], b["mime"])
+            # Stamp every agent-generated artifact for tamper-evident
+            # proof of integrity. The OpenTimestamps anchor is fired
+            # async inside save_blob_to_gridfs and never blocks the
+            # save — calendars failing means no proof, not no file.
+            gridfs_id = await save_blob_to_gridfs(
+                db, data, b["name"], b["mime"], stamp_for_proof=True,
+            )
             # Also register in the global media_files map so the universal
             # serve handler can recover bytes by filename alone.
             if gridfs_id:
@@ -617,6 +623,11 @@ async def save_artifacts(
                 "original_name": b["name"],
                 "is_artifact": True,
                 "document_id": doc["id"],
+                # Expose the GridFS id so the UI can fetch the proof of
+                # integrity for this artifact (the proof is keyed on
+                # gridfs_id, not document_id, since stamping happens at
+                # the file-storage layer).
+                "gridfs_id": gridfs_id,
             })
         except Exception as exc:  # pragma: no cover — never let one bad
             logger.exception("artifact persistence failed: %s", exc)

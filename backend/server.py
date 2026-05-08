@@ -179,6 +179,10 @@ from security import (  # noqa: E402
 )
 app.add_middleware(SecurityHeadersMiddleware)
 
+# Background task refs (held to prevent garbage collection).
+_poi_anchor_task: Optional[asyncio.Task] = None
+_poi_upgrade_task: Optional[asyncio.Task] = None
+
 JWT_SECRET = os.environ.get("JWT_SECRET", "soulprint-dev-secret")
 JWT_ALGO = "HS256"
 
@@ -6554,6 +6558,102 @@ app.add_middleware(
 async def get_security_policy():
     return SECURITY_POLICY_DOC
 
+
+# ── Proof of Integrity (OpenTimestamps anchoring) ────────────────────────
+# Per-file proofs and daily Merkle anchors. See proof_of_integrity.py.
+import proof_of_integrity as poi  # noqa: E402
+
+
+@app.get("/api/files/{gridfs_id}/proof")
+async def get_file_proof(gridfs_id: str, u: dict = Depends(get_current_user)):
+    """Return the current proof status for an artifact stored in GridFS.
+
+    Auth note: anyone signed in can ask about ANY GridFS id. We don't
+    leak file contents — only the digest, which is what proves the
+    file was anchored. Restricting to "members of the org that owns
+    the file" would mean linking every GridFS upload back to an org,
+    which the schema doesn't enforce yet. The digest itself is
+    information-free without the file bytes.
+    """
+    row = await poi.get_proof_for_subject(db, kind="file", subject_id=gridfs_id)
+    if not row:
+        raise HTTPException(404, "No integrity proof for this file")
+    return poi._public_proof_row(row)
+
+
+@app.post("/api/files/{gridfs_id}/proof/upgrade")
+async def upgrade_file_proof(gridfs_id: str, u: dict = Depends(get_current_user)):
+    """Poll the calendars to see if the pending attestation has been
+    upgraded to a Bitcoin block attestation. Rate-limited internally
+    to one calendar poll every 5 minutes per proof.
+    """
+    row = await poi.get_proof_for_subject(db, kind="file", subject_id=gridfs_id)
+    if not row:
+        raise HTTPException(404, "No integrity proof for this file")
+    refreshed = await poi.try_upgrade_pending(db, record_id=row["id"])
+    return refreshed or poi._public_proof_row(row)
+
+
+@app.get("/api/integrity-proofs/{record_id}/proof.ots")
+async def download_proof_ots(record_id: str, u: dict = Depends(get_current_user)):
+    """Stream the raw `.ots` proof bytes so the user can verify with
+    the standard OpenTimestamps CLI (`ots verify file.ots --file the_file`).
+    """
+    row = await db.integrity_proofs.find_one({"id": record_id})
+    if not row:
+        raise HTTPException(404, "Proof not found")
+    proof_bytes = row.get("proof_bytes") or b""
+    return Response(
+        content=proof_bytes,
+        media_type="application/vnd.opentimestamps.ots",
+        headers={
+            "Content-Disposition": f'attachment; filename="{record_id}.ots"',
+        },
+    )
+
+
+@app.get("/api/integrity-anchors")
+async def list_integrity_anchors(
+    limit: int = 30,
+    u: dict = Depends(get_current_user),
+):
+    """List the most recent daily Merkle anchors. Powers the admin
+    dashboard's "Integrity Anchors" panel and is also useful for any
+    customer who wants to audit their data window-by-window.
+    """
+    limit = max(1, min(200, int(limit or 30)))
+    cur = db.integrity_proofs.find(
+        {"kind": "merkle_daily"},
+        # Drop heavy fields from the list view.
+        {"_id": 0, "proof_bytes": 0, "extra.manifest": 0},
+    ).sort("created_at", -1).limit(limit)
+    rows = [r async for r in cur]
+    return rows
+
+
+@app.get("/api/integrity-anchors/{record_id}/manifest")
+async def get_anchor_manifest(record_id: str, u: dict = Depends(get_current_user)):
+    """Return the manifest of records folded into a daily Merkle root.
+    Each entry has the source collection, record id, and leaf hex so
+    a customer can re-hash the original record and confirm it appears
+    in the anchored set.
+    """
+    row = await db.integrity_proofs.find_one(
+        {"id": record_id, "kind": "merkle_daily"},
+        {"_id": 0, "proof_bytes": 0},
+    )
+    if not row:
+        raise HTTPException(404, "Anchor not found")
+    return row
+
+
+@app.post("/api/admin/integrity-anchors/run-now")
+async def admin_run_daily_anchor(u: dict = Depends(_require_superadmin_dep)):
+    """Manually trigger a daily Merkle anchor build. Useful for testing
+    or for retroactively anchoring after a calendar outage."""
+    row = await poi.build_daily_audit_anchor(db, include_today=True)
+    return row or {"ok": False, "detail": "No records in window or every calendar failed"}
+
 @app.on_event("startup")
 async def startup():
     await db.users.create_index("email", unique=True)
@@ -6648,6 +6748,19 @@ async def startup():
             logger.info("Workspace startup: migrated %d legacy org(s)", migrated)
     except Exception as exc:
         logger.warning("Workspace migration failed: %s", exc)
+    # ── Proof of Integrity startup ──────────────────────────────────────
+    # Ensure the integrity_proofs collection has its indexes, then kick
+    # off the daily anchor builder + the pending-proof upgrade poller.
+    # Both are infinite loops we let asyncio garbage-collect; storing
+    # the task refs keeps them from being prematurely cancelled.
+    try:
+        await poi.ensure_indexes(db)
+        global _poi_anchor_task, _poi_upgrade_task
+        _poi_anchor_task = asyncio.create_task(poi.daily_anchor_loop(db))
+        _poi_upgrade_task = asyncio.create_task(poi.upgrade_pending_loop(db))
+        logger.info("Proof of Integrity: scheduler started")
+    except Exception as exc:
+        logger.warning("Proof of Integrity startup failed: %s", exc)
     # ── Mission rehydration (autonomous resume across pod restarts) ─────
     # Re-spawn the asyncio task for any mission whose heartbeat is still
     # fresh — these are missions where the previous backend just died

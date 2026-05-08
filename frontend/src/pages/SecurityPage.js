@@ -2,7 +2,7 @@ import React, { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import api from "../lib/api";
 import Logo from "../components/Logo";
-import { Lock, ShieldCheck, KeyRound, Server, Users, Mail, ArrowRight, Loader2 } from "lucide-react";
+import { Lock, ShieldCheck, KeyRound, Server, Users, Mail, ArrowRight, Loader2, Anchor } from "lucide-react";
 
 /**
  * Public security trust page — no auth required.
@@ -87,6 +87,54 @@ export default function SecurityPage() {
             </div>
           )}
         </div>
+
+        {/* Proof of Integrity — flagship tamper-evident feature. Powered
+            by OpenTimestamps / Bitcoin. Shows up as a full-width section
+            so prospective customers spot it before they scroll the rest. */}
+        {policy?.proof_of_integrity && (
+          <section className="rounded-2xl p-5 sm:p-6 mb-8 border"
+                   style={{
+                     background: "linear-gradient(135deg, rgba(251,146,60,0.10), rgba(251,146,60,0.02))",
+                     borderColor: "rgba(251,146,60,0.25)",
+                   }}>
+            <div className="flex items-start gap-3 mb-3">
+              <div className="w-10 h-10 rounded-xl flex items-center justify-center shrink-0"
+                   style={{ background: "rgba(251,146,60,0.15)" }}>
+                <Anchor className="w-5 h-5 text-orange-300" />
+              </div>
+              <div className="min-w-0">
+                <div className="text-[10px] uppercase tracking-widest text-orange-300/90 mb-0.5">
+                  Proof of Integrity · Bitcoin-anchored
+                </div>
+                <h2 className="text-xl sm:text-2xl font-medium tracking-tight">
+                  Tamper-evident proof for every artifact your agents create.
+                </h2>
+              </div>
+            </div>
+            <div className="grid sm:grid-cols-2 gap-3 mt-4">
+              <div className="sp-glass rounded-xl p-4">
+                <div className="text-[10px] uppercase tracking-widest sp-subtle mb-1">Tier 1 · Per-file</div>
+                <div className="text-sm sp-subtle leading-relaxed">
+                  {policy.proof_of_integrity.tier1_per_file}
+                </div>
+              </div>
+              <div className="sp-glass rounded-xl p-4">
+                <div className="text-[10px] uppercase tracking-widest sp-subtle mb-1">Tier 2 · Daily Merkle root</div>
+                <div className="text-sm sp-subtle leading-relaxed">
+                  {policy.proof_of_integrity.tier2_daily_merkle}
+                </div>
+              </div>
+            </div>
+            <div className="grid sm:grid-cols-3 gap-2 mt-3 text-[11px] sp-subtle">
+              <div><b className="text-white/85">Ledger:</b> {policy.proof_of_integrity.ledger}</div>
+              <div><b className="text-white/85">Cost:</b> {policy.proof_of_integrity.cost_to_customer}</div>
+              <div className="sm:col-span-1"><b className="text-white/85">Verify yourself:</b> any third party, any time</div>
+            </div>
+            <div className="mt-3 pt-3 border-t border-orange-300/15 text-[11px] sp-subtle leading-relaxed">
+              <b className="text-white/85">How to verify independently:</b> {policy.proof_of_integrity.verifiability}
+            </div>
+          </section>
+        )}
 
         {/* Cards */}
         <div className="grid sm:grid-cols-2 gap-3 mb-8">

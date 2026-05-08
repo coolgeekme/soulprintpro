@@ -404,3 +404,57 @@ pattern. Users must be able to:
     renders cleanly. Login still works for the standing superadmin after the
     counter is cleared.
 
+
+- ✅ **Two-tier Proof of Integrity** (May 8, 2026) — flagship tamper-evident
+  feature for B2B trust, anchored on Bitcoin via OpenTimestamps. **Free**
+  (uses public OTS calendar servers, no wallet, no API key, no recurring
+  cost). New `backend/proof_of_integrity.py` module:
+  - **Tier 1 (per-file)** — every agent-generated artifact (PDFs, briefs,
+    audits) is hashed with SHA-256 and the digest submitted to all 3 public
+    OTS calendars (alice/bob/finney) in parallel. Within ~1-6 hours the
+    digest is anchored into a Bitcoin block, giving customers a tamper-
+    evident proof that the file existed at exactly those bytes at that
+    moment. Wired into `file_storage.save_blob_to_gridfs(stamp_for_proof=True)`
+    and `artifacts.py` flips that flag on so EVERY agent-generated file gets
+    stamped automatically. Idempotent on both `subject_id` and `digest_hex`.
+  - **Tier 2 (daily Merkle root)** — every 24h, a Merkle tree is built over
+    yesterday's `mission_events`, `workspace_invites` (used), `org_members`
+    (joined), and `audit_leads`. Root anchored on Bitcoin; manifest of
+    {collection, id, leaf_hex} per record stored in the proof row so
+    customers can re-hash any single record and walk the Merkle path to
+    prove it was part of that day's anchored set. Run automatically by
+    `daily_anchor_loop` (started at backend startup) and on-demand via
+    `POST /api/admin/integrity-anchors/run-now`.
+  - **Calendar polling** — `upgrade_pending_loop` runs every 30 min,
+    polls calendars for pending → anchored upgrades. Per-record rate limit
+    of 1 poll / 5 min so we can't hammer the public infrastructure.
+  - **API endpoints**:
+    - `GET /api/files/{gridfs_id}/proof` — public-safe proof status.
+    - `POST /api/files/{gridfs_id}/proof/upgrade` — manually re-poll calendars.
+    - `GET /api/integrity-proofs/{id}/proof.ots` — download standard `.ots`
+      proof bytes for independent verification with the OTS CLI.
+    - `GET /api/integrity-anchors` — list daily Merkle anchors.
+    - `GET /api/integrity-anchors/{id}/manifest` — download manifest.
+    - `POST /api/admin/integrity-anchors/run-now` — superadmin-only manual trigger.
+  - **Frontend**:
+    - New `IntegrityBadge` component renders an inline shield pill on
+      every agent-generated artifact in `ConversationPage.js`. Green
+      "Verified" once anchored, orange "Anchoring…" while pending. Click
+      opens a popover with full proof details (digest, status, calendars,
+      timestamps), copy-digest button, "Download .ots" link, "Refresh"
+      button to poll for upgrade. Includes verify instructions:
+      `ots verify file.ots --file your_file`.
+    - `/security` page now leads with a full-width orange-accented Proof
+      of Integrity hero section explaining both tiers, plus the existing
+      cards for encryption, auth, authorization, etc.
+    - `/api/security` policy doc updated to v1.1 with `proof_of_integrity`
+      field describing both tiers, ledger, cost, verifiability.
+  - **Verified end-to-end**: Tier 1 — created a test artifact, all 3 OTS
+    calendars accepted the stamp, 500-byte `.ots` proof persisted, digest
+    matches file content exactly, GET/POST proof endpoints work, `.ots`
+    download streams correctly. Tier 2 — manual run-now folded 33 records
+    into a Merkle root and anchored it across all 3 calendars. Backend
+    boots clean, scheduler logs "Proof of Integrity: scheduler started".
+  - **Dependencies added**: `opentimestamps==0.4.5`, `pycryptodomex==3.23.0`,
+    `python-bitcoinlib==0.12.2` in `requirements.txt`.
+

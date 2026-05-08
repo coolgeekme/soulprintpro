@@ -7,6 +7,7 @@ import { toast } from "sonner";
 import { useAuth } from "../context/AuthContext";
 import { Send, Trash2, AtSign, Users, Repeat, Search, X, Lock, Film, Globe, ArrowUp, ArrowDown, UserPlus, Paperclip, FileText, File as FileIcon, Download, CornerDownRight, Megaphone, Pencil, Sparkles, Loader2, Rocket, Square, Minimize2 } from "lucide-react";
 import LinkPreviewCard from "../components/LinkPreviewCard";
+import IntegrityBadge from "../components/IntegrityBadge";
 import { MissionCard } from "../components/MissionCard";
 import { MessageActions } from "../components/MessageActions";
 import WorkingIndicator from "../components/WorkingIndicator";
@@ -1306,7 +1307,16 @@ export default function ConversationPage() {
                                   : <FileIcon className="w-4 h-4" />}
                               </div>
                               <div className="min-w-0 flex-1">
-                                <div className="text-sm font-medium truncate">{a.original_name || "Attachment"}</div>
+                                <div className="flex items-center gap-2 min-w-0">
+                                  <div className="text-sm font-medium truncate min-w-0">{a.original_name || "Attachment"}</div>
+                                  {/* Tamper-evident proof badge — only renders when the
+                                      artifact has a stored gridfs_id and a proof exists.
+                                      No-op (renders null) for user-uploaded attachments
+                                      that aren't agent-generated. */}
+                                  {a.gridfs_id && a.is_artifact && (
+                                    <IntegrityBadge gridfsId={a.gridfs_id} compact />
+                                  )}
+                                </div>
                                 <div className="text-[11px] sp-subtle">
                                   {(a.kind || "FILE").toUpperCase()}
                                   {a.size ? ` · ${(a.size / 1024).toFixed(0)} KB` : ""}

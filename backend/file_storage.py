@@ -46,12 +46,19 @@ async def save_blob_to_gridfs(
     content: bytes,
     filename: str,
     mime: Optional[str] = None,
+    *,
+    stamp_for_proof: bool = False,
 ) -> Optional[str]:
     """Persist ``content`` to GridFS and return ``str(file_id)``.
 
     Returns ``None`` on failure so the caller can keep going with disk-only
     storage instead of crashing the request. We log the exception so issues
     surface in supervisor logs but don't break user flows.
+
+    When ``stamp_for_proof=True`` the bytes are also submitted to the
+    OpenTimestamps calendar network so the resulting GridFS file gets a
+    tamper-evident integrity proof. Failure to stamp never blocks the
+    upload — the file still saves and the proof is best-effort.
     """
     try:
         bucket = get_bucket(db)
@@ -61,10 +68,20 @@ async def save_blob_to_gridfs(
             content,
             metadata=metadata,
         )
-        return str(file_id)
+        file_id_s = str(file_id)
     except Exception as exc:  # pragma: no cover — defensive
         logger.warning("GridFS write failed for %s: %s", filename, exc)
         return None
+    if stamp_for_proof:
+        try:
+            from proof_of_integrity import stamp_file_content  # noqa: E402
+            await stamp_file_content(
+                db, content=content, gridfs_file_id=file_id_s, label=filename,
+            )
+        except Exception as exc:
+            # Stamping is best-effort. Log but never block the upload.
+            logger.warning("Integrity stamp failed for %s: %s", filename, exc)
+    return file_id_s
 
 
 async def read_blob_from_gridfs(
