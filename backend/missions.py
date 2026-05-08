@@ -2343,9 +2343,108 @@ def make_missions_router(
     return r
 
 
+async def rehydrate_running_missions(
+    *, db, AGENTS: dict, EMERGENT_LLM_KEY: str,
+    LlmChat, UserMessage,
+    build_tools_factory: Callable[[], List[Tool]],
+    build_lead_system_prompt: Callable[[str], str],
+    stale_minutes: int = 60,
+) -> int:
+    """Re-spawn the asyncio task for any mission that was `running` or
+    `awaiting_user` when the previous backend process died (pod restart,
+    redeploy, OOM, scale event).
+
+    Without this, the `missions` row is left in `running` state forever
+    until the watchdog reaps it 15+ minutes later — which is exactly the
+    "my mission stopped because of watchdog" complaint. By restarting the
+    loop here we keep missions truly autonomous across deploys.
+
+    Strategy:
+      * `running` + recent heartbeat (< stale_minutes) → restart the loop.
+        The loop reads the mission's event history on iteration 1 so it
+        picks up where it left off.
+      * `awaiting_user` → leave alone. The user owes an answer; the loop
+        is correctly suspended until they post via /missions/{id}/answer.
+      * `running` + heartbeat older than `stale_minutes` → leave for the
+        startup-recovery scan in server.py to fail with a clear message.
+        These are usually missions where Mongo writes succeeded but the
+        process hung mid-tool-call (e.g. Playwright deadlock) and the
+        cleanest recovery is "let the user click Continue".
+
+    Returns the number of missions rehydrated.
+    """
+    from datetime import timedelta as _td
+    cutoff = datetime.now(timezone.utc) - _td(minutes=stale_minutes)
+    rehydrated = 0
+    cur = db.missions.find(
+        {"status": "running"},
+        {"_id": 0},
+    )
+    async for m in cur:
+        mid = m.get("id") or ""
+        if not mid:
+            continue
+        # Skip missions that are already running on THIS process (rare —
+        # only happens if rehydrate is called twice in a row).
+        if mid in _RUNNING and not _RUNNING[mid].done():
+            continue
+        # Heartbeat freshness gate — too-stale missions get failed by the
+        # startup recovery scan instead.
+        last = m.get("last_activity_at") or m.get("updated_at") or m.get("started_at")
+        if isinstance(last, datetime):
+            if last.tzinfo is None:
+                last = last.replace(tzinfo=timezone.utc)
+            if last < cutoff:
+                continue
+        # Re-stamp the heartbeat NOW so the watchdog doesn't reap us
+        # mid-rehydrate. Also append a system event so the work log
+        # shows the resume point clearly to the user.
+        now = datetime.now(timezone.utc)
+        try:
+            await db.missions.update_one(
+                {"id": mid, "status": "running"},
+                {"$set": {"last_activity_at": now}},
+            )
+            await db.mission_events.insert_one({
+                "id": str(uuid.uuid4()),
+                "mission_id": mid,
+                "kind": "system",
+                "ts": now,
+                "text": ("Backend restart detected — mission auto-resumed "
+                         "from work log. No action required."),
+                "iteration": int(m.get("iteration_count", 0)),
+            })
+        except Exception as exc:
+            logger.warning("Could not stamp resume heartbeat for %s: %s", mid, exc)
+        # Build the same ctx the original start_mission did.
+        ctx = {
+            "org_id": m.get("org_id") or "",
+            "mission_id": mid,
+            "lead_agent_id": m.get("lead_agent_id"),
+            "lead_agent_name": m.get("lead_agent_name"),
+            "created_by": m.get("created_by") or "",
+        }
+        tools = build_tools_factory()
+        try:
+            task = asyncio.create_task(run_mission_loop(
+                db=db, mission=m, tools=tools, ctx=ctx,
+                LlmChat=LlmChat, UserMessage=UserMessage,
+                EMERGENT_LLM_KEY=EMERGENT_LLM_KEY,
+                build_lead_system_prompt=build_lead_system_prompt,
+            ))
+            _RUNNING[mid] = task
+            rehydrated += 1
+        except Exception as exc:
+            logger.warning("Could not rehydrate mission %s: %s", mid, exc)
+    if rehydrated:
+        logger.info("Mission rehydrate: re-spawned %d running mission(s)", rehydrated)
+    return rehydrated
+
+
 __all__ = [
     "Tool",
     "build_tools",
     "make_missions_router",
     "run_mission_loop",
+    "rehydrate_running_missions",
 ]

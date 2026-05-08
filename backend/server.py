@@ -67,8 +67,9 @@ from style_guide import (
     make_style_guide_router,
     format_guide_for_prompt as _format_style_guide_prompt,
 )
-from missions import (
+from missions import (  # noqa: E402
     make_missions_router,
+    rehydrate_running_missions,
     build_tools as _build_mission_tools,
 )
 from firebase_auth import (
@@ -167,6 +168,16 @@ async def recover_bytes_from_gridfs(filename: str) -> tuple[Optional[bytes], Opt
 
 # ── App ──────────────────────────────────────────────────────────────────────
 app = FastAPI(title="SoulPrint Engine API")
+
+# ── Security middleware (headers + brute-force lockout) ──────────────────
+# Security headers must be added BEFORE other middleware so they're applied
+# on every response (including error paths). CORS must remain the outermost
+# layer so preflights still resolve cleanly.
+from security import (  # noqa: E402
+    LoginThrottle, RateLimiter, SecurityHeadersMiddleware,
+    SECURITY_POLICY_DOC, _client_ip,
+)
+app.add_middleware(SecurityHeadersMiddleware)
 
 JWT_SECRET = os.environ.get("JWT_SECRET", "soulprint-dev-secret")
 JWT_ALGO = "HS256"
@@ -572,8 +583,16 @@ def serialize_conv(c: dict) -> dict:
 # ── Auth routes ──────────────────────────────────────────────────────────────
 auth_r = APIRouter(prefix="/api/auth")
 
+# Brute-force lockout for /login + per-IP rate limits for sensitive endpoints.
+# All raise 429 when tripped; legit users see a clear "try again in N min" toast.
+login_throttle = LoginThrottle(db)
+register_limiter = RateLimiter(calls=10, window_s=60)        # 10 reg/min/IP
+invite_accept_limiter = RateLimiter(calls=10, window_s=60)   # 10 accepts/min/IP
+password_reset_limiter = RateLimiter(calls=5, window_s=300)  # 5 / 5min / IP
+
 @auth_r.post("/register")
-async def register(body: RegisterBody, resp: Response):
+async def register(body: RegisterBody, request: Request, resp: Response):
+    register_limiter(request)  # raises 429 if abused
     email = body.email.lower().strip()
     if not email or not body.password or len(body.password) < 6:
         raise HTTPException(400, "Email and password (min 6 chars) required")
@@ -606,13 +625,22 @@ async def register(body: RegisterBody, resp: Response):
             "access_token": token}
 
 @auth_r.post("/login")
-async def login(body: LoginBody, resp: Response):
+async def login(body: LoginBody, request: Request, resp: Response):
     email = body.email.lower().strip()
+    ip = _client_ip(request)
+    # Brute-force gate — raises 429 with retry-after message if the
+    # caller is locked out. Fail-open if Mongo is hiccuping (better to
+    # let a real user in than block them on transient infra issues).
+    await login_throttle.check(ip=ip, email=email)
     user = await db.users.find_one({"email": email})
     if not user or not verify_password(body.password, user["password_hash"]):
+        await login_throttle.record_failure(ip=ip, email=email)
         raise HTTPException(401, "Invalid email or password")
     if user.get("is_disabled"):
         raise HTTPException(403, "Account disabled. Contact your administrator.")
+    # Successful login → wipe the failure counter so the next legit
+    # mistake doesn't compound with old failed attempts.
+    await login_throttle.clear(ip=ip, email=email)
     uid = str(user["_id"])
     token = create_access_token(uid, email)
     set_auth_cookies(resp, token)
@@ -1653,7 +1681,8 @@ async def list_invites(org_id: str, u: dict = Depends(get_current_user)):
 invite_r = APIRouter(prefix="/api/invites")
 
 @invite_r.post("/accept")
-async def accept_invite(body: InviteAcceptBody, u: dict = Depends(get_current_user)):
+async def accept_invite(body: InviteAcceptBody, request: Request, u: dict = Depends(get_current_user)):
+    invite_accept_limiter(request)  # raises 429 if abused
     inv = await db.invites.find_one({"code": body.code, "used_by": None})
     if not inv:
         raise HTTPException(404, "Invite not found or already used")
@@ -6501,10 +6530,29 @@ app.include_router(social_autopost_r)
 app.add_middleware(
     CORSMiddleware,
     allow_credentials=True,
-    allow_origin_regex=r".*",
+    # Tightened CORS: prefer an explicit allowlist via the ALLOWED_ORIGINS
+    # env var ("https://pro.soulprintengine.ai,https://app.soulprintengine.ai")
+    # for production. Falls back to the permissive regex when the env is
+    # unset so preview/dev still works without manual config.
+    allow_origins=[
+        o.strip() for o in (os.environ.get("ALLOWED_ORIGINS") or "").split(",")
+        if o.strip()
+    ] or [],
+    allow_origin_regex=(
+        None if (os.environ.get("ALLOWED_ORIGINS") or "").strip()
+        else r".*"
+    ),
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# ── Public security policy doc ───────────────────────────────────────────
+# Surface the structured policy doc at /api/security so the public
+# /security trust page (and prospective enterprise customers' security
+# review teams) can pull it programmatically.
+@app.get("/api/security")
+async def get_security_policy():
+    return SECURITY_POLICY_DOC
 
 @app.on_event("startup")
 async def startup():
@@ -6600,6 +6648,27 @@ async def startup():
             logger.info("Workspace startup: migrated %d legacy org(s)", migrated)
     except Exception as exc:
         logger.warning("Workspace migration failed: %s", exc)
+    # ── Mission rehydration (autonomous resume across pod restarts) ─────
+    # Re-spawn the asyncio task for any mission whose heartbeat is still
+    # fresh — these are missions where the previous backend just died
+    # (deploy / OOM / scale event) but the work log is intact in Mongo.
+    # Pulling these back to life is what makes missions truly autonomous;
+    # otherwise every redeploy kills in-flight runs and the watchdog
+    # eventually fails them. Stale missions (no heartbeat in 60+ min)
+    # are skipped here so the recovery scan below can fail them with a
+    # clear message instead of restarting a wedged run forever.
+    try:
+        rehydrated = await rehydrate_running_missions(
+            db=db, AGENTS=AGENTS, EMERGENT_LLM_KEY=EMERGENT_LLM_KEY,
+            LlmChat=LlmChat, UserMessage=UserMessage,
+            build_tools_factory=_build_mission_tools_factory,
+            build_lead_system_prompt=_build_lead_mission_system_prompt,
+            stale_minutes=60,
+        )
+        if rehydrated:
+            logger.info("Mission startup: rehydrated %d running mission(s)", rehydrated)
+    except Exception as exc:
+        logger.warning("Mission rehydrate failed: %s", exc)
     # ── Stuck-mission recovery ───────────────────────────────────────────
     # Pod restarts / redeploys kill in-flight asyncio tasks, but the
     # `missions` row keeps `status="running"` (or "awaiting_user") in
@@ -6671,15 +6740,18 @@ async def startup():
     # timeout, or got wedged inside a Playwright call — without waiting
     # for a pod restart. Threshold 5 minutes matches the startup scan.
     async def _watchdog_tick():
-        # 15-minute window. Was 5 minutes, but legitimate browse-heavy
+        # 60-minute window. Was 15 minutes, but legitimate browse-heavy
         # missions (Google Maps interactions, multi-screenshot crawls,
-        # long LLM round-trips on slow Anthropic days) can legitimately
-        # iterate slower than that. We'd rather a truly-dead mission
-        # take a few extra minutes to reap than false-fail a working
-        # one. The in-loop heartbeat (`run_mission_loop` ticks
-        # last_activity_at at the start of every iteration AND on every
-        # event append) keeps the cadence accurate for normal paces.
-        cutoff = datetime.now(timezone.utc) - timedelta(minutes=15)
+        # long LLM round-trips on slow Anthropic days, multi-form
+        # submissions across 5+ pages) can legitimately iterate slower
+        # than that. We'd rather a truly-dead mission take an extra
+        # 45 minutes to reap than false-fail a working one. The
+        # in-loop heartbeat (every 30s from `_mission_heartbeat`) keeps
+        # the cadence accurate for normal paces. Pod-restart recovery
+        # is handled separately by `rehydrate_running_missions` at
+        # startup, which re-spawns the asyncio task — so the watchdog
+        # can afford a generous threshold.
+        cutoff = datetime.now(timezone.utc) - timedelta(minutes=60)
         try:
             cur = db.missions.find(
                 {
@@ -6698,8 +6770,8 @@ async def startup():
                     {"$set": {
                         "status": "failed",
                         "error": ("Mission stalled with no activity for "
-                                  "over 15 minutes and was auto-failed "
-                                  "by the watchdog. You can click "
+                                  "over 60 minutes and was auto-failed "
+                                  "by the watchdog. Click "
                                   "Continue to pick up where it left off."),
                         "finished_at": datetime.now(timezone.utc),
                     }},
@@ -6709,7 +6781,7 @@ async def startup():
                         "mission_id": mid,
                         "kind": "system",
                         "text": ("Watchdog auto-failed this mission — no "
-                                 "heartbeat in 15+ minutes. Click "
+                                 "heartbeat in 60+ minutes. Click "
                                  "Continue to resume."),
                         "ts": datetime.now(timezone.utc),
                     })

@@ -18,6 +18,7 @@ import WorkspaceSettingsPage from "./pages/WorkspaceSettingsPage";
 import SocialPage from "./pages/SocialPage";
 import MissionsPage from "./pages/MissionsPage";
 import AboutPage from "./pages/AboutPage";
+import SecurityPage from "./pages/SecurityPage";
 import AccountPage from "./pages/AccountPage";
 import DeckPage from "./pages/DeckPage";
 import AdminDashboard from "./pages/AdminDashboard";
@@ -59,6 +60,7 @@ function App() {
               <Routes>
                 <Route path="/" element={<PublicOnly><LandingPage /></PublicOnly>} />
                 <Route path="/about" element={<AboutPage />} />
+                <Route path="/security" element={<SecurityPage />} />
                 <Route path="/deck" element={<DeckPage />} />
                 <Route path="/auth" element={<PublicOnly><AuthPage /></PublicOnly>} />
                 <Route path="/invite/:code" element={<Protected><AcceptInvitePage /></Protected>} />

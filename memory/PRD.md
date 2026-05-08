@@ -361,3 +361,46 @@ pattern. Users must be able to:
   (name, email, phone, company, role, submitted_at), and screenshotted the
   modal rendering correctly. Test lead cleaned up after verification.
 
+
+- ✅ **Mission autonomy across pod restarts** (May 8, 2026) — direct response
+  to "a mission was running but stopped because of watchdog". Two fixes:
+  (1) New `rehydrate_running_missions(stale_minutes=60)` in `missions.py` runs
+  at backend startup and re-spawns the asyncio task for any `running` mission
+  whose heartbeat is fresher than 60 minutes. The mission picks up from its
+  event log and continues — true autonomy across deploys / OOM / scale events.
+  Stale missions (>60 min no heartbeat) still fail with the existing "please
+  re-run" message so genuinely-wedged runs don't loop forever. (2) Bumped the
+  in-flight watchdog threshold from 15 min → 60 min so legitimate browse-heavy
+  missions (multi-page form fills, slow LLM days, multi-screenshot crawls)
+  don't get false-failed. The 30s heartbeat task in `_mission_heartbeat`
+  keeps `last_activity_at` fresh during long tool calls so the watchdog only
+  reaps truly-dead missions.
+- ✅ **B2B security hardening pass** (May 8, 2026) — broad audit + concrete fixes:
+  - **`security.py`** — new module with `LoginThrottle` (Mongo-backed, 8 fails /
+    15min → 15min lockout, fail-open on Mongo blips), `RateLimiter` (in-memory
+    sliding window, FastAPI-dependency style), and `SecurityHeadersMiddleware`
+    (HSTS preload, X-Content-Type-Options, X-Frame-Options SAMEORIGIN,
+    Referrer-Policy strict-origin-when-cross-origin, Permissions-Policy locking
+    geolocation/camera/mic to self and disabling payment, CSP starts in
+    `Content-Security-Policy-Report-Only` so we can tighten without breaking).
+  - **CORS** tightened: explicit allowlist via `ALLOWED_ORIGINS` env var (CSV),
+    falls back to permissive regex when unset for dev. Production deploys can
+    set this to lock origins.
+  - **Brute-force lockout** wired into `POST /api/auth/login` — after 8
+    consecutive failures from the same (IP, email), returns 429 with a clear
+    "Try again in N minutes" message. Successful login wipes the counter.
+  - **Rate limiters** on `/api/auth/register` (10/min/IP), `/api/invites/accept`
+    (10/min/IP). Lead-capture already had a 5/min/IP limiter from earlier.
+  - **`GET /api/security`** — public endpoint serving the structured policy
+    doc (encryption, auth, authorization, rate limits, secrets handling,
+    incident response, compliance posture). Single source of truth for the
+    public trust page.
+  - **`/security` trust page** — public route powered by `/api/security`.
+    Hero + cards for encryption / auth / authorization / per-org isolation,
+    sections for rate limiting, secrets, data residency, compliance, incident
+    response. Footer CTA mailto for security teams to request a deeper review.
+  - Verified end-to-end: 8 wrong logins → 429 lockout, security headers present
+    on every response, /api/security returns full policy JSON, /security page
+    renders cleanly. Login still works for the standing superadmin after the
+    counter is cleared.
+
