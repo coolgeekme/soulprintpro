@@ -246,9 +246,18 @@ PLATFORM CAPABILITY MAP — what SoulPrint Engine Pro can actually do
 ═══════════════════════════════════════════════════════════════════════
 This audit is delivered through SoulPrint Engine Pro (SPE Pro). EVERY
 recommendation you make MUST include a ``soulprint_execution`` field
-that explains — concretely, in 1–2 sentences — exactly which SPE Pro
-feature or agent would execute the fix. Use only the capabilities
+that explains — concretely, in 1–2 sentences — exactly how SPE Pro
+helps the user act on the fix (which agent drafts it, which mission
+researches it, which feature schedules it). Use only the capabilities
 listed below; do NOT invent features that don't exist.
+
+Be honest about the boundary: SPE Pro PRODUCES the work product
+(drafts, briefs, plans, research, reports, monitoring); the user or
+their team is the one who clicks publish, files paperwork, books the
+meeting, etc. A recommendation like "redirect 301 your /old to /new"
+isn't something SPE Pro literally does — but SPE Pro can DRAFT the
+exact .htaccess block, EXPLAIN what to paste where, and MONITOR the
+result. Frame it that way.
 
 SPE Pro is a B2B platform (built by ArcheForge) that lets a company:
 
@@ -306,27 +315,39 @@ K. **Custom Agents** — admins can author new specialist agents that
 ═══════════════════════════════════════════════════════════════════════
 HOW TO MAP RECOMMENDATIONS TO PLATFORM CAPABILITIES
 ═══════════════════════════════════════════════════════════════════════
-For every recommendation, choose the most direct execution path. Be
-specific — name the agent, the mission, or the feature.
+For every recommendation, choose the most direct path SPE Pro can help
+with. Be specific — name the agent, the mission, or the feature. Be
+honest about the boundary: SPE Pro DRAFTS, BRIEFS, RESEARCHES, PLANS,
+and MONITORS; the user (or their team) is the one who hits publish,
+files paperwork, books the meeting, makes the phone call. Words like
+"drafts", "surfaces", "monitors", "briefs", "schedules a draft",
+"prepares" are GOOD. Words like "executes", "ships", "publishes
+automatically", "fixes for you" overpromise and should be avoided
+unless the action genuinely happens autonomously inside SPE Pro
+(e.g. social posts via the Social Queue with auto-publish on, which
+the user explicitly opts into).
 
 Examples of good ``soulprint_execution`` text:
 
-  • "SoulPrint's **Conversion Copywriter agent** rewrites your hero
-     using your Brand Soul + the top phrases from your G2 reviews —
-     auto-imported via the Reviews Listener mission."
+  • "SoulPrint's **Conversion Copywriter agent** drafts a new hero
+     using your Brand Soul + the top phrases from your G2 reviews
+     (pulled in by the Reviews Listener mission). You review and
+     paste into your CMS."
 
-  • "Set up a recurring **Reviews Monitor mission** that scans Google
-     + Trustpilot weekly and pings your Slack when sentiment drops.
-     The mission also drafts a public response in your tone for you
-     to approve."
+  • "Stand up a recurring **Reviews Monitor mission** that scans
+     Google + Trustpilot weekly, pings your Slack when sentiment
+     drops, and drafts a public response in your tone for you to
+     approve and post."
 
-  • "Use the **Social Queue** to auto-schedule the LinkedIn cadence —
-     SoulPrint drafts 5 posts a week from your latest customer wins,
-     generates the cover images, and you approve in 30 seconds."
+  • "Use the **Social Queue** to keep a LinkedIn cadence ready —
+     SoulPrint drafts 5 posts a week from your latest customer wins
+     and generates the cover images. With auto-publish on you can
+     have it post directly; otherwise it queues drafts for your
+     30-second approval."
 
-  • "Create a **'Pricing comparison' brief mission** — the Competitive
-     Researcher agent scans 3 named competitors weekly and outputs a
-     PDF you can drop into sales decks."
+  • "Spin up a **'Pricing comparison' brief mission** — the
+     Competitive Researcher agent scans 3 named competitors weekly
+     and produces a PDF you can drop into sales decks."
 
 ═══════════════════════════════════════════════════════════════════════
 JSON SCHEMA
@@ -350,7 +371,7 @@ Synthesize a structured audit and return ONLY valid JSON matching this schema:
       "title": "Action verb + specific change",
       "detail": "What to do, why it works, how to measure success.",
       "estimated_impact": "1 sentence: the lift they should expect.",
-      "soulprint_execution": "1-2 sentences: which SPE Pro agent / mission / feature executes this. Reference at least one named agent or mission. Do NOT invent features."
+      "soulprint_execution": "1-2 sentences: how SPE Pro helps the user act on this — which agent or mission would brief, draft, plan, or research it. Be honest about the boundary: SPE Pro produces the playbook, copy, brief, or analysis; the user (or their team) is the one who hits publish, files the form, books the meeting, etc. Reference at least one named agent or mission. Never imply SPE Pro autonomously ships work to live customer-facing channels unless that's literally the case. Do NOT invent features."
     }
   ],
   "competitors": [           // exactly 3 — named direct competitors
@@ -367,7 +388,7 @@ Synthesize a structured audit and return ONLY valid JSON matching this schema:
     "reviews_summary": "Paragraph: sentiment + 2-3 specific recurring complaints or themes (cite review excerpts when available).",
     "competitive_context": "Paragraph: where they sit vs the 3 named competitors."
   },
-  "how_soulprint_helps": "3-4 sentence closing pitch: tie the audit's findings together and explain how SoulPrint Engine Pro is the natural execution partner for the recommended fixes. Reference 2-3 specific SPE Pro features by name. End with a soft CTA inviting them to start with SPE Pro. Do NOT use marketing fluff — be specific and grounded in THEIR audit."
+  "how_soulprint_helps": "3-4 sentence closing pitch: tie the audit's findings together and explain how SoulPrint Engine Pro helps the user act on the recommended fixes — by drafting the copy, building the briefs, surfacing the research, and keeping the playbooks current. Be honest about the split: SPE Pro prepares the work, the user (or their team) ships it. Reference 2-3 specific SPE Pro features by name. End with a soft CTA inviting them to start with SPE Pro. Do NOT use marketing fluff — be specific and grounded in THEIR audit."
 }
 
 Rules:
@@ -466,7 +487,7 @@ def _audit_to_markdown(a: dict) -> str:
             # Pro feature so the prospect sees the natural next step.
             spe = rec.get("soulprint_execution") or ""
             if spe:
-                out.append(f"\n**↳ How SoulPrint Engine Pro executes this:** {spe}\n")
+                out.append(f"\n**↳ How SoulPrint Engine Pro can help:** {spe}\n")
     out.append("\n## Brand Voice Read\n")
     out.append(f"\n- **Stated mission:** {bv.get('stated_mission','')}")
     out.append(f"\n- **Actual voice:** {bv.get('actual_voice','')}")
@@ -487,7 +508,7 @@ def _audit_to_markdown(a: dict) -> str:
     # prospect toward the natural next step (booking a SPE Pro setup).
     helps = a.get("how_soulprint_helps") or ""
     if helps:
-        out.append("\n\n## Execute These Fixes With SoulPrint Engine Pro\n")
+        out.append("\n\n## Tackle These Fixes With SoulPrint Engine Pro\n")
         out.append(f"\n{helps}\n")
     out.append("\n\n---\n_Prepared by SoulPrint Engine Pro._")
     return "".join(out)
