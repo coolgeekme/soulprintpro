@@ -3072,6 +3072,23 @@ async def generate_agent_reply(conv: dict, team: dict, agent_id: str,
     # and would otherwise hallucinate follower counts / engagement / etc.
     user_url_block, user_url_fetches = await fetch_user_supplied_urls(latest_user_text)
 
+    # GitHub auto-detect — if the user's message mentions "my repos" /
+    # "open issues in <repo>" / similar, hit the GitHub API server-side
+    # with their connected token and inject the result as ground truth.
+    # Read-only intents only (writes still go through Missions for the
+    # explicit-consent UX).
+    github_block = ""
+    try:
+        from github_integration import fetch_github_chat_context
+        github_block, _gh_results = await fetch_github_chat_context(
+            db, message=latest_user_text or "",
+            org_id=str(team.get("org_id") or ""),
+            user_id=u["id"],
+        )
+    except Exception as exc:
+        logger.warning("github_chat_context_failed: %s", exc)
+        github_block = ""
+
     # Pull a compact view of the org's asset library so the agent can cite it.
     org_assets_brief: List[dict] = []
     org_doc: Optional[dict] = None
@@ -3105,6 +3122,12 @@ async def generate_agent_reply(conv: dict, team: dict, agent_id: str,
         # weight it heavier. The block itself contains the strict "do not
         # invent metrics" directive.
         system += "\n\n" + user_url_block
+    if github_block:
+        # GitHub ground truth lands LAST so it's the most-recent context
+        # the LLM sees before generating. The block already contains
+        # an anti-hallucination directive ("Do NOT invent issues / repos
+        # not in this list"). Citation rules baked in.
+        system += github_block
 
     chat = LlmChat(
         api_key=EMERGENT_LLM_KEY,

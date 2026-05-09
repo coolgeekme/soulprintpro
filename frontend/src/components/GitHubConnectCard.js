@@ -1,8 +1,9 @@
 /* eslint-disable react-hooks/exhaustive-deps */
 import { useEffect, useState } from "react";
-import { Github, Loader2, Trash2, ShieldCheck, Building2, User } from "lucide-react";
+import { Github, Loader2, Trash2, ShieldCheck, Building2, User, Pencil } from "lucide-react";
 import { toast } from "sonner";
 import api from "../lib/api";
+import GitHubQuickEditModal from "./GitHubQuickEditModal";
 
 /**
  * GitHubConnectCard — list current connections for an org and let the
@@ -20,6 +21,7 @@ export default function GitHubConnectCard({ orgId }) {
   const [connections, setConnections] = useState([]);
   const [isAdmin, setIsAdmin] = useState(false);
   const [busy, setBusy] = useState("");
+  const [editorOpen, setEditorOpen] = useState(false);
 
   const refresh = async () => {
     if (!orgId) return;
@@ -135,10 +137,26 @@ export default function GitHubConnectCard({ orgId }) {
         </div>
       )}
 
-      <div className="mt-4 pt-4 border-t border-white/10 flex items-center gap-2 text-[11px] sp-subtle">
-        <ShieldCheck className="w-3 h-3 text-green-400/80" />
-        Tokens are encrypted at rest. Disconnect anytime.
+      <div className="mt-4 pt-4 border-t border-white/10 flex items-center gap-3 flex-wrap">
+        <span className="inline-flex items-center gap-1.5 text-[11px] sp-subtle">
+          <ShieldCheck className="w-3 h-3 text-green-400/80" />
+          Tokens are encrypted at rest. Disconnect anytime.
+        </span>
+        {connections.length > 0 && (
+          <button
+            type="button"
+            onClick={() => setEditorOpen(true)}
+            className="sp-btn sp-btn-ghost text-xs ml-auto"
+            data-testid="gh-quick-edit-btn"
+          >
+            <Pencil className="w-3 h-3" /> Quick-edit a file
+          </button>
+        )}
       </div>
+
+      {editorOpen && (
+        <GitHubQuickEditModal orgId={orgId} onClose={() => setEditorOpen(false)} />
+      )}
     </div>
   );
 }

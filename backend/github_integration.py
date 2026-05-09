@@ -363,6 +363,139 @@ def make_github_router(*, db, get_current_user, require_org_member,
         await db.github_connections.delete_one({"_id": obj_id})
         return {"ok": True}
 
+    # ── Quick-edit endpoints (consumed by the GitHubConnectCard UI) ─────────
+    # Three thin proxies around the connected token: list-repos, get-tree,
+    # commit-file. Lets the user surgical-edit a file from /app/account
+    # without spinning up a Mission. Every call requires a live connection;
+    # we resolve the token via the same user-then-org fallback the agent
+    # tools use so behavior is consistent.
+    @r.get("/repos")
+    async def list_repos_endpoint(org_id: str = Query(...),
+                                  u: dict = Depends(get_current_user)):
+        await require_org_member(org_id, u["id"])
+        token = await _get_token(db, org_id=org_id, user_id=u["id"])
+        if not token:
+            raise HTTPException(404, "No GitHub connection — connect one first.")
+        try:
+            data = await _gh_get(token, "/user/repos",
+                                 params={"per_page": 100, "sort": "updated"})
+        except Exception as exc:
+            raise HTTPException(502, str(exc))
+        return {
+            "repos": [
+                {"full_name": r.get("full_name"),
+                 "default_branch": r.get("default_branch"),
+                 "private": r.get("private"),
+                 "url": r.get("html_url"),
+                 "description": r.get("description"),
+                 "language": r.get("language")}
+                for r in (data or [])
+            ],
+        }
+
+    @r.get("/tree")
+    async def get_tree(
+        org_id: str = Query(...), repo: str = Query(...),
+        path: str = Query(""), ref: str = Query(""),
+        u: dict = Depends(get_current_user),
+    ):
+        """List a directory's entries OR return a single file's contents."""
+        await require_org_member(org_id, u["id"])
+        token = await _get_token(db, org_id=org_id, user_id=u["id"])
+        if not token:
+            raise HTTPException(404, "No GitHub connection.")
+        if "/" not in repo:
+            raise HTTPException(400, "repo must be 'owner/name'")
+        params = {"ref": ref} if ref else {}
+        try:
+            data = await _gh_get(token, f"/repos/{repo}/contents/{path}",
+                                 params=params)
+        except Exception as exc:
+            raise HTTPException(404, str(exc))
+        if isinstance(data, list):
+            return {
+                "is_directory": True,
+                "entries": sorted([
+                    {"name": e.get("name"), "type": e.get("type"),
+                     "path": e.get("path"), "size": e.get("size", 0),
+                     "sha": e.get("sha")}
+                    for e in data
+                ], key=lambda e: (e["type"] != "dir", e["name"].lower())),
+            }
+        # Single file
+        import base64
+        if data.get("encoding") == "base64":
+            try:
+                content = base64.b64decode(data["content"]).decode("utf-8")
+                is_binary = False
+            except Exception:
+                content = "(binary file — open on GitHub to view)"
+                is_binary = True
+        else:
+            content = data.get("content") or ""
+            is_binary = False
+        return {
+            "is_directory": False,
+            "name": data.get("name"),
+            "path": data.get("path"),
+            "sha": data.get("sha"),
+            "size": data.get("size"),
+            "is_binary": is_binary,
+            "content": content,
+            "html_url": data.get("html_url"),
+        }
+
+    @r.post("/commit")
+    async def commit_file(
+        body: dict = Body(...),
+        u: dict = Depends(get_current_user),
+    ):
+        """Push a single-file commit. Body: {org_id, repo, branch, path,
+        content, message, sha?}. If `sha` is provided we update that
+        revision; otherwise GitHub treats it as a create."""
+        org_id = (body or {}).get("org_id") or ""
+        await require_org_member(org_id, u["id"])
+        token = await _get_token(db, org_id=org_id, user_id=u["id"])
+        if not token:
+            raise HTTPException(404, "No GitHub connection.")
+        repo = (body.get("repo") or "").strip()
+        branch = (body.get("branch") or "").strip()
+        path = (body.get("path") or "").strip()
+        content = body.get("content") or ""
+        message = (body.get("message") or "").strip()
+        sha = body.get("sha")
+        if not (repo and branch and path and message):
+            raise HTTPException(400, "repo, branch, path, and message are required")
+        import base64
+        encoded = base64.b64encode(content.encode("utf-8")).decode("ascii")
+        payload = {"message": message, "content": encoded, "branch": branch}
+        if sha:
+            payload["sha"] = sha
+        try:
+            async with httpx.AsyncClient(timeout=30) as c:
+                resp = await c.put(
+                    f"{GITHUB_API}/repos/{repo}/contents/{path}",
+                    json=payload,
+                    headers={
+                        "Authorization": f"token {token}",
+                        "Accept": "application/vnd.github+json",
+                    },
+                )
+            if resp.status_code >= 400:
+                raise HTTPException(resp.status_code,
+                                    f"GitHub: {resp.text[:300]}")
+            data = resp.json()
+        except HTTPException:
+            raise
+        except Exception as exc:
+            raise HTTPException(502, str(exc))
+        return {
+            "ok": True,
+            "commit_sha": (data.get("commit") or {}).get("sha"),
+            "commit_url": (data.get("commit") or {}).get("html_url"),
+            "new_sha": (data.get("content") or {}).get("sha"),
+        }
+
     return r
 
 
@@ -667,5 +800,131 @@ def make_github_tools(*, db):
 
 __all__ = [
     "make_github_router", "make_github_tools", "_get_token",
-    "_is_configured",
+    "_is_configured", "fetch_github_chat_context",
 ]
+
+
+# ── 7. Chat-side intent detection + ground-truth block ─────────────────────
+# Chat conversations don't have a tool-calling loop yet (that's a P2
+# refactor). To make GitHub useful in chat NOW, we run a tiny
+# rule-based intent classifier on each user message — when it matches,
+# we call the appropriate read-only GitHub endpoint server-side and
+# inject the result as a "GROUND TRUTH — GITHUB" block in the system
+# prompt. Same pattern as `fetch_user_supplied_urls()` for paste-a-link
+# scrapes.
+#
+# We only auto-execute READ operations (list_repos, list_issues, read
+# file). Write operations (open PR, push commit, create branch) require
+# explicit human consent → those continue to live in Missions only.
+import re as _re
+
+# Match a "owner/repo" mention in the user's message — captures common
+# patterns like "in coolgeek/site", "https://github.com/owner/repo",
+# "owner/repo issues". Two-segment slug, alnum + dash + underscore.
+_REPO_RE = _re.compile(
+    r"(?:github\.com/)?([A-Za-z0-9_.-]{1,39})/([A-Za-z0-9_.-]{1,100})"
+    r"(?:\.git|/issues|/pulls|/blob/[^\s]+)?\b"
+)
+
+_INTENT_LIST_REPOS = _re.compile(
+    r"\b(my (?:github )?repos?|list (?:my )?repos?|what repos|"
+    r"show.*repos?|active repos?|recent repos?)\b",
+    _re.IGNORECASE,
+)
+
+_INTENT_LIST_ISSUES = _re.compile(
+    r"\b(open issues?|list issues?|issues? in|outstanding issues?|"
+    r"bugs? (?:in|on)|tickets? in|what'?s open|what bugs?)\b",
+    _re.IGNORECASE,
+)
+
+
+async def fetch_github_chat_context(
+    db, *, message: str, org_id: str, user_id: str,
+) -> tuple[str, list[dict]]:
+    """Inspect the user's chat message; if a GitHub intent + scope is
+    detected, perform a single read-only API call and format the result
+    as a system-prompt block. Returns (block_str, structured_results).
+
+    Structured results are persisted on the message so the UI can later
+    render them as cards if desired (we don't render them today — the
+    block is enough to ground the agent's reply)."""
+    try:
+        token = await _get_token(db, org_id=org_id, user_id=user_id)
+    except Exception:
+        token = None
+    if not token or not message:
+        return "", []
+    msg = message.strip()
+
+    # Pattern 1: "list my repos" / "what are my recent repos"
+    if _INTENT_LIST_REPOS.search(msg) and not _REPO_RE.search(msg):
+        try:
+            data = await _gh_get(token, "/user/repos",
+                                 params={"per_page": 15, "sort": "updated"})
+        except Exception as exc:
+            return f"\n\nGITHUB INTENT FAILED: {exc}\n", []
+        rows = []
+        for r in (data or [])[:15]:
+            rows.append({
+                "full_name": r.get("full_name"),
+                "description": r.get("description") or "",
+                "private": r.get("private"),
+                "language": r.get("language"),
+                "url": r.get("html_url"),
+                "updated_at": r.get("updated_at"),
+            })
+        block = (
+            "\n\nGROUND TRUTH — GITHUB (the user's 15 most recently "
+            "updated repos, fetched server-side just now). Cite repo "
+            "names as `owner/name` markdown links to their `url`. Do "
+            "NOT mention repos that aren't in this list.\n\n"
+        )
+        for r in rows:
+            vis = "private" if r.get("private") else "public"
+            lang = f" · {r['language']}" if r.get("language") else ""
+            desc = (r.get("description") or "").strip()
+            block += f"- [{r['full_name']}]({r['url']}) ({vis}{lang})"
+            if desc:
+                block += f" — {desc[:140]}"
+            block += "\n"
+        return block, rows
+
+    # Pattern 2: "open issues in owner/name" / "what's open in owner/name"
+    if _INTENT_LIST_ISSUES.search(msg):
+        m = _REPO_RE.search(msg)
+        if not m:
+            return "", []
+        repo = f"{m.group(1)}/{m.group(2)}"
+        try:
+            data = await _gh_get(token, f"/repos/{repo}/issues",
+                                 params={"state": "open", "per_page": 20})
+        except Exception as exc:
+            return f"\n\nGITHUB INTENT FAILED for {repo}: {exc}\n", []
+        rows = []
+        for i in (data or []):
+            if i.get("pull_request"):
+                continue  # exclude PRs from the issues view
+            rows.append({
+                "number": i.get("number"),
+                "title": i.get("title"),
+                "url": i.get("html_url"),
+                "labels": [lbl.get("name") for lbl in (i.get("labels") or [])],
+                "state": i.get("state"),
+            })
+            if len(rows) >= 20:
+                break
+        block = (
+            f"\n\nGROUND TRUTH — GITHUB (open issues on `{repo}`, "
+            f"fetched server-side just now). Reference issue numbers "
+            f"as `#42` and link to their `url`. Do NOT invent issues "
+            f"not in this list.\n\n"
+        )
+        for r in rows:
+            labels = (" `" + "` `".join(r["labels"]) + "`") if r["labels"] else ""
+            block += f"- [#{r['number']} {r['title']}]({r['url']}){labels}\n"
+        if not rows:
+            block += "_(No open issues.)_\n"
+        return block, rows
+
+    return "", []
