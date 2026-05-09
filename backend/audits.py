@@ -638,11 +638,14 @@ def make_audits_router(
                 hint=a.get("hint") or "",
             )
 
-            # Stage C — render PDF (best-effort; non-blocking on failure)
+            # Stage C — render PDF (best-effort; non-blocking on failure).
+            # Uses the dedicated, brand-aligned audit renderer which
+            # consumes the structured audit dict directly (cover page,
+            # score ring, priority pills, "How SoulPrint helps" cards).
             pdf_filename = ""
             try:
-                md = _audit_to_markdown({**a, **data})
-                pdf_bytes = render_pdf(md, title=f"Audit — {brand}")
+                from audit_pdf import render_audit_pdf
+                pdf_bytes = render_audit_pdf({**a, **data})
                 pdf_filename = f"audit-{audit_id}-{uuid.uuid4().hex[:8]}.pdf"
                 await persist_bytes(
                     upload_dir / pdf_filename, pdf_bytes,
