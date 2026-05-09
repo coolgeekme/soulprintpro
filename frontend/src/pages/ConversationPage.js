@@ -12,6 +12,7 @@ import LinkPreviewCard from "../components/LinkPreviewCard";
 import IntegrityBadge from "../components/IntegrityBadge";
 import { MissionCard } from "../components/MissionCard";
 import { MessageActions } from "../components/MessageActions";
+import EmptyPromisePill from "../components/EmptyPromisePill";
 import WorkingIndicator from "../components/WorkingIndicator";
 import { useRoutingPrefs } from "../components/DynamicIntelligencePicker";
 
@@ -1243,6 +1244,29 @@ export default function ConversationPage() {
                     <span className="text-[11px] sp-subtle ml-auto">{formatTime(m.timestamp)}</span>
                   </div>
                   <div className="whitespace-pre-wrap text-[16px] leading-[1.6]">{m.text}</div>
+                  {/* Empty-promise rescue pill — agent message that
+                      promised an image / file / video but never delivered
+                      it. Single click hits /generate-now which replays
+                      the user's prompt with force_delivery=True. The
+                      pill self-removes once clicked (server unsets the
+                      flag). */}
+                  {isAgent && m.empty_promise && !m._regenerating && (
+                    <EmptyPromisePill
+                      convId={convId}
+                      message={m}
+                      onSuccess={(newMsg) => {
+                        // Remove the flag locally + append the new agent
+                        // reply so the user sees both messages.
+                        setMessages((prev) => {
+                          const updated = prev.map((mm) =>
+                            mm.id === m.id ? { ...mm, empty_promise: false, empty_promise_retried: true } : mm
+                          );
+                          if (newMsg) updated.push(newMsg);
+                          return updated;
+                        });
+                      }}
+                    />
+                  )}
                   {/* Failed-send pill — shows the precise reason and a
                       one-click Retry. Far better UX than dropping the
                       bubble + restoring the input box, which loses the

@@ -3704,6 +3704,14 @@ async def send_message(conv_id: str, body: SendMessageBody, u: dict = Depends(ge
                             web_sources = retry_sources
             except Exception as exc:
                 logger.warning("Forced-delivery retry failed: %s", exc)
+        # If we STILL don't have artifacts AND the cleaned reply still
+        # looks like an empty promise, flag the message so the frontend
+        # can render a "Generate now" pill the user can click to trigger
+        # a manual retry. Lightweight UX rescue when the LLM-side fixes
+        # don't catch it.
+        message_empty_promise = (
+            not artifacts and _has_empty_promise(clean_reply or reply or "")
+        )
         msg = {
             "id": msg_id,
             "conversation_id": conv_id,
@@ -3718,6 +3726,8 @@ async def send_message(conv_id: str, body: SendMessageBody, u: dict = Depends(ge
             msg["web_sources"] = web_sources
         if artifacts:
             msg["attachments"] = artifacts
+        if message_empty_promise:
+            msg["empty_promise"] = True
         await db.messages.insert_one({**msg})
         agent_messages.append({k: v for k, v in msg.items() if k != "_id"})
 
@@ -4356,6 +4366,102 @@ async def set_message_feedback(
     ups = await db.message_feedback.count_documents({"message_id": msg_id, "value": "up"})
     downs = await db.message_feedback.count_documents({"message_id": msg_id, "value": "down"})
     return {"my_feedback": val, "up_count": ups, "down_count": downs}
+
+
+@conv_r.post("/conversations/{conv_id}/messages/{msg_id}/generate-now")
+async def generate_now(
+    conv_id: str, msg_id: str,
+    u: dict = Depends(get_current_user),
+):
+    """User-triggered "Generate now" for an agent message that promised
+    a deliverable but didn't actually deliver one (the `empty_promise`
+    flag is set on the message).
+
+    Replays the original USER message that prompted this agent reply,
+    forcing `force_delivery=True` so the agent actually produces the
+    artifact this time. Posts the result as a NEW agent message —
+    the original empty-promise reply stays visible (just stripped of
+    the `empty_promise` flag) so the user can still see what was said.
+    """
+    conv = await load_conv_or_403(conv_id, u["id"])
+    team = await db.teams.find_one({"_id": ObjectId(conv["team_id"])})
+    if not team:
+        raise HTTPException(404, "Team not found")
+    target = await db.messages.find_one({"id": msg_id, "conversation_id": conv_id})
+    if not target:
+        raise HTTPException(404, "Message not found")
+    if not target.get("empty_promise"):
+        raise HTTPException(400, "This message isn't flagged for retry — it already has its deliverable.")
+    aid = target.get("agent_id")
+    if not aid or aid not in AGENTS:
+        raise HTTPException(400, "Could not resolve the agent for this message")
+
+    # Find the user message that prompted the empty-promise reply.
+    # Strategy: walk the messages collection backwards from target's
+    # timestamp until we hit a user-typed message in the same conv.
+    target_ts = target.get("timestamp")
+    if not target_ts:
+        raise HTTPException(400, "Original message has no timestamp; can't retry")
+    user_prompt_doc = await db.messages.find_one(
+        {"conversation_id": conv_id,
+         "sender_type": "user",
+         "timestamp": {"$lt": target_ts}},
+        sort=[("timestamp", -1)],
+    )
+    if not user_prompt_doc:
+        raise HTTPException(400, "No prompting user message found to replay.")
+    user_text = user_prompt_doc.get("text") or ""
+    user_name = user_prompt_doc.get("sender_name") or u["name"]
+
+    # Re-run with forced delivery. We piggyback on generate_agent_reply
+    # so the same image-intent classifier + ground-truth blocks fire.
+    try:
+        reply, web_sources = await generate_agent_reply(
+            conv, team, aid, user_text, user_name, force_delivery=True,
+            latest_user_id=user_prompt_doc.get("sender_id") or u["id"],
+        )
+    except Exception as exc:
+        logger.exception("Generate-now retry failed: %s", exc)
+        raise HTTPException(502, f"Couldn't regenerate: {exc}") from exc
+
+    new_msg_id = str(uuid.uuid4())
+    clean_reply, attachments = await process_agent_artifacts(
+        reply or "", conv=conv, agent_id=aid,
+        message_id=new_msg_id, created_by=u["id"],
+    )
+    new_msg = {
+        "id": new_msg_id,
+        "conversation_id": conv_id,
+        "sender_type": "agent",
+        "sender_id": aid,
+        "sender_name": AGENTS[aid]["name"],
+        "agent_id": aid,
+        "text": clean_reply,
+        "timestamp": datetime.now(timezone.utc),
+        "regenerated_from": msg_id,
+        "intent": "generate_now_retry",
+    }
+    if attachments:
+        new_msg["attachments"] = attachments
+    if web_sources:
+        new_msg["web_sources"] = web_sources
+    # Tag the original message as "consumed" so the pill doesn't render
+    # again — even if the retry didn't produce an artifact, the user
+    # already pulled their "one click" lever and shouldn't get repeated
+    # prompts. Same-thread retries can still be done via the regular
+    # composer.
+    await db.messages.update_one(
+        {"id": msg_id},
+        {"$unset": {"empty_promise": ""},
+         "$set": {"empty_promise_retried": True}},
+    )
+    await db.messages.insert_one({**new_msg})
+    return {
+        "ok": True,
+        "message": {k: v for k, v in new_msg.items() if k != "_id"},
+        "delivered": bool(attachments),
+    }
+
 
 
 
