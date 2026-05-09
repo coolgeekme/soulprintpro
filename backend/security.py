@@ -214,11 +214,13 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
         "connect-src 'self' https: wss: ws:; "
         "frame-src 'self' https://*.firebaseapp.com https://accounts.google.com; "
         # `frame-ancestors` allows Emergent's IDE preview iframe in
-        # dev/preview without weakening production. Production sets a
-        # stricter policy via Cloudflare Transform Rule which overrides
-        # this default.
+        # dev/preview without weakening production. The IDE itself can
+        # be parented from any subdomain of emergent.sh (e.g.
+        # app.emergent.sh, ide.emergent.sh) so we wildcard the host.
+        # Production sets a stricter policy via Cloudflare Transform
+        # Rule which overrides this default.
         "frame-ancestors 'self' https://*.emergentagent.com "
-        "https://*.emergent.host https://emergent.sh; "
+        "https://*.emergent.host https://emergent.sh https://*.emergent.sh; "
         "object-src 'none'; "
         "base-uri 'self'; "
         "form-action 'self'"

@@ -79,6 +79,7 @@ webpackConfig.devServer = (devServerConfig) => {
     "https://*.emergentagent.com",
     "https://*.emergent.host",
     "https://emergent.sh",
+    "https://*.emergent.sh",
   ].join(" ");
   const SECURITY_HEADERS = [
     { key: "Strict-Transport-Security", value: "max-age=63072000; includeSubDomains; preload" },
