@@ -45,7 +45,18 @@ logger = logging.getLogger(__name__)
 MAX_ITERATIONS = 25            # hard safety cap per mission
 MAX_EVENTS_IN_CONTEXT = 40     # truncation window for the loop's memory
 LLM_CALL_TIMEOUT_S = 90        # hard ceiling on a single LLM round-trip
-TOOL_CALL_TIMEOUT_S = 60       # hard ceiling on any single tool execution
+TOOL_CALL_TIMEOUT_S = 60       # default hard ceiling on a single tool execution
+# Browser tools (browse_url, browse_click, etc.) get a longer ceiling
+# because Cloudflare / Akamai / PerimeterX anti-bot challenges on
+# protected sites (Shopify, Squarespace, ecommerce, news) routinely
+# take 30-90s to clear. Below 120s the agent burns retry budget on
+# sites that would have loaded fine given another 30-60s. Cap is still
+# hard-bounded so a permanently-stuck navigation can't hang the loop.
+BROWSER_TOOL_TIMEOUT_S = 150
+_BROWSER_TOOL_NAMES = {
+    "browse_url", "screenshot_url", "browse_click", "browse_fill",
+    "browse_submit", "browse_text", "browse_keyboard",
+}
 DUPLICATE_CALL_SOFT_LIMIT = 2  # 2nd identical call: warning injected
 DUPLICATE_CALL_HARD_LIMIT = 3  # 3rd identical call: auto-aborted with error
 
@@ -607,13 +618,29 @@ async def run_mission_loop(
             # this mission, short-circuit and return a synthetic error
             # that forces the LLM to pivot. We allow the first call to
             # execute fully; only exact re-runs are blocked.
-            args_key = json.dumps(args or {}, sort_keys=True, default=str)
-            prior_identical = [
-                e for e in history
-                if e.get("kind") == "tool_call"
-                and e.get("tool") == tool_name
-                and json.dumps(e.get("args") or {}, sort_keys=True, default=str) == args_key
-            ]
+            #
+            # For browser tools we go further: match on `url` alone, NOT
+            # the full args dict. Otherwise an agent that just timed out
+            # on `browse_url(url=X)` can slip past by retrying with
+            # `browse_url(url=X, timeout=30)` (different args ⇒ no
+            # dedupe hit) — which is exactly what we observed in the
+            # maradynehp.com mission.
+            if tool_name in _BROWSER_TOOL_NAMES and (args or {}).get("url"):
+                target_url = str((args or {}).get("url"))
+                prior_identical = [
+                    e for e in history
+                    if e.get("kind") == "tool_call"
+                    and e.get("tool") == tool_name
+                    and str((e.get("args") or {}).get("url") or "") == target_url
+                ]
+            else:
+                args_key = json.dumps(args or {}, sort_keys=True, default=str)
+                prior_identical = [
+                    e for e in history
+                    if e.get("kind") == "tool_call"
+                    and e.get("tool") == tool_name
+                    and json.dumps(e.get("args") or {}, sort_keys=True, default=str) == args_key
+                ]
             # `prior_identical` is the history BEFORE this turn; the
             # current call has already been appended but isn't in `history`.
             if prior_identical:
@@ -634,20 +661,46 @@ async def run_mission_loop(
                 )
                 continue
             try:
+                # Browser tools get a longer timeout because anti-bot
+                # walls eat 30-90s before the page actually paints.
+                tool_timeout = (
+                    BROWSER_TOOL_TIMEOUT_S
+                    if tool_name in _BROWSER_TOOL_NAMES
+                    else TOOL_CALL_TIMEOUT_S
+                )
                 result = await asyncio.wait_for(
-                    t(ctx, args), timeout=TOOL_CALL_TIMEOUT_S,
+                    t(ctx, args), timeout=tool_timeout,
                 )
             except asyncio.TimeoutError:
                 logger.warning(
                     "mission %s tool %s timed out after %ds (iter %d)",
-                    mission_id, tool_name, TOOL_CALL_TIMEOUT_S, iteration,
+                    mission_id, tool_name, tool_timeout, iteration,
                 )
-                result = {
-                    "error": (f"Tool '{tool_name}' exceeded {TOOL_CALL_TIMEOUT_S}s "
-                              "and was aborted. Try a different tool, simplify "
-                              "the args (e.g. shorter prompt / different URL), "
-                              "or call finish."),
-                }
+                # Tailor the recovery hint to the tool that just timed
+                # out. Browser tools should NOT be retried with the same
+                # URL — the issue is anti-bot or the site is genuinely
+                # slow, and a re-fetch will fail again. Push the agent
+                # toward `web_search` (research) or `write_artifact` /
+                # `finish` (use what you have) instead.
+                if tool_name in _BROWSER_TOOL_NAMES:
+                    hint = (
+                        f"Tool '{tool_name}' could not load that URL within "
+                        f"{tool_timeout}s — the site is either slow, "
+                        f"behind heavy anti-bot protection, or down. DO NOT "
+                        f"retry the same URL. Your next action MUST be one of: "
+                        f"(a) call `web_search` to gather information about "
+                        f"the site/business from external sources, (b) call "
+                        f"`write_artifact` with what you already know plus "
+                        f"public knowledge, or (c) call `finish` with a clear "
+                        f"explanation that the source URL was unreachable."
+                    )
+                else:
+                    hint = (
+                        f"Tool '{tool_name}' exceeded {tool_timeout}s and "
+                        f"was aborted. Try a different tool, simplify the "
+                        f"args (e.g. shorter prompt), or call finish."
+                    )
+                result = {"error": hint}
             except Exception as exc:
                 logger.exception("tool %s raised: %s", tool_name, exc)
                 result = {"error": str(exc)[:400]}
