@@ -20,6 +20,53 @@ const formatTime = (ts) => {
   catch { return ""; }
 };
 
+
+/** Recovery poll for chat sends that failed with a network error.
+ *
+ * On production, Cloudflare's edge severs HTTP requests after ~100s.
+ * If the agent's LLM call runs longer than that, the user sees an
+ * "ERR_NETWORK" error — but the backend almost always finished its
+ * work and persisted the agent reply. Rather than asking the user to
+ * "refresh to check", we poll `/conversations/{id}/messages` every 4s
+ * for up to 90s. Once we see ANY message timestamped AFTER the user's
+ * optimistic send, we know the backend completed and we splice the
+ * real persisted thread back into UI state, replacing the failed
+ * bubble. The user gets a "recovered" toast and never has to retry.
+ *
+ * Closes over the messages mutator + conv setter via params (passed
+ * from ConversationPage) so we can keep this as a pure module-level
+ * helper without React context. */
+function _recoverFailedSend({ convId, optimisticId, optimisticTs, setMessages, setConv }) {
+  const startedAt = Date.parse(optimisticTs) || Date.now();
+  let attempts = 0;
+  const maxAttempts = 22; // ~88s of polling at 4s cadence
+  const poll = async () => {
+    attempts += 1;
+    try {
+      const { data } = await api.get(`/conversations/${convId}/messages`);
+      // Look for any agent message timestamped strictly AFTER the user's
+      // failed send. If found, the backend persisted both sides of the
+      // turn — replace UI state with the canonical thread.
+      const recovered = (data || []).some((m) =>
+        m.sender_type === "agent"
+        && (Date.parse(m.timestamp) || 0) > startedAt
+      );
+      if (recovered) {
+        setMessages(data);
+        toast.success("Reply recovered — the agent did finish.", { duration: 4000 });
+        return; // stop polling
+      }
+    } catch (_) { /* network may still be flaky — try again next tick */ }
+    if (attempts < maxAttempts) {
+      setTimeout(poll, 4000);
+    } else {
+      // Gave up. Leave the failed bubble in place so the user can retry.
+      toast.error("We couldn't recover that reply — tap Retry on the message.", { duration: 6000 });
+    }
+  };
+  setTimeout(poll, 4000);
+}
+
 export default function ConversationPage() {
   const { teamId, convId } = useParams();
   const { user } = useAuth();
@@ -730,7 +777,19 @@ export default function ConversationPage() {
         // Most common cause on production: Cloudflare severed an LLM
         // call that ran longer than the edge timeout. Backend likely
         // DID start working but we didn't get the reply.
-        toastMsg = "Connection dropped before the agent finished. The reply may still arrive — refresh to check, or retry.";
+        toastMsg = "Connection dropped before the agent replied — auto-recovering…";
+        // Kick off a recovery poll: every 4s for up to 90s, check the
+        // messages endpoint. If a NEW agent message arrived after our
+        // optimistic timestamp, the backend DID finish — replace the
+        // failed bubble with the actual persisted thread, dismiss the
+        // toast, and the user never has to retry.
+        _recoverFailedSend({
+          convId,
+          optimisticId: optimistic.id,
+          optimisticTs: optimistic.timestamp,
+          setMessages,
+          setConv,
+        });
       } else if (txt) {
         toastMsg = `Message failed: ${txt}`.slice(0, 220);
       } else {

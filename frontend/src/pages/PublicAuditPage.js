@@ -41,6 +41,7 @@ export default function PublicAuditPage() {
 
   useEffect(() => {
     let cancelled = false;
+    let pollId = null;
     const fetchTeaser = async () => {
       try {
         const { data } = await api.get(`/public/audits/${slug}`);
@@ -53,7 +54,29 @@ export default function PublicAuditPage() {
       } finally { if (!cancelled) setLoading(false); }
     };
     fetchTeaser();
-    return () => { cancelled = true; };
+    // Poll every 8s while the audit is still generating so the page
+    // flips to "ready" automatically — no manual refresh required.
+    // Capped at ~10 minutes (75 ticks * 8s) so a failed pipeline
+    // doesn't poll forever.
+    let attempts = 0;
+    pollId = setInterval(() => {
+      if (cancelled) return;
+      attempts += 1;
+      if (attempts > 75) { clearInterval(pollId); return; }
+      // Snapshot current status — if it's already terminal we stop.
+      setTeaser((current) => {
+        const s = current?.status;
+        if (s && s !== "generating") {
+          clearInterval(pollId);
+          return current;
+        }
+        // Not yet ready — fire another fetch (don't await; let the
+        // existing async path update state).
+        fetchTeaser();
+        return current;
+      });
+    }, 8000);
+    return () => { cancelled = true; if (pollId) clearInterval(pollId); };
   }, [slug]);
 
   // Once the teaser confirms the audit is ready AND we have a lead id
@@ -100,7 +123,7 @@ export default function PublicAuditPage() {
         <Loader2 className="w-10 h-10 animate-spin opacity-50 mb-4" />
         <h1 className="text-2xl font-medium mb-2">Your audit is being prepared</h1>
         <p className="sp-subtle text-sm leading-relaxed">
-          We're gathering data from {teaser?.business_name}'s website, social profiles, reviews, and competitive landscape — usually takes 3–10 minutes. Refresh this page in a few minutes.
+          We're gathering data from {teaser?.business_name}'s website, social profiles, reviews, and competitive landscape — usually takes 1–3 minutes. This page will refresh automatically when it's ready.
         </p>
       </div>
     );
