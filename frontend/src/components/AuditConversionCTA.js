@@ -23,12 +23,13 @@ import api from "../lib/api";
  * (overall score, recommendation count) so the CTA feels written
  * for them, not generic.
  */
-export default function AuditConversionCTA({ audit }) {
+export default function AuditConversionCTA({ audit, leadId }) {
   const [phase, setPhase] = useState("idle"); // idle | sending | sent | error | bookDemo
   const [email, setEmail] = useState("");
   const [name, setName] = useState("");
   const [error, setError] = useState("");
   const [demoOpen, setDemoOpen] = useState(false);
+  const [pdfBusy, setPdfBusy] = useState(false);
 
   const score = Number(audit?.scorecard?.overall ?? audit?.overall_score ?? 0);
   const recCount = Array.isArray(audit?.recommendations)
@@ -74,6 +75,37 @@ export default function AuditConversionCTA({ audit }) {
         setError("Could not request a trial code. Please try again.");
         setPhase("error");
       }
+    }
+  };
+
+  /** Trigger a real PDF download from the third CTA card. Hits the
+   *  same lead-gated endpoint the orange button uses, then opens the
+   *  resulting absolute URL in a new tab so the browser's PDF viewer
+   *  takes over. We do NOT scrollIntoView() the orange button (that
+   *  was the previous behaviour and confused users — the click looked
+   *  like a no-op on desktops where the orange button was already in
+   *  view). If we don't have a leadId for some reason, fall back to
+   *  scrolling so the user still has a path. */
+  const onPdfDownload = async () => {
+    if (!slug || !leadId) {
+      const el = document.querySelector('[data-testid="audit-pdf-download"]');
+      if (el) el.scrollIntoView({ behavior: "smooth", block: "center" });
+      return;
+    }
+    if (pdfBusy) return;
+    setPdfBusy(true);
+    try {
+      const { data } = await api.get(
+        `/public/audits/${slug}/pdf?lead_id=${encodeURIComponent(leadId)}`,
+      );
+      if (data?.url) window.open(data.url, "_blank", "noopener,noreferrer");
+    } catch (_) {
+      // Best-effort fallback to scrolling so the user can hit the
+      // orange button manually.
+      const el = document.querySelector('[data-testid="audit-pdf-download"]');
+      if (el) el.scrollIntoView({ behavior: "smooth", block: "center" });
+    } finally {
+      setPdfBusy(false);
     }
   };
 
@@ -205,14 +237,14 @@ export default function AuditConversionCTA({ audit }) {
           </div>
           <button
             type="button"
-            onClick={() => {
-              const el = document.querySelector('[data-testid="audit-pdf-download"]');
-              if (el) el.scrollIntoView({ behavior: "smooth", block: "center" });
-            }}
-            className="sp-btn sp-btn-ghost text-sm w-full mt-auto"
+            onClick={onPdfDownload}
+            disabled={pdfBusy}
+            className="sp-btn sp-btn-ghost text-sm w-full mt-auto disabled:opacity-50"
             data-testid="cta-pdf-btn"
           >
-            <Anchor className="w-3.5 h-3.5" /> Download PDF
+            {pdfBusy
+              ? <><Loader2 className="w-3.5 h-3.5 animate-spin" /> Preparing…</>
+              : <><Anchor className="w-3.5 h-3.5" /> Download PDF</>}
           </button>
         </div>
       </div>

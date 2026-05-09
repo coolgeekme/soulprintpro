@@ -202,7 +202,7 @@ export default function PublicAuditPage() {
             {/* Conversion bar — three-path CTA after the prospect has
                 read the full audit. Personalised hero, 24-hour trial
                 request form, demo modal, PDF exit. */}
-            <AuditConversionCTA audit={{ ...audit, slug }} />
+            <AuditConversionCTA audit={{ ...audit, slug }} leadId={unlocked.leadId} />
             <PdfDownload slug={slug} leadId={unlocked.leadId} />
           </>
         )}
