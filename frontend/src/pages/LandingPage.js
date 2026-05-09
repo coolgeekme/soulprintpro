@@ -1,6 +1,6 @@
 import React from "react";
 import { Link } from "react-router-dom";
-import { ArrowRight, Users, Network, ShieldCheck, Radio, HelpCircle } from "lucide-react";
+import { ArrowRight, Users, Network, ShieldCheck, Radio, HelpCircle, Sparkles } from "lucide-react";
 import Logo from "../components/Logo";
 
 const Pill = ({ children }) => <span className="sp-chip">{children}</span>;
@@ -79,6 +79,22 @@ export default function LandingPage() {
           <div className="flex flex-wrap gap-3 mt-2">
             <Link to="/auth?mode=register" className="sp-btn sp-btn-primary" data-testid="hero-cta-primary">
               Start your SoulPrint <ArrowRight className="w-4 h-4" />
+            </Link>
+            {/* New: free audit CTA — drives prospects into the
+                self-serve audit funnel. Visually distinct from the
+                primary "register" CTA so they don't compete: this is
+                accent-orange-bordered ghost, the primary stays solid. */}
+            <Link
+              to="/get-audit"
+              className="sp-btn"
+              style={{
+                background: "rgba(251,146,60,0.10)",
+                border: "1px solid rgba(251,146,60,0.40)",
+                color: "rgb(251,146,60)",
+              }}
+              data-testid="hero-cta-audit"
+            >
+              <Sparkles className="w-4 h-4" /> Get a free audit
             </Link>
             <a href="#agents" className="sp-btn sp-btn-ghost" data-testid="hero-cta-secondary">Meet the agents</a>
           </div>

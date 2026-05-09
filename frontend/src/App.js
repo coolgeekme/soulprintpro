@@ -22,6 +22,7 @@ import SecurityPage from "./pages/SecurityPage";
 import VerifyPublicPage from "./pages/VerifyPublicPage";
 import TrustPage from "./pages/TrustPage";
 import TrialRedeemPage from "./pages/TrialRedeemPage";
+import GetAuditPage from "./pages/GetAuditPage";
 import AccountPage from "./pages/AccountPage";
 import DeckPage from "./pages/DeckPage";
 import AdminDashboard from "./pages/AdminDashboard";
@@ -67,6 +68,7 @@ function App() {
                 <Route path="/v/:fileId" element={<VerifyPublicPage />} />
                 <Route path="/trust" element={<TrustPage />} />
                 <Route path="/trial/redeem" element={<TrialRedeemPage />} />
+                <Route path="/get-audit" element={<GetAuditPage />} />
                 <Route path="/deck" element={<DeckPage />} />
                 <Route path="/auth" element={<PublicOnly><AuthPage /></PublicOnly>} />
                 <Route path="/invite/:code" element={<Protected><AcceptInvitePage /></Protected>} />

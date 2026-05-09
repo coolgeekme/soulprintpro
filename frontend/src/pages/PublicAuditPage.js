@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from "react";
-import { useParams, Link } from "react-router-dom";
+import { useParams, useSearchParams, Link } from "react-router-dom";
 import {
   Loader2, Lock, ShieldCheck, ExternalLink, Download,
   TrendingUp, AlertTriangle, Sparkles, Phone, Mail,
@@ -26,10 +26,19 @@ import AuditConversionCTA from "../components/AuditConversionCTA";
  */
 export default function PublicAuditPage() {
   const { slug } = useParams();
+  const [params] = useSearchParams();
   const [teaser, setTeaser] = useState(null);
   const [loading, setLoading] = useState(true);
   const [notFound, setNotFound] = useState(false);
   const [unlocked, setUnlocked] = useState(null); // {audit, leadId}
+
+  // When the visitor arrives from the homepage self-serve flow
+  // (`/audit/<slug>?lead_id=<id>`), they already gave us their email
+  // a few seconds ago. Auto-unlock so we don't make them fill the
+  // gate again. We re-fetch the full (post-gate) audit shape using
+  // a tiny "unlock by lead id" endpoint that the backend exposes.
+  // The teaser fetch still runs first as a sanity check / 404 guard.
+  const presentedLeadId = params.get("lead_id");
 
   useEffect(() => {
     let cancelled = false;
@@ -47,6 +56,25 @@ export default function PublicAuditPage() {
     fetchTeaser();
     return () => { cancelled = true; };
   }, [slug]);
+
+  // Once the teaser confirms the audit is ready AND we have a lead id
+  // in the URL, fetch the full unlocked payload. We trust the backend
+  // to validate that the lead id actually belongs to this audit.
+  useEffect(() => {
+    if (!presentedLeadId || !teaser || teaser.status !== "ready" || unlocked) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const { data } = await api.get(
+          `/public/audits/${slug}/unlock?lead_id=${encodeURIComponent(presentedLeadId)}`,
+        );
+        if (!cancelled && data?.audit) {
+          setUnlocked({ audit: data.audit, leadId: presentedLeadId });
+        }
+      } catch (_) { /* fall back to gate */ }
+    })();
+    return () => { cancelled = true; };
+  }, [presentedLeadId, teaser, slug, unlocked]);
 
   if (loading) {
     return (

@@ -117,6 +117,20 @@ class LeadSubmitBody(BaseModel):
     role: str = Field("", max_length=120)
 
 
+class PublicAuditStartBody(BaseModel):
+    """Body for the homepage self-serve audit form."""
+    business_name: str = Field(..., min_length=1, max_length=200)
+    website_url: str = Field(..., min_length=1, max_length=400)
+    name: str = Field(..., min_length=1, max_length=120)
+    email: EmailStr
+    # Phone optional — the homepage form reduces to just the essentials
+    # to maximise conversion. Admin can chase phone numbers separately.
+    phone: str = Field("", max_length=40)
+    company: str = Field("", max_length=160)
+    role: str = Field("", max_length=120)
+    hint: Optional[str] = Field(default="", max_length=600)
+
+
 # ── Helpers ──────────────────────────────────────────────────────────────────
 _SLUG_NOISE_RE = re.compile(r"[^a-z0-9]+")
 
@@ -776,6 +790,136 @@ def make_audits_router(
         return out
 
     # ── Public endpoints (no auth) ─────────────────────────────────────────
+    async def _notify_new_lead(*, a: dict, lead: dict) -> None:
+        """Fire the team@archeforge.com lead-notification email. Used
+        by both the public /lead endpoint and the homepage self-serve
+        audit-start endpoint so we don't lose lead visibility for the
+        new flow."""
+        notify_to = os.environ.get("AUDIT_NOTIFY_EMAIL", "").strip() or "team@archeforge.com"
+        slug = a.get("slug") or lead.get("audit_slug", "")
+        subject = f"🔥 New audit lead: {lead.get('name','')} from {lead.get('company','') or '—'}"
+        text = (
+            f"You have a new audit lead.\n\n"
+            f"Audit: {a.get('business_name')} (/{slug})\n\n"
+            f"Name:    {lead.get('name','')}\n"
+            f"Email:   {lead.get('email','')}\n"
+            f"Phone:   {lead.get('phone','') or '—'}\n"
+            f"Company: {lead.get('company','') or '—'}\n"
+            f"Role:    {lead.get('role','') or '—'}\n"
+            f"Captured via: {lead.get('captured_via','lead_gate')}\n"
+            f"Submitted: {(lead.get('submitted_at') or datetime.now(timezone.utc)).isoformat()}\n"
+        )
+        html = (
+            f"<h2>🔥 New audit lead</h2>"
+            f"<p>Audit: <b>{a.get('business_name')}</b> "
+            f"(<code>/{slug}</code>)</p>"
+            f"<table cellpadding='6' style='border-collapse:collapse;'>"
+            f"<tr><td><b>Name</b></td><td>{lead.get('name','')}</td></tr>"
+            f"<tr><td><b>Email</b></td><td><a href='mailto:{lead.get('email','')}'>{lead.get('email','')}</a></td></tr>"
+            f"<tr><td><b>Phone</b></td><td>{lead.get('phone','') or '—'}</td></tr>"
+            f"<tr><td><b>Company</b></td><td>{lead.get('company','') or '—'}</td></tr>"
+            f"<tr><td><b>Role</b></td><td>{lead.get('role','') or '—'}</td></tr>"
+            f"<tr><td><b>Captured via</b></td><td>{lead.get('captured_via','lead_gate')}</td></tr>"
+            f"</table>"
+        )
+        try:
+            await _send_resend_email(notify_to, subject, html, text)
+        except Exception:
+            pass
+
+    @public_r.post("/audits/start")
+    async def public_start_audit(
+        body: PublicAuditStartBody, request: Request,
+    ):
+        """Self-serve audit creation from the public homepage.
+
+        One form, two outcomes: a brand-new audit row enters the
+        generation queue AND the requester's email is captured as a
+        lead at the same moment — so they don't have to fill the
+        lead-gate again when they land on `/audit/<slug>`. The
+        tighter funnel is worth the slight asymmetry with admin-
+        created audits (which don't capture a lead automatically).
+
+        Anti-abuse: per-IP rate-limit (3/hour, separately-keyed from
+        the lead-submit limiter so the two flows don't interact);
+        URL hostname must be a real public domain after normalisation;
+        every public-created row carries `created_via: "public"` so
+        the admin dashboard can filter / spotlight them.
+        """
+        ip = (request.client.host if request.client else "0.0.0.0")
+        if not _rate_limit_ok(ip, window=3600, limit=3):
+            raise HTTPException(
+                429,
+                "We limit new audits to 3 per hour per network to keep "
+                "abuse low. Please try again in a bit, or email "
+                "team@archeforge.com if you need more right now.",
+            )
+        # Normalise + sanity check the URL.
+        normalised_url = _normalise_url(body.website_url)
+        if not normalised_url:
+            raise HTTPException(400, "That doesn't look like a valid URL.")
+        # Build the slug. Ensure uniqueness with the same retry the
+        # admin path uses.
+        slug = _slugify(body.business_name)
+        for _ in range(3):
+            if not await db.business_audits.find_one({"slug": slug}):
+                break
+            slug = _slugify(body.business_name)
+        now = datetime.now(timezone.utc)
+        doc = {
+            "slug": slug,
+            "business_name": body.business_name.strip(),
+            "website_url": normalised_url,
+            "socials": {},
+            "hint": (body.hint or "").strip(),
+            "status": "generating",
+            "score": None,
+            "lead_count": 1,            # we're capturing the requester
+            "view_count": 0,
+            "pdf_filename": "",
+            "created_by": None,         # no auth on this path
+            "created_by_email": body.email.lower().strip(),
+            "created_via": "public",
+            "created_at": now,
+            "updated_at": now,
+        }
+        res = await db.business_audits.insert_one(doc)
+        # Capture the requester as a lead immediately — same shape as
+        # the existing /lead endpoint so the admin "Leads" modal
+        # renders both kinds identically.
+        lead_doc = {
+            "audit_id": str(res.inserted_id),
+            "audit_slug": slug,
+            "name": body.name.strip(),
+            "email": body.email.lower().strip(),
+            "phone": (body.phone or "").strip(),
+            "company": (body.company or "").strip(),
+            "role": (body.role or "").strip(),
+            "submitted_at": now,
+            "ip": ip,
+            "user_agent": (request.headers.get("user-agent") or "")[:240],
+            "captured_via": "public_self_serve",
+        }
+        lead_res = await db.audit_leads.insert_one(lead_doc)
+        # Fire-and-forget the heavy generation pipeline.
+        asyncio.create_task(_run_audit(res.inserted_id))
+        # Kick off the standard "new lead" admin notification email so
+        # we don't lose the operational visibility we already built.
+        try:
+            await _notify_new_lead(
+                a={"_id": res.inserted_id, "business_name": body.business_name,
+                   "slug": slug},
+                lead=lead_doc,
+            )
+        except Exception:
+            pass
+        return {
+            "ok": True,
+            "slug": slug,
+            "audit_id": str(res.inserted_id),
+            "lead_id": str(lead_res.inserted_id),
+        }
+
     @public_r.get("/audits/{slug}")
     async def public_get_audit_teaser(slug: str):
         a = await db.business_audits.find_one({"slug": slug})
