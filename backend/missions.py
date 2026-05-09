@@ -1779,7 +1779,23 @@ def build_tools(
              "Submit a form on the CURRENT browser page. With no args, clicks the first `button[type=submit]` / `input[type=submit]`. You can also pass a `selector` pointing at a specific form or submit button. Use AFTER browse_fill.",
              '{"selector": "form#contact"}',
              browse_submit, side_effect=True),
-    ]
+    ] + _maybe_github_tools(db)
+
+
+def _maybe_github_tools(db) -> List[Tool]:
+    """Append GitHub tools to the catalog ONLY when GITHUB_CLIENT_ID is
+    set on the backend. Avoids confusing the LLM with tools it can't
+    actually use on a deploy where the OAuth app wasn't configured."""
+    try:
+        from github_integration import make_github_tools, _is_configured
+        if not _is_configured():
+            return []
+        out = []
+        for name, desc, args_hint, handler in make_github_tools(db=db):
+            out.append(Tool(name, desc, args_hint, handler, side_effect=True))
+        return out
+    except Exception:
+        return []
 
 
 # ── HTTP router ────────────────────────────────────────────────────────────

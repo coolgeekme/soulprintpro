@@ -23,6 +23,7 @@ import VerifyPublicPage from "./pages/VerifyPublicPage";
 import TrustPage from "./pages/TrustPage";
 import TrialRedeemPage from "./pages/TrialRedeemPage";
 import GetAuditPage from "./pages/GetAuditPage";
+import GitHubCallbackPage from "./pages/GitHubCallbackPage";
 import AccountPage from "./pages/AccountPage";
 import DeckPage from "./pages/DeckPage";
 import AdminDashboard from "./pages/AdminDashboard";
@@ -69,6 +70,7 @@ function App() {
                 <Route path="/trust" element={<TrustPage />} />
                 <Route path="/trial/redeem" element={<TrialRedeemPage />} />
                 <Route path="/get-audit" element={<GetAuditPage />} />
+                <Route path="/auth/github/callback" element={<Protected><GitHubCallbackPage /></Protected>} />
                 <Route path="/deck" element={<DeckPage />} />
                 <Route path="/auth" element={<PublicOnly><AuthPage /></PublicOnly>} />
                 <Route path="/invite/:code" element={<Protected><AcceptInvitePage /></Protected>} />

@@ -6188,6 +6188,19 @@ _audit_admin_router, _audit_public_router = make_audits_router(
 app.include_router(_audit_admin_router)
 app.include_router(_audit_public_router)
 
+# ── GitHub OAuth integration (per-user + per-org) ──────────────────────────
+# Lets users connect GitHub once → mission agents can read repos, open
+# PRs, comment, push. Self-disables when GITHUB_CLIENT_ID isn't set, so
+# preview deploys without the secret won't expose half-broken UI.
+from github_integration import make_github_router as _make_github_router  # noqa: E402
+from workspaces import _public_origin as _gh_public_origin  # noqa: E402
+app.include_router(_make_github_router(
+    db=db,
+    get_current_user=get_current_user,
+    require_org_member=require_org_member,
+    _public_origin=_gh_public_origin,
+))
+
 @app.on_event("startup")
 async def _seed_superadmins():
     """Stamp configured emails as superadmin if their accounts already

@@ -228,8 +228,60 @@ export default function AccountPage() {
             </div>
           </form>
         )}
+
+        {/* Integrations — currently just GitHub. Per (user, org) so we
+            need an active org to render. We pick the first org from
+            user.orgs as a default, since this page is org-agnostic. */}
+        <Integrations user={user} />
       </main>
     </div>
+  );
+}
+
+
+// Lazy import the card so the AccountPage bundle doesn't grow when
+// the user never opens the integrations section. Lifted to module
+// scope to keep the export profile clean.
+import GitHubConnectCard from "../components/GitHubConnectCard";
+
+function Integrations({ user }) {
+  // Fetch the caller's orgs directly — useAuth().user doesn't include
+  // org membership data, and we need an active org to scope the
+  // GitHub connection. We pick the first org returned (stable order:
+  // most-recently-joined first per the backend's serializer).
+  const [orgId, setOrgId] = useState("");
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const { data } = await api.get("/orgs");
+        if (cancelled) return;
+        const first = (Array.isArray(data) ? data : [])[0];
+        if (first?.id) setOrgId(first.id);
+      } catch (_) {
+        /* user has no orgs — render the join hint */
+      }
+    })();
+    return () => { cancelled = true; };
+  }, []);
+  if (!orgId) {
+    return (
+      <div className="sp-glass rounded-2xl p-5 mt-6">
+        <div className="text-sm sp-subtle">
+          Join or create an organisation to manage integrations.
+        </div>
+      </div>
+    );
+  }
+  return (
+    <section className="mt-8" data-testid="integrations-section">
+      <div className="text-[10px] uppercase tracking-widest sp-subtle mb-2">Integrations</div>
+      <h2 className="text-xl font-medium tracking-tight mb-3">Connected services</h2>
+      <p className="text-sm sp-subtle mb-4 max-w-xl">
+        Let mission agents read your repos, open PRs, comment on issues, and push commits on your behalf.
+      </p>
+      <GitHubConnectCard orgId={orgId} />
+    </section>
   );
 }
 
