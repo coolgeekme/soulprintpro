@@ -1,5 +1,5 @@
 import React, { useState } from "react";
-import { ShieldCheck, Anchor, Calendar, Rocket, Loader2, Check, X, Mail, ArrowRight, Wand2 } from "lucide-react";
+import { ShieldCheck, Anchor, Calendar, Rocket, Loader2, Check, X, ArrowRight, Wand2 } from "lucide-react";
 import api from "../lib/api";
 
 /**
@@ -28,7 +28,6 @@ export default function AuditConversionCTA({ audit, leadId }) {
   const [email, setEmail] = useState("");
   const [name, setName] = useState("");
   const [error, setError] = useState("");
-  const [demoOpen, setDemoOpen] = useState(false);
   const [pdfBusy, setPdfBusy] = useState(false);
 
   const score = Number(audit?.scorecard?.overall ?? audit?.overall_score ?? 0);
@@ -77,6 +76,15 @@ export default function AuditConversionCTA({ audit, leadId }) {
       }
     }
   };
+
+  // Cal.com / Calendly / zcal booking URL via env, with a baked-in
+  // fallback to the founder's zcal. We open this in a new tab rather
+  // than embedding via iframe — most calendar tools (zcal, Cal.com,
+  // Calendly) ship strict `X-Frame-Options: SAMEORIGIN` or CSP rules
+  // that block iframe embedding outright. New tab is more reliable,
+  // works on mobile, and lets the booking page use its full UI.
+  const demoUrl = (process.env.REACT_APP_DEMO_BOOKING_URL
+    || "https://zcal.co/reggie-archeforge").trim();
 
   /** Trigger a real PDF download from the third CTA card. Hits the
    *  same lead-gated endpoint the orange button uses, then opens the
@@ -212,14 +220,15 @@ export default function AuditConversionCTA({ audit, leadId }) {
             Want to see SoulPrint Engine Pro operated by a human first?
             We'll set up your workspace live and run your first mission with you.
           </div>
-          <button
-            type="button"
-            onClick={() => setDemoOpen(true)}
+          <a
+            href={demoUrl}
+            target="_blank"
+            rel="noopener noreferrer"
             className="sp-btn sp-btn-ghost text-sm w-full mt-auto"
             data-testid="cta-demo-btn"
           >
             <Calendar className="w-3.5 h-3.5" /> Pick a time
-          </button>
+          </a>
         </div>
 
         {/* PATH 3 — Take the audit & leave (PDF download) */}
@@ -258,8 +267,6 @@ export default function AuditConversionCTA({ audit, leadId }) {
           Full security policy <ArrowRight className="w-3 h-3" />
         </a>
       </div>
-
-      {demoOpen && <DemoModal onClose={() => setDemoOpen(false)} source={slug ? `audit:${slug}` : "audit"} />}
     </section>
   );
 }
@@ -295,87 +302,5 @@ function TrustBadge({ icon: Icon, label, cross }) {
         : <Icon className="w-3 h-3 text-green-400/80" />}
       {label}
     </span>
-  );
-}
-
-
-function DemoModal({ onClose, source }) {
-  // Cal.com / Calendly / zcal embed URL via env, with a baked-in
-  // fallback to the founder's zcal so the demo CTA always has a
-  // working iframe — even on deploys that don't set the env var.
-  const calUrl = (process.env.REACT_APP_DEMO_BOOKING_URL
-    || "https://zcal.co/reggie-archeforge/meeting").trim();
-  return (
-    <div
-      className="fixed inset-0 z-50 flex items-center justify-center p-4"
-      style={{ background: "rgba(0,0,0,0.6)" }}
-      onClick={onClose}
-      data-testid="demo-modal"
-    >
-      <div
-        className="sp-glass-strong rounded-2xl w-full max-w-3xl max-h-[90vh] overflow-hidden flex flex-col"
-        onClick={(e) => e.stopPropagation()}
-      >
-        <div className="flex items-center justify-between px-5 py-4 border-b border-white/10">
-          <div className="flex items-center gap-2">
-            <Calendar className="w-4 h-4 text-orange-300" />
-            <div className="font-medium">Book a 20-minute demo</div>
-          </div>
-          <button
-            type="button"
-            onClick={onClose}
-            className="sp-btn sp-btn-ghost !p-1.5"
-            data-testid="demo-modal-close"
-            aria-label="Close"
-          >
-            <X className="w-4 h-4" />
-          </button>
-        </div>
-        <div className="flex-1 overflow-auto">
-          {calUrl ? (
-            <div className="relative h-[70vh]">
-              <iframe
-                src={calUrl}
-                title="Book a demo"
-                className="w-full h-full"
-                style={{ border: 0 }}
-              />
-              <div className="absolute top-2 right-2">
-                <a
-                  href={calUrl}
-                  target="_blank"
-                  rel="noreferrer"
-                  className="sp-btn sp-btn-ghost text-[11px]"
-                  data-testid="demo-modal-open-tab"
-                >
-                  Open in new tab
-                </a>
-              </div>
-            </div>
-          ) : (
-            <div className="p-8 text-center">
-              <Mail className="w-10 h-10 text-orange-300 mx-auto mb-4" />
-              <div className="text-lg font-medium mb-2">Let's find a time</div>
-              <p className="text-sm sp-subtle leading-relaxed max-w-md mx-auto mb-5">
-                Email{" "}
-                <a href={`mailto:team@archeforge.com?subject=Demo%20request%20-%20${encodeURIComponent(source || "audit")}`}
-                   className="text-orange-300 hover:text-orange-200 underline-offset-2 hover:underline">
-                  team@archeforge.com
-                </a>
-                {" "}with a couple of windows that work for you and we'll get a
-                20-minute demo on the calendar within 24 hours.
-              </p>
-              <a
-                href={`mailto:team@archeforge.com?subject=Demo%20request%20-%20${encodeURIComponent(source || "audit")}`}
-                className="sp-btn sp-btn-primary text-sm"
-                data-testid="demo-modal-mailto"
-              >
-                <Mail className="w-4 h-4" /> Open email
-              </a>
-            </div>
-          )}
-        </div>
-      </div>
-    </div>
   );
 }
