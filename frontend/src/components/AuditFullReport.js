@@ -23,30 +23,24 @@ export default function AuditFullReport({ audit }) {
         <SectionHeader icon={Sparkles} title="Prioritized recommendations" subtitle="The highest-leverage fixes — and how SoulPrint Engine Pro can help you act on each one." />
         <ol className="space-y-3 mt-3">
           {(audit.recommendations || []).map((r, i) => (
-            <li key={i} className="sp-glass rounded-xl p-4">
-              <div className="flex items-baseline justify-between gap-3 mb-1 flex-wrap">
-                <div className="font-medium">{i + 1}. {r.title}</div>
+            <li key={i} className="sp-glass rounded-xl p-5">
+              <div className="flex items-baseline justify-between gap-3 mb-2 flex-wrap">
+                <div className="font-medium text-lg">{i + 1}. {r.title}</div>
                 <span className={`text-[10px] uppercase tracking-widest px-2 py-0.5 rounded-full border ${
                   r.priority === "high" ? "bg-red-500/15 text-red-200 border-red-500/30"
                   : r.priority === "medium" ? "bg-amber-500/15 text-amber-200 border-amber-500/30"
                   : "bg-white/5 text-white/60 border-white/10"
                 }`}>{r.priority || "—"}</span>
               </div>
-              <div className="text-sm leading-relaxed">{r.detail}</div>
+              <div className="text-base leading-relaxed">{r.detail}</div>
               {r.estimated_impact && (
-                <div className="text-xs sp-subtle italic mt-2">Expected impact: {r.estimated_impact}</div>
+                <div className="text-sm sp-subtle italic mt-2">Expected impact: {r.estimated_impact}</div>
               )}
-              {/* "Help" hook — small inset card, orange accent, anchors
-                  the recommendation to a specific SPE Pro feature/agent.
-                  Note: SPE Pro PREPARES the work (drafts copy, builds
-                  briefs, runs research). The user or their team is the
-                  one who hits publish, books the meeting, files the
-                  form etc. The label below reflects that boundary. */}
               {r.soulprint_execution && (
-                <div className="mt-3 rounded-lg border border-orange-500/30 bg-orange-500/5 px-3 py-2.5 flex items-start gap-2">
-                  <Zap className="w-3.5 h-3.5 text-orange-300 shrink-0 mt-0.5" />
-                  <div className="text-xs leading-relaxed">
-                    <span className="text-orange-300/90 uppercase tracking-widest text-[10px] font-medium block mb-0.5">
+                <div className="mt-3 rounded-lg border border-orange-500/30 bg-orange-500/5 px-3 py-3 flex items-start gap-2">
+                  <Zap className="w-4 h-4 text-orange-300 shrink-0 mt-0.5" />
+                  <div className="text-sm leading-relaxed">
+                    <span className="text-orange-300/90 uppercase tracking-widest text-[10px] font-medium block mb-1">
                       How SoulPrint Engine helps you act on this
                     </span>
                     {r.soulprint_execution}
@@ -63,15 +57,15 @@ export default function AuditFullReport({ audit }) {
         <SectionHeader icon={Building2} title="Direct competitors" subtitle="Three companies playing the same game — and where they're ahead." />
         <div className="grid sm:grid-cols-3 gap-3 mt-3">
           {(audit.competitors || []).map((c, i) => (
-            <div key={i} className="sp-glass rounded-xl p-4">
-              <div className="font-medium">{c.name}</div>
+            <div key={i} className="sp-glass rounded-xl p-5">
+              <div className="font-medium text-base">{c.name}</div>
               {c.url && (
                 <a href={c.url.startsWith("http") ? c.url : `https://${c.url}`} target="_blank" rel="noopener noreferrer"
-                   className="text-[11px] sp-subtle hover:text-orange-300 inline-flex items-center gap-1 mb-2">
+                   className="text-xs sp-subtle hover:text-orange-300 inline-flex items-center gap-1 mb-2">
                   {c.url} <ExternalLink className="w-3 h-3" />
                 </a>
               )}
-              <div className="text-xs leading-relaxed mt-2">{c.edge}</div>
+              <div className="text-sm leading-relaxed mt-2">{c.edge}</div>
             </div>
           ))}
         </div>
@@ -81,7 +75,7 @@ export default function AuditFullReport({ audit }) {
       {audit.brand_voice && (audit.brand_voice.stated_mission || audit.brand_voice.actual_voice || audit.brand_voice.gap) && (
         <section>
           <SectionHeader icon={Sparkles} title="Brand voice read" subtitle="Stated mission vs. how the market hears it." />
-          <div className="sp-glass rounded-xl p-4 mt-3 space-y-2 text-sm">
+          <div className="sp-glass rounded-xl p-5 mt-3 space-y-3 text-base leading-relaxed">
             <div><b>Stated mission:</b> {audit.brand_voice.stated_mission}</div>
             <div><b>Actual voice:</b> {audit.brand_voice.actual_voice}</div>
             <div><b>The gap:</b> {audit.brand_voice.gap}</div>
@@ -122,16 +116,16 @@ export default function AuditFullReport({ audit }) {
               Tackle these with SoulPrint Engine Pro
             </div>
           </div>
-          <p className="text-sm sm:text-base leading-relaxed mb-4">
+          <p className="text-base sm:text-lg leading-relaxed mb-4">
             {audit.how_soulprint_helps}
           </p>
           <a
             href="https://pro.soulprintengine.ai/auth"
             target="_blank" rel="noopener noreferrer"
-            className="sp-btn sp-btn-primary text-sm"
+            className="sp-btn sp-btn-primary text-base"
             data-testid="audit-spe-cta-button"
           >
-            <Rocket className="w-3.5 h-3.5" /> Start with SoulPrint Engine Pro
+            <Rocket className="w-4 h-4" /> Start with SoulPrint Engine Pro
           </a>
         </section>
       )}
@@ -147,7 +141,7 @@ function SectionHeader({ icon: Icon, title, subtitle }) {
         <Icon className="w-4 h-4 opacity-80" />
         <div className="text-[11px] uppercase tracking-widest sp-subtle">{title}</div>
       </div>
-      <div className="text-xs sp-subtle">{subtitle}</div>
+      <div className="text-sm sp-subtle leading-relaxed">{subtitle}</div>
     </div>
   );
 }
@@ -156,9 +150,9 @@ function SectionHeader({ icon: Icon, title, subtitle }) {
 function SectionParagraph({ title, body }) {
   if (!body) return null;
   return (
-    <div className="sp-glass rounded-xl p-4">
+    <div className="sp-glass rounded-xl p-5">
       <div className="text-[11px] uppercase tracking-widest sp-subtle mb-2">{title}</div>
-      <div className="text-sm leading-relaxed whitespace-pre-wrap">{body}</div>
+      <div className="text-base leading-relaxed whitespace-pre-wrap">{body}</div>
     </div>
   );
 }
@@ -167,13 +161,13 @@ function SectionParagraph({ title, body }) {
 function FullList({ title, items, accent }) {
   const border = accent === "emerald" ? "border-emerald-500/30" : "border-orange-500/30";
   return (
-    <div className={`sp-glass rounded-xl p-4 border ${border}`}>
-      <div className="text-[11px] uppercase tracking-widest sp-subtle mb-2">{title}</div>
+    <div className={`sp-glass rounded-xl p-5 border ${border}`}>
+      <div className="text-[11px] uppercase tracking-widest sp-subtle mb-3">{title}</div>
       <ul className="space-y-3">
         {items.map((it, i) => (
           <li key={i}>
-            <div className="font-medium text-sm">{it.headline}</div>
-            {it.detail && <div className="text-xs sp-subtle mt-1 leading-relaxed">{it.detail}</div>}
+            <div className="font-medium text-base">{it.headline}</div>
+            {it.detail && <div className="text-sm sp-subtle mt-1 leading-relaxed">{it.detail}</div>}
           </li>
         ))}
       </ul>

@@ -147,7 +147,7 @@ export default function PublicAuditPage() {
           {/* Score circle */}
           <div className="pt-6 flex flex-col items-center" data-testid="audit-score-card">
             <ScoreRing value={audit.score || 0} />
-            <div className="text-xs sp-subtle mt-3 max-w-md leading-relaxed">
+            <div className="text-base sp-subtle mt-4 max-w-2xl leading-relaxed">
               {audit.executive_summary || audit.score_rationale || "Comprehensive audit of website, social presence, reviews, brand voice, and competitive position."}
             </div>
           </div>
@@ -228,17 +228,17 @@ function TeaserCard({ icon: Icon, title, items, tone, full }) {
         <div className="text-[11px] uppercase tracking-widest sp-subtle">{title}</div>
       </div>
       {items.length === 0 ? (
-        <div className="text-xs sp-subtle">—</div>
+        <div className="text-sm sp-subtle">—</div>
       ) : (
         <ul className="space-y-3">
           {items.map((it, i) => (
             <li key={i}>
-              <div className="font-medium text-sm">{it.headline}</div>
+              <div className="font-medium text-base">{it.headline}</div>
               {full && it.detail && (
-                <div className="text-xs sp-subtle mt-1 leading-relaxed">{it.detail}</div>
+                <div className="text-sm sp-subtle mt-1 leading-relaxed">{it.detail}</div>
               )}
               {!full && (
-                <div className="text-xs sp-subtle italic mt-1 select-none" style={{ filter: "blur(3px)" }} aria-hidden>
+                <div className="text-sm sp-subtle italic mt-1 select-none" style={{ filter: "blur(3px)" }} aria-hidden>
                   Detailed insight unlocked after a 30-second sign-up below.
                 </div>
               )}
@@ -283,8 +283,8 @@ function LeadGate({ slug, onUnlock }) {
         <Lock className="w-4 h-4 text-orange-300" />
         <div className="text-[11px] uppercase tracking-widest text-orange-300/90">Unlock the full report</div>
       </div>
-      <h2 className="text-2xl font-medium tracking-tight mb-2">See every recommendation, named competitor, and the full PDF.</h2>
-      <p className="sp-subtle text-sm mb-5 max-w-2xl leading-relaxed">
+      <h2 className="text-2xl sm:text-3xl font-medium tracking-tight mb-3">See every recommendation, named competitor, and the full PDF.</h2>
+      <p className="sp-subtle text-base mb-5 max-w-2xl leading-relaxed">
         Your full audit includes the prioritized fix list, the 3 named direct competitors and where they're winning, the brand voice gap analysis, and a polished PDF you can save or share. Takes 30 seconds.
       </p>
       <form onSubmit={submit} className="grid sm:grid-cols-2 gap-3">
@@ -296,13 +296,13 @@ function LeadGate({ slug, onUnlock }) {
         <button
           type="submit"
           disabled={submitting}
-          className="sm:col-span-2 sp-btn sp-btn-primary text-sm justify-center disabled:opacity-50"
+          className="sm:col-span-2 sp-btn sp-btn-primary text-base justify-center disabled:opacity-50"
           data-testid="lead-submit"
         >
           {submitting ? <Loader2 className="w-4 h-4 animate-spin" /> : <ShieldCheck className="w-4 h-4" />}
           {submitting ? "Unlocking…" : "Unlock the full audit"}
         </button>
-        <div className="sm:col-span-2 text-[10px] sp-subtle text-center">
+        <div className="sm:col-span-2 text-xs sp-subtle text-center">
           We respect your inbox — no marketing spam, no third-party sharing. Just the audit.
         </div>
       </form>
@@ -318,7 +318,7 @@ function Field({ label, value, onChange, placeholder, type = "text", testid }) {
       <input
         type={type} required value={value} onChange={(e) => onChange(e.target.value)}
         placeholder={placeholder}
-        className="w-full rounded-lg bg-black/30 border border-white/10 px-3 py-2.5 text-sm focus:outline-none focus:border-orange-500/50"
+        className="w-full rounded-lg bg-black/30 border border-white/10 px-3 py-2.5 text-base focus:outline-none focus:border-orange-500/50"
         data-testid={testid}
       />
     </label>
@@ -354,13 +354,13 @@ function PdfDownload({ slug, leadId }) {
     <div className="text-center py-6">
       <button
         type="button" onClick={onDownload} disabled={busy}
-        className="sp-btn sp-btn-primary text-sm justify-center disabled:opacity-50"
+        className="sp-btn sp-btn-primary text-base justify-center disabled:opacity-50"
         data-testid="audit-pdf-download"
       >
         {busy ? <Loader2 className="w-4 h-4 animate-spin" /> : <Download className="w-4 h-4" />}
         {busy ? "Preparing PDF…" : "Download the full PDF report"}
       </button>
-      <div className="text-[10px] sp-subtle mt-2 inline-flex items-center gap-3">
+      <div className="text-xs sp-subtle mt-2 inline-flex items-center gap-3">
         <span className="inline-flex items-center gap-1"><Mail className="w-3 h-3" /> emailed to {leadId ? "you" : "—"}</span>
         <span className="inline-flex items-center gap-1"><Phone className="w-3 h-3" /> we'll be in touch shortly</span>
       </div>

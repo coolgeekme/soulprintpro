@@ -116,8 +116,8 @@ export default function AuditConversionCTA({ audit }) {
               Self-serve · 24h
             </div>
           </div>
-          <div className="text-base font-medium mb-1">Try free for 24 hours</div>
-          <div className="text-xs sp-subtle mb-4 leading-relaxed">
+          <div className="text-lg font-medium mb-1.5">Try free for 24 hours</div>
+          <div className="text-sm sp-subtle mb-4 leading-relaxed">
             No credit card. Clock starts when you're ready — register, get a
             code by email, redeem when you have time to put us through our paces.
           </div>
@@ -126,11 +126,11 @@ export default function AuditConversionCTA({ audit }) {
             <SuccessState email={email} />
           ) : phase === "alreadyRegistered" ? (
             <div className="mt-auto">
-              <div className="text-xs sp-subtle leading-relaxed mb-3">
+              <div className="text-sm sp-subtle leading-relaxed mb-3">
                 That email already has an account. Sign in to see your trial status.
               </div>
-              <a href="/auth?mode=login" className="sp-btn sp-btn-primary text-xs w-full">
-                Sign in <ArrowRight className="w-3 h-3" />
+              <a href="/auth?mode=login" className="sp-btn sp-btn-primary text-sm w-full">
+                Sign in <ArrowRight className="w-3.5 h-3.5" />
               </a>
             </div>
           ) : (
@@ -140,7 +140,7 @@ export default function AuditConversionCTA({ audit }) {
                 placeholder="Your name (optional)"
                 value={name}
                 onChange={(e) => setName(e.target.value)}
-                className="sp-input text-xs w-full"
+                className="sp-input text-sm w-full"
                 data-testid="cta-trial-name"
               />
               <input
@@ -149,20 +149,20 @@ export default function AuditConversionCTA({ audit }) {
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
                 required
-                className="sp-input text-xs w-full"
+                className="sp-input text-sm w-full"
                 data-testid="cta-trial-email"
               />
               <button
                 type="submit"
                 disabled={phase === "sending"}
-                className="sp-btn sp-btn-primary text-xs w-full disabled:opacity-60"
+                className="sp-btn sp-btn-primary text-sm w-full disabled:opacity-60"
                 data-testid="cta-trial-submit"
               >
                 {phase === "sending"
-                  ? <><Loader2 className="w-3 h-3 animate-spin" /> Sending…</>
-                  : <>Email me a code <ArrowRight className="w-3 h-3" /></>}
+                  ? <><Loader2 className="w-3.5 h-3.5 animate-spin" /> Sending…</>
+                  : <>Email me a code <ArrowRight className="w-3.5 h-3.5" /></>}
               </button>
-              {error && <div className="text-[11px] text-red-400">{error}</div>}
+              {error && <div className="text-xs text-red-400">{error}</div>}
             </form>
           )}
         </div>
@@ -175,18 +175,18 @@ export default function AuditConversionCTA({ audit }) {
               Live · 20 minutes
             </div>
           </div>
-          <div className="text-base font-medium mb-1">Book a demo</div>
-          <div className="text-xs sp-subtle mb-4 leading-relaxed">
+          <div className="text-lg font-medium mb-1.5">Book a demo</div>
+          <div className="text-sm sp-subtle mb-4 leading-relaxed">
             Want to see SoulPrint Engine Pro operated by a human first?
             We'll set up your workspace live and run your first mission with you.
           </div>
           <button
             type="button"
             onClick={() => setDemoOpen(true)}
-            className="sp-btn sp-btn-ghost text-xs w-full mt-auto"
+            className="sp-btn sp-btn-ghost text-sm w-full mt-auto"
             data-testid="cta-demo-btn"
           >
-            <Calendar className="w-3 h-3" /> Pick a time
+            <Calendar className="w-3.5 h-3.5" /> Pick a time
           </button>
         </div>
 
@@ -198,8 +198,8 @@ export default function AuditConversionCTA({ audit }) {
               Just the audit
             </div>
           </div>
-          <div className="text-base font-medium mb-1">Take it & run</div>
-          <div className="text-xs sp-subtle mb-4 leading-relaxed">
+          <div className="text-lg font-medium mb-1.5">Take it & run</div>
+          <div className="text-sm sp-subtle mb-4 leading-relaxed">
             Download the full audit as a PDF. Tamper-evident — the file is
             cryptographically anchored on Bitcoin so you can prove its integrity later.
           </div>
@@ -209,10 +209,10 @@ export default function AuditConversionCTA({ audit }) {
               const el = document.querySelector('[data-testid="audit-pdf-download"]');
               if (el) el.scrollIntoView({ behavior: "smooth", block: "center" });
             }}
-            className="sp-btn sp-btn-ghost text-xs w-full mt-auto"
+            className="sp-btn sp-btn-ghost text-sm w-full mt-auto"
             data-testid="cta-pdf-btn"
           >
-            <Anchor className="w-3 h-3" /> Download PDF
+            <Anchor className="w-3.5 h-3.5" /> Download PDF
           </button>
         </div>
       </div>
@@ -242,8 +242,8 @@ function SuccessState({ email }) {
       <div className="flex items-start gap-2">
         <Check className="w-4 h-4 text-green-400 shrink-0 mt-0.5" />
         <div>
-          <div className="text-sm font-medium">Code sent!</div>
-          <div className="text-xs sp-subtle leading-relaxed mt-1">
+          <div className="text-base font-medium">Code sent!</div>
+          <div className="text-sm sp-subtle leading-relaxed mt-1">
             We emailed a code to <b className="text-white/90">{email}</b>. Open
             it and click the button when you're ready — your 24-hour trial
             starts at that moment, not now.
