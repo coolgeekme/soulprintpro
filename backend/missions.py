@@ -2063,15 +2063,34 @@ def make_missions_router(
                     f"'PUBLISHED:' and include the verified post URL.\n"
                 )
             else:
+                # No saved session for the detected platform. Previous
+                # behaviour: hard-fail the mission before it even ran,
+                # forcing the user to upload cookies via "Manage login
+                # sessions" first. New behaviour: let the mission start,
+                # tell the agent to navigate to the composer normally,
+                # and rely on the existing login-wall auto-pause +
+                # **Take control** flow (see B3 in the runner) so the
+                # user can log in interactively in the live browser
+                # canvas. After login, the agent resumes and the cookies
+                # are persisted for next time — no detour required.
                 goal_with_context += (
                     f"\n\n[SYSTEM CONTEXT — DO NOT IGNORE]\n"
                     f"This mission involves posting on {detected_platform.upper()}.\n"
-                    f"• NO authenticated session is on file for {detected_platform} — "
-                    f"DO NOT attempt to log in, DO NOT ask the user for credentials.\n"
-                    f"• Finish the mission IMMEDIATELY with summary: "
-                    f"'FAILED: no login cookies on file for {detected_platform} — "
-                    f"user must upload a session at the org's Social Queue page "
-                    f"(Manage login sessions) before this mission can run.'\n"
+                    f"• NO authenticated session is on file for {detected_platform} yet — "
+                    f"that's OK. Navigate to {composer or 'the composer page'} "
+                    f"normally with browse_url.\n"
+                    f"• When {detected_platform.upper()} shows the login screen, "
+                    f"DO NOT type credentials and DO NOT call browse_fill on "
+                    f"login forms. The runner will auto-pause the mission and "
+                    f"the user will sign in manually via the live browser "
+                    f"canvas (Take control). Their session is then saved.\n"
+                    f"• After the user hands control back, the page should be "
+                    f"logged in. Continue with browse_url → browse_fill → "
+                    f"browse_submit on the composer to publish the post.\n"
+                    f"• On successful publication, finish with summary starting "
+                    f"'PUBLISHED:' and include the verified post URL.\n"
+                    f"• If anything else goes wrong post-login, finish with "
+                    f"summary starting 'FAILED:' and a one-line reason.\n"
                 )
         # Resolve user-uploaded attachments. Validate owner + org, embed
         # them in the mission doc, and mark the pending records as

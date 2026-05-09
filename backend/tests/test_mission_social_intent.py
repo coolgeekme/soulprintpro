@@ -168,13 +168,18 @@ class TestStartMissionSocialContextInjection:
             assert g.startswith(goal)
             assert "[SYSTEM CONTEXT" in g
             assert "LINKEDIN" in g
+            # New policy: no-session branch tells the agent to start
+            # normally and rely on Take Control when the login wall
+            # appears, INSTEAD of hard-failing the mission.
             assert "NO authenticated session" in g
-            assert "DO NOT attempt to log in" in g
-            assert "DO NOT ask the user for credentials" in g
-            assert "FAILED: no login cookies on file for linkedin" in g
+            assert "Take control" in g
+            assert "DO NOT type credentials" in g
+            assert "PUBLISHED:" in g  # the agent must still publish post-login
+            # And it must NOT carry the old hard-fail directive
+            assert "FAILED: no login cookies on file" not in g
+            assert "must upload a session at the org's Social Queue page" not in g
             # And it must NOT carry the authenticated-branch language
             assert "ALREADY" not in g
-            assert "PUBLISHED:" not in g
         finally:
             _cancel(auth_session, mission["id"])
 
