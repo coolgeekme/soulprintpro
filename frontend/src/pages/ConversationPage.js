@@ -36,10 +36,15 @@ const formatTime = (ts) => {
  * Closes over the messages mutator + conv setter via params (passed
  * from ConversationPage) so we can keep this as a pure module-level
  * helper without React context. */
-function _recoverFailedSend({ convId, optimisticId, optimisticTs, setMessages, setConv }) {
+function _recoverFailedSend({ convId, optimisticId, optimisticTs, setMessages, setConv, setSending, recoveryActiveRef }) {
   const startedAt = Date.parse(optimisticTs) || Date.now();
   let attempts = 0;
   const maxAttempts = 22; // ~88s of polling at 4s cadence
+  if (recoveryActiveRef) recoveryActiveRef.current = true;
+  const finalize = () => {
+    if (recoveryActiveRef) recoveryActiveRef.current = false;
+    if (typeof setSending === "function") setSending(false);
+  };
   const poll = async () => {
     attempts += 1;
     try {
@@ -54,6 +59,7 @@ function _recoverFailedSend({ convId, optimisticId, optimisticTs, setMessages, s
       if (recovered) {
         setMessages(data);
         toast.success("Reply recovered — the agent did finish.", { duration: 4000 });
+        finalize();
         return; // stop polling
       }
     } catch (_) { /* network may still be flaky — try again next tick */ }
@@ -62,6 +68,7 @@ function _recoverFailedSend({ convId, optimisticId, optimisticTs, setMessages, s
     } else {
       // Gave up. Leave the failed bubble in place so the user can retry.
       toast.error("We couldn't recover that reply — tap Retry on the message.", { duration: 6000 });
+      finalize();
     }
   };
   setTimeout(poll, 4000);
@@ -87,6 +94,7 @@ export default function ConversationPage() {
   const inputRef = useRef(null);
   const fileInputRef = useRef(null);
   // AbortController for the in-flight send/upload request, so the user
+  const recoveryActiveRef = useRef(false);
   // can hit "Stop" to cancel an agent reply mid-generation. Cleared on
   // success, abort, or error.
   const sendAbortRef = useRef(null);
@@ -789,6 +797,8 @@ export default function ConversationPage() {
           optimisticTs: optimistic.timestamp,
           setMessages,
           setConv,
+          setSending,
+          recoveryActiveRef,
         });
       } else if (txt) {
         toastMsg = `Message failed: ${txt}`.slice(0, 220);
@@ -807,7 +817,14 @@ export default function ConversationPage() {
       ));
     } finally {
       sendAbortRef.current = null;
-      setSending(false);
+      // If the recovery poll is still in flight (set by the ERR_NETWORK
+      // branch), DON'T blank the indicator — the agent's reply may
+      // still arrive within the next ~90s and the user expects a clear
+      // "still working" signal until then. The recovery poll itself
+      // calls setSending(false) when it succeeds OR gives up.
+      if (!recoveryActiveRef.current) {
+        setSending(false);
+      }
     }
   };
 

@@ -2124,7 +2124,43 @@ def build_system_prompt(agent_id: str, team: dict, current_user_name: Optional[s
     # Resourcefulness protocol — teaches every agent how to fall back to
     # downloadable artifacts when a native integration is missing.
     lines.append(RESOURCEFULNESS_DIRECTIVE)
+    # Anti-procrastination protocol — agents do NOT "send images in the
+    # next message". Every reply is its own complete unit. The platform
+    # generates images / files / videos AUTOMATICALLY when the user's
+    # current message asks for them — the agent never controls timing.
+    lines.append(NO_FAKE_PROMISES_DIRECTIVE)
     return "\n".join(lines)
+
+
+# Why this exists: a real customer chat (May 2026) had the Product
+# Manager say "I'll generate the logos in the next message" five times
+# in a row, never producing any image — the agent has no scheduling
+# power and no way to send a follow-up message later. Every reply is
+# stateless. So we tell the agent that explicitly.
+NO_FAKE_PROMISES_DIRECTIVE = (
+    "\n\nNO FAKE PROMISES — your reply IS the complete deliverable.\n"
+    "• You CANNOT send 'in the next message', 'in a moment', 'shortly', "
+    "'in just a sec', or schedule any future autonomous action. "
+    "Every chat reply you write is the entire turn. Period.\n"
+    "• Image / video / file generation is handled AUTOMATICALLY by the "
+    "platform when the USER's current message asks for one. You do not "
+    "trigger generation by promising it. If the user wants an image, "
+    "they will ask for it again or rephrase, and the platform will "
+    "generate it inline with that turn.\n"
+    "• If you cannot complete a task in this single reply, SAY SO "
+    "EXPLICITLY: state what blocks you (missing input, capability gap, "
+    "needs Mission), and ask the user to provide what's missing or to "
+    "kick off a Mission. Do NOT pretend you'll get to it later.\n"
+    "• Phrases that are FORBIDDEN: 'I'll send', 'I'll generate', "
+    "'I'll have those ready', 'expect them next', 'in just a moment', "
+    "'stand by', 'just wrapping up', 'final touches', 'right away'. "
+    "These create a fake sense of progress and frustrate the user.\n"
+    "• If you've apologized for missing images more than ONCE in this "
+    "thread, STOP apologizing — instead, plainly tell the user the "
+    "image system needs them to ask again with explicit instructions "
+    "(e.g. 'Generate 4 wordmark logos for Vision Kinetix in different "
+    "colors'). Their next message with that prompt will trigger it.\n"
+)
 
 async def load_assets_brief(org_id: str, max_items: int = 30) -> List[dict]:
     """Compact list of assets for prompt injection. Limits text excerpts."""
@@ -2493,7 +2529,9 @@ _VIDEO_KEYWORDS_RE = re.compile(
 )
 _VERB_HINTS_RE = re.compile(
     r"\b(make|create|generate|design|draft|render|produce|whip\s*up|build|"
-    r"give\s*me|show\s*me|i\s*need|i\s*want|can\s*you\s*(make|create|design|generate|render|give|show))\b",
+    r"give\s*me|show\s*me|see|view|look\s*at|i\s*need|i\s*want|"
+    r"i'?d\s*like|where\s*(?:is|are|did)|"
+    r"can\s*you\s*(make|create|design|generate|render|give|show|share|send))\b",
     re.IGNORECASE,
 )
 
@@ -3043,7 +3081,8 @@ async def fetch_user_supplied_urls(message: str) -> tuple[str, list[dict]]:
 
 async def generate_agent_reply(conv: dict, team: dict, agent_id: str,
                                latest_user_text: str, latest_user_name: str,
-                               *, force_delivery: bool = False) -> tuple[str, list]:
+                               *, force_delivery: bool = False,
+                               latest_user_id: Optional[str] = None) -> tuple[str, list]:
     """One LLM turn for `agent_id`. Returns (reply_text, web_sources).
 
     When ``force_delivery=True`` we append a strong "deliver as [[ARTIFACT]]
@@ -3083,7 +3122,7 @@ async def generate_agent_reply(conv: dict, team: dict, agent_id: str,
         github_block, _gh_results = await fetch_github_chat_context(
             db, message=latest_user_text or "",
             org_id=str(team.get("org_id") or ""),
-            user_id=u["id"],
+            user_id=latest_user_id or "",
         )
     except Exception as exc:
         logger.warning("github_chat_context_failed: %s", exc)
@@ -3626,7 +3665,7 @@ async def send_message(conv_id: str, body: SendMessageBody, u: dict = Depends(ge
         # orphan replies the user never wanted.
         if _should_cancel(conv_id, started_at):
             break
-        reply, web_sources = await generate_agent_reply(conv, team, aid, body.text, u["name"])
+        reply, web_sources = await generate_agent_reply(conv, team, aid, body.text, u["name"], latest_user_id=u["id"])
         # Re-check after the (potentially long) LLM call before we persist.
         if _should_cancel(conv_id, started_at):
             break
@@ -3648,6 +3687,7 @@ async def send_message(conv_id: str, body: SendMessageBody, u: dict = Depends(ge
                 logger.info("Auto-retrying agent %s with forced-delivery (empty promise detected).", aid)
                 retry_reply, retry_sources = await generate_agent_reply(
                     conv, team, aid, body.text, u["name"], force_delivery=True,
+                    latest_user_id=u["id"],
                 )
                 if retry_reply and not _should_cancel(conv_id, started_at):
                     retry_clean, retry_artifacts = await process_agent_artifacts(
@@ -3827,7 +3867,7 @@ async def smart_start(team_id: str, body: SmartStartBody, u: dict = Depends(get_
     # fails, we post a single agent message with a friendly retry
     # nudge so the user knows what to do next.
     try:
-        reply, web_sources = await generate_agent_reply(conv_doc, team, chosen, body.text, u["name"])
+        reply, web_sources = await generate_agent_reply(conv_doc, team, chosen, body.text, u["name"], latest_user_id=u["id"])
         msg_id = str(uuid.uuid4())
         clean_reply, artifacts = await process_agent_artifacts(
             reply, conv=conv_doc, agent_id=chosen, message_id=msg_id, created_by=u["id"],
@@ -3913,7 +3953,7 @@ async def switch_agent(conv_id: str, body: SwitchAgentBody, u: dict = Depends(ge
     }
     await db.messages.insert_one({**intro})
 
-    reply, web_sources = await generate_agent_reply(conv, team, body.agent_id, intro_msg, u["name"])
+    reply, web_sources = await generate_agent_reply(conv, team, body.agent_id, intro_msg, u["name"], latest_user_id=u["id"])
     msg_id = str(uuid.uuid4())
     clean_reply, artifacts = await process_agent_artifacts(
         reply, conv=conv, agent_id=body.agent_id, message_id=msg_id, created_by=u["id"],
@@ -5857,6 +5897,7 @@ async def _run_schedule(sched_id: str) -> None:
                 continue
             reply, web_sources = await generate_agent_reply(
                 conv, team, aid, user_doc["text"], creator_name,
+                latest_user_id=s.get("created_by") or "",
             )
             msg_id = str(uuid.uuid4())
             clean_reply, artifacts = await process_agent_artifacts(
