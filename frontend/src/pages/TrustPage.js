@@ -3,7 +3,7 @@ import { Link } from "react-router-dom";
 import {
   ShieldCheck, Lock, KeyRound, Eye, EyeOff, Anchor, FileLock,
   UserCheck, AlertTriangle, Check, X, ArrowRight, Mail,
-  Fingerprint, Activity, Database, Sparkles,
+  Fingerprint, Activity, Database, Wand2,
 } from "lucide-react";
 import Logo from "../components/Logo";
 
@@ -469,7 +469,7 @@ function Compliance() {
     <section className="max-w-6xl mx-auto px-4 sm:px-6 py-10 sm:py-14">
       <div className="sp-glass-strong rounded-2xl p-6 sm:p-8">
         <div className="flex items-start gap-3 mb-4">
-          <Sparkles className="w-5 h-5 text-orange-300 shrink-0 mt-1" />
+          <Wand2 className="w-5 h-5 text-orange-300 shrink-0 mt-1" />
           <div>
             <div className="text-[10px] uppercase tracking-widest sp-subtle mb-1">Compliance posture</div>
             <h2 className="text-xl sm:text-2xl font-medium tracking-tight">

@@ -1,5 +1,5 @@
 import React from "react";
-import { Sparkles, Building2, ExternalLink, Zap, Rocket } from "lucide-react";
+import { Wand2, Building2, ExternalLink, Zap, Rocket } from "lucide-react";
 
 /**
  * AuditFullReport — the full rendered audit body.
@@ -20,7 +20,7 @@ export default function AuditFullReport({ audit }) {
           act on this" hook so the prospect sees the natural next
           step without us overpromising autonomous execution. */}
       <section>
-        <SectionHeader icon={Sparkles} title="Prioritized recommendations" subtitle="The highest-leverage fixes — and how SoulPrint Engine Pro can help you act on each one." />
+        <SectionHeader icon={Wand2} title="Prioritized recommendations" subtitle="The highest-leverage fixes — and how SoulPrint Engine Pro can help you act on each one." />
         <ol className="space-y-3 mt-3">
           {(audit.recommendations || []).map((r, i) => (
             <li key={i} className="sp-glass rounded-xl p-5">
@@ -74,7 +74,7 @@ export default function AuditFullReport({ audit }) {
       {/* Brand voice */}
       {audit.brand_voice && (audit.brand_voice.stated_mission || audit.brand_voice.actual_voice || audit.brand_voice.gap) && (
         <section>
-          <SectionHeader icon={Sparkles} title="Brand voice read" subtitle="Stated mission vs. how the market hears it." />
+          <SectionHeader icon={Wand2} title="Brand voice read" subtitle="Stated mission vs. how the market hears it." />
           <div className="sp-glass rounded-xl p-5 mt-3 space-y-3 text-base leading-relaxed">
             <div><b>Stated mission:</b> {audit.brand_voice.stated_mission}</div>
             <div><b>Actual voice:</b> {audit.brand_voice.actual_voice}</div>

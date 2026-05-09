@@ -1,9 +1,7 @@
 import React, { useEffect, useState, useCallback, useRef } from "react";
 import { Link } from "react-router-dom";
 import {
-  ArrowLeft, ArrowRight, Sparkles, Users, Rocket, FileText,
-  Megaphone, Building2, MessageCircle, Maximize2, Minimize2,
-  Sun, Moon,
+  ArrowLeft, ArrowRight, Wand2, Users, Rocket, FileText, Megaphone, Building2, MessageCircle, Maximize2, Minimize2, Sun, Moon
 } from "lucide-react";
 import Logo from "../components/Logo";
 import { useTheme } from "../context/ThemeContext";
@@ -45,7 +43,7 @@ const SLIDES = [
     id: "soul",
     kind: "feature",
     eyebrow: "The SoulPrint",
-    icon: Sparkles,
+    icon: Wand2,
     title: "Your brand, distilled\ninto every reply.",
     body: [
       "Drop in your website, a description, or both.",
@@ -399,7 +397,7 @@ function HeroSlide({ slide }) {
 }
 
 function FeatureSlide({ slide }) {
-  const Icon = slide.icon || Sparkles;
+  const Icon = slide.icon || Wand2;
   return (
     <div className="grid lg:grid-cols-12 gap-8 lg:gap-12 items-center" data-testid={`slide-${slide.id}`}>
       <div className="lg:col-span-5 deck-rise">

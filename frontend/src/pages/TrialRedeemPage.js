@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from "react";
 import { useSearchParams, Link, useNavigate } from "react-router-dom";
-import { Rocket, Loader2, ArrowRight, Mail, Check, Sparkles } from "lucide-react";
+import { Rocket, Loader2, ArrowRight, Mail, Check, Wand2 } from "lucide-react";
 import api, { setToken } from "../lib/api";
 import Logo from "../components/Logo";
 import { useAuth } from "../context/AuthContext";/**

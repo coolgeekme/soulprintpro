@@ -1,8 +1,7 @@
 import React, { useEffect, useState } from "react";
 import { useParams, useSearchParams, Link } from "react-router-dom";
 import {
-  Loader2, Lock, ShieldCheck, ExternalLink, Download,
-  TrendingUp, AlertTriangle, Sparkles, Phone, Mail,
+  Loader2, Lock, ShieldCheck, ExternalLink, Download, TrendingUp, AlertTriangle, Wand2, Phone, Mail
 } from "lucide-react";
 import { toast } from "sonner";
 import api from "../lib/api";
@@ -126,7 +125,7 @@ export default function PublicAuditPage() {
       <header className="sp-glass-strong border-b border-white/5">
         <div className="max-w-5xl mx-auto px-6 py-3 flex items-center justify-between">
           <Link to="/" className="flex items-center gap-2">
-            <Sparkles className="w-4 h-4 opacity-80" />
+            <Wand2 className="w-4 h-4 opacity-80" />
             <span className="text-sm tracking-tight font-medium">SoulPrint Engine Pro</span>
           </Link>
           <span className="text-[10px] uppercase tracking-widest sp-subtle">Business Audit</span>

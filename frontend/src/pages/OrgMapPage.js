@@ -3,7 +3,7 @@ import { useNavigate, useParams, Link } from "react-router-dom";
 import api from "../lib/api";
 import { toast } from "sonner";
 import {
-  Loader2, ArrowLeft, Sparkles, RefreshCw, Network, Users, Bot,
+  Loader2, ArrowLeft, Wand2, RefreshCw, Network, Users, Bot,
   FileText, Send, MessageCircle, Hash, Megaphone,
   Activity, Timer, Shield, Lock, Check, X, UserPlus,
 } from "lucide-react";
@@ -386,7 +386,7 @@ export default function OrgMapPage() {
           <StatCard icon={Users}        label="Teams"     value={totals.teams ?? 0} />
           <StatCard icon={Bot}          label="Agents"    value={totals.agents_active ?? 0} accent="#F0A050" />
           <StatCard icon={MessageCircle} label="Messages"  value={(totals.messages ?? 0).toLocaleString()} accent="#7AB7FF" />
-          <StatCard icon={Sparkles}     label="Missions"  value={totals.missions ?? 0} accent="#3FE0A2" />
+          <StatCard icon={Wand2}     label="Missions"  value={totals.missions ?? 0} accent="#3FE0A2" />
           <StatCard icon={Megaphone}    label="Posts"     value={totals.social_posts ?? 0} accent="#A0C4FF" />
           <StatCard icon={UserPlus}     label="Members"   value={totals.members ?? 0} accent="#C8A6F0" />
         </div>

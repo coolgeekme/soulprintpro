@@ -858,10 +858,10 @@ def make_audits_router(
         the admin dashboard can filter / spotlight them.
         """
         ip = (request.client.host if request.client else "0.0.0.0")
-        if not _rate_limit_ok(ip, window=3600, limit=3):
+        if not _rate_limit_ok(ip, window=3600, limit=10):
             raise HTTPException(
                 429,
-                "We limit new audits to 3 per hour per network to keep "
+                "We limit new audits to 10 per hour per network to keep "
                 "abuse low. Please try again in a bit, or email "
                 "team@archeforge.com if you need more right now.",
             )

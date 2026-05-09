@@ -1,6 +1,6 @@
 import React from "react";
 import { Link } from "react-router-dom";
-import { ArrowRight, Users, Network, ShieldCheck, Radio, HelpCircle, Sparkles } from "lucide-react";
+import { ArrowRight, Users, Network, ShieldCheck, Radio, HelpCircle, Wand2 } from "lucide-react";
 import Logo from "../components/Logo";
 
 const Pill = ({ children }) => <span className="sp-chip">{children}</span>;
@@ -94,7 +94,7 @@ export default function LandingPage() {
               }}
               data-testid="hero-cta-audit"
             >
-              <Sparkles className="w-4 h-4" /> Get a free audit
+              <Wand2 className="w-4 h-4" /> Get a free audit
             </Link>
             <a href="#agents" className="sp-btn sp-btn-ghost" data-testid="hero-cta-secondary">Meet the agents</a>
           </div>

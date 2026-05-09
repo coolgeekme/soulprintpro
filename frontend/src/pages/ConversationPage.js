@@ -5,7 +5,9 @@ import { compressImageFile, formatBytes } from "../lib/imageCompress";
 import TopBar from "../components/TopBar";
 import { toast } from "sonner";
 import { useAuth } from "../context/AuthContext";
-import { Send, Trash2, AtSign, Users, Repeat, Search, X, Lock, Film, Globe, ArrowUp, ArrowDown, UserPlus, Paperclip, FileText, File as FileIcon, Download, CornerDownRight, Megaphone, Pencil, Sparkles, Loader2, Rocket, Square, Minimize2 } from "lucide-react";
+import {
+  Send, Trash2, AtSign, Users, Repeat, Search, X, Lock, Film, Globe, ArrowUp, ArrowDown, UserPlus, Paperclip, FileText, File as FileIcon, Download, CornerDownRight, Megaphone, Pencil, Wand2, Loader2, Rocket, Square, Minimize2
+} from "lucide-react";
 import LinkPreviewCard from "../components/LinkPreviewCard";
 import IntegrityBadge from "../components/IntegrityBadge";
 import { MissionCard } from "../components/MissionCard";
@@ -1710,7 +1712,7 @@ export default function ConversationPage() {
           {looksLikeMission && (
             <div className="mb-2 sp-glass rounded-xl px-3 py-2 flex items-center gap-2 sp-fade-up"
                  data-testid="mission-suggest-pill">
-              <Sparkles className="w-3.5 h-3.5 opacity-70 shrink-0" />
+              <Wand2 className="w-3.5 h-3.5 opacity-70 shrink-0" />
               <div className="text-xs leading-snug flex-1 min-w-0">
                 This looks like a multi-step goal. Run it as a <span className="font-medium">mission</span>—the agent will browse, fill forms, and ship deliverables on its own.
               </div>
@@ -2078,7 +2080,7 @@ function RegenerateImageDialog({ editingImage, convId, onClose, onDone }) {
             data-testid="regenerate-model-nano"
           >
             <div className="flex items-center gap-2 mb-0.5">
-              <Sparkles className="w-3.5 h-3.5" />
+              <Wand2 className="w-3.5 h-3.5" />
               <div className="text-sm font-medium">Nano Banana</div>
             </div>
             <div className="text-[11px] sp-subtle leading-snug">
@@ -2093,7 +2095,7 @@ function RegenerateImageDialog({ editingImage, convId, onClose, onDone }) {
             data-testid="regenerate-model-gpt"
           >
             <div className="flex items-center gap-2 mb-0.5">
-              <Sparkles className="w-3.5 h-3.5" />
+              <Wand2 className="w-3.5 h-3.5" />
               <div className="text-sm font-medium">GPT Image 1</div>
             </div>
             <div className="text-[11px] sp-subtle leading-snug">
@@ -2117,7 +2119,7 @@ function RegenerateImageDialog({ editingImage, convId, onClose, onDone }) {
           >
             {busy
               ? <><Loader2 className="w-3.5 h-3.5 animate-spin" /> Generating…</>
-              : <><Sparkles className="w-3.5 h-3.5" /> Regenerate</>}
+              : <><Wand2 className="w-3.5 h-3.5" /> Regenerate</>}
           </button>
         </div>
         <div className="text-[10px] sp-subtle mt-3 text-right">⌘/Ctrl + Enter to submit</div>

@@ -2,7 +2,7 @@ import React, { useEffect, useState, useCallback } from "react";
 import api from "../lib/api";
 import { toast } from "sonner";
 import {
-  Sparkles,
+  Wand2,
   Send,
   Check,
   X as XIcon,
@@ -251,7 +251,7 @@ export default function SoulSuggestionsPanel({ orgId, role, currentSoul, onSoulA
       <div className="flex items-start justify-between gap-3 mb-4 flex-wrap">
         <div>
           <h3 className="text-sm uppercase tracking-widest sp-subtle flex items-center gap-2">
-            <Sparkles className="w-4 h-4 text-orange-400" /> Soul change requests
+            <Wand2 className="w-4 h-4 text-orange-400" /> Soul change requests
             {pending.length > 0 && isReviewer && (
               <span
                 className="px-2 py-0.5 rounded-full text-[10px] uppercase tracking-wider font-semibold animate-pulse"

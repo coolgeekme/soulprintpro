@@ -5,11 +5,7 @@ import api, { BACKEND_URL } from "../lib/api";
 import TopBar from "../components/TopBar";
 import { toast } from "sonner";
 import {
-  Send, Sparkles, Calendar, CheckCircle2, Trash2, Copy, ExternalLink,
-  Download, Save, X, Loader2, Megaphone, Image as ImageIcon, Wand2,
-  Zap, KeyRound, AlertTriangle, Rocket, Pencil,
-  UploadCloud, ShieldCheck, ChevronRight, Lightbulb, RefreshCcw,
-  FolderOpen,
+  Send, Wand2, Calendar, CheckCircle2, Trash2, Copy, ExternalLink, Download, Save, X, Loader2, Megaphone, Image as ImageIcon, Zap, KeyRound, AlertTriangle, Rocket, Pencil, UploadCloud, ShieldCheck, ChevronRight, Lightbulb, RefreshCcw, FolderOpen
 } from "lucide-react";
 import AssetPickerModal from "../components/AssetPickerModal";
 import WorkingIndicator from "../components/WorkingIndicator";
@@ -307,7 +303,7 @@ export default function SocialPage() {
         {/* Compose form */}
         <form onSubmit={compose} className="sp-glass-strong rounded-2xl p-6 mb-8 space-y-3" data-testid="social-compose">
           <div className="flex items-center gap-2 mb-1">
-            <Sparkles className="w-4 h-4 text-orange-400" />
+            <Wand2 className="w-4 h-4 text-orange-400" />
             <h3 className="text-sm uppercase tracking-widest sp-subtle">Draft with an agent</h3>
           </div>
           <textarea

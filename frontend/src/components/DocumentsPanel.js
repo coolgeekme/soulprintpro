@@ -3,7 +3,7 @@ import api, { BACKEND_URL, downloadFile } from "../lib/api";
 import { toast } from "sonner";
 import {
   FileText, FileCode2, FileSpreadsheet, Calendar, Mail, User as UserIcon,
-  Download, Trash2, Search, ScrollText, Sparkles, X as XIcon,
+  Download, Trash2, Search, ScrollText, Wand2, X as XIcon,
 } from "lucide-react";
 
 /**
@@ -176,7 +176,7 @@ export default function DocumentsPanel({ orgId }) {
         <div className="sp-subtle text-sm py-6 text-center">Loading documents…</div>
       ) : docs.length === 0 ? (
         <div className="sp-glass rounded-xl p-6 text-center">
-          <Sparkles className="w-5 h-5 mx-auto mb-2 text-white/60" />
+          <Wand2 className="w-5 h-5 mx-auto mb-2 text-white/60" />
           <div className="text-sm">Nothing here yet.</div>
           <div className="text-xs sp-subtle mt-1 max-w-md mx-auto">
             Ask any agent to schedule a meeting, draft an email, or build a checklist.

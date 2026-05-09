@@ -1,5 +1,5 @@
 import React, { useState } from "react";
-import { ShieldCheck, Anchor, Calendar, Rocket, Loader2, Check, X, Mail, ArrowRight, Sparkles } from "lucide-react";
+import { ShieldCheck, Anchor, Calendar, Rocket, Loader2, Check, X, Mail, ArrowRight, Wand2 } from "lucide-react";
 import api from "../lib/api";
 
 /**
@@ -88,7 +88,7 @@ export default function AuditConversionCTA({ audit }) {
     >
       {/* Personalised hero */}
       <div className="flex items-start gap-3 mb-6">
-        <Sparkles className="w-5 h-5 text-orange-300 shrink-0 mt-1" />
+        <Wand2 className="w-5 h-5 text-orange-300 shrink-0 mt-1" />
         <div>
           <div className="text-[10px] uppercase tracking-widest text-orange-300/90 mb-1">
             What's next?

@@ -1,8 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useState } from "react";
 import {
-  Loader2, Plus, Trash2, RefreshCw, ExternalLink, Mail, Phone,
-  AlertCircle, CheckCircle2, Clock, Building, FileText, Users as UsersIcon,
-  Eye, X, Download, Sparkles, TrendingUp, AlertTriangle,
+  Loader2, Plus, Trash2, RefreshCw, ExternalLink, Mail, Phone, AlertCircle, CheckCircle2, Clock, Building, FileText, Users as UsersIcon, Eye, X, Download, Wand2, TrendingUp, AlertTriangle
 } from "lucide-react";
 import { toast } from "sonner";
 import api from "../lib/api";
@@ -200,7 +198,7 @@ export default function AdminAuditsPanel() {
                           data-testid={`audit-source-${a.id}`}
                           title="Created from the public homepage self-serve form"
                         >
-                          <Sparkles className="w-2.5 h-2.5" /> Self-serve
+                          <Wand2 className="w-2.5 h-2.5" /> Self-serve
                         </span>
                       )}
                     </div>
@@ -317,7 +315,7 @@ export default function AdminAuditsPanel() {
                             data-testid={`audit-source-${a.id}`}
                             title="Created from the public homepage self-serve form"
                           >
-                            <Sparkles className="w-2.5 h-2.5" /> Self-serve
+                            <Wand2 className="w-2.5 h-2.5" /> Self-serve
                           </span>
                         )}
                       </div>

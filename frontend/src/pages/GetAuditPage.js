@@ -1,6 +1,6 @@
 import React, { useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
-import { Sparkles, Loader2, ArrowRight, Globe, ShieldCheck, Anchor, Mail } from "lucide-react";
+import { Wand2, Loader2, ArrowRight, Globe, ShieldCheck, Anchor, Mail } from "lucide-react";
 import api from "../lib/api";
 import Logo from "../components/Logo";
 
@@ -55,7 +55,25 @@ export default function GetAuditPage() {
         nav(`/audit/${data.slug}?lead_id=${data.lead_id}`);
       }, 600);
     } catch (err) {
-      setError(err?.response?.data?.detail
+      // Surface a useful message regardless of whether the server
+      // returns a string detail (HTTPException), a Pydantic 422 array,
+      // or no body at all (network/CORS hiccup). Prevents the generic
+      // fallback from swallowing the real reason.
+      const r = err?.response;
+      let msg = "";
+      const d = r?.data?.detail;
+      if (typeof d === "string") {
+        msg = d;
+      } else if (Array.isArray(d) && d.length) {
+        msg = d.map((e) => e?.msg || "").filter(Boolean).join("; ");
+      } else if (r?.status === 429) {
+        msg = "Too many audits started recently from this network — please try again in a few minutes.";
+      } else if (r?.status >= 500) {
+        msg = "Our servers are having a moment. Please try again in a few seconds.";
+      } else if (!r) {
+        msg = "We couldn't reach the audit service. Check your connection and try again.";
+      }
+      setError(msg
         || "We couldn't start that audit. Please double-check the URL and try again.");
       setPhase("error");
     }
@@ -79,7 +97,7 @@ export default function GetAuditPage() {
         <div className="w-full max-w-2xl">
           <div className="text-center mb-7">
             <div className="inline-flex items-center gap-1.5 sp-glass rounded-full px-3 py-1 text-[10px] uppercase tracking-widest sp-subtle mb-4">
-              <Sparkles className="w-3 h-3" /> Free business audit
+              <Wand2 className="w-3 h-3" /> Free business audit
             </div>
             <h1 className="text-3xl sm:text-4xl font-medium tracking-tight leading-[1.1]">
               Drop your URL. Get a personalised audit in <span style={{

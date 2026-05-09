@@ -1,7 +1,7 @@
 import React, { useEffect, useRef, useState } from "react";
 import api, { BACKEND_URL } from "../lib/api";
 import { toast } from "sonner";
-import { Sparkles, UploadCloud, Trash2, Save, Image as ImageIcon, X as XIcon, Lock } from "lucide-react";
+import { Wand2, UploadCloud, Trash2, Save, Image as ImageIcon, X as XIcon, Lock } from "lucide-react";
 
 // One self-contained component for the org's brand kit:
 // - primary logo (used for social-image overlay)
@@ -171,7 +171,7 @@ export default function BrandAssetsPanel({ orgId, initial, isOwner = false, onCh
   return (
     <section className="sp-glass-strong rounded-2xl p-5 sm:p-6 mb-6" data-testid="brand-assets-panel">
       <div className="flex items-center gap-2 mb-4">
-        <Sparkles className="w-4 h-4 text-orange-400" />
+        <Wand2 className="w-4 h-4 text-orange-400" />
         <h3 className="text-sm uppercase tracking-widest sp-subtle">Brand assets</h3>
         <span className="text-[11px] sp-subtle ml-2">Used by the social-image generator</span>
         {!isOwner && (

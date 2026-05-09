@@ -2,8 +2,7 @@ import React, { useEffect, useMemo, useRef, useState } from "react";
 import api from "../lib/api";
 import { toast } from "sonner";
 import {
-  Sparkles, Plus, Trash2, RefreshCw, ExternalLink, Save, Pencil, X as XIcon,
-  Wand2, Loader2, AlertTriangle, Eye, EyeOff,
+  Wand2, Plus, Trash2, RefreshCw, ExternalLink, Save, Pencil, X as XIcon, Loader2, AlertTriangle, Eye, EyeOff
 } from "lucide-react";
 import WorkingIndicator from "./WorkingIndicator";
 
@@ -179,7 +178,7 @@ export default function SocialStyleGuidePanel({ orgId }) {
           >
             {synthing
               ? <><Loader2 className="w-3.5 h-3.5 animate-spin" /> Synthesizing…</>
-              : <><Sparkles className="w-3.5 h-3.5" /> {hasGuide ? "Re-synthesize" : "Synthesize"}</>}
+              : <><Wand2 className="w-3.5 h-3.5" /> {hasGuide ? "Re-synthesize" : "Synthesize"}</>}
           </button>
         </div>
       </div>
