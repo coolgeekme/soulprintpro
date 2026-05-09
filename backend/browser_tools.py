@@ -641,6 +641,43 @@ async def _populate_snapshot(page, out: dict, take_screenshot: bool,
             logger.warning("screenshot failed/timeout: %s", exc)
             out["screenshot"] = None
 
+    # ── Anti-bot challenge sniff ─────────────────────────────────────────
+    # Cloudflare / DataDome / PerimeterX / Akamai serve interstitial
+    # "Checking your browser" pages BEFORE the real content loads.
+    # Even with our stealth context the challenge sometimes wins (IP
+    # reputation, headless signals, etc.) and we get back ~200 bytes of
+    # JS-challenge text instead of the page. The agent's tool result
+    # then looks "successful" and it tries to extract data from a page
+    # that has none — wasting the mission.
+    #
+    # Detect the challenge here and surface it as an explicit error so
+    # the mission loop can pivot to web_search / perplexity instead of
+    # retrying the same blocked URL.
+    sniff_title = (out.get("title") or "").lower()
+    sniff_text = (out.get("text") or "")[:500].lower()
+    challenge_signals = [
+        "robot challenge", "checking your browser", "checking the site connection",
+        "just a moment", "attention required", "ddos protection", "cloudflare",
+        "please verify you are a human", "press and hold to confirm",
+        "verifying you are human", "akamai", "incapsula",
+    ]
+    is_challenge = (
+        any(s in sniff_title for s in challenge_signals)
+        or sum(1 for s in challenge_signals if s in sniff_text) >= 1
+        and len(out.get("text") or "") < 500  # real pages have more text
+    )
+    if is_challenge:
+        out["bot_challenge"] = True
+        out["error"] = (
+            "This site is behind anti-bot protection (Cloudflare / "
+            "DataDome / Akamai-style). The browser was served a "
+            "challenge page instead of the real content. DO NOT retry "
+            "this URL with browse_url — it will fail again. Use "
+            "`web_search` or `perplexity_web_search` to research this "
+            "site instead, or call `finish` with a clear note that the "
+            "source URL was unreachable."
+        )
+
 
 # JavaScript payload that extracts a structured "what can I do on this
 # page" map. Returned shape:
