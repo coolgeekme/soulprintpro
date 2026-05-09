@@ -356,19 +356,27 @@ function Field({ label, value, onChange, placeholder, type = "text", testid }) {
 function PdfDownload({ slug, leadId }) {
   const [busy, setBusy] = useState(false);
   const onDownload = async () => {
+    if (busy) return;
+    // Open a placeholder window synchronously with the click so mobile
+    // pop-up blockers (iOS Safari, Chrome Android) don't reject the
+    // tab when we update its location after the async fetch returns.
+    // If popup-blocked, we fall back to same-tab navigation.
+    const placeholder = window.open("", "_blank", "noopener,noreferrer");
     setBusy(true);
     try {
       const { data } = await api.get(`/public/audits/${slug}/pdf?lead_id=${encodeURIComponent(leadId)}`);
-      // Trigger a same-tab navigation to the file URL — browser handles the
-      // PDF inline-or-download depending on the user's preference.
-      const a = document.createElement("a");
-      a.href = data.url;
-      a.download = data.filename || `audit-${slug}.pdf`;
-      a.target = "_blank";
-      document.body.appendChild(a);
-      a.click();
-      a.remove();
+      const url = data?.url;
+      if (!url) throw new Error("No URL");
+      if (placeholder && !placeholder.closed) {
+        try { placeholder.location.href = url; }
+        catch { window.location.assign(url); }
+      } else {
+        window.location.assign(url);
+      }
     } catch (err) {
+      if (placeholder && !placeholder.closed) {
+        try { placeholder.close(); } catch { /* ignore */ }
+      }
       toast.error(err?.response?.data?.detail || "PDF not available");
     } finally { setBusy(false); }
   };

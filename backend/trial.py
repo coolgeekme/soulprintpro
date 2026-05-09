@@ -92,7 +92,13 @@ async def _send_trial_code_email(*, to: str, name: str, code: str,
     api_key = os.environ.get("RESEND_API_KEY", "").strip()
     sender = os.environ.get("RESEND_FROM", "").strip()
     if not api_key or not sender:
-        logger.info("Resend not configured — skipping trial code email")
+        logger.warning(
+            "Resend not configured (RESEND_API_KEY=%s, RESEND_FROM=%s) — "
+            "trial code email will NOT be delivered for %s",
+            "set" if api_key else "MISSING",
+            "set" if sender else "MISSING",
+            to,
+        )
         return False
     redeem_url = f"{origin.rstrip('/')}/trial/redeem?code={code}"
     subject = "Your SoulPrint Engine Pro trial code"
@@ -147,12 +153,15 @@ async def _send_trial_code_email(*, to: str, name: str, code: str,
                       "html": html, "text": text},
             )
         if resp.status_code >= 300:
-            logger.warning("Trial code email failed %s: %s",
-                           resp.status_code, resp.text[:200])
+            logger.error(
+                "TRIAL_EMAIL_FAILED resend_status=%s recipient=%s sender=%s body=%s",
+                resp.status_code, to, sender, resp.text[:400],
+            )
             return False
         return True
     except Exception as exc:
-        logger.warning("Trial code email exception: %s", exc)
+        logger.error("TRIAL_EMAIL_EXCEPTION recipient=%s sender=%s: %s",
+                     to, sender, exc)
         return False
 
 

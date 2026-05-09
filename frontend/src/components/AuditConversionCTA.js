@@ -54,20 +54,35 @@ export default function AuditConversionCTA({ audit, leadId }) {
     }
     setPhase("sending");
     try {
-      await api.post("/trial/request-code", {
+      const { data } = await api.post("/trial/request-code", {
         email: email.trim(),
         name: name.trim(),
         source: slug ? `audit:${slug}` : "audit",
       });
-      setPhase("sent");
-    } catch (err) {
-      // Already-registered isn't an error — surface it cleanly so the
-      // visitor goes to login instead of bouncing.
-      const detail = err?.response?.data?.detail || "";
-      if (err?.response?.status === 200 && err?.response?.data?.already_registered) {
+      // The backend returns 200 even when Resend silently bounces (so
+      // the row is still persisted and the user can request again).
+      // We check `email_sent` explicitly here — if Resend failed, show
+      // the user a "we couldn't email it" state with a way out (mailto
+      // founders) rather than the false-positive "Code sent!" green.
+      if (data?.already_registered) {
         setError("");
         setPhase("alreadyRegistered");
-      } else if (detail) {
+      } else if (data?.email_sent === false) {
+        // Production-only path when sender domain bounces / Resend
+        // rate-limits / API key is wrong. The dev_code is only present
+        // in non-prod (where Resend isn't configured).
+        if (data.dev_code) {
+          setError(`Email isn't configured on this environment. Use this code directly: ${data.dev_code}`);
+        } else {
+          setError("We couldn't deliver the code right now. Email team@archeforge.com and we'll get you set up directly.");
+        }
+        setPhase("error");
+      } else {
+        setPhase("sent");
+      }
+    } catch (err) {
+      const detail = err?.response?.data?.detail || "";
+      if (detail) {
         setError(detail);
         setPhase("error");
       } else {
@@ -101,15 +116,34 @@ export default function AuditConversionCTA({ audit, leadId }) {
       return;
     }
     if (pdfBusy) return;
+    // Mobile pop-up blockers (Safari iOS, Chrome Android) reject any
+    // window.open() that's NOT synchronous with the user click — so we
+    // can't fetch the URL first and then open. Instead: pop the tab
+    // immediately with a placeholder, fetch the URL, then update the
+    // tab's location. If the user has aggressive blockers and the
+    // popup is still rejected, we fall back to navigating the same
+    // tab (window.location.assign) so the PDF still opens.
+    const placeholder = window.open("", "_blank", "noopener,noreferrer");
     setPdfBusy(true);
     try {
       const { data } = await api.get(
         `/public/audits/${slug}/pdf?lead_id=${encodeURIComponent(leadId)}`,
       );
-      if (data?.url) window.open(data.url, "_blank", "noopener,noreferrer");
+      const url = data?.url;
+      if (!url) throw new Error("No URL");
+      if (placeholder && !placeholder.closed) {
+        try { placeholder.location.href = url; }
+        catch { window.location.assign(url); }
+      } else {
+        // Pop-up blocked — same-tab fallback so the user still gets
+        // their PDF. Acceptable tradeoff: they lose the audit page
+        // but can hit Back to return.
+        window.location.assign(url);
+      }
     } catch (_) {
-      // Best-effort fallback to scrolling so the user can hit the
-      // orange button manually.
+      if (placeholder && !placeholder.closed) {
+        try { placeholder.close(); } catch { /* ignore */ }
+      }
       const el = document.querySelector('[data-testid="audit-pdf-download"]');
       if (el) el.scrollIntoView({ behavior: "smooth", block: "center" });
     } finally {
