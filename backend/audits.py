@@ -734,13 +734,13 @@ def make_audits_router(
         return _full_serialize(a)
 
     @admin_r.get("/audits/{audit_id}/pdf")
-    async def admin_audit_pdf(audit_id: str, _: dict = Depends(require_superadmin)):
+    async def admin_audit_pdf(
+        audit_id: str, request: Request,
+        _: dict = Depends(require_superadmin),
+    ):
         """Admin-only PDF download — no lead-id required, no public-page
-        gating. Returns the same `/api/files/<filename>` URL the public
-        endpoint returns, but skips the lead-ownership check because the
-        caller has already proven they're a superadmin via the auth
-        dependency. Idempotent + safe for a "Download PDF" button in
-        the admin viewer modal.
+        gating. Returns an absolute URL to the persisted file so the
+        admin can click straight through from any deploy / domain.
         """
         try:
             a = await db.business_audits.find_one({"_id": ObjectId(audit_id)})
@@ -750,8 +750,16 @@ def make_audits_router(
             raise HTTPException(404, "Audit not found")
         if not a.get("pdf_filename"):
             raise HTTPException(404, "PDF not yet generated for this audit")
-        return {"url": f"/api/files/{a['pdf_filename']}",
-                "filename": a["pdf_filename"]}
+        try:
+            from workspaces import _public_origin as _origin_helper
+            origin = _origin_helper(request)
+        except Exception:
+            origin = ""
+        path = f"/api/files/{a['pdf_filename']}"
+        return {
+            "url": f"{origin.rstrip('/')}{path}" if origin else path,
+            "filename": a["pdf_filename"],
+        }
 
     @admin_r.delete("/audits/{audit_id}")
     async def delete_audit(audit_id: str, _: dict = Depends(require_superadmin)):
@@ -995,8 +1003,37 @@ def make_audits_router(
             "audit": _public_full(a),
         }
 
+    @public_r.get("/audits/{slug}/unlock")
+    async def public_audit_unlock(slug: str, lead_id: str):
+        """Auto-unlock the full audit body when the visitor arrives from
+        the homepage self-serve flow with `?lead_id=...` in the URL.
+
+        Validates the lead_id was captured against THIS slug — so a
+        leaked lead id can't be used to peek at a different audit.
+        Returns the same `_public_full(audit)` shape the lead-gate POST
+        returns, keeping the PublicAuditPage's render path identical
+        whether the visitor unlocked via gate-form or via redirect.
+        """
+        try:
+            lead = await db.audit_leads.find_one(
+                {"_id": ObjectId(lead_id), "audit_slug": slug},
+            )
+        except Exception as exc:
+            raise HTTPException(400, "Invalid lead id") from exc
+        if not lead:
+            raise HTTPException(403, "Lead not associated with this audit.")
+        a = await db.business_audits.find_one({"slug": slug})
+        if not a:
+            raise HTTPException(404, "Audit not found")
+        if a.get("status") != "ready":
+            # Don't 4xx here — a still-generating audit is a normal state
+            # the page handles via the teaser route. Simply tell the
+            # caller it isn't ready yet.
+            return {"ok": False, "status": a.get("status", "generating")}
+        return {"ok": True, "audit": _public_full(a)}
+
     @public_r.get("/audits/{slug}/pdf")
-    async def public_audit_pdf(slug: str, lead_id: str):
+    async def public_audit_pdf(slug: str, lead_id: str, request: Request):
         # Validate the lead belongs to this audit (gates the download).
         try:
             lead = await db.audit_leads.find_one({"_id": ObjectId(lead_id), "audit_slug": slug})
@@ -1007,9 +1044,20 @@ def make_audits_router(
         a = await db.business_audits.find_one({"slug": slug})
         if not a or not a.get("pdf_filename"):
             raise HTTPException(404, "PDF not available")
-        # Return a redirect URL to the existing /api/files handler — that
-        # already rehydrates from GridFS if disk got wiped.
-        return {"url": f"/api/files/{a['pdf_filename']}",
-                "filename": a["pdf_filename"]}
+        # Return an ABSOLUTE URL so the front-end can navigate to it
+        # cleanly even when the SPA is hosted on a custom domain that
+        # doesn't proxy `/api/*` to this backend (e.g. a marketing
+        # subdomain that splits API and front-end). Falls back to the
+        # relative path when no origin is detectable.
+        try:
+            from workspaces import _public_origin as _origin_helper
+            origin = _origin_helper(request)
+        except Exception:
+            origin = ""
+        path = f"/api/files/{a['pdf_filename']}"
+        return {
+            "url": f"{origin.rstrip('/')}{path}" if origin else path,
+            "filename": a["pdf_filename"],
+        }
 
     return admin_r, public_r

@@ -106,7 +106,16 @@ def _public_origin(request: Request) -> str:
     Returns a string like ``"https://pro.soulprintengine.ai"`` with no
     trailing slash. Always validates the scheme is http/https to avoid
     header-injection attacks producing ``javascript:`` links.
+
+    Operator escape hatch: setting ``PUBLIC_ORIGIN_OVERRIDE`` in env
+    pins the result regardless of headers — needed when a fronting
+    proxy (e.g. emergent.host → cloudflare → pro.soulprintengine.ai)
+    rewrites X-Forwarded-Host to the inner deploy URL so emails would
+    otherwise leak the wrong domain.
     """
+    override = (os.environ.get("PUBLIC_ORIGIN_OVERRIDE") or "").strip().rstrip("/")
+    if override.startswith("http://") or override.startswith("https://"):
+        return override
     fwd_host = (request.headers.get("x-forwarded-host") or "").strip()
     if fwd_host:
         # X-Forwarded-Host can be a comma-separated chain — first entry

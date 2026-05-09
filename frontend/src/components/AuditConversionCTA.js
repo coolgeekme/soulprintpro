@@ -203,14 +203,17 @@ export default function AuditConversionCTA({ audit }) {
             Download the full audit as a PDF. Tamper-evident — the file is
             cryptographically anchored on Bitcoin so you can prove its integrity later.
           </div>
-          <a
-            href={slug ? `/api/audits/${slug}/pdf` : "#"}
-            target="_blank" rel="noreferrer"
+          <button
+            type="button"
+            onClick={() => {
+              const el = document.querySelector('[data-testid="audit-pdf-download"]');
+              if (el) el.scrollIntoView({ behavior: "smooth", block: "center" });
+            }}
             className="sp-btn sp-btn-ghost text-xs w-full mt-auto"
             data-testid="cta-pdf-btn"
           >
             <Anchor className="w-3 h-3" /> Download PDF
-          </a>
+          </button>
         </div>
       </div>
 
@@ -265,10 +268,11 @@ function TrustBadge({ icon: Icon, label, cross }) {
 
 
 function DemoModal({ onClose, source }) {
-  // Cal.com / Calendly embed URL via env. Falls back to a clean
-  // mailto so this works the moment you set the env var, no code
-  // change required.
-  const calUrl = (process.env.REACT_APP_DEMO_BOOKING_URL || "").trim();
+  // Cal.com / Calendly / zcal embed URL via env, with a baked-in
+  // fallback to the founder's zcal so the demo CTA always has a
+  // working iframe — even on deploys that don't set the env var.
+  const calUrl = (process.env.REACT_APP_DEMO_BOOKING_URL
+    || "https://zcal.co/reggie-archeforge/meeting").trim();
   return (
     <div
       className="fixed inset-0 z-50 flex items-center justify-center p-4"
@@ -297,12 +301,25 @@ function DemoModal({ onClose, source }) {
         </div>
         <div className="flex-1 overflow-auto">
           {calUrl ? (
-            <iframe
-              src={calUrl}
-              title="Book a demo"
-              className="w-full"
-              style={{ height: "70vh", border: 0 }}
-            />
+            <div className="relative h-[70vh]">
+              <iframe
+                src={calUrl}
+                title="Book a demo"
+                className="w-full h-full"
+                style={{ border: 0 }}
+              />
+              <div className="absolute top-2 right-2">
+                <a
+                  href={calUrl}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="sp-btn sp-btn-ghost text-[11px]"
+                  data-testid="demo-modal-open-tab"
+                >
+                  Open in new tab
+                </a>
+              </div>
+            </div>
           ) : (
             <div className="p-8 text-center">
               <Mail className="w-10 h-10 text-orange-300 mx-auto mb-4" />

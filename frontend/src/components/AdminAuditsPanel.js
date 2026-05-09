@@ -192,7 +192,18 @@ export default function AdminAuditsPanel() {
               >
                 <div className="flex items-start justify-between gap-3">
                   <div className="min-w-0 flex-1">
-                    <div className="font-medium truncate">{a.business_name}</div>
+                    <div className="font-medium truncate flex items-center gap-2 flex-wrap">
+                      {a.business_name}
+                      {a.created_via === "public" && (
+                        <span
+                          className="inline-flex items-center gap-1 text-[9px] uppercase tracking-widest px-1.5 py-0.5 rounded-full border border-violet-500/30 bg-violet-500/10 text-violet-200"
+                          data-testid={`audit-source-${a.id}`}
+                          title="Created from the public homepage self-serve form"
+                        >
+                          <Sparkles className="w-2.5 h-2.5" /> Self-serve
+                        </span>
+                      )}
+                    </div>
                     {a.website_url && (
                       <a href={a.website_url} target="_blank" rel="noopener noreferrer"
                          className="text-[11px] sp-subtle hover:text-orange-300 inline-flex items-center gap-1 break-all">
@@ -298,7 +309,18 @@ export default function AdminAuditsPanel() {
                 return (
                   <tr key={a.id} className="border-t border-white/5" data-testid={`audit-row-${a.id}`}>
                     <td className="px-4 py-3">
-                      <div className="font-medium">{a.business_name}</div>
+                      <div className="font-medium flex items-center gap-2 flex-wrap">
+                        {a.business_name}
+                        {a.created_via === "public" && (
+                          <span
+                            className="inline-flex items-center gap-1 text-[9px] uppercase tracking-widest px-1.5 py-0.5 rounded-full border border-violet-500/30 bg-violet-500/10 text-violet-200"
+                            data-testid={`audit-source-${a.id}`}
+                            title="Created from the public homepage self-serve form"
+                          >
+                            <Sparkles className="w-2.5 h-2.5" /> Self-serve
+                          </span>
+                        )}
+                      </div>
                       <a href={a.website_url} target="_blank" rel="noopener noreferrer"
                          className="text-[11px] sp-subtle hover:text-orange-300 inline-flex items-center gap-1">
                         {a.website_url} <ExternalLink className="w-3 h-3" />
