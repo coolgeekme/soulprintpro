@@ -171,19 +171,27 @@ def _rate_limit_ok(ip: str, *, window: int = 60, limit: int = 5) -> bool:
 
 
 # ── Public Resend helper ─────────────────────────────────────────────────────
-async def _send_resend_email(to: str, subject: str, html: str, text: str) -> bool:
-    """POST to Resend's /emails endpoint. Returns True on success."""
+async def _send_resend_email(to: str, subject: str, html: str, text: str,
+                             *, attachments: list[dict] | None = None) -> bool:
+    """POST to Resend's /emails endpoint. Returns True on success.
+
+    `attachments` supports Resend's native attachment shape:
+    `[{"filename": "...", "content": "<base64>"}]`. Use `_attach_pdf()`
+    to build it from raw bytes.
+    """
     api_key = os.environ.get("RESEND_API_KEY", "").strip()
     sender = os.environ.get("RESEND_FROM", "").strip()
     if not api_key or not sender:
-        logger.info("Resend not configured — skipping admin notification")
+        logger.info("Resend not configured — skipping email to %s", to)
         return False
     payload = {
         "from": sender, "to": [to], "subject": subject,
         "html": html, "text": text,
     }
+    if attachments:
+        payload["attachments"] = attachments
     try:
-        async with httpx.AsyncClient(timeout=15) as client:
+        async with httpx.AsyncClient(timeout=20) as client:
             resp = await client.post(
                 "https://api.resend.com/emails",
                 headers={
@@ -199,6 +207,15 @@ async def _send_resend_email(to: str, subject: str, html: str, text: str) -> boo
     except Exception as exc:
         logger.warning("Resend send exception: %s", exc)
         return False
+
+
+def _attach_pdf(pdf_bytes: bytes, filename: str) -> dict:
+    """Wrap raw PDF bytes into Resend's attachment shape (base64 content)."""
+    import base64
+    return {
+        "filename": filename,
+        "content": base64.b64encode(pdf_bytes).decode("ascii"),
+    }
 
 
 # ── Audit serializers ────────────────────────────────────────────────────────
@@ -643,6 +660,7 @@ def make_audits_router(
             # consumes the structured audit dict directly (cover page,
             # score ring, priority pills, "How SoulPrint helps" cards).
             pdf_filename = ""
+            pdf_bytes_for_email = b""
             try:
                 from audit_pdf import render_audit_pdf
                 pdf_bytes = render_audit_pdf({**a, **data})
@@ -651,6 +669,7 @@ def make_audits_router(
                     upload_dir / pdf_filename, pdf_bytes,
                     original_name=pdf_filename, mime="application/pdf",
                 )
+                pdf_bytes_for_email = pdf_bytes
             except Exception as exc:
                 logger.warning("Audit PDF render failed for %s: %s", audit_id, exc)
 
@@ -680,6 +699,23 @@ def make_audits_router(
                 "Audit %s ready (score=%s, model=%s/%s)",
                 audit_id, data.get("score"), model_choice.provider, model_choice.model,
             )
+            # Email the audit to the visitor (homepage self-serve flow only).
+            # Admin-created rows have created_via=None or "admin" and skip
+            # this — those audits are for outbound prospecting, not
+            # transactional. Best-effort: failures here don't roll back
+            # the audit doc.
+            if a.get("created_via") == "public":
+                try:
+                    await _email_visitor_audit_ready(
+                        audit={**a, **data, "_id": audit_id, "slug": a.get("slug")},
+                        pdf_bytes=pdf_bytes_for_email,
+                        pdf_filename=pdf_filename,
+                    )
+                except Exception as exc:
+                    logger.warning(
+                        "visitor audit email failed for %s: %s",
+                        audit_id, exc,
+                    )
         except Exception as exc:
             logger.exception("Audit generation failed for %s", audit_id)
             await db.business_audits.update_one(
@@ -801,6 +837,113 @@ def make_audits_router(
         return out
 
     # ── Public endpoints (no auth) ─────────────────────────────────────────
+    async def _email_visitor_audit_ready(*, audit: dict, pdf_bytes: bytes,
+                                         pdf_filename: str) -> None:
+        """Send the visitor a "your audit is ready" email with the PDF
+        attached AND a magic-link to view the rich version on the web.
+
+        Resolves the recipient by walking the audit_leads rows for this
+        audit (slug-keyed). If multiple leads were captured, we email
+        the FIRST one (the homepage-form submitter — captured_via:
+        'public_start') because they're the original requester. Other
+        leads (lead-gate captures from after-the-fact unlocks) get the
+        admin-side prospecting touch instead.
+        """
+        slug = audit.get("slug") or ""
+        if not slug:
+            return
+        primary = await db.audit_leads.find_one(
+            {"audit_slug": slug, "captured_via": "public_start"},
+            sort=[("submitted_at", 1)],
+        )
+        if not primary:
+            # Fall back to any lead on this audit if the primary tag
+            # isn't on the doc (older rows pre-tagging).
+            primary = await db.audit_leads.find_one(
+                {"audit_slug": slug},
+                sort=[("submitted_at", 1)],
+            )
+        if not primary or not primary.get("email"):
+            return
+        to_email = primary["email"]
+        first_name = (primary.get("name") or "").split(" ")[0] or "there"
+        biz = audit.get("business_name") or "your business"
+        score = audit.get("score")
+        score_line = f"{score}/100" if isinstance(score, int) else "—"
+        # Magic-link URL: /audit/<slug>?lead_id=<id> — the auto-unlock
+        # path we shipped earlier, so the visitor lands on the full
+        # audit without re-filling the lead-gate.
+        # Use FRONTEND_URL (with PUBLIC_ORIGIN_OVERRIDE precedence)
+        # because there's no Request in scope here.
+        origin = (os.environ.get("PUBLIC_ORIGIN_OVERRIDE") or "").strip()
+        if not origin:
+            origin = (os.environ.get("FRONTEND_URL") or "").strip()
+        origin = origin.rstrip("/")
+        view_url = f"{origin}/audit/{slug}?lead_id={primary['_id']}" if origin else f"/audit/{slug}"
+        subject = f"Your SoulPrint audit for {biz} is ready"
+        text = (
+            f"Hi {first_name},\n\n"
+            f"Your business audit for {biz} is ready. The PDF is attached "
+            f"to this email — print it, share it with your team, save it "
+            f"for later.\n\n"
+            f"Health score: {score_line}\n\n"
+            f"Want the rich, clickable version with live links to your "
+            f"competitors' pages and detailed recommendations? Open the "
+            f"web version here:\n\n{view_url}\n\n"
+            f"Questions or want help acting on what you found? Reply to "
+            f"this email or grab a 20-minute slot at "
+            f"https://zcal.co/reggie-archeforge.\n\n"
+            f"— The SoulPrint Engine team\n"
+        )
+        # Pre-escape user-controlled values for the HTML view.
+        from html import escape as _esc
+        biz_h = _esc(biz)
+        first_h = _esc(first_name)
+        view_h = _esc(view_url)
+        score_h = _esc(score_line)
+        html = f"""<!doctype html>
+<html><body style="margin:0;padding:0;background:#fafafa;font-family:-apple-system,BlinkMacSystemFont,Helvetica,Arial,sans-serif;color:#0f0f0f;">
+  <div style="max-width:560px;margin:0 auto;padding:32px 24px;">
+    <div style="background:#F64000;height:4px;border-radius:2px;width:48px;margin-bottom:24px;"></div>
+    <h1 style="font-size:22px;font-weight:600;margin:0 0 8px 0;">Your audit is ready, {first_h}.</h1>
+    <p style="font-size:15px;line-height:1.6;color:#374151;margin:0 0 20px 0;">
+      We finished the comprehensive read of <b style="color:#0f0f0f;">{biz_h}</b> — website, social, reviews, brand voice, and competitive landscape. The full PDF is attached to this email.
+    </p>
+    <div style="background:#fff7ed;border:1px solid #fdba74;border-radius:12px;padding:16px 20px;margin:0 0 24px 0;">
+      <div style="font-size:11px;letter-spacing:0.1em;text-transform:uppercase;color:#F64000;font-weight:600;margin-bottom:4px;">Health score</div>
+      <div style="font-size:32px;font-weight:700;color:#0f0f0f;line-height:1;">{score_h}</div>
+    </div>
+    <a href="{view_h}" style="display:inline-block;background:#F64000;color:#fff;text-decoration:none;padding:12px 22px;border-radius:8px;font-weight:600;font-size:15px;margin-bottom:20px;">
+      Open the rich web version →
+    </a>
+    <p style="font-size:13px;line-height:1.6;color:#6b7280;margin:24px 0 0 0;">
+      The web version has the live competitor links, the per-recommendation "How SoulPrint helps you act on this" hooks, and the brand voice gap analysis with the full text intact. The PDF is the portable mirror.
+    </p>
+    <hr style="border:none;border-top:1px solid #e5e7eb;margin:32px 0;" />
+    <p style="font-size:13px;line-height:1.6;color:#6b7280;margin:0;">
+      Questions, or want help acting on what you found? Just reply to this email — we read every one — or grab a 20-minute slot at <a href="https://zcal.co/reggie-archeforge" style="color:#F64000;">zcal.co/reggie-archeforge</a>.
+    </p>
+    <p style="font-size:11px;color:#9ca3af;margin:32px 0 0 0;">SoulPrint Engine Pro · Tamper-evident · Bitcoin-anchored proof of integrity</p>
+  </div>
+</body></html>"""
+        attachments: list[dict] = []
+        if pdf_bytes and pdf_filename:
+            attachments.append(_attach_pdf(pdf_bytes, pdf_filename))
+        ok = await _send_resend_email(
+            to_email, subject, html, text, attachments=attachments,
+        )
+        if ok:
+            # Persist the timestamp so we don't double-send on a
+            # regenerate. Future re-runs will see this and skip.
+            await db.business_audits.update_one(
+                {"_id": audit.get("_id")},
+                {"$set": {"visitor_email_sent_at": datetime.now(timezone.utc),
+                          "visitor_email_to": to_email}},
+            )
+            logger.info("Visitor audit email sent: slug=%s to=%s", slug, to_email)
+        else:
+            logger.warning("Visitor audit email FAILED: slug=%s to=%s", slug, to_email)
+
     async def _notify_new_lead(*, a: dict, lead: dict) -> None:
         """Fire the team@archeforge.com lead-notification email. Used
         by both the public /lead endpoint and the homepage self-serve
@@ -909,7 +1052,7 @@ def make_audits_router(
             "submitted_at": now,
             "ip": ip,
             "user_agent": (request.headers.get("user-agent") or "")[:240],
-            "captured_via": "public_self_serve",
+            "captured_via": "public_start",
         }
         lead_res = await db.audit_leads.insert_one(lead_doc)
         # Fire-and-forget the heavy generation pipeline.
