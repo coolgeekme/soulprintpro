@@ -6,7 +6,7 @@ import {
 } from "recharts";
 import {
   Loader2, Users, Building2, Layers, Rocket, MessageSquare,
-  Activity, DollarSign, Search, ShieldCheck, Target,
+  Activity, DollarSign, Search, ShieldCheck, Target, KeyRound,
 } from "lucide-react";
 
 import api from "../lib/api";
@@ -14,11 +14,12 @@ import { useAuth } from "../context/AuthContext";
 import TopBar from "../components/TopBar";
 import AdminUsersPanel from "../components/AdminUsersPanel";
 import AdminAuditsPanel from "../components/AdminAuditsPanel";
+import AdminAccessCodesPanel from "../components/AdminAccessCodesPanel";
 
 /**
  * AdminDashboard — superadmin-only analytics + tooling surface.
  *
- * Tabs: Overview · LLM Usage · Orgs · Users · Missions · Audits
+ * Tabs: Overview · LLM Usage · Orgs · Users · Missions · Audits · Access Codes
  * Hard-gated client-side via `user.is_superadmin`; the backend also
  * 403s any non-superadmin hitting /api/admin/*, so a tampered client
  * still gets nothing.
@@ -30,6 +31,7 @@ const TAB_DEFS = [
   { id: "users",    label: "Users", icon: Users },
   { id: "missions", label: "Missions", icon: Rocket },
   { id: "audits",   label: "Audits", icon: Target },
+  { id: "access",   label: "Access Codes", icon: KeyRound },
 ];
 
 function StatCard({ icon: Icon, label, value, sub }) {
@@ -507,6 +509,7 @@ export default function AdminDashboard() {
         {tab === "users" && <AdminUsersPanel currentUserId={user?.id} />}
         {tab === "missions" && <MissionsPanel />}
         {tab === "audits" && <AdminAuditsPanel />}
+        {tab === "access" && <AdminAccessCodesPanel />}
       </main>
     </div>
   );

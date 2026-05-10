@@ -672,3 +672,27 @@ pattern. Users must be able to:
   4. **Demo modal calendar URL hardcoded fallback** — `DemoModal` previously fell back to a `mailto:` if `REACT_APP_DEMO_BOOKING_URL` wasn't set. User confirmed their booking link is `https://zcal.co/reggie-archeforge/meeting`; baked that in as the default. Also added a prominent "Open in new tab" link inside the iframe modal so the demo CTA still works if zcal blocks `<iframe>` embedding via `X-Frame-Options`.
   5. **Admin Audits panel — "Self-serve" badge** — small violet pill rendered next to `business_name` (both mobile cards + desktop table) when `created_via === "public"`, so admins can tell at a glance which audits came from the homepage funnel vs ones they created themselves. Uses the existing `created_via` field on the audit doc — no schema change.
 
+
+- ✅ **Pre-launch Site Access Gate** (Feb 10, 2026) — global lock that prevents anyone from reaching `/app/*` until they redeem either an admin-issued private access code OR an existing 24-hour trial code. Built to satisfy the user's pre-launch invite-only window without breaking the existing trial funnel.
+
+  **Backend** — new module `/app/backend/access_codes.py`:
+  - `db.access_codes` collection: `{code, usage_type: "single"|"multi", max_uses, used_count, expires_at, is_active, note, created_at, created_by, redeemed_by_user_ids[]}`
+  - `POST /api/access-codes/redeem` — public-auth, accepts EITHER a private access code OR an existing trial code (24h timer is started in the latter case). Idempotent for the same user.
+  - `GET /api/access-codes/status` — anonymous-safe; returns `{signed_in, has_access, reason, is_superadmin, device_grant}`. `reason` ∈ `{superadmin, private_code, trial, device_cookie, none, anonymous}`.
+  - Admin endpoints (superadmin-gated): `POST /api/admin/access-codes` (mint), `GET /api/admin/access-codes` (list, paginated), `DELETE /api/admin/access-codes/{id}` (soft-revoke with audit trail).
+  - Long-lived `sp_access_ok` JWT cookie minted at redeem-time; per the user's "bound to account AND device cookie" decision, the device cookie satisfies the gate independently of the account stamp on the same browser. Cookie is invalidated automatically when the underlying code is revoked or expires.
+  - `/api/auth/me` now exposes `has_site_access` so the SPA can render the gate without an extra round-trip on first paint.
+
+  **Frontend**:
+  - New component `/app/frontend/src/components/SiteAccessGate.js` wraps every `<Protected>` route. Reads `has_site_access` from `/auth/me` (fast path) → falls back to `/access-codes/status`. When the user lacks access, renders a full-screen lock with a single code input, a `Sign out` escape hatch, and a deep-link to `/get-audit` for visitors without a code.
+  - New admin tab `/app/frontend/src/components/AdminAccessCodesPanel.js` (added as the 7th tab in `AdminDashboard.js`): mint codes (single/multi-use, custom or auto-generated, optional expiry, internal note), copy-to-clipboard per row, status pills (active / spent / expired / revoked), revoke button.
+
+  **Verification** — verified end-to-end via curl:
+  - Superadmin bypasses (`reason: superadmin`).
+  - Fresh user is gated (`has_access: false`), redeems a multi-use code → `has_access: true`.
+  - Single-use code: User A succeeds, User B blocked with "already been used".
+  - Revoked code blocked with "has been revoked".
+  - Non-superadmin gets 403 on `/api/admin/access-codes`.
+  - Idempotent re-redeem of the same code by the same user returns `{ok: true, already_granted: true}`.
+
+  **Setup user has to do once**: nothing — runs out of the box. Optionally mint codes via `/admin` → "Access Codes" tab. Trial codes from `/get-audit` continue to work without changes.

@@ -1,0 +1,34 @@
+{
+  "summary": "Pre-launch Site Access Gate fully tested end-to-end. Backend pytest suite (13 tests) and Playwright UI flows all pass. Gate enforcement, redeem flow (private + revoke + idempotent + single-use exhaustion), admin CRUD, has_site_access propagation through /auth/me, superadmin bypass, and admin panel UI all work.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "/admin (and many app shell pages)", "issues": ["React hydration warning: '<a> cannot contain a nested <a>' — pre-existing, unrelated to access gate but worth investigating"]}
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_access_codes_gate.py",
+    "/app/test_reports/pytest/iter18_access_codes_gate.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "access_codes.py: redeem endpoint normalises with _norm_code() before strict re.match in trial path is bypassed — fine, but any future custom-code with hyphens entered by users will be silently coerced; consider showing the canonical form back to admins so they can copy/share without ambiguity.",
+    "Trial-code branch was NOT covered by the automated suite (would require minting via /api/trial/request-code which depends on Resend in dev — main agent already smoke-tested manually). Recommend adding a unit-level test that inserts a trial_codes doc directly via a fixture for full coverage.",
+    "set_access_cookie hard-codes secure=True. In local non-HTTPS dev this means the device cookie won't persist; not a problem for the public preview env (HTTPS) but worth a comment."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_access_codes_gate.py (NEW)"
+  ],
+  "success_rate": {"backend": "100% (13/13 pytest)", "frontend": "100% (7/7 manual flows)"},
+  "test_credentials": "Superadmin reggie@coolgeek.me / superadminpass123. Fresh users registered ad-hoc with TEST_ prefix at REACT_APP_BACKEND_URL.",
+  "seed_data_creation": "Created multiple TEST_-prefixed access_codes documents and ~5 TEST_ users via /api/auth/register. Codes mostly revoked or spent and safe to leave; users have access_granted_at stamps but pose no production risk.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "All gate flows verified. If main agent extends this feature (e.g. cohort analytics, expiry notifications), re-run /app/backend/tests/test_access_codes_gate.py. Trial-code branch verified backend code path but not via automated test — add fixture-backed trial code insert if extending.",
+  "rca of the issue": "N/A — all tests passed."
+}

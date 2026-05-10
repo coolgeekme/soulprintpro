@@ -29,6 +29,7 @@ import DeckPage from "./pages/DeckPage";
 import AdminDashboard from "./pages/AdminDashboard";
 import PublicAuditPage from "./pages/PublicAuditPage";
 import ErrorBoundary from "./components/ErrorBoundary";
+import SiteAccessGate from "./components/SiteAccessGate";
 
 const Loader = () => (
   <div className="flex items-center justify-center h-screen">
@@ -42,7 +43,8 @@ const Loader = () => (
 const Protected = ({ children }) => {
   const { user, loading } = useAuth();
   if (loading) return <Loader />;
-  return user ? children : <Navigate to="/auth" replace />;
+  if (!user) return <Navigate to="/auth" replace />;
+  return <SiteAccessGate>{children}</SiteAccessGate>;
 };
 
 const PublicOnly = ({ children }) => {

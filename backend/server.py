@@ -716,6 +716,18 @@ async def me(u: dict = Depends(get_current_user)):
     if (full or {}).get("trial_expires_at"):
         te = full["trial_expires_at"]
         u["trial_expires_at"] = te.isoformat() if isinstance(te, datetime) else str(te)
+    # Pre-launch site access gate state. Mirrors the access_codes module's
+    # `_user_has_access` decision so the SPA can render the gate without an
+    # extra round-trip on first paint. Superadmins always pass; users with
+    # a redeemed access code or trial pass; everyone else hits the gate.
+    if (full or {}).get("access_granted_at"):
+        ag = full["access_granted_at"]
+        u["access_granted_at"] = ag.isoformat() if isinstance(ag, datetime) else str(ag)
+    u["has_site_access"] = bool(
+        u.get("is_superadmin")
+        or u.get("access_granted_at")
+        or u.get("trial_started_at")
+    )
     return u
 
 
@@ -6264,6 +6276,12 @@ app.include_router(invite_r)
 # clock starts at redeem time. See trial.py.
 from trial import make_trial_router  # noqa: E402
 from workspaces import _public_origin  # noqa: E402
+from access_codes import make_access_codes_router  # noqa: E402
+app.include_router(make_access_codes_router(
+    db=db,
+    get_current_user=get_current_user,
+    get_user_or_none=get_user_or_none,
+))
 app.include_router(make_trial_router(
     db=db,
     set_auth_cookies=set_auth_cookies,
