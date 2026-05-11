@@ -401,6 +401,11 @@ class RegisterBody(BaseModel):
     name: str
     email: str
     password: str
+    # Required for the pre-launch site gate. Accepts either an
+    # admin-issued private access code or an existing 24h trial code
+    # from the audit funnel. Validated + redeemed atomically with the
+    # user row so a fresh signup doesn't bounce off the gate UI.
+    access_code: Optional[str] = ""
 
 class LoginBody(BaseModel):
     email: str
@@ -624,6 +629,29 @@ async def register(body: RegisterBody, request: Request, resp: Response):
         raise HTTPException(400, "Email and password (min 6 chars) required")
     if await db.users.find_one({"email": email}):
         raise HTTPException(400, "Email already registered")
+    # ── Site access gate ──
+    # Validate the access code BEFORE creating the user so a bad code
+    # doesn't leave half-baked rows behind. We do the actual redemption
+    # AFTER user creation so the redemption row points at a real user_id.
+    from access_codes import (
+        validate_code_only, redeem_code_for_user,
+        mint_device_cookie, set_access_cookie,
+    )
+    code_raw = (body.access_code or "").strip()
+    if not code_raw:
+        raise HTTPException(
+            400,
+            "An access code is required to sign up. Have a 24-hour trial code "
+            "or an invite code? Enter it on the sign-up form. No code yet? "
+            "Request a free trial at /get-audit.",
+        )
+    validated = await validate_code_only(db, code_raw)
+    if not validated:
+        raise HTTPException(
+            400,
+            "That access code didn't check out — make sure it hasn't been "
+            "used, revoked, or expired.",
+        )
     doc = {
         "name": body.name.strip() or email.split("@")[0],
         "email": email,
@@ -636,6 +664,21 @@ async def register(body: RegisterBody, request: Request, resp: Response):
         doc["is_superadmin"] = True
     res = await db.users.insert_one(doc)
     uid = str(res.inserted_id)
+    # Burn the code now that the user exists. Failure here is fatal —
+    # we'd rather refuse a half-completed signup than mint a user that
+    # can't see the app. Roll back the user row in that case.
+    redeemed = await redeem_code_for_user(db, code_raw, uid)
+    if not redeemed:
+        await db.users.delete_one({"_id": res.inserted_id})
+        raise HTTPException(
+            400,
+            "That access code just became invalid (likely consumed by "
+            "another signup). Please try a different code.",
+        )
+    _reason, code_id = redeemed
+    # Mint the long-lived device cookie so the SAME browser doesn't
+    # see the post-auth gate fallback if for any reason /auth/me lags.
+    set_access_cookie(resp, mint_device_cookie(code_id))
     token = create_access_token(uid, email)
     set_auth_cookies(resp, token)
     # Welcome email — fire-and-forget so a Resend outage / missing API
@@ -6402,6 +6445,17 @@ async def _seed_superadmins():
         await db.llm_calls.create_index([("model", 1), ("created_at", -1)])
     except Exception:
         pass
+    # Grandfather any pre-existing users into the site access gate so
+    # the gate is invite-only for NEW signups, never a friction for
+    # existing customers. Idempotent — only touches rows missing
+    # `access_granted_at`.
+    try:
+        from access_codes import grandfather_existing_users
+        n = await grandfather_existing_users(db)
+        if n:
+            logger.info("Grandfathered %d existing users into the access gate", n)
+    except Exception as exc:
+        logger.warning("Grandfather migration skipped: %s", exc)
 
 
 @app.on_event("startup")

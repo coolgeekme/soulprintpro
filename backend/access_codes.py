@@ -164,7 +164,158 @@ async def device_cookie_grants_access(db, request: Request) -> bool:
     return True
 
 
-# ── Body models ───────────────────────────────────────────────────────────
+# ── Shared redemption helpers ─────────────────────────────────────────────
+
+
+async def validate_code_only(db, raw_code: str) -> tuple[str, dict] | None:
+    """Lightweight check: does this code currently grant access?
+    Returns ``(kind, row)`` where ``kind`` ∈ {"private", "trial"} on
+    match, ``None`` otherwise. Doesn't redeem — just confirms validity
+    so callers (like /auth/register) can short-circuit BEFORE mutating
+    the user row.
+    """
+    code = _norm_code(raw_code)
+    if not code:
+        return None
+    now = _now()
+    row = await db.access_codes.find_one({"code": code})
+    if row:
+        if not row.get("is_active", True):
+            return None
+        expires = row.get("expires_at")
+        if isinstance(expires, datetime):
+            if expires.tzinfo is None:
+                expires = expires.replace(tzinfo=timezone.utc)
+            if expires < now:
+                return None
+        if row.get("usage_type") == "single":
+            if (row.get("used_count") or 0) >= 1:
+                return None
+        else:  # multi
+            cap = row.get("max_uses")
+            if cap is not None and (row.get("used_count") or 0) >= cap:
+                return None
+        return "private", row
+    trial_row = await db.trial_codes.find_one({"code": code})
+    if trial_row:
+        if trial_row.get("used_at"):
+            return None
+        t_expires = trial_row.get("expires_at")
+        if isinstance(t_expires, datetime):
+            if t_expires.tzinfo is None:
+                t_expires = t_expires.replace(tzinfo=timezone.utc)
+            if t_expires < now:
+                return None
+        return "trial", trial_row
+    return None
+
+
+async def redeem_code_for_user(db, raw_code: str, user_id: str) -> tuple[str, str] | None:
+    """Burn a code on behalf of ``user_id``. Used by /auth/register so
+    a code can be redeemed AT signup time in a single round-trip
+    instead of forcing the user through a post-auth gate.
+
+    Stamps ``access_granted_at`` on the user row and returns
+    ``(reason, code_id_for_cookie)`` so the caller can mint the
+    device cookie. Returns ``None`` if the code is invalid (the
+    caller is expected to have already validated, but this is a
+    second line of defence against TOCTOU).
+    """
+    code = _norm_code(raw_code)
+    if not code:
+        return None
+    now = _now()
+    try:
+        user_obj_id = ObjectId(user_id)
+    except Exception:
+        return None
+    row = await db.access_codes.find_one({"code": code})
+    if row:
+        if not row.get("is_active", True):
+            return None
+        expires = row.get("expires_at")
+        if isinstance(expires, datetime):
+            if expires.tzinfo is None:
+                expires = expires.replace(tzinfo=timezone.utc)
+            if expires < now:
+                return None
+        already = str(user_obj_id) in (row.get("redeemed_by_user_ids") or [])
+        if not already:
+            if row.get("usage_type") == "single":
+                if (row.get("used_count") or 0) >= 1:
+                    return None
+            else:
+                cap = row.get("max_uses")
+                if cap is not None and (row.get("used_count") or 0) >= cap:
+                    return None
+            await db.access_codes.update_one(
+                {"_id": row["_id"]},
+                {
+                    "$inc": {"used_count": 1},
+                    "$addToSet": {"redeemed_by_user_ids": str(user_obj_id)},
+                    "$set": {"last_used_at": now},
+                },
+            )
+        await db.users.update_one(
+            {"_id": user_obj_id},
+            {"$set": {
+                "access_granted_at": now,
+                "access_code_used": code,
+                "access_code_id": str(row["_id"]),
+            }},
+        )
+        return "private_code", str(row["_id"])
+    trial_row = await db.trial_codes.find_one({"code": code})
+    if trial_row:
+        if trial_row.get("used_at"):
+            return None
+        t_expires = trial_row.get("expires_at")
+        if isinstance(t_expires, datetime):
+            if t_expires.tzinfo is None:
+                t_expires = t_expires.replace(tzinfo=timezone.utc)
+            if t_expires < now:
+                return None
+        trial_started_at = now
+        trial_expires_at = now + timedelta(hours=24)
+        await db.users.update_one(
+            {"_id": user_obj_id},
+            {"$set": {
+                "access_granted_at": now,
+                "access_code_used": code,
+                "trial_started_at": trial_started_at,
+                "trial_expires_at": trial_expires_at,
+                "trial_source": trial_row.get("source") or "auth_register",
+            }},
+        )
+        await db.trial_codes.update_one(
+            {"_id": trial_row["_id"]},
+            {"$set": {"used_at": now, "used_by_user_id": str(user_obj_id)}},
+        )
+        return "trial", str(trial_row["_id"])
+    return None
+
+
+async def grandfather_existing_users(db) -> int:
+    """One-shot migration: stamp ``access_granted_at`` on every user
+    row that doesn't already have it. Runs on backend startup; idempotent
+    (the ``$exists: false`` filter means re-running does nothing).
+
+    Rationale: when the access gate launches, every user who registered
+    BEFORE it would otherwise be locked out until an admin minted them
+    a code. That's product-hostile — they're paying customers we
+    trust. This grandfathers them in one query.
+    """
+    res = await db.users.update_many(
+        {"access_granted_at": {"$exists": False}},
+        {"$set": {
+            "access_granted_at": _now(),
+            "access_code_used": "grandfathered",
+        }},
+    )
+    return res.modified_count
+
+
+
 
 
 class RedeemBody(BaseModel):
@@ -236,6 +387,24 @@ def make_access_codes_router(*, db, get_current_user, get_user_or_none) -> APIRo
             "reason": reason,
             "is_superadmin": bool(full.get("is_superadmin")),
         }
+
+    # ── Public: validate (no redeem) ──────────────────────────────────
+    @r.post("/api/access-codes/validate")
+    async def validate(body: RedeemBody):
+        """Lightweight check for the registration form. Lets the SPA
+        confirm a code is valid BEFORE it commits to creating a
+        Firebase account, so a bad code doesn't leave the user with
+        a half-baked auth state. Returns ``{ok: true, kind}`` on
+        success, raises 400 otherwise."""
+        result = await validate_code_only(db, body.code)
+        if not result:
+            raise HTTPException(
+                400,
+                "That code didn't check out — make sure it hasn't been "
+                "used, revoked, or expired.",
+            )
+        kind, _row = result
+        return {"ok": True, "kind": kind}
 
     # ── Public: redeem ────────────────────────────────────────────────
     @r.post("/api/access-codes/redeem")
@@ -453,4 +622,8 @@ def make_access_codes_router(*, db, get_current_user, get_user_or_none) -> APIRo
 
 
 __all__ = ["make_access_codes_router", "_user_has_access",
-           "device_cookie_grants_access"]
+           "device_cookie_grants_access",
+           "redeem_code_for_user", "validate_code_only",
+           "grandfather_existing_users",
+           "mint_device_cookie", "set_access_cookie",
+           "ACCESS_COOKIE_NAME", "ACCESS_COOKIE_MAX_AGE"]

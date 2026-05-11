@@ -25,13 +25,17 @@ export default function AuthPage() {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [name, setName] = useState("");
+  // Pre-launch access code — required for new sign-ups so we can keep
+  // the platform invite-only without forcing existing users through a
+  // post-auth gate.
+  const [accessCode, setAccessCode] = useState(params.get("code") || "");
   const [busy, setBusy] = useState(false);
   const [resetting, setResetting] = useState(false);
   const {
     login, register,
     firebaseEnabled,
     loginWithGoogle, loginWithFirebaseEmail, registerWithFirebaseEmail,
-    sendPasswordReset,
+    sendPasswordReset, refresh,
   } = useAuth();
   const navigate = useNavigate();
 
@@ -45,14 +49,46 @@ export default function AuthPage() {
   //   - Firebase says "user not found" (existing legacy user — let the
   //     bcrypt password verify them, then we'll prompt them to set up
   //     a Firebase password later)
+  //
+  // For REGISTRATION specifically: we pre-validate the access code
+  // BEFORE touching Firebase so a bad code doesn't leave the user with
+  // a half-baked Firebase account they then can't use. After Firebase
+  // creates the user, we redeem the code via the backend to stamp
+  // `access_granted_at` on their Mongo row.
   const onSubmit = async (e) => {
     e.preventDefault();
     setBusy(true);
     try {
+      // Gate check first for registration — fail fast if the code is bad.
+      if (isRegister) {
+        const code = accessCode.trim();
+        if (!code) {
+          toast.error("An access code is required to sign up.");
+          return;
+        }
+        try {
+          await api.post("/access-codes/validate", { code });
+        } catch (err) {
+          toast.error(err?.response?.data?.detail
+            || "That access code didn't check out.");
+          return;
+        }
+      }
       if (firebaseEnabled) {
         try {
           if (isRegister) {
             await registerWithFirebaseEmail(name || email.split("@")[0], email, password);
+            // Burn the code now that the Firebase + Mongo user rows
+            // exist. Refresh /auth/me so `has_site_access` flips to
+            // true before we land on /app and the gate evaluates.
+            try {
+              await api.post("/access-codes/redeem", { code: accessCode.trim() });
+              await refresh();
+            } catch (_redeemErr) {
+              // Redeem failed but the user IS registered. The gate
+              // will catch them post-auth and let them try again
+              // there — don't block navigation.
+            }
           } else {
             await loginWithFirebaseEmail(email, password);
           }
@@ -72,7 +108,7 @@ export default function AuthPage() {
           // intentional fall-through to legacy login below
         }
       }
-      if (isRegister) await register(name || email.split("@")[0], email, password);
+      if (isRegister) await register(name || email.split("@")[0], email, password, accessCode.trim());
       else await login(email, password);
       navigate("/app");
     } catch (err) {
@@ -184,6 +220,31 @@ export default function AuthPage() {
                 className="w-full mt-1 bg-white/[0.03] border border-white/10 rounded-xl px-4 py-3 text-sm text-white placeholder:text-white/30 focus:border-white/30 focus:sp-focus"
                 autoComplete="name"
               />
+            </div>
+          )}
+          {isRegister && (
+            <div>
+              <label className="text-xs sp-subtle uppercase tracking-widest">
+                Access code
+              </label>
+              <input
+                data-testid="auth-access-code"
+                value={accessCode}
+                onChange={(e) => setAccessCode(e.target.value.toUpperCase())}
+                placeholder="ABCD-EFGH-JKMN"
+                className="w-full mt-1 bg-white/[0.03] border border-white/10 rounded-xl px-4 py-3 text-sm text-white placeholder:text-white/30 focus:border-white/30 focus:sp-focus tracking-widest font-mono"
+                autoComplete="off"
+                spellCheck={false}
+                maxLength={40}
+                required
+              />
+              <p className="text-[10px] sp-subtle mt-1 leading-snug">
+                Invite-only during pre-launch. Don't have a code?{" "}
+                <Link to="/get-audit" className="text-white underline">
+                  request a free 24-hour trial
+                </Link>
+                .
+              </p>
             </div>
           )}
           <div>

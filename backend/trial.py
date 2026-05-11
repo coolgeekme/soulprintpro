@@ -293,6 +293,11 @@ def make_trial_router(*, db, set_auth_cookies, create_access_token,
             "trial_started_at": trial_started_at,
             "trial_expires_at": trial_expires_at,
             "trial_source": row.get("source") or "",
+            # Trial redemption counts as a code redemption for the
+            # pre-launch site access gate — so the user doesn't bounce
+            # off the gate after their email-verified trial sign-up.
+            "access_granted_at": now,
+            "access_code_used": code,
         }
         result = await db.users.insert_one(user_doc)
         uid = str(result.inserted_id)

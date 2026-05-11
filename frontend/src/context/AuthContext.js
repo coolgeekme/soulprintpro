@@ -106,8 +106,10 @@ export const AuthProvider = ({ children }) => {
     return me.data;
   };
 
-  const register = async (name, email, password) => {
-    const { data } = await api.post("/auth/register", { name, email, password });
+  const register = async (name, email, password, accessCode) => {
+    const { data } = await api.post("/auth/register", {
+      name, email, password, access_code: accessCode || "",
+    });
     if (data?.access_token) setToken(data.access_token);
     const me = await api.get("/auth/me");
     setUser(me.data);
