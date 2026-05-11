@@ -10,7 +10,7 @@ import Logo from "../components/Logo";
 /**
  * PricingPage — two-axis pricing.
  *
- * Axis 1: Platform subscription (Spark / Tempered / Refine) — clean SaaS.
+ * Axis 1: Platform subscription (Spark / Temper / Refine) — clean SaaS.
  * Axis 2: SoulPrint Studio — productized done-for-you services delivered
  *         by the agency arm. Discounted for higher platform tiers so the
  *         platform subscription "earns back" on the first service order.
@@ -355,7 +355,7 @@ function StudioCard({ s }) {
         </div>
         <div className="text-right">
           <div className="text-[10px] uppercase tracking-widest sp-subtle">
-            Tempered / Refine
+            Temper / Refine
           </div>
           <div className="text-xs">
             <span className="text-orange-300">
@@ -549,8 +549,8 @@ export default function PricingPage() {
             Light the spark. Temper the work. Refine the outcome.
           </h3>
           <p className="sp-subtle text-sm max-w-xl">
-            14-day money-back on Spark. 30-day money-back on Tempered. Refine
-            ships with a dedicated CSM from day one.
+            Monthly billing, cancel anytime. Annual saves ~17%. Refine ships
+            with a dedicated CSM from day one.
           </p>
           <div className="flex gap-2">
             <Link to="/get-audit" className="sp-btn sp-btn-ghost"
