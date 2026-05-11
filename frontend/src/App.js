@@ -26,6 +26,8 @@ import GetAuditPage from "./pages/GetAuditPage";
 import PricingPage from "./pages/PricingPage";
 import MockupHomePage from "./pages/MockupHomePage";
 import MockupPricingPage from "./pages/MockupPricingPage";
+import MockupHomeV2Page from "./pages/MockupHomeV2Page";
+import MockupPricingV2Page from "./pages/MockupPricingV2Page";
 import GitHubCallbackPage from "./pages/GitHubCallbackPage";
 import AccountPage from "./pages/AccountPage";
 import DeckPage from "./pages/DeckPage";
@@ -78,6 +80,8 @@ function App() {
                 <Route path="/pricing" element={<PricingPage />} />
                 <Route path="/mockup/home" element={<MockupHomePage />} />
                 <Route path="/mockup/pricing" element={<MockupPricingPage />} />
+                <Route path="/mockup/home-v2" element={<MockupHomeV2Page />} />
+                <Route path="/mockup/pricing-v2" element={<MockupPricingV2Page />} />
                 <Route path="/auth/github/callback" element={<Protected><GitHubCallbackPage /></Protected>} />
                 <Route path="/deck" element={<DeckPage />} />
                 <Route path="/auth" element={<PublicOnly><AuthPage /></PublicOnly>} />

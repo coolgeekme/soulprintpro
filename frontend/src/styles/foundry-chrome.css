@@ -1,0 +1,262 @@
+/* Foundry — Chrome Sigil Theme (v2 mockups)
+ * ==========================================
+ * Aesthetic borrowed from the v2 brand artwork:
+ *   - pure black coal field, deeper than v1
+ *   - two-tone palette: cool steel-blue PRIMARY + copper-orange ACCENT
+ *   - faceted chrome typography (Orbitron) for headlines
+ *   - sharp architectural geometry (no warm embers)
+ *   - quiet — light reflects off it instead of glowing.
+ *
+ * Scope: only `.chr-*` classes, so v1 (.fdy-*) stays untouched and the
+ * user can A/B the two dark themes against each other + against the live
+ * cream theme. Three-way side-by-side.
+ */
+
+:root {
+  --chr-coal:       #000000;
+  --chr-coal-2:     #050608;
+  --chr-graphite:   #0f1115;
+  --chr-graphite-2: #161a21;
+  --chr-ink:        #e8edf3;
+  --chr-mute:       #7c8493;
+  --chr-mute-2:     #4d5360;
+
+  /* Steel blue — primary accent. Cooler than v1's warm orange. */
+  --chr-steel:      #5fa8d6;
+  --chr-steel-2:    #82c3ec;
+  --chr-steel-d:    #2c5d80;
+
+  /* Copper — used SPARINGLY (only for Spark + cross-tier transitions). */
+  --chr-copper:     #e57b3a;
+  --chr-copper-2:   #ff9c5a;
+
+  /* Chrome gradient — for headline text + wordmark. */
+  --chr-chrome:     linear-gradient(180deg, #f6f8fb 0%, #b9bfc7 35%,
+                    #6c727c 60%, #2a2d33 100%);
+  --chr-chrome-cool:linear-gradient(180deg, #e8eef5 0%, #87aac7 50%,
+                    #2c5d80 100%);
+  --chr-chrome-warm:linear-gradient(180deg, #ffd6b1 0%, #ff9c5a 45%,
+                    #b04a14 100%);
+
+  --chr-glow-steel: 0 0 24px rgba(95, 168, 214, .25),
+                    0 0 60px rgba(95, 168, 214, .12);
+  --chr-glow-copper:0 0 24px rgba(229, 123, 58, .25),
+                    0 0 60px rgba(229, 123, 58, .12);
+}
+
+/* ── Page shell ───────────────────────────────────────────────────── */
+.chr-page {
+  background: var(--chr-coal);
+  color: var(--chr-ink);
+  min-height: 100vh;
+  font-family: "Rajdhani", "Inter", system-ui, sans-serif;
+  position: relative;
+  overflow-x: hidden;
+}
+.chr-page::before {
+  /* Subtle steel scan lines + light from above. */
+  content: "";
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 0;
+  background:
+    repeating-linear-gradient(
+      0deg,
+      rgba(255,255,255,.015) 0 1px,
+      transparent 1px 4px
+    ),
+    radial-gradient(
+      ellipse at 50% -10%,
+      rgba(95, 168, 214, .12),
+      transparent 50%
+    );
+}
+
+/* ── Typography ───────────────────────────────────────────────────── */
+.chr-display {
+  font-family: "Orbitron", "Inter", sans-serif;
+  letter-spacing: 0.06em;
+  font-weight: 700;
+  line-height: 1;
+  text-transform: uppercase;
+}
+.chr-display-tight {
+  font-family: "Orbitron", "Inter", sans-serif;
+  letter-spacing: 0.04em;
+  font-weight: 600;
+  line-height: 1.05;
+  text-transform: uppercase;
+}
+.chr-eyebrow {
+  font-family: "Rajdhani", sans-serif;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.4em;
+  text-transform: uppercase;
+  color: var(--chr-mute);
+}
+.chr-mute   { color: var(--chr-mute); }
+.chr-mute-2 { color: var(--chr-mute-2); }
+
+/* Chrome-gradient text — cool default. */
+.chr-text {
+  background: var(--chr-chrome);
+  -webkit-background-clip: text; background-clip: text;
+  -webkit-text-fill-color: transparent;
+  color: transparent;
+}
+.chr-text-steel {
+  background: var(--chr-chrome-cool);
+  -webkit-background-clip: text; background-clip: text;
+  -webkit-text-fill-color: transparent;
+  color: transparent;
+  text-shadow: 0 0 20px rgba(95, 168, 214, .35);
+}
+.chr-text-copper {
+  background: var(--chr-chrome-warm);
+  -webkit-background-clip: text; background-clip: text;
+  -webkit-text-fill-color: transparent;
+  color: transparent;
+  text-shadow: 0 0 20px rgba(229, 123, 58, .35);
+}
+
+/* ── Buttons ──────────────────────────────────────────────────────── */
+.chr-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-family: "Rajdhani", sans-serif;
+  font-weight: 600;
+  font-size: 13px;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  padding: 0.85rem 1.5rem;
+  transition: transform .15s ease, box-shadow .25s ease,
+              border-color .25s ease, color .25s ease;
+  cursor: pointer;
+  user-select: none;
+  /* Angular cut corner — gives that faceted-armor feel. */
+  clip-path: polygon(8px 0, 100% 0, calc(100% - 8px) 100%, 0 100%);
+  border: 0;
+}
+.chr-btn-primary {
+  background: linear-gradient(135deg, var(--chr-steel), var(--chr-steel-d));
+  color: #001628;
+  font-weight: 700;
+  box-shadow: var(--chr-glow-steel);
+}
+.chr-btn-primary:hover {
+  transform: translateY(-1px);
+  box-shadow:
+    0 0 30px rgba(95, 168, 214, .55),
+    0 0 80px rgba(95, 168, 214, .25);
+}
+.chr-btn-ghost {
+  background: transparent;
+  color: var(--chr-ink);
+  border: 1px solid rgba(255,255,255,.12);
+  /* override clip so the border is visible */
+  clip-path: none;
+}
+.chr-btn-ghost:hover {
+  border-color: var(--chr-steel);
+  color: var(--chr-steel-2);
+}
+.chr-btn-copper {
+  background: linear-gradient(135deg, var(--chr-copper), #b85525);
+  color: #1a0a02;
+  font-weight: 700;
+  box-shadow: var(--chr-glow-copper);
+}
+
+/* ── Cards ────────────────────────────────────────────────────────── */
+.chr-card {
+  position: relative;
+  background:
+    linear-gradient(180deg, rgba(255,255,255,.02), rgba(255,255,255,.005)),
+    var(--chr-graphite);
+  border: 1px solid rgba(255,255,255,.07);
+  padding: 1.75rem;
+  overflow: hidden;
+  /* Architectural corner cut — top-right and bottom-left. */
+  clip-path: polygon(
+    16px 0, 100% 0, 100% calc(100% - 16px),
+    calc(100% - 16px) 100%, 0 100%, 0 16px
+  );
+}
+.chr-card-steel {
+  border-color: rgba(95, 168, 214, .35);
+  box-shadow:
+    inset 0 1px 0 rgba(95, 168, 214, .2),
+    var(--chr-glow-steel);
+}
+.chr-card-copper {
+  border-color: rgba(229, 123, 58, .35);
+  box-shadow:
+    inset 0 1px 0 rgba(229, 123, 58, .2),
+    var(--chr-glow-copper);
+}
+
+/* Sigil mount — pedestal area inside cards where the v2 tier emblems
+   sit. Mimics the artwork's "icon hovering over reflective base" feel. */
+.chr-sigil-mount {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 1rem 0 0.5rem;
+}
+.chr-sigil-mount::after {
+  /* Reflection underneath. */
+  content: "";
+  position: absolute;
+  inset: auto 20% -4px 20%;
+  height: 1px;
+  background: linear-gradient(90deg, transparent, var(--chr-steel), transparent);
+  filter: blur(1px);
+  opacity: 0.6;
+}
+
+/* ── Hairline rule ────────────────────────────────────────────────── */
+.chr-rule {
+  height: 1px;
+  background: linear-gradient(90deg, transparent,
+              rgba(95, 168, 214, .35) 50%, transparent);
+}
+
+/* ── Wordmark ─────────────────────────────────────────────────────── */
+.chr-wordmark {
+  font-family: "Orbitron", sans-serif;
+  font-weight: 800;
+  font-size: 1.6rem;
+  letter-spacing: 0.14em;
+  background: var(--chr-chrome);
+  -webkit-background-clip: text; background-clip: text;
+  -webkit-text-fill-color: transparent;
+  position: relative;
+}
+.chr-wordmark::after {
+  content: "";
+  position: absolute;
+  inset: auto 0 -4px 0;
+  height: 1px;
+  background: linear-gradient(90deg, transparent, var(--chr-steel),
+              var(--chr-copper) 75%, transparent);
+  opacity: 0.6;
+}
+.chr-sub-wordmark {
+  font-family: "Rajdhani", sans-serif;
+  font-size: 9px;
+  letter-spacing: 0.32em;
+  color: var(--chr-mute);
+  text-transform: uppercase;
+  margin-top: 4px;
+}
+.chr-sub-wordmark .accent { color: var(--chr-steel-2); }
+
+/* ── Bevel divider for tier columns ───────────────────────────────── */
+.chr-tier-glow-spark   { box-shadow: 0 0 80px rgba(229, 123, 58, .15); }
+.chr-tier-glow-temper  { box-shadow: 0 0 80px rgba(95, 168, 214, .2),
+                                     0 0 80px rgba(229, 123, 58, .1); }
+.chr-tier-glow-refine  { box-shadow: 0 0 80px rgba(190, 200, 215, .18); }
