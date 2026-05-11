@@ -19,14 +19,14 @@ import AdminAccessCodesPanel from "../components/AdminAccessCodesPanel";
 /**
  * AdminDashboard — superadmin-only analytics + tooling surface.
  *
- * Tabs: Overview · LLM Usage · Orgs · Users · Missions · Audits · Access Codes
+ * Tabs: Overview · API Spend · Orgs · Users · Missions · Audits · Access Codes
  * Hard-gated client-side via `user.is_superadmin`; the backend also
  * 403s any non-superadmin hitting /api/admin/*, so a tampered client
  * still gets nothing.
  */
 const TAB_DEFS = [
   { id: "overview", label: "Overview", icon: Activity },
-  { id: "llm",      label: "LLM Usage", icon: DollarSign },
+  { id: "spend",    label: "API Spend", icon: DollarSign },
   { id: "orgs",     label: "Orgs", icon: Building2 },
   { id: "users",    label: "Users", icon: Users },
   { id: "missions", label: "Missions", icon: Rocket },
@@ -129,7 +129,7 @@ function OverviewPanel() {
   );
 }
 
-function LlmPanel() {
+function ApiSpendPanel() {
   const [data, setData] = useState(null);
   const [days, setDays] = useState(30);
   useEffect(() => {
@@ -138,8 +138,54 @@ function LlmPanel() {
   }, [days]);
   const fmt = (n) => Number(n || 0).toLocaleString();
   const cur = (n) => `$${Number(n || 0).toFixed(2)}`;
+  const cur4 = (n) => `$${Number(n || 0).toFixed(4)}`;
+  const llm = data?.totals || {};
+  const ext = data?.external?.totals || {};
+  const grand = Number(data?.grand_total_cost || 0);
+  const grandCalls = Number(llm.calls || 0) + Number(ext.calls || 0);
+
+  // Merge LLM daily + external daily into a single stacked dataset
+  // keyed by date so the chart reads as one continuous spend story
+  // rather than two parallel ones the eye has to add up.
+  const mergedDaily = useMemo(() => {
+    if (!data) return [];
+    const byDate = {};
+    (data.daily_series || []).forEach((d) => {
+      byDate[d.date] = { date: d.date, llm_cost: d.cost, ext_cost: 0 };
+    });
+    (data.external?.daily_series || []).forEach((d) => {
+      if (!byDate[d.date]) byDate[d.date] = { date: d.date, llm_cost: 0 };
+      byDate[d.date].ext_cost = d.cost;
+    });
+    return Object.values(byDate).sort((a, b) => a.date.localeCompare(b.date));
+  }, [data]);
+
+  // Merge models + external providers into a single ranked table —
+  // operator's "where did the money actually go" view.
+  const mergedProviders = useMemo(() => {
+    if (!data) return [];
+    const rows = [];
+    (data.by_model || []).forEach((m) =>
+      rows.push({
+        kind: "Language model",
+        name: m.model || "unknown",
+        calls: m.calls,
+        cost: m.cost,
+      }),
+    );
+    (data.external?.by_provider || []).forEach((p) =>
+      rows.push({
+        kind: "Service",
+        name: p.provider || "unknown",
+        calls: p.calls,
+        cost: p.cost,
+      }),
+    );
+    return rows.sort((a, b) => (b.cost || 0) - (a.cost || 0)).slice(0, 15);
+  }, [data]);
+
   if (!data) return <div className="sp-subtle text-sm flex items-center gap-2"><Loader2 className="w-4 h-4 animate-spin" /> Loading…</div>;
-  const tot = data.totals || {};
+
   return (
     <div className="space-y-6">
       <div className="flex flex-wrap gap-2 items-center">
@@ -155,63 +201,77 @@ function LlmPanel() {
           </button>
         ))}
         <span className="text-xs sp-subtle ml-auto italic">
-          Cost figures are estimates from public list pricing. Exact billing happens upstream via the universal key.
+          Cost figures are estimates from public list pricing. Exact billing happens upstream via the universal key + provider invoices.
         </span>
       </div>
 
+      {/* Grand total — leads the page so "what is this costing me" is the first answer. */}
       <div className="grid sm:grid-cols-4 gap-3">
-        <StatCard icon={DollarSign} label="Total cost (est.)" value={cur(tot.cost)} sub={`${fmt(tot.calls)} calls`} />
-        <StatCard icon={Activity} label="Tokens" value={fmt(tot.tokens)} sub="prompt + completion" />
-        <StatCard icon={Activity} label="Successful" value={fmt(tot.ok)} sub={`of ${fmt(tot.calls)}`} />
-        <StatCard icon={DollarSign} label="$ / call" value={cur(tot.calls ? tot.cost / tot.calls : 0)} />
+        <StatCard icon={DollarSign} label="Total API spend (est.)" value={cur(grand)} sub={`${fmt(grandCalls)} calls total`} />
+        <StatCard icon={DollarSign} label="Language models" value={cur(llm.cost)} sub={`${fmt(llm.calls)} calls · ${fmt(llm.tokens)} tokens`} />
+        <StatCard icon={DollarSign} label="Other services" value={cur(ext.cost)} sub={`${fmt(ext.calls)} calls · Brave/Perplexity/Resend/kie.ai`} />
+        <StatCard icon={Activity} label="$ / call (blended)" value={cur4(grandCalls ? grand / grandCalls : 0)} sub="across both buckets" />
       </div>
 
+      {/* Unified daily spend chart — stacked so the breakdown is visible
+          per-day without the eye having to compare two adjacent charts. */}
       <div className="sp-glass-strong rounded-2xl p-5">
-        <h3 className="text-sm uppercase tracking-widest sp-subtle mb-3">Daily spend</h3>
+        <h3 className="text-sm uppercase tracking-widest sp-subtle mb-3">Daily spend (stacked)</h3>
         <div className="h-56 -ml-2">
           <ResponsiveContainer width="100%" height="100%">
-            <BarChart data={data.daily_series || []}>
+            <BarChart data={mergedDaily}>
               <CartesianGrid strokeDasharray="3 3" stroke="var(--border-soft)" />
               <XAxis dataKey="date" tick={{ fontSize: 11, fill: "var(--fg-soft)" }} />
               <YAxis tick={{ fontSize: 11, fill: "var(--fg-soft)" }} />
-              <Tooltip contentStyle={{ background: "var(--bg)", border: "1px solid var(--border-soft)", borderRadius: 8 }}
-                       formatter={(v, n) => n === "cost" ? `$${Number(v).toFixed(4)}` : v} />
-              <Legend wrapperStyle={{ fontSize: 11 }} />
-              <Bar dataKey="cost" name="Cost ($)" fill="var(--primary-bg)" />
+              <Tooltip
+                contentStyle={{ background: "var(--bg)", border: "1px solid var(--border-soft)", borderRadius: 8 }}
+                formatter={(v, n) => [`$${Number(v).toFixed(4)}`, n === "llm_cost" ? "Language models" : "Other services"]}
+              />
+              <Legend wrapperStyle={{ fontSize: 11 }}
+                      formatter={(v) => v === "llm_cost" ? "Language models" : "Other services"} />
+              <Bar dataKey="llm_cost" stackId="cost" fill="var(--primary-bg)" />
+              <Bar dataKey="ext_cost" stackId="cost" fill="#4ade80" />
             </BarChart>
           </ResponsiveContainer>
         </div>
       </div>
 
+      {/* Top 15 providers ranked across BOTH buckets. The `kind` chip
+          tells operators at a glance whether they're looking at a
+          token-priced LLM or a per-call utility API. */}
       <div className="grid lg:grid-cols-2 gap-4">
         <div className="sp-glass-strong rounded-2xl p-5">
-          <h3 className="text-sm uppercase tracking-widest sp-subtle mb-3">Spend by model</h3>
+          <h3 className="text-sm uppercase tracking-widest sp-subtle mb-3">Top providers by spend</h3>
           <table className="w-full text-sm">
             <thead>
               <tr className="text-[10px] uppercase tracking-widest sp-subtle">
-                <th className="text-left py-1.5">Model</th>
+                <th className="text-left py-1.5">Provider</th>
+                <th className="text-left">Kind</th>
                 <th className="text-right">Calls</th>
-                <th className="text-right">Tokens</th>
                 <th className="text-right">Cost</th>
               </tr>
             </thead>
             <tbody>
-              {(data.by_model || []).map((m) => (
-                <tr key={m.model} className="border-t border-[var(--border-soft)]">
-                  <td className="py-2 font-mono text-xs truncate max-w-[180px]">{m.model || "unknown"}</td>
-                  <td className="text-right">{fmt(m.calls)}</td>
-                  <td className="text-right">{fmt(m.tokens)}</td>
-                  <td className="text-right font-medium">{cur(m.cost)}</td>
+              {mergedProviders.map((p, i) => (
+                <tr key={`${p.kind}-${p.name}-${i}`} className="border-t border-[var(--border-soft)]"
+                    data-testid={`admin-spend-row-${p.name}`}>
+                  <td className="py-2 font-mono text-xs truncate max-w-[200px]">{p.name}</td>
+                  <td className="text-xs sp-subtle">{p.kind}</td>
+                  <td className="text-right">{fmt(p.calls)}</td>
+                  <td className="text-right font-medium">{cur(p.cost)}</td>
                 </tr>
               ))}
-              {!(data.by_model || []).length && (
-                <tr><td colSpan="4" className="text-center py-4 sp-subtle text-xs italic">No calls yet — telemetry is forward-only.</td></tr>
+              {!mergedProviders.length && (
+                <tr><td colSpan="4" className="text-center py-4 sp-subtle text-xs italic">No spend recorded yet in this window.</td></tr>
               )}
             </tbody>
           </table>
         </div>
         <div className="sp-glass-strong rounded-2xl p-5">
           <h3 className="text-sm uppercase tracking-widest sp-subtle mb-3">Top orgs by spend</h3>
+          <p className="text-[11px] sp-subtle mb-2 italic">
+            Org-attributed spend currently covers language-model calls only.
+          </p>
           <table className="w-full text-sm">
             <thead>
               <tr className="text-[10px] uppercase tracking-widest sp-subtle">
@@ -244,86 +304,34 @@ function LlmPanel() {
               {k.kind} · {fmt(k.calls)} calls · <strong>{cur(k.cost)}</strong>
             </span>
           ))}
+          {!(data.by_kind || []).length && (
+            <span className="sp-subtle text-xs italic">No call-kind breakdown yet.</span>
+          )}
         </div>
       </div>
 
-      {/* ── External APIs (non-LLM) ───────────────────────────────────
-          Brave / Perplexity / Resend / kie.ai. Tracked via the
-          `external_api_calls` collection, aggregated server-side. */}
-      <div className="border-t border-white/10 pt-6 mt-2 space-y-4">
-        <div className="flex items-baseline gap-3 flex-wrap">
-          <h2 className="text-lg font-medium">External API spend</h2>
-          <span className="text-xs sp-subtle">
-            Brave · Perplexity · Resend · kie.ai (Suno/Veo/etc.)
-          </span>
-          <span className="ml-auto text-xs sp-subtle italic">
-            Combined LLM + external: <strong>{cur(data.grand_total_cost || 0)}</strong>
-          </span>
-        </div>
-        <div className="grid sm:grid-cols-3 gap-3">
-          <StatCard icon={DollarSign} label="External cost (est.)"
-                    value={cur((data.external?.totals?.cost) || 0)}
-                    sub={`${fmt((data.external?.totals?.calls) || 0)} calls`} />
-          <StatCard icon={Activity} label="External calls"
-                    value={fmt((data.external?.totals?.calls) || 0)}
-                    sub={`${fmt((data.external?.totals?.ok) || 0)} successful`} />
-          <StatCard icon={DollarSign} label="$ / external call"
-                    value={cur(
-                      (data.external?.totals?.calls)
-                        ? (data.external.totals.cost / data.external.totals.calls)
-                        : 0,
-                    )} />
-        </div>
-
-        <div className="grid lg:grid-cols-2 gap-3">
-          <div className="sp-glass-strong rounded-2xl p-5">
-            <h3 className="text-sm uppercase tracking-widest sp-subtle mb-3">By provider</h3>
-            <table className="w-full text-sm">
-              <thead className="sp-subtle text-xs uppercase tracking-widest">
-                <tr><th className="text-left pb-2">Provider</th>
-                    <th className="text-right">Calls</th>
-                    <th className="text-right">Cost</th></tr>
-              </thead>
-              <tbody>
-                {((data.external?.by_provider) || []).map((p) => (
-                  <tr key={p.provider} className="border-t border-white/5"
-                      data-testid={`admin-ext-row-${p.provider}`}>
-                    <td className="py-1.5 font-mono text-xs">{p.provider}</td>
-                    <td className="text-right">{fmt(p.calls)}</td>
-                    <td className="text-right font-medium">{cur(p.cost)}</td>
-                  </tr>
-                ))}
-                {!((data.external?.by_provider) || []).length && (
-                  <tr><td colSpan="3" className="text-center py-4 sp-subtle text-xs italic">
-                    No external API calls yet in this window.
-                  </td></tr>
-                )}
-              </tbody>
-            </table>
-          </div>
-
-          <div className="sp-glass-strong rounded-2xl p-5">
-            <h3 className="text-sm uppercase tracking-widest sp-subtle mb-3">Pricing reference</h3>
-            <p className="text-xs sp-subtle mb-3 leading-relaxed">
-              Public list rates we apply when computing estimated cost.
-              Update <code>EXTERNAL_API_RATES</code> when providers
-              change pricing.
-            </p>
-            <ul className="space-y-1 text-xs">
-              {((data.external?.rates) || []).map((r) => (
-                <li key={r.provider} className="flex justify-between gap-3 border-t border-white/5 py-1">
-                  <span className="font-mono">{r.provider}</span>
-                  <span className="sp-subtle">{r.rate_summary}</span>
-                </li>
-              ))}
-              {!((data.external?.rates) || []).length && (
-                <li className="text-center py-3 sp-subtle italic">
-                  Pricing table unavailable.
-                </li>
-              )}
-            </ul>
-          </div>
-        </div>
+      {/* Pricing reference for the non-LLM utilities — token pricing for
+          LLMs varies per-model and is documented upstream, so we don't
+          duplicate it here. */}
+      <div className="sp-glass-strong rounded-2xl p-5">
+        <h3 className="text-sm uppercase tracking-widest sp-subtle mb-3">Pricing reference — utility APIs</h3>
+        <p className="text-xs sp-subtle mb-3 leading-relaxed">
+          Public list rates we apply when computing estimated cost for non-LLM services.
+          Update <code>EXTERNAL_API_RATES</code> when providers change pricing.
+        </p>
+        <ul className="space-y-1 text-xs">
+          {((data.external?.rates) || []).map((r) => (
+            <li key={r.provider} className="flex justify-between gap-3 border-t border-white/5 py-1">
+              <span className="font-mono">{r.provider}</span>
+              <span className="sp-subtle">{r.rate_summary}</span>
+            </li>
+          ))}
+          {!((data.external?.rates) || []).length && (
+            <li className="text-center py-3 sp-subtle italic">
+              Pricing table unavailable.
+            </li>
+          )}
+        </ul>
       </div>
     </div>
   );
@@ -486,7 +494,7 @@ export default function AdminDashboard() {
             <span className="text-xs uppercase tracking-widest sp-subtle">Superadmin</span>
           </div>
           <h1 className="sp-display text-3xl">Admin dashboard</h1>
-          <p className="text-sm sp-subtle mt-1">Activity, LLM spend, and platform health.</p>
+          <p className="text-sm sp-subtle mt-1">Activity, API spend, and platform health.</p>
         </div>
 
         <div className="flex flex-wrap gap-2 mb-6">
@@ -504,7 +512,7 @@ export default function AdminDashboard() {
         </div>
 
         {tab === "overview" && <OverviewPanel />}
-        {tab === "llm" && <LlmPanel />}
+        {tab === "spend" && <ApiSpendPanel />}
         {tab === "orgs" && <PaginatedTable endpoint="/admin/orgs" columns={orgCols} testidPrefix="admin-org" emptyMsg="No organizations yet." />}
         {tab === "users" && <AdminUsersPanel currentUserId={user?.id} />}
         {tab === "missions" && <MissionsPanel />}
