@@ -290,6 +290,72 @@ def make_admin_router(*, db, get_current_user) -> APIRouter:
                 "cost": round(row["cost"] or 0, 4),
             })
 
+        # Top users by spend — merges LLM + external API spend per
+        # user. Anonymous calls (no user_id) are dropped so the
+        # leaderboard reflects real humans, not background jobs. Both
+        # collections key user attribution under `user_id`, but the
+        # llm_calls collection stores it via the telemetry context
+        # wrapper while external_api_calls stores it via the ctx
+        # argument; the shape is identical at query time.
+        llm_user_pipe = [
+            {"$match": {"created_at": {"$gte": since},
+                        "user_id": {"$nin": [None, ""]}}},
+            {"$group": {
+                "_id": "$user_id",
+                "llm_calls": {"$sum": 1},
+                "tokens": {"$sum": "$total_tokens"},
+                "llm_cost": {"$sum": "$cost_usd"},
+            }},
+        ]
+        ext_user_pipe = [
+            {"$match": {"ts": {"$gte": since},
+                        "user_id": {"$nin": [None, ""]}}},
+            {"$group": {
+                "_id": "$user_id",
+                "ext_calls": {"$sum": "$calls"},
+                "ext_cost":  {"$sum": "$cost_usd"},
+            }},
+        ]
+        # Merge in Python — both aggs are tiny (≤thousands of distinct
+        # users) so a join in code is cheaper than $unionWith ceremony.
+        by_user: dict[str, dict] = {}
+        async for row in db.llm_calls.aggregate(llm_user_pipe):
+            uid = row["_id"]
+            by_user[uid] = {
+                "user_id": uid,
+                "llm_calls": row.get("llm_calls", 0),
+                "tokens": row.get("tokens", 0) or 0,
+                "llm_cost": round(row.get("llm_cost", 0) or 0, 4),
+                "ext_calls": 0,
+                "ext_cost": 0.0,
+            }
+        async for row in db.external_api_calls.aggregate(ext_user_pipe):
+            uid = row["_id"]
+            slot = by_user.setdefault(uid, {
+                "user_id": uid,
+                "llm_calls": 0, "tokens": 0, "llm_cost": 0.0,
+                "ext_calls": 0, "ext_cost": 0.0,
+            })
+            slot["ext_calls"] = row.get("ext_calls", 0)
+            slot["ext_cost"] = round(row.get("ext_cost", 0) or 0, 4)
+        # Compute total cost per user, sort, hydrate emails for top 20.
+        for v in by_user.values():
+            v["total_cost"] = round(v["llm_cost"] + v["ext_cost"], 4)
+            v["total_calls"] = v["llm_calls"] + v["ext_calls"]
+        top_users_rows = sorted(
+            by_user.values(), key=lambda r: r["total_cost"], reverse=True,
+        )[:20]
+        for row in top_users_rows:
+            try:
+                u = await db.users.find_one(
+                    {"_id": ObjectId(row["user_id"])},
+                    {"email": 1, "name": 1},
+                )
+            except Exception:
+                u = None
+            row["user_email"] = (u or {}).get("email") or "(deleted)"
+            row["user_name"] = (u or {}).get("name") or ""
+
         # ── External APIs (Brave / Perplexity / Resend / kie.ai) ─────
         # Same time window, separate collection, aggregated three ways
         # so the dashboard can render per-provider, per-kind, and a
@@ -347,6 +413,9 @@ def make_admin_router(*, db, get_current_user) -> APIRouter:
             "by_kind": by_kind,
             "daily_series": daily_series,
             "top_orgs": top_orgs,
+            # Per-user spend leaderboard. Merges LLM + external API
+            # rows so admins can answer "who is burning the budget?".
+            "top_users": top_users_rows,
             # New: non-LLM third-party API spend (Brave / Perplexity /
             # Resend / kie.ai). Frontend renders these in their own
             # cards next to the LLM cards.

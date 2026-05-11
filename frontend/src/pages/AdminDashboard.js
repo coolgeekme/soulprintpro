@@ -296,6 +296,58 @@ function ApiSpendPanel() {
         </div>
       </div>
 
+      {/* Per-user spend leaderboard — merges LLM + external API rows
+          server-side so admins can answer "who is burning the budget?"
+          at a glance. Anonymous calls (background jobs, public audits)
+          are omitted from this view. */}
+      <div className="sp-glass-strong rounded-2xl p-5">
+        <h3 className="text-sm uppercase tracking-widest sp-subtle mb-3">Top users by spend</h3>
+        <p className="text-[11px] sp-subtle mb-2 italic">
+          Combined LLM + utility-API spend per user. Background-job
+          attribution rolls up to org, not user, so a quiet leaderboard
+          doesn't necessarily mean a quiet platform.
+        </p>
+        <div className="overflow-x-auto">
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="text-[10px] uppercase tracking-widest sp-subtle">
+                <th className="text-left py-1.5">User</th>
+                <th className="text-right">LLM calls</th>
+                <th className="text-right">Tokens</th>
+                <th className="text-right">LLM $</th>
+                <th className="text-right">Other calls</th>
+                <th className="text-right">Other $</th>
+                <th className="text-right font-semibold">Total $</th>
+              </tr>
+            </thead>
+            <tbody>
+              {(data.top_users || []).map((u) => (
+                <tr key={u.user_id} className="border-t border-[var(--border-soft)]"
+                    data-testid={`admin-user-spend-${u.user_id}`}>
+                  <td className="py-2 max-w-[260px]">
+                    <div className="truncate font-medium">{u.user_email}</div>
+                    {u.user_name && (
+                      <div className="text-[11px] sp-subtle truncate">{u.user_name}</div>
+                    )}
+                  </td>
+                  <td className="text-right">{fmt(u.llm_calls)}</td>
+                  <td className="text-right">{fmt(u.tokens)}</td>
+                  <td className="text-right">{cur4(u.llm_cost)}</td>
+                  <td className="text-right">{fmt(u.ext_calls)}</td>
+                  <td className="text-right">{cur4(u.ext_cost)}</td>
+                  <td className="text-right font-semibold">{cur(u.total_cost)}</td>
+                </tr>
+              ))}
+              {!(data.top_users || []).length && (
+                <tr><td colSpan="7" className="text-center py-4 sp-subtle text-xs italic">
+                  No user-attributed spend yet in this window.
+                </td></tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+      </div>
+
       <div className="sp-glass-strong rounded-2xl p-5">
         <h3 className="text-sm uppercase tracking-widest sp-subtle mb-3">Spend by call kind</h3>
         <div className="flex flex-wrap gap-2">
