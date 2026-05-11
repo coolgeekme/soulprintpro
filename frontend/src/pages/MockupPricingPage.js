@@ -21,7 +21,7 @@ const TIERS = [
     id: "spark", name: "Spark", icon: Sparkles, visual: "spark",
     headline: "Ignite ideas",
     tagline: "For solo founders shipping alone",
-    monthly: 79, annual: 59,
+    monthly: 80, annual: 66,
     perks: [
       "1 user · 1 organization · 3 teams",
       "Full 169-agent catalogue",
@@ -39,7 +39,7 @@ const TIERS = [
     id: "temper", name: "Temper", icon: Hammer, visual: "anvil",
     headline: "Strengthen with purpose",
     tagline: "For teams scaling without scaling headcount",
-    monthly: 299, annual: 249,
+    monthly: 300, annual: 250,
     hot: true,
     seatsLabel: "5 seats included · $40/seat after (max 20)",
     perks: [
