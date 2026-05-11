@@ -204,6 +204,75 @@ const STUDIO_SERVICES = [
   },
 ];
 
+const COMPARE_MATRIX = [
+  {
+    group: "Plan basics",
+    rows: [
+      { label: "Monthly price",         spark: "$80",            tempered: "$300",          refine: "Custom (from $1,500)" },
+      { label: "Annual price (~17% off)", spark: "$66/mo",       tempered: "$250/mo",       refine: "Custom" },
+      { label: "Seats included",        spark: "1",              tempered: "5 (then $40/seat, max 20)", refine: "Unlimited" },
+      { label: "Organizations",         spark: "1",              tempered: "3",             refine: "Unlimited · multi-workspace" },
+      { label: "Teams per org",         spark: "3",              tempered: "Unlimited",     refine: "Unlimited" },
+    ],
+  },
+  {
+    group: "Agents & intelligence",
+    rows: [
+      { label: "Full 150+ agent catalogue",       spark: true, tempered: true, refine: true },
+      { label: "Smart auto-routing",              spark: true, tempered: true, refine: true },
+      { label: "Dynamic model intelligence",      spark: true, tempered: true, refine: true },
+      { label: "Real-time web search + citations", spark: true, tempered: true, refine: true },
+      { label: "Custom agent creation",           spark: false, tempered: true, refine: "Co-designed with our team" },
+      { label: "Bring-your-own LLM key",          spark: false, tempered: false, refine: true },
+    ],
+  },
+  {
+    group: "Monthly usage",
+    rows: [
+      { label: "Agent messages",          spark: "750",        tempered: "5,000 (pooled)",      refine: "100k fair-use" },
+      { label: "Autonomous mission runs", spark: "5",          tempered: "75",                  refine: "1,000 fair-use" },
+      { label: "Business audits",         spark: "15",         tempered: "200",                 refine: "2,000 fair-use" },
+      { label: "Crucible (live browser)", spark: "60 min",     tempered: "600 min",             refine: "Unlimited" },
+      { label: "Saved Crucible profiles", spark: "0",          tempered: "3",                   refine: "Unlimited" },
+    ],
+  },
+  {
+    group: "Storage & integrations",
+    rows: [
+      { label: "Document storage",   spark: "3 GB",  tempered: "25 GB",       refine: "Unlimited" },
+      { label: "Files",              spark: "250",   tempered: "Unlimited",   refine: "Unlimited" },
+      { label: "Social accounts",    spark: "2",     tempered: "10",          refine: "Unlimited" },
+      { label: "GitHub repos",       spark: "3",     tempered: "Unlimited",   refine: "Unlimited" },
+    ],
+  },
+  {
+    group: "Trust, brand & enterprise",
+    rows: [
+      { label: "Proof of Integrity (Bitcoin-anchored)", spark: false, tempered: true, refine: true },
+      { label: "White-label audit PDFs",                spark: false, tempered: true, refine: true },
+      { label: "White-label domain / logo / portal",    spark: false, tempered: false, refine: true },
+      { label: "SSO / SAML · SCIM",                     spark: false, tempered: false, refine: true },
+      { label: "DPA + custom data retention",           spark: false, tempered: false, refine: true },
+      { label: "Dedicated infra option",                spark: false, tempered: false, refine: true },
+    ],
+  },
+  {
+    group: "Support",
+    rows: [
+      { label: "Email response SLA", spark: "48 h",     tempered: "24 h (priority)", refine: "4 h" },
+      { label: "Dedicated CSM",      spark: false,       tempered: false,             refine: true },
+      { label: "Quarterly business review", spark: false, tempered: false,            refine: true },
+    ],
+  },
+  {
+    group: "ArcheForge Studios",
+    rows: [
+      { label: "Pricing on managed services", spark: "Retail",
+        tempered: "15% off · priority queue", refine: "$2k/mo credits · 30% off after" },
+    ],
+  },
+];
+
 const FAQ = [
   {
     q: "Do the paid-ads packages include ad spend?",
@@ -368,6 +437,124 @@ function StudioCard({ s }) {
   );
 }
 
+function CellValue({ value }) {
+  if (value === true) {
+    return (
+      <span className="inline-flex items-center justify-center w-6 h-6 rounded-full bg-emerald-500/15 text-emerald-300">
+        <Check className="w-3.5 h-3.5" strokeWidth={3} />
+      </span>
+    );
+  }
+  if (value === false) {
+    return <span className="text-white/25 text-sm select-none">—</span>;
+  }
+  return <span className="text-sm">{value}</span>;
+}
+
+function ComparisonMatrix() {
+  return (
+    <section
+      className="relative z-10 max-w-6xl mx-auto px-6 md:px-10 py-20 border-t border-white/10"
+      data-testid="pricing-matrix-section"
+      id="compare"
+    >
+      <div className="text-center mb-10">
+        <span className="inline-flex items-center gap-2 text-[10px] uppercase tracking-widest sp-glass rounded-full px-3 py-1 mb-4">
+          <Zap className="w-3 h-3" /> Compare every detail
+        </span>
+        <h2 className="sp-display text-3xl sm:text-4xl lg:text-5xl max-w-3xl mx-auto leading-tight">
+          The same crew. <span className="text-orange-300">Different gear.</span>
+        </h2>
+        <p className="text-base sp-subtle mt-4 max-w-2xl mx-auto leading-relaxed">
+          Every plan unlocks all 150+ agents. What changes is how much they
+          can run, who else is on the team, and how customized the engine gets.
+        </p>
+      </div>
+
+      <div className="sp-glass-strong rounded-2xl overflow-hidden border border-white/10">
+        <div className="overflow-x-auto">
+          <table className="w-full text-sm" data-testid="pricing-matrix-table">
+            <thead>
+              <tr className="bg-white/[0.04] border-b border-white/10">
+                <th className="text-left px-5 py-4 font-medium text-xs uppercase tracking-widest sp-subtle min-w-[220px]">
+                  Feature
+                </th>
+                <th className="text-left px-5 py-4 min-w-[160px]">
+                  <div className="flex items-center gap-2">
+                    <Sparkles className="w-4 h-4 text-amber-300" />
+                    <span className="sp-display text-lg">Spark</span>
+                  </div>
+                  <div className="text-[11px] sp-subtle font-normal mt-0.5">$80/mo</div>
+                </th>
+                <th className="text-left px-5 py-4 min-w-[180px] bg-orange-500/[0.06]">
+                  <div className="flex items-center gap-2">
+                    <Flame className="w-4 h-4 text-orange-300" />
+                    <span className="sp-display text-lg">Temper</span>
+                    <span className="text-[9px] uppercase tracking-widest bg-orange-400/15 text-orange-300 px-1.5 py-0.5 rounded">
+                      Most picked
+                    </span>
+                  </div>
+                  <div className="text-[11px] sp-subtle font-normal mt-0.5">$300/mo</div>
+                </th>
+                <th className="text-left px-5 py-4 min-w-[200px]">
+                  <div className="flex items-center gap-2">
+                    <Gem className="w-4 h-4 text-violet-300" />
+                    <span className="sp-display text-lg">Refine</span>
+                  </div>
+                  <div className="text-[11px] sp-subtle font-normal mt-0.5">From $1,500/mo</div>
+                </th>
+              </tr>
+            </thead>
+            <tbody>
+              {COMPARE_MATRIX.map((section) => (
+                <React.Fragment key={section.group}>
+                  <tr className="bg-white/[0.02]">
+                    <td
+                      colSpan={4}
+                      className="px-5 py-2.5 text-[10px] uppercase tracking-widest sp-subtle font-medium border-t border-white/5"
+                    >
+                      {section.group}
+                    </td>
+                  </tr>
+                  {section.rows.map((row) => (
+                    <tr
+                      key={row.label}
+                      className="border-t border-white/5 hover:bg-white/[0.02] transition-colors"
+                      data-testid={`matrix-row-${row.label.replace(/\W+/g, "-").toLowerCase()}`}
+                    >
+                      <td className="px-5 py-3 sp-subtle">{row.label}</td>
+                      <td className="px-5 py-3"><CellValue value={row.spark} /></td>
+                      <td className="px-5 py-3 bg-orange-500/[0.04]"><CellValue value={row.tempered} /></td>
+                      <td className="px-5 py-3"><CellValue value={row.refine} /></td>
+                    </tr>
+                  ))}
+                </React.Fragment>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <div className="flex flex-wrap justify-center gap-3 mt-8">
+        <Link
+          to="/auth?mode=register"
+          className="sp-btn sp-btn-primary text-sm"
+          data-testid="matrix-cta-spark"
+        >
+          Start with Spark <ArrowRight className="w-4 h-4" />
+        </Link>
+        <a
+          href="mailto:hello@foundryagents.ai?subject=Refine%20tier%20enquiry"
+          className="sp-btn sp-btn-ghost text-sm"
+          data-testid="matrix-cta-refine"
+        >
+          Talk to us about Refine
+        </a>
+      </div>
+    </section>
+  );
+}
+
 const LADDER = [
   { step: 1, icon: Search, name: "Free Audit",
     blurb: "Drop a URL on the homepage. Get a real audit in 60 seconds, no card.",
@@ -438,7 +625,19 @@ export default function PricingPage() {
           CSP enforcement, and encrypted credential vault. We never sell or train on
           your data — see <Link to="/trust" className="underline">Trust &amp; Security</Link>.
         </p>
+        <div className="text-center mt-3">
+          <a
+            href="#compare"
+            className="text-xs sp-subtle hover:text-white transition-colors underline underline-offset-2"
+            data-testid="pricing-jump-to-matrix"
+          >
+            Compare every feature side-by-side ↓
+          </a>
+        </div>
       </section>
+
+      {/* Comparison matrix */}
+      <ComparisonMatrix />
 
       {/* ArcheForge Studios */}
       <section className="relative z-10 max-w-6xl mx-auto px-6 md:px-10 py-20 border-t border-white/10"
