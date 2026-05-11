@@ -40,6 +40,7 @@ const TIERS = [
       "60 browser automation min / mo (Crucible + Missions)",
       "10 GB documents · 250 files",
       "Community email support",
+      "+ Add-ons: extra orgs ($20/mo) · seats ($30/mo) · usage packs",
     ],
     studioPerk: "ArcheForge Studios services available at retail",
     accent: "from-amber-400/30 to-orange-400/10",
@@ -268,6 +269,121 @@ const COMPARE_MATRIX = [
   },
 ];
 
+const ADD_ONS = [
+  {
+    id: "org",
+    name: "Extra organization",
+    blurb: "Spin up another org with its own teams, agents, and brand soul. Bills monthly per extra org.",
+    price: 20, unit: "/org / mo",
+    cadence: "recurring",
+    icon: Compass,
+  },
+  {
+    id: "seat",
+    name: "Extra seat (Spark)",
+    blurb: "Invite another teammate to your Spark org. Each seat counts toward the same usage pool.",
+    price: 30, unit: "/seat / mo",
+    cadence: "recurring",
+    icon: Bot,
+    note: "Temper already includes 5 seats — upgrade once you reach 4+.",
+  },
+  {
+    id: "messages",
+    name: "Message pack",
+    blurb: "Top up 500 extra agent messages whenever you spike. No expiry until consumed.",
+    price: 15, unit: "/ 500 msgs",
+    cadence: "one-time",
+    icon: Zap,
+  },
+  {
+    id: "browser",
+    name: "Browser automation pack",
+    blurb: "Add 200 extra minutes for Crucible + Mission browser work. Carry over until used.",
+    price: 20, unit: "/ 200 min",
+    cadence: "one-time",
+    icon: Search,
+  },
+  {
+    id: "audits",
+    name: "Audit pack",
+    blurb: "10 extra business audits for client prospecting. Reuses your saved templates.",
+    price: 10, unit: "/ 10 audits",
+    cadence: "one-time",
+    icon: PenTool,
+  },
+];
+
+function AddOnCard({ a }) {
+  const Icon = a.icon;
+  const isRecurring = a.cadence === "recurring";
+  return (
+    <div
+      className="sp-glass rounded-2xl p-5 flex flex-col gap-3 border border-white/10 hover:border-white/25 transition-colors"
+      data-testid={`addon-card-${a.id}`}
+    >
+      <div className="flex items-start justify-between gap-3">
+        <div className="w-9 h-9 rounded-xl sp-glass-strong flex items-center justify-center shrink-0">
+          <Icon className="w-4 h-4" />
+        </div>
+        <span
+          className={`text-[9px] uppercase tracking-widest px-2 py-1 rounded-full ${
+            isRecurring
+              ? "bg-orange-400/15 text-orange-300"
+              : "bg-amber-300/15 text-amber-300"
+          }`}
+        >
+          {isRecurring ? "Recurring" : "One-time"}
+        </span>
+      </div>
+      <h4 className="sp-display text-base leading-snug">{a.name}</h4>
+      <p className="text-xs sp-subtle leading-relaxed flex-1">{a.blurb}</p>
+      {a.note && (
+        <p className="text-[10px] italic text-amber-300/80 leading-snug -mt-1">
+          {a.note}
+        </p>
+      )}
+      <div className="border-t border-white/10 pt-3 flex items-baseline gap-1">
+        <span className="text-2xl font-medium tracking-tight">${a.price}</span>
+        <span className="text-xs sp-subtle">{a.unit}</span>
+      </div>
+    </div>
+  );
+}
+
+function AddOnsSection() {
+  return (
+    <section
+      className="relative z-10 max-w-6xl mx-auto px-6 md:px-10 py-20 border-t border-white/10"
+      data-testid="pricing-addons-section"
+      id="add-ons"
+    >
+      <div className="text-center mb-10">
+        <span className="inline-flex items-center gap-2 text-[10px] uppercase tracking-widest sp-glass rounded-full px-3 py-1 mb-4">
+          <Zap className="w-3 h-3" /> Add as you grow
+        </span>
+        <h2 className="sp-display text-3xl sm:text-4xl lg:text-5xl max-w-3xl mx-auto leading-tight">
+          Need more headroom? <span className="text-orange-300">Add it on.</span>
+        </h2>
+        <p className="text-base sp-subtle mt-4 max-w-2xl mx-auto leading-relaxed">
+          Built for small agencies managing multiple clients on Spark. Stack extra
+          orgs and seats month-to-month, top up usage packs when a project spikes.
+          No upgrade required.
+        </p>
+      </div>
+
+      <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-4">
+        {ADD_ONS.map((a) => <AddOnCard key={a.id} a={a} />)}
+      </div>
+
+      <p className="text-[11px] sp-subtle text-center mt-8 max-w-2xl mx-auto italic">
+        Recurring add-ons bill on your monthly Spark cycle. One-time packs are
+        consumed against your current usage pool until used up — no expiry.
+        Cancel any recurring add-on anytime.
+      </p>
+    </section>
+  );
+}
+
 const FAQ = [
   {
     q: "Do the paid-ads packages include ad spend?",
@@ -284,6 +400,10 @@ const FAQ = [
   {
     q: "What's Crucible?",
     a: "Crucible is Foundry's live remote browser layer. When an agent needs to log into a system, fill a form, or click through something a scraper can't, it opens a Chromium session and streams the screen back to you in real time. You can take over with a click, save the session as a saved login, and your agents reuse it from then on.",
+  },
+  {
+    q: "Can I add organizations or seats to Spark without upgrading?",
+    a: "Yes. Spark add-ons are designed for small agencies on Spark managing multiple clients: extra organization ($20/mo each), extra seat ($30/mo each). You can also top up one-time usage packs — 500 messages ($15), 200 browser automation minutes ($20), or 10 business audits ($10) — when a project spikes. Add-ons stack so a Spark + 2 orgs + 1 seat is still cheaper than jumping to Temper if you don't need the rest of Temper's features.",
   },
   {
     q: "Is there a free trial?",
@@ -633,6 +753,9 @@ export default function PricingPage() {
 
       {/* Comparison matrix */}
       <ComparisonMatrix />
+
+      {/* Add-ons */}
+      <AddOnsSection />
 
       {/* ArcheForge Studios */}
       <section className="relative z-10 max-w-6xl mx-auto px-6 md:px-10 py-20 border-t border-white/10"
