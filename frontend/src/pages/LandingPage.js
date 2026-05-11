@@ -43,7 +43,8 @@ export default function LandingPage() {
           <a href="#agents" className="hover:text-white transition-colors">Agents</a>
           <a href="#teams" className="hover:text-white transition-colors">Teams</a>
           <Link to="/about" className="hover:text-white transition-colors" data-testid="nav-about">What is Foundry?</Link>
-          <Link to="/pricing" className="hover:text-white transition-colors" data-testid="nav-pricing">Pricing</Link>
+          {/* Pricing link intentionally hidden until pricing is locked in.
+              The /pricing route is still live — staff visit directly. */}
           <Link to="/trust" className="hover:text-white transition-colors" data-testid="nav-trust">Trust &amp; Security</Link>
         </nav>
         <div className="flex items-center gap-2">
