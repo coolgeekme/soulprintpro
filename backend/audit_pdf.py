@@ -697,7 +697,7 @@ def _build_closing(story: list, audit: dict):
         _body(helps, color=INK, size=11),
         Spacer(1, 8),
         Paragraph(
-            "<b>Start free at pro.soulprintengine.ai</b>",
+            "<b>Start free at foundryagents.ai</b>",
             ParagraphStyle(
                 "ClosingCta", fontName=FONT_BOLD, fontSize=11,
                 textColor=BRAND_ORANGE, leading=14,

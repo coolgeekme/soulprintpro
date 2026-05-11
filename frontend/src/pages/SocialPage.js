@@ -31,7 +31,7 @@ const PLATFORMS = {
     label: "Facebook",
     accent: "#1877F2",
     composeUrl: (p) =>
-      `https://www.facebook.com/sharer/sharer.php?quote=${encodeURIComponent(joinPostText(p))}&u=${encodeURIComponent(p.link_url || "https://soulprintengine.ai")}`,
+      `https://www.facebook.com/sharer/sharer.php?quote=${encodeURIComponent(joinPostText(p))}&u=${encodeURIComponent(p.link_url || "https://foundryagents.ai")}`,
   },
   threads: {
     label: "Threads",

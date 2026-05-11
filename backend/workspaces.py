@@ -95,7 +95,7 @@ def _public_origin(request: Request) -> str:
     Priority:
       1. ``X-Forwarded-Host`` + ``X-Forwarded-Proto`` (set by the
          platform's ingress/Cloudflare → uvicorn). When the request
-         arrives at `pro.soulprintengine.ai`, these headers reflect
+         arrives at `foundryagents.ai`, these headers reflect
          that origin and the resulting invite URL points at the right
          deployment.
       2. ``Origin`` request header — set by the browser's fetch from
@@ -103,13 +103,13 @@ def _public_origin(request: Request) -> str:
       3. ``Host`` header (always present).
       4. Final fallback: ``FRONTEND_URL`` env var (last-ditch).
 
-    Returns a string like ``"https://pro.soulprintengine.ai"`` with no
+    Returns a string like ``"https://foundryagents.ai"`` with no
     trailing slash. Always validates the scheme is http/https to avoid
     header-injection attacks producing ``javascript:`` links.
 
     Operator escape hatch: setting ``PUBLIC_ORIGIN_OVERRIDE`` in env
     pins the result regardless of headers — needed when a fronting
-    proxy (e.g. emergent.host → cloudflare → pro.soulprintengine.ai)
+    proxy (e.g. emergent.host → cloudflare → foundryagents.ai)
     rewrites X-Forwarded-Host to the inner deploy URL so emails would
     otherwise leak the wrong domain.
     """

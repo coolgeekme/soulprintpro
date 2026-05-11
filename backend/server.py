@@ -5797,7 +5797,7 @@ async def unfurl(url: str, u: dict = Depends(get_current_user)):
         preview["host"] = host
         async with httpx.AsyncClient(timeout=8.0, follow_redirects=True,
                                     headers={
-                                        "User-Agent": "Mozilla/5.0 (compatible; FoundryBot/1.0; +https://soulprintengine.ai/bot)",
+                                        "User-Agent": "Mozilla/5.0 (compatible; FoundryBot/1.0; +https://foundryagents.ai/bot)",
                                         "Accept": "text/html,application/xhtml+xml",
                                         "Accept-Language": "en-US,en;q=0.9",
                                     }) as client:
@@ -6862,7 +6862,7 @@ app.add_middleware(
     CORSMiddleware,
     allow_credentials=True,
     # Tightened CORS: prefer an explicit allowlist via the ALLOWED_ORIGINS
-    # env var ("https://pro.soulprintengine.ai,https://app.soulprintengine.ai")
+    # env var ("https://foundryagents.ai,https://app.foundryagents.ai")
     # for production. Falls back to the permissive regex when the env is
     # unset so preview/dev still works without manual config.
     allow_origins=[

@@ -120,7 +120,7 @@ export default function AuditFullReport({ audit }) {
             {audit.how_soulprint_helps}
           </p>
           <a
-            href="https://pro.soulprintengine.ai/auth"
+            href="https://foundryagents.ai/auth"
             target="_blank" rel="noopener noreferrer"
             className="sp-btn sp-btn-primary text-base"
             data-testid="audit-spe-cta-button"

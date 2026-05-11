@@ -100,6 +100,13 @@ async def send_welcome_email(*, name: str, email: str) -> bool:
         return False
     safe_name = (name or email.split("@")[0] or "there").strip()
     team_addr = (os.environ.get("WELCOME_NOTIFY_EMAIL") or "team@archeforge.com").strip()
+    # Public origin for the in-email "Open dashboard" CTA. Env-driven so
+    # the same code ships across preview / production / future domains
+    # (foundryagents.ai, etc.) without a redeploy.
+    public_origin = (
+        os.environ.get("PUBLIC_ORIGIN_OVERRIDE")
+        or "https://foundryagents.ai"
+    ).rstrip("/")
 
     user_html = f"""
       <div style="font-family:'Inter',-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;
@@ -120,7 +127,7 @@ async def send_welcome_email(*, name: str, email: str) -> bool:
           Chief of Staff agent will spin up a plan for what to ship next.
         </p>
         <p style="margin-top:28px;">
-          <a href="https://pro.soulprintengine.ai/app"
+          <a href="{public_origin}/app"
              style="display:inline-block;background:linear-gradient(135deg,#F64000,#FF8E3A);
                     color:white;padding:12px 24px;border-radius:999px;
                     text-decoration:none;font-weight:600;font-size:14px;">
@@ -136,7 +143,7 @@ async def send_welcome_email(*, name: str, email: str) -> bool:
     user_text = (
         f"Welcome to Foundry, {safe_name}.\n\n"
         f"You now have access to a 169-agent team that already knows how to build inside your brand voice.\n\n"
-        f"Open your dashboard: https://pro.soulprintengine.ai/app\n\n"
+        f"Open your dashboard: {public_origin}/app\n\n"
         f"Questions? Reply to this email — a real human reads it.\n— The Foundry team"
     )
     user_ok = await send_resend_email(

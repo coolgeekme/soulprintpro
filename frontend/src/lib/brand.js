@@ -19,7 +19,7 @@ export const PRODUCT_NAME = "Foundry";
 export const COMPANY_NAME = "SoulPrint Engine";
 export const FULL_NAME = "Foundry by SoulPrint Engine";
 export const AGENCY_NAME = "ArcheForge Studios";
-export const DOMAIN = "soulprintengine.ai";
+export const DOMAIN = "foundryagents.ai";
 
 // Convenience for `<title>` / meta / email subject lines.
 export const TAGLINE = "Your company's AI crew.";
