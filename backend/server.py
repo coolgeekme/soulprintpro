@@ -2072,8 +2072,15 @@ async def team_agents(
     limit: int = 500,
     u: dict = Depends(get_current_user),
 ):
-    await require_team_member(team_id, u["id"])
-    agents = [public_agent(a) for a in AGENTS.values()]
+    ctx = await require_team_member(team_id, u["id"])
+    team_org_id = str(ctx["team"]["org_id"])
+    # Built-in agents are visible to everyone. Custom agents (with
+    # `org_scope` set) are only visible inside the org that owns them.
+    agents = []
+    for a in AGENTS.values():
+        if a.get("custom") and a.get("org_scope") != team_org_id:
+            continue
+        agents.append(public_agent(a))
     if division:
         d = division.strip().lower()
         agents = [a for a in agents if a.get("division_key", "").lower() == d
@@ -2096,6 +2103,10 @@ async def list_divisions(u: dict = Depends(get_current_user)):
     counts: dict = {}
     labels: dict = {}
     for a in AGENTS.values():
+        # Custom agents are org-scoped — don't pollute global division
+        # counts across tenants.
+        if a.get("custom"):
+            continue
         key = a.get("division_key", "specialized")
         labels[key] = a.get("division", key.title())
         counts[key] = counts.get(key, 0) + 1
@@ -6402,6 +6413,20 @@ social_r = make_social_router(
 )
 app.include_router(social_r)
 
+# ── Custom agents — user-defined agents per org (Temper+ feature) ─────────
+from custom_agents import (  # noqa: E402
+    router as _custom_agents_router,
+    init as _init_custom_agents,
+    load_into_catalogue as _load_custom_agents,
+)
+_init_custom_agents(
+    db=db,
+    agents_dict=AGENTS,
+    get_current_user=get_current_user,
+    require_org_member=require_org_member,
+)
+app.include_router(_custom_agents_router)
+
 from activity import make_activity_router  # noqa: E402
 activity_r = make_activity_router(
     db=db, AGENTS=AGENTS,
@@ -6473,6 +6498,14 @@ async def _seed_superadmins():
         await db.llm_calls.create_index([("model", 1), ("created_at", -1)])
     except Exception:
         pass
+    # Load any persisted custom agents into the in-memory catalogue so
+    # they're usable immediately after boot. Idempotent.
+    try:
+        n = await _load_custom_agents()
+        if n:
+            logger.info("Loaded %d custom agents from DB into catalogue", n)
+    except Exception as exc:
+        logger.warning("Could not load custom agents: %s", exc)
     # Grandfather any pre-existing users into the site access gate so
     # the gate is invite-only for NEW signups, never a friction for
     # existing customers. Idempotent — only touches rows missing

@@ -5,6 +5,7 @@ import TopBar from "../components/TopBar";
 import { toast } from "sonner";
 import { Plus, Users, ArrowRight, Copy, UserPlus, FileText, Image as ImageIcon, FileBox, Trash2, UploadCloud, Download, File as FileIcon, MessageCircle, Pencil, Save, X as XIcon, RefreshCw, Megaphone, Paperclip, Send, Loader2, Rocket, Network, Minimize2, ChevronRight } from "lucide-react";
 import BrandAssetsPanel from "../components/BrandAssetsPanel";
+import CustomAgentsPanel from "../components/CustomAgentsPanel";
 import ActivityOverview from "../components/ActivityOverview";
 import DocumentsPanel from "../components/DocumentsPanel";
 import SocialStyleGuidePanel from "../components/SocialStyleGuidePanel";
@@ -825,6 +826,11 @@ export default function OrgPage() {
 
               {/* Social Style Guide */}
               <SocialStyleGuidePanel orgId={orgId} />
+
+              {/* Custom agents (per-org, owner/admin manageable) */}
+              <div className="sp-glass-strong rounded-2xl p-6 mb-6" data-testid="custom-agents-section">
+                <CustomAgentsPanel orgId={orgId} canEdit={canEdit} />
+              </div>
 
               {/* Schedules */}
               <SchedulesPanel scope="org" targetId={orgId} orgId={orgId} />
