@@ -1,7 +1,7 @@
 import React, { useEffect, useState, useCallback, useRef } from "react";
 import { Link } from "react-router-dom";
 import {
-  ArrowLeft, ArrowRight, Wand2, Users, Rocket, FileText, Megaphone, Building2, MessageCircle, Maximize2, Minimize2, Sun, Moon
+  ArrowLeft, ArrowRight, Wand2, Users, Rocket, FileText, Megaphone, Building2, MessageCircle, Maximize2, Minimize2, Sun, Moon, Target, Monitor, ShieldCheck
 } from "lucide-react";
 import Logo from "../components/Logo";
 import { useTheme } from "../context/ThemeContext";
@@ -157,6 +157,66 @@ const SLIDES = [
     ],
     image: "/deck/05-workspace.jpg",
     imageCaption: "Workspace settings — orgs in this workspace, invites, members, all in one place.",
+  },
+
+  // 8. Public Business Audits — homepage lead funnel
+  {
+    id: "audits",
+    kind: "feature",
+    icon: Target,
+    eyebrow: "Top-of-funnel",
+    title: "Drop a URL.\nShip a real audit\nin 60 seconds.",
+    body: [
+      "Anyone with a website link can self-serve a personalised audit from the homepage — no signup, no credit card.",
+      "Our agents scrape the site, fetch reviews and competitor signal, score the brand, and write back a prioritised fix list mapped to features they can act on inside SoulPrint Engine Pro.",
+    ],
+    bullets: [
+      "Public report, branded teaser → lead-gated full PDF",
+      "Auto-emailed to the visitor via Resend on completion",
+      "Bitcoin-anchored timestamp on every PDF for tamper-proof citation",
+    ],
+    image: "/deck/08-audit-report.jpg",
+    imageCaption: "Public audit report — score, strengths, critical issues, with a lead-gated full PDF unlock.",
+  },
+
+  // 9. Agent Mode — ChatGPT-style live browser
+  {
+    id: "agent-mode",
+    kind: "feature",
+    icon: Monitor,
+    eyebrow: "Agent Mode",
+    title: "Watch your agent\ndrive a real browser.",
+    body: [
+      "When an agent needs to log into a site, fill a form, or click something a scraper can't, Agent Mode opens a live remote Chromium and streams the screen back to you in real time.",
+      "Take over with a click. Save the session as a named login. Next time, the agent reuses it — no re-auth, no leaked credentials.",
+    ],
+    bullets: [
+      "Live CDP stream — see every click, type, scroll",
+      "One-tap human takeover for CAPTCHAs and 2FA",
+      "Encrypted credential vault (Fernet) per organization",
+    ],
+    image: "/deck/04-missions.jpg",
+    imageCaption: "Mission Mode + Agent Mode — autonomous browser work with a human escape hatch.",
+  },
+
+  // 10. Proof of Integrity — Bitcoin-anchored trust
+  {
+    id: "proof",
+    kind: "feature",
+    icon: ShieldCheck,
+    eyebrow: "Proof of Integrity",
+    title: "Every deliverable,\nanchored to Bitcoin.",
+    body: [
+      "Each document, audit, image, and report gets a SHA-256 fingerprint stamped onto the Bitcoin blockchain via OpenTimestamps — for free, forever, and verifiable by anyone with a copy of the file.",
+      "Pair that with brute-force lockout, CSP enforcement, encrypted credential storage, and never-sold-to-anyone data — and your enterprise security review is no longer the bottleneck.",
+    ],
+    bullets: [
+      "OpenTimestamps + Merkle batching (no per-file fee)",
+      "Public verify page — prospects can audit YOU, not just trust you",
+      "SOC-grade hygiene: CSP enforce, rate limits, encrypted vault",
+    ],
+    image: "/deck/09-trust.jpg",
+    imageCaption: "Trust page — public verifier, security posture, what we promise we never do.",
   },
 
   // 8. CTA
