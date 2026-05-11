@@ -27,32 +27,32 @@ const TIERS = [
     name: "Spark",
     tagline: "For solo founders shipping alone",
     icon: Sparkles,
-    monthly: 39,
-    annual: 29,
+    monthly: 79,
+    annual: 59,
     cta: "Start with Spark",
     href: "/auth?mode=register",
     perks: [
       "1 user · 1 organization · 3 teams",
       "Full 150+ agent catalogue",
-      "500 agent messages / month",
-      "5 autonomous mission runs / month",
-      "20 free business audits / month",
-      "Crucible: 60 min live remote browser / mo",
-      "1 GB documents · 100 files",
-      "1 social account · 1 GitHub repo",
+      "1,500 agent messages / month",
+      "10 autonomous mission runs / month",
+      "30 free business audits / month",
+      "Crucible: 120 min live remote browser / mo",
+      "3 GB documents · 250 files",
+      "2 social accounts · 3 GitHub repos",
       "Community + 48h email support",
     ],
-    studioPerk: "Studio services available at retail",
+    studioPerk: "ArcheForge Studios services available at retail",
     accent: "from-amber-400/30 to-orange-400/10",
   },
   {
     id: "tempered",
-    name: "Tempered",
+    name: "Temper",
     tagline: "For teams scaling without scaling headcount",
     icon: Flame,
     monthly: 299,
     annual: 249,
-    cta: "Choose Tempered",
+    cta: "Choose Temper",
     href: "/auth?mode=register",
     highlight: true,
     seatsLabel: "5 seats included · $40/seat after (max 20)",
@@ -69,7 +69,7 @@ const TIERS = [
       "White-label audit PDFs",
       "Priority support · 24h SLA",
     ],
-    studioPerk: "15% off all SoulPrint Studio services + priority queue",
+    studioPerk: "15% off all ArcheForge Studios services + priority queue",
     accent: "from-orange-500/35 to-red-400/10",
   },
   {
@@ -93,7 +93,7 @@ const TIERS = [
       "Dedicated infra option (your own cluster)",
       "Dedicated CSM + 4h SLA + QBR",
     ],
-    studioPerk: "$2,000/mo Studio credits included + 30% off everything after",
+    studioPerk: "$2,000/mo ArcheForge credits included + 30% off everything after",
     accent: "from-violet-500/30 to-fuchsia-400/10",
   },
 ];
@@ -193,7 +193,7 @@ const STUDIO_SERVICES = [
   {
     id: "strategy",
     name: "Strategy Sprint",
-    blurb: "2-week deep dive. The Engine plus our team produce your 90-day execution roadmap.",
+    blurb: "2-week deep dive. Foundry plus our team produce your 90-day execution roadmap.",
     scope: "2-week engagement",
     retail: 2500, unit: "flat",
     icon: Compass,
@@ -203,16 +203,16 @@ const STUDIO_SERVICES = [
 
 const FAQ = [
   {
-    q: "How does Studio pricing actually work for Tempered and Refine?",
-    a: "Tempered members get 15% off every productized Studio service automatically and skip the queue. Refine members get $2,000/mo of Studio credits applied to any service, and 30% off everything beyond that. Both discounts apply on the day you subscribe — no waiting period.",
+    q: "How does ArcheForge pricing actually work for Temper and Refine?",
+    a: "Temper members get 15% off every productized ArcheForge service automatically and skip the queue. Refine members get $2,000/mo of ArcheForge credits applied to any service, and 30% off everything beyond that. Both discounts apply on the day you subscribe — no waiting period.",
   },
   {
-    q: "Do I have to use Studio? Can I just use the platform?",
-    a: "Of course. The platform stands on its own — most Spark customers never touch Studio. Studio exists for when the Engine tells you what to do and you'd rather have us do it than do it yourself.",
+    q: "Do I have to use ArcheForge? Can I just use the platform?",
+    a: "Of course. Foundry stands on its own — most Spark customers never touch ArcheForge. Studios exists for when Foundry tells you what to do and you'd rather have us do it than do it yourself.",
   },
   {
     q: "What's Crucible?",
-    a: "Crucible is our name for the live remote browser layer. When an agent needs to log into a system, fill a form, or click through something a scraper can't, it opens a Chromium session and streams the screen back to you in real time. You can take over with a click, save the session as a saved login, and your agents reuse it from then on.",
+    a: "Crucible is Foundry's live remote browser layer. When an agent needs to log into a system, fill a form, or click through something a scraper can't, it opens a Chromium session and streams the screen back to you in real time. You can take over with a click, save the session as a saved login, and your agents reuse it from then on.",
   },
   {
     q: "Is there a free trial?",
@@ -293,7 +293,7 @@ function TierCard({ tier }) {
         <Wrench className="w-3.5 h-3.5 text-orange-300 mt-0.5 flex-shrink-0" />
         <span className="leading-relaxed">
           <span className="uppercase tracking-widest text-[9px] sp-subtle block mb-0.5">
-            SoulPrint Studio perks
+            ArcheForge perks
           </span>
           {tier.studioPerk}
         </span>
@@ -361,13 +361,13 @@ const LADDER = [
     blurb: "Drop a URL on the homepage. Get a real audit in 60 seconds, no card.",
     cta: "Try it free", href: "/get-audit" },
   { step: 2, icon: Sparkles, name: "Spark",
-    blurb: "$39/mo. The AI tells you what to do — you ship it yourself.",
+    blurb: "$79/mo. Foundry tells you what to do — you ship it yourself.",
     cta: null },
-  { step: 3, icon: Flame, name: "Tempered",
-    blurb: "$299/mo. Your team is using it. Some things they hand to Studio.",
+  { step: 3, icon: Flame, name: "Temper",
+    blurb: "$299/mo. Your team is using it. Some things they hand to ArcheForge Studios.",
     cta: null },
-  { step: 4, icon: Gem, name: "Refine + Studio retainer",
-    blurb: "Custom. The Engine plans, our Studio executes. End-to-end.",
+  { step: 4, icon: Gem, name: "Refine + ArcheForge retainer",
+    blurb: "Custom. Foundry plans, ArcheForge executes. End-to-end.",
     cta: null },
 ];
 
@@ -406,12 +406,12 @@ export default function PricingPage() {
         </span>
         <h1 className="sp-display text-4xl sm:text-5xl lg:text-6xl max-w-3xl mx-auto leading-tight">
           Start with a <span className="text-amber-300">Spark</span>.
-          Scale through <span className="text-orange-300">Tempered</span>.
+          Scale through <span className="text-orange-300">Temper</span>.
           Finish in <span className="text-violet-200">Refine</span>.
         </h1>
         <p className="text-base sm:text-lg sp-subtle mt-5 max-w-2xl mx-auto leading-relaxed">
-          A working crew of AI agents at every plan. And when the AI tells you what to do,{" "}
-          <span className="text-white font-medium">SoulPrint Studio</span> will do it for you.
+          A working crew of AI agents at every plan. And when Foundry tells you what to do,{" "}
+          <span className="text-white font-medium">ArcheForge Studios</span> will do it for you.
         </p>
       </section>
 
@@ -428,7 +428,7 @@ export default function PricingPage() {
         </p>
       </section>
 
-      {/* SoulPrint Studio */}
+      {/* ArcheForge Studios */}
       <section className="relative z-10 max-w-6xl mx-auto px-6 md:px-10 py-20 border-t border-white/10"
                data-testid="studio-section">
         <div className="text-center mb-12">
@@ -441,10 +441,11 @@ export default function PricingPage() {
             We'll <span className="text-orange-300">ship the work</span> for you.
           </h2>
           <p className="text-base sp-subtle mt-4 max-w-2xl mx-auto leading-relaxed">
-            SoulPrint Studio is our agency arm. Productized, fixed-price engagements
-            for the things the Engine recommends but you don't have time to execute.
-            Tempered members save 15% on every line item. Refine members get $2k/mo of
-            credits and 30% off everything beyond that.
+            ArcheForge Studios is our agency arm. Productized, fixed-price
+            engagements for the things Foundry recommends but you don't have
+            time to execute. Temper members save 15% on every line item.
+            Refine members get $2k/mo of credits and 30% off everything
+            beyond that.
           </p>
         </div>
 
@@ -454,13 +455,13 @@ export default function PricingPage() {
 
         <div className="sp-glass-strong rounded-2xl p-6 mt-8 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
           <div>
-            <h3 className="sp-display text-xl">Need something not on the menu?</h3>
+            <h3 className="sp-display text-xl">Need something not on the ArcheForge menu?</h3>
             <p className="text-sm sp-subtle mt-1">
               Custom builds, integrations, fractional CMO/CTO retainers — all available.
             </p>
           </div>
           <a
-            href="mailto:hello@soulprintengine.ai?subject=Custom%20Studio%20engagement"
+            href="mailto:hello@archeforge.studio?subject=Custom%20ArcheForge%20engagement"
             className="sp-btn sp-btn-primary text-sm"
             data-testid="studio-custom-cta"
           >
@@ -553,7 +554,7 @@ export default function PricingPage() {
       </section>
 
       <footer className="relative z-10 max-w-6xl mx-auto px-6 md:px-10 py-10 text-center text-xs sp-subtle">
-        SoulPrint Engine Pro · SoulPrint Studio · est. 2026
+        Foundry · ArcheForge Studios · est. 2026
       </footer>
     </div>
   );
