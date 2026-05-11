@@ -1,7 +1,8 @@
 import React from "react";
 import { Link } from "react-router-dom";
-import { ArrowRight, Users, Network, ShieldCheck, Radio, HelpCircle, Wand2 } from "lucide-react";
+import { ArrowRight, Users, Network, ShieldCheck, Radio, HelpCircle, Wand2, Sun, Moon } from "lucide-react";
 import Logo from "../components/Logo";
+import { useTheme } from "../context/ThemeContext";
 
 const Pill = ({ children }) => <span className="sp-chip">{children}</span>;
 
@@ -16,6 +17,7 @@ const FeatureCard = ({ icon: Icon, title, body }) => (
 );
 
 export default function LandingPage() {
+  const { mode, toggle } = useTheme();
   return (
     <div className="relative min-h-screen overflow-x-hidden">
       {/* Aurora halo */}
@@ -57,6 +59,16 @@ export default function LandingPage() {
           >
             <HelpCircle className="w-4 h-4" />
           </Link>
+          <button
+            type="button"
+            onClick={toggle}
+            className="sp-btn sp-btn-ghost text-sm"
+            data-testid="landing-theme-toggle"
+            aria-label="Toggle theme"
+            title={mode === "dark" ? "Switch to light mode" : "Switch to dark mode"}
+          >
+            {mode === "dark" ? <Sun className="w-4 h-4" /> : <Moon className="w-4 h-4" />}
+          </button>
           <Link to="/auth" className="sp-btn sp-btn-ghost text-sm" data-testid="nav-signin">Sign in</Link>
           <Link to="/auth?mode=register" className="sp-btn sp-btn-primary text-sm" data-testid="nav-getstarted">
             Get started <ArrowRight className="w-4 h-4" />
