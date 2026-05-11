@@ -91,7 +91,8 @@ const TIERS = [
 const STUDIO = [
   { name: "Paid Ads — Google + Meta", retail: 3750, unit: "/mo",
     icon: Megaphone, flagship: true,
-    blurb: "End-to-end campaign management. AI strategy from Foundry, human hands on keys." },
+    blurb: "End-to-end campaign management. AI strategy from Foundry, human hands on keys.",
+    note: "Management fee only — ad spend billed by Google/Meta directly to your account." },
   { name: "Marketing Site (10 pages + CMS)", retail: 12500, unit: "flat",
     icon: Globe, flagship: true,
     blurb: "Full brand site with agent-friendly CMS so Foundry can update it post-launch." },
@@ -99,9 +100,11 @@ const STUDIO = [
     icon: Smartphone, flagship: true,
     blurb: "4-week production sprint. Scope with the agents, ship with ArcheForge." },
   { name: "Paid Ads — Google only", retail: 2500, unit: "/mo", icon: Megaphone,
-    blurb: "Search + PMax + remarketing. Weekly reporting." },
+    blurb: "Search + PMax + remarketing. Weekly reporting.",
+    note: "Management fee only — ad spend billed by Google directly to your account." },
   { name: "Paid Ads — Meta only", retail: 2500, unit: "/mo", icon: Megaphone,
-    blurb: "FB + IG. Creative refresh every 14 days." },
+    blurb: "FB + IG. Creative refresh every 14 days.",
+    note: "Management fee only — ad spend billed by Meta directly to your account." },
   { name: "Marketing Site (5 pages)", retail: 6500, unit: "flat", icon: Globe,
     blurb: "Lean brand site, Webflow or React." },
   { name: "Brand Identity", retail: 3500, unit: "flat", icon: PenTool,
@@ -254,6 +257,11 @@ function StudioCard({ s }) {
       </div>
       <h4 className="chr-display-tight text-base chr-text mb-2 leading-tight">{s.name}</h4>
       <p className="text-xs chr-mute leading-relaxed mb-3 font-medium">{s.blurb}</p>
+      {s.note && (
+        <p className="text-[10px] italic text-blue-300/90 leading-snug mb-3 -mt-1 font-medium">
+          {s.note}
+        </p>
+      )}
       <div className="border-t border-white/5 pt-3 flex items-end justify-between">
         <div className="chr-display text-2xl chr-text-steel">
           ${s.retail.toLocaleString()}

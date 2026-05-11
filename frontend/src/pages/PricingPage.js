@@ -107,6 +107,7 @@ const STUDIO_SERVICES = [
     retail: 3750, unit: "/mo",
     icon: Megaphone,
     flagship: true,
+    note: "Management fee only — ad spend billed by Google/Meta directly to your account.",
   },
   {
     id: "site-marketing",
@@ -133,6 +134,7 @@ const STUDIO_SERVICES = [
     scope: "Setup + 30 days managed",
     retail: 2500, unit: "/mo",
     icon: Megaphone,
+    note: "Management fee only — ad spend billed by Google directly to your account.",
   },
   {
     id: "ads-meta",
@@ -141,6 +143,7 @@ const STUDIO_SERVICES = [
     scope: "Setup + 30 days managed",
     retail: 2500, unit: "/mo",
     icon: Megaphone,
+    note: "Management fee only — ad spend billed by Meta directly to your account.",
   },
   {
     id: "site-5",
@@ -202,6 +205,10 @@ const STUDIO_SERVICES = [
 ];
 
 const FAQ = [
+  {
+    q: "Do the paid-ads packages include ad spend?",
+    a: "No — the monthly fees ($2,500 Google · $2,500 Meta · $3,750 combined) are management fees only. Ad spend is billed by Google or Meta directly to your own ad account, which we set up alongside (or use the one you already have). This is the industry-standard model and keeps you in full control of your spend, payment method, and billing history. We'll recommend a starting daily/monthly budget based on your goals before launch, but you decide the number and can change it any time.",
+  },
   {
     q: "How does ArcheForge pricing actually work for Temper and Refine?",
     a: "Temper members get 15% off every productized ArcheForge service automatically and skip the queue. Refine members get $2,000/mo of ArcheForge credits applied to any service, and 30% off everything beyond that. Both discounts apply on the day you subscribe — no waiting period.",
@@ -331,6 +338,11 @@ function StudioCard({ s }) {
       </div>
       <h4 className="sp-display text-lg leading-snug">{s.name}</h4>
       <p className="text-xs sp-subtle leading-relaxed flex-1">{s.blurb}</p>
+      {s.note && (
+        <p className="text-[10px] italic text-amber-300/80 leading-snug -mt-1">
+          {s.note}
+        </p>
+      )}
       <div className="border-t border-white/10 pt-3 flex items-end justify-between gap-2">
         <div>
           <div className="text-[10px] uppercase tracking-widest sp-subtle">
