@@ -3222,6 +3222,34 @@ async def generate_agent_reply(conv: dict, team: dict, agent_id: str,
         # an anti-hallucination directive ("Do NOT invent issues / repos
         # not in this list"). Citation rules baked in.
         system += github_block
+    else:
+        # Even when no GitHub intent fires, tell the agent the integration
+        # EXISTS for this org if it's connected — so the agent never
+        # falls back to "I don't have access to your repos" when the user
+        # is clearly trying to use it but phrased the ask unusually.
+        try:
+            gh_conn = await db.github_connections.find_one(
+                {"$or": [
+                    {"scope": "org", "org_id": str(team.get("org_id") or "")},
+                    {"scope": "user", "user_id": latest_user_id or ""},
+                ]},
+                {"github_username": 1, "scope": 1},
+            )
+            if gh_conn:
+                system += (
+                    f"\n\nGITHUB CAPABILITY (PASSIVE): The user has connected "
+                    f"their GitHub account (`{gh_conn.get('github_username') or 'unknown'}`, "
+                    f"scope `{gh_conn.get('scope')}`). You DO have read access to "
+                    f"their repos via the platform — list repos, read READMEs, "
+                    f"check commits, view open issues. If they reference a repo "
+                    f"by name (`owner/name` or a github.com URL), ask them to "
+                    f"say what kind of review they want (architecture, code "
+                    f"quality, security, README polish, etc.) and I'll fetch "
+                    f"the data on the next turn. Never tell them you don't "
+                    f"have access — you do."
+                )
+        except Exception:
+            pass
 
     chat = LlmChat(
         api_key=EMERGENT_LLM_KEY,

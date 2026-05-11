@@ -29,6 +29,7 @@ same `db`, both need `_fernet()`). One module, three sections, clean.
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 import secrets
@@ -838,6 +839,27 @@ _INTENT_LIST_ISSUES = _re.compile(
     _re.IGNORECASE,
 )
 
+# "review / audit / explore / summarize / look at / check out / examine /
+# read / read through / dive into / walk through / take a look at <repo>"
+# — catches the natural "help me understand this repo" intent that's
+# distinct from "list my repos" or "open issues".
+_INTENT_REPO_SUMMARY = _re.compile(
+    r"\b(review|audit|explore|summari[sz]e|examine|inspect|"
+    r"read(?: through)?|walk through|dive into|"
+    r"look at|take a look at|check( out)?|peek at)\b"
+    r"[^.?!]{0,80}\brepo\b",
+    _re.IGNORECASE,
+)
+
+# Bare "github" or "my repo" mention without any repo coordinate —
+# fires the "user wants something with GitHub but didn't name a repo"
+# branch so the agent prompts for a repo instead of denying access.
+_INTENT_GITHUB_BARE = _re.compile(
+    r"\b(my github|github (?:account|integration|connection)|"
+    r"(?:my )?repo(?:sitor(?:y|ies))?)\b",
+    _re.IGNORECASE,
+)
+
 
 async def fetch_github_chat_context(
     db, *, message: str, org_id: str, user_id: str,
@@ -926,5 +948,134 @@ async def fetch_github_chat_context(
         if not rows:
             block += "_(No open issues.)_\n"
         return block, rows
+
+    # Pattern 3: "review / explore / summarize <repo>" — fetch repo
+    # metadata + README + recent commits + counts so the agent can
+    # actually discuss what's in the repo instead of pleading
+    # ignorance. This is the highest-leverage intent because it's
+    # what users mean ~80% of the time when they say "look at my
+    # repo".
+    #
+    # Two trip-wires for this intent:
+    #   (a) explicit "review/audit/explore/summarize <...> repo" phrasing
+    #   (b) a bare `github.com/<owner>/<name>` URL paired with ANY
+    #       review-like verb (lower bar — if a user pastes a GitHub
+    #       URL into chat they almost always want the agent to look
+    #       at it, not just acknowledge the link).
+    has_github_url = "github.com/" in msg.lower()
+    casual_review_verb = _re.search(
+        r"\b(review|audit|explore|examine|inspect|read|look|"
+        r"summari[sz]e|walk|dive|peek|check|see)\b",
+        msg, _re.IGNORECASE,
+    )
+    if _INTENT_REPO_SUMMARY.search(msg) or (has_github_url and casual_review_verb):
+        m = _REPO_RE.search(msg)
+        if m:
+            repo = f"{m.group(1)}/{m.group(2)}"
+            try:
+                meta, readme, commits, lang_breakdown = await asyncio.gather(
+                    _gh_get(token, f"/repos/{repo}"),
+                    _gh_get(token, f"/repos/{repo}/readme"),
+                    _gh_get(token, f"/repos/{repo}/commits", params={"per_page": 10}),
+                    _gh_get(token, f"/repos/{repo}/languages"),
+                    return_exceptions=True,
+                )
+            except Exception as exc:
+                return f"\n\nGITHUB INTENT FAILED for {repo}: {exc}\n", []
+            block = (
+                f"\n\nGROUND TRUTH — GITHUB REPO `{repo}` (fetched "
+                f"server-side just now). Use this to ground your review; "
+                f"do not invent files, commits, or behaviour that aren't "
+                f"represented here. If you need deeper detail (file "
+                f"contents, specific issues), ASK the user — don't claim "
+                f"you can't see the repo, you can.\n\n"
+            )
+            results: list[dict] = []
+            if isinstance(meta, dict):
+                desc = (meta.get("description") or "").strip()
+                visibility = "private" if meta.get("private") else "public"
+                stars = meta.get("stargazers_count", 0)
+                forks = meta.get("forks_count", 0)
+                open_issues = meta.get("open_issues_count", 0)
+                default_branch = meta.get("default_branch", "main")
+                size_kb = meta.get("size", 0)
+                license_name = ((meta.get("license") or {}).get("name") or "").strip()
+                block += f"**Repo**: [{repo}]({meta.get('html_url')}) ({visibility})\n"
+                if desc:
+                    block += f"**Description**: {desc}\n"
+                block += (
+                    f"**Default branch**: `{default_branch}` · "
+                    f"**Size**: {size_kb} KB · "
+                    f"**Stars**: {stars} · **Forks**: {forks} · "
+                    f"**Open issues+PRs**: {open_issues}"
+                )
+                if license_name:
+                    block += f" · **License**: {license_name}"
+                block += "\n"
+                results.append({"kind": "repo_meta", "data": {
+                    "full_name": repo, "url": meta.get("html_url"),
+                    "description": desc, "visibility": visibility,
+                    "stars": stars, "forks": forks,
+                    "open_issues": open_issues,
+                    "default_branch": default_branch,
+                    "size_kb": size_kb, "license": license_name,
+                }})
+            if isinstance(lang_breakdown, dict) and lang_breakdown:
+                total = sum(lang_breakdown.values()) or 1
+                breakdown = sorted(lang_breakdown.items(), key=lambda x: -x[1])[:6]
+                pretty = ", ".join(
+                    f"{name} {round(100*size/total)}%" for name, size in breakdown
+                )
+                block += f"**Languages**: {pretty}\n"
+            if isinstance(readme, dict) and readme.get("content"):
+                import base64 as _b64
+                try:
+                    raw = _b64.b64decode(readme["content"]).decode("utf-8", "replace")
+                    snippet = raw.strip()[:2400]
+                    truncated = "..." if len(raw.strip()) > 2400 else ""
+                    block += f"\n**README (first 2.4KB)**:\n```\n{snippet}{truncated}\n```\n"
+                    results.append({"kind": "readme",
+                                    "data": {"length_chars": len(raw),
+                                             "truncated": bool(truncated)}})
+                except Exception:
+                    pass
+            if isinstance(commits, list) and commits:
+                block += "\n**Last 10 commits** (newest first):\n"
+                for c in commits[:10]:
+                    sha = (c.get("sha") or "")[:7]
+                    cm = c.get("commit") or {}
+                    msg_line = ((cm.get("message") or "").splitlines() or [""])[0][:90]
+                    author = ((cm.get("author") or {}).get("name") or "?")
+                    when = ((cm.get("author") or {}).get("date") or "")[:10]
+                    block += f"- `{sha}` {when} · {author}: {msg_line}\n"
+                results.append({"kind": "commits",
+                                "data": {"count": len(commits)}})
+            return block, results
+        # Intent matched but no repo coord — tell the agent the user
+        # is asking about a repo without naming one. The agent should
+        # ASK rather than refuse.
+        block = (
+            "\n\nGITHUB CONTEXT: The user wants to review a GitHub "
+            "repo but didn't name one. Their GitHub account IS "
+            "connected (you have read access via their OAuth token). "
+            "Ask them which repo — accept either `owner/name` or a "
+            "GitHub URL. Do NOT say you can't access their repos; "
+            "you can.\n"
+        )
+        return block, []
+
+    # Pattern 4: bare GitHub mention with no other intent — prevent the
+    # agent from falling back to "I don't have access" when the user
+    # is clearly trying to use the integration.
+    if _INTENT_GITHUB_BARE.search(msg):
+        block = (
+            "\n\nGITHUB CONTEXT: The user's GitHub account is "
+            "connected (read access via OAuth). You CAN list their "
+            "repos, read repo metadata + README + commits + open "
+            "issues, and explore files. If their message is vague, "
+            "ask a clarifying question (which repo? what aspect?) "
+            "rather than denying capability.\n"
+        )
+        return block, []
 
     return "", []
