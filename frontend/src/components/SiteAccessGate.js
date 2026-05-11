@@ -113,7 +113,7 @@ export default function SiteAccessGate({ children }) {
           One more step.
         </h1>
         <p className="sp-subtle text-sm text-center mb-6">
-          SoulPrint Engine Pro is currently invite-only. Enter your access
+          Foundry is currently invite-only. Enter your access
           code or 24-hour trial code to continue.
         </p>
 

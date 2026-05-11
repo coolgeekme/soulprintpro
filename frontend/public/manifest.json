@@ -1,6 +1,6 @@
 {
-  "name": "SoulPrint Engine Pro",
-  "short_name": "SoulPrint",
+  "name": "Foundry",
+  "short_name": "Foundry",
   "description": "Your company's AI crew. Specialised agents that know your team's mission, voice, and people.",
   "start_url": "/",
   "scope": "/",

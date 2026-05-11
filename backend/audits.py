@@ -263,7 +263,7 @@ def _public_full(a: dict) -> dict:
 
 
 # ── LLM audit synthesis ──────────────────────────────────────────────────────
-_AUDIT_SYSTEM_PROMPT = """You are SoulPrint Engine Pro's Senior Brand & Growth Auditor — a hybrid of a McKinsey-style strategist, a senior conversion-rate optimiser, and a brand voice expert. You produce honest, prospect-grade audits that win business by being specific, useful, and slightly uncomfortable.
+_AUDIT_SYSTEM_PROMPT = """You are Foundry's Senior Brand & Growth Auditor — a hybrid of a McKinsey-style strategist, a senior conversion-rate optimiser, and a brand voice expert. You produce honest, prospect-grade audits that win business by being specific, useful, and slightly uncomfortable.
 
 You will receive raw data the team has gathered:
   • The business's website rendered text (hero, copy, calls-to-action)
@@ -273,9 +273,9 @@ You will receive raw data the team has gathered:
   • Optional social profile URLs the admin provided
 
 ═══════════════════════════════════════════════════════════════════════
-PLATFORM CAPABILITY MAP — what SoulPrint Engine Pro can actually do
+PLATFORM CAPABILITY MAP — what Foundry can actually do
 ═══════════════════════════════════════════════════════════════════════
-This audit is delivered through SoulPrint Engine Pro (SPE Pro). EVERY
+This audit is delivered through Foundry (SPE Pro). EVERY
 recommendation you make MUST include a ``soulprint_execution`` field
 that explains — concretely, in 1–2 sentences — exactly how SPE Pro
 helps the user act on the fix (which agent drafts it, which mission
@@ -419,7 +419,7 @@ Synthesize a structured audit and return ONLY valid JSON matching this schema:
     "reviews_summary": "Paragraph: sentiment + 2-3 specific recurring complaints or themes (cite review excerpts when available).",
     "competitive_context": "Paragraph: where they sit vs the 3 named competitors."
   },
-  "how_soulprint_helps": "3-4 sentence closing pitch: tie the audit's findings together and explain how SoulPrint Engine Pro helps the user act on the recommended fixes — by drafting the copy, building the briefs, surfacing the research, and keeping the playbooks current. Be honest about the split: SPE Pro prepares the work, the user (or their team) ships it. Reference 2-3 specific SPE Pro features by name. End with a soft CTA inviting them to start with SPE Pro. Do NOT use marketing fluff — be specific and grounded in THEIR audit."
+  "how_soulprint_helps": "3-4 sentence closing pitch: tie the audit's findings together and explain how Foundry helps the user act on the recommended fixes — by drafting the copy, building the briefs, surfacing the research, and keeping the playbooks current. Be honest about the split: SPE Pro prepares the work, the user (or their team) ships it. Reference 2-3 specific SPE Pro features by name. End with a soft CTA inviting them to start with SPE Pro. Do NOT use marketing fluff — be specific and grounded in THEIR audit."
 }
 
 Rules:
@@ -518,7 +518,7 @@ def _audit_to_markdown(a: dict) -> str:
             # Pro feature so the prospect sees the natural next step.
             spe = rec.get("soulprint_execution") or ""
             if spe:
-                out.append(f"\n**↳ How SoulPrint Engine Pro can help:** {spe}\n")
+                out.append(f"\n**↳ How Foundry can help:** {spe}\n")
     out.append("\n## Brand Voice Read\n")
     out.append(f"\n- **Stated mission:** {bv.get('stated_mission','')}")
     out.append(f"\n- **Actual voice:** {bv.get('actual_voice','')}")
@@ -539,9 +539,9 @@ def _audit_to_markdown(a: dict) -> str:
     # prospect toward the natural next step (booking a SPE Pro setup).
     helps = a.get("how_soulprint_helps") or ""
     if helps:
-        out.append("\n\n## Tackle These Fixes With SoulPrint Engine Pro\n")
+        out.append("\n\n## Tackle These Fixes With Foundry\n")
         out.append(f"\n{helps}\n")
-    out.append("\n\n---\n_Prepared by SoulPrint Engine Pro._")
+    out.append("\n\n---\n_Prepared by Foundry._")
     return "".join(out)
 
 
@@ -923,7 +923,7 @@ def make_audits_router(
     <p style="font-size:13px;line-height:1.6;color:#6b7280;margin:0;">
       Questions, or want help acting on what you found? Just reply to this email — we read every one — or grab a 20-minute slot at <a href="https://zcal.co/reggie-archeforge" style="color:#F64000;">zcal.co/reggie-archeforge</a>.
     </p>
-    <p style="font-size:11px;color:#9ca3af;margin:32px 0 0 0;">SoulPrint Engine Pro · Tamper-evident · Bitcoin-anchored proof of integrity</p>
+    <p style="font-size:11px;color:#9ca3af;margin:32px 0 0 0;">Foundry · Tamper-evident · Bitcoin-anchored proof of integrity</p>
   </div>
 </body></html>"""
         attachments: list[dict] = []

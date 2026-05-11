@@ -54,7 +54,7 @@ export default function AboutPage() {
           >
             <ArrowLeft className="w-3.5 h-3.5" /> Back
           </Link>
-          <Link to="/" aria-label="SoulPrint Engine Pro home" data-testid="about-brand">
+          <Link to="/" aria-label="Foundry home" data-testid="about-brand">
             <Logo variant="wordmark" className="h-7 w-auto" />
           </Link>
         </div>

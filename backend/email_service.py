@@ -106,7 +106,7 @@ async def send_welcome_email(*, name: str, email: str) -> bool:
                   color:#1a1a22;max-width:560px;margin:0 auto;line-height:1.55;padding:32px 24px;">
         <h1 style="font-family:'IBM Plex Serif',Georgia,serif;font-size:28px;
                    color:#F64000;margin:0 0 16px;line-height:1.15;">
-          Welcome to SoulPrint Engine Pro, {safe_name}.
+          Welcome to Foundry, {safe_name}.
         </h1>
         <p style="font-size:15px;color:#2a2a35;">
           You now have access to a 169-agent team that already knows how
@@ -129,19 +129,19 @@ async def send_welcome_email(*, name: str, email: str) -> bool:
         </p>
         <p style="font-size:13px;color:#888;margin-top:32px;">
           Questions? Reply to this email — a real human reads it.<br/>
-          — The SoulPrint Engine Pro team
+          — The Foundry team
         </p>
       </div>
     """
     user_text = (
-        f"Welcome to SoulPrint Engine Pro, {safe_name}.\n\n"
+        f"Welcome to Foundry, {safe_name}.\n\n"
         f"You now have access to a 169-agent team that already knows how to build inside your brand voice.\n\n"
         f"Open your dashboard: https://pro.soulprintengine.ai/app\n\n"
-        f"Questions? Reply to this email — a real human reads it.\n— The SoulPrint Engine Pro team"
+        f"Questions? Reply to this email — a real human reads it.\n— The Foundry team"
     )
     user_ok = await send_resend_email(
         to=email,
-        subject="Welcome to SoulPrint Engine Pro",
+        subject="Welcome to Foundry",
         html=user_html, text=user_text,
     )
 
@@ -163,7 +163,7 @@ async def send_welcome_email(*, name: str, email: str) -> bool:
     )
     await send_resend_email(
         to=team_addr,
-        subject=f"[SoulPrint] New signup — {safe_name} <{email}>",
+        subject=f"[Foundry] New signup — {safe_name} <{email}>",
         html=team_html, text=team_text,
     )
 

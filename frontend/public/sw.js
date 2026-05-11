@@ -1,4 +1,4 @@
-/* SoulPrint Engine Pro — self-unregistering service worker.
+/* Foundry — self-unregistering service worker.
  *
  * Why this exists as a stub:
  *   We previously shipped a network-first SW that cached the app shell. As

@@ -1,7 +1,7 @@
 /**
  * Clipboard sanitiser.
  *
- * When a user copies from SoulPrint Engine Pro the browser by default
+ * When a user copies from Foundry the browser by default
  * captures the rendered styles — meaning a dark-theme page produces a
  * "white text on black/grey" payload that looks awful pasted into Gmail,
  * Notion, Word, Google Docs, etc.

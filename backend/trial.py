@@ -101,10 +101,10 @@ async def _send_trial_code_email(*, to: str, name: str, code: str,
         )
         return False
     redeem_url = f"{origin.rstrip('/')}/trial/redeem?code={code}"
-    subject = "Your SoulPrint Engine Pro trial code"
+    subject = "Your Foundry trial code"
     text = (
         f"Hi {name or 'there'},\n\n"
-        f"Your SoulPrint Engine Pro 24-hour trial is ready when you are.\n\n"
+        f"Your Foundry 24-hour trial is ready when you are.\n\n"
         f"Your code: {code}\n\n"
         f"Or click here to start now:\n{redeem_url}\n\n"
         f"The clock starts the moment you redeem the code — not now. So "
@@ -118,7 +118,7 @@ async def _send_trial_code_email(*, to: str, name: str, code: str,
         f"<p style='font-size:13px;color:#888;text-transform:uppercase;"
         f"letter-spacing:0.1em;margin:0 0 8px'>Trial code</p>"
         f"<h2 style='font-size:22px;margin:0 0 16px;line-height:1.3'>"
-        f"Your SoulPrint Engine Pro 24-hour trial is ready when you are.</h2>"
+        f"Your Foundry 24-hour trial is ready when you are.</h2>"
         f"<p style='font-size:14px;line-height:1.6;margin:0 0 8px'>"
         f"Hi {name or 'there'},</p>"
         f"<p style='font-size:14px;line-height:1.6;margin:0 0 16px'>"

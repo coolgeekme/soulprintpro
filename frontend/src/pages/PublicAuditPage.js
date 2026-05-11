@@ -149,7 +149,7 @@ export default function PublicAuditPage() {
         <div className="max-w-5xl mx-auto px-6 py-3 flex items-center justify-between">
           <Link to="/" className="flex items-center gap-2">
             <Wand2 className="w-4 h-4 opacity-80" />
-            <span className="text-sm tracking-tight font-medium">SoulPrint Engine Pro</span>
+            <span className="text-sm tracking-tight font-medium">Foundry</span>
           </Link>
           <span className="text-[10px] uppercase tracking-widest sp-subtle">Business Audit</span>
         </div>
@@ -209,7 +209,7 @@ export default function PublicAuditPage() {
 
         <footer className="pt-12 text-center">
           <div className="text-[10px] uppercase tracking-widest sp-subtle">Audit prepared by</div>
-          <div className="text-sm mt-1">SoulPrint Engine Pro</div>
+          <div className="text-sm mt-1">Foundry</div>
         </footer>
       </main>
     </div>

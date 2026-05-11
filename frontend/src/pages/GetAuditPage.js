@@ -109,7 +109,7 @@ export default function GetAuditPage() {
             <p className="text-sm sm:text-base sp-subtle leading-relaxed mt-3 max-w-xl mx-auto">
               Our agents will scan your site, dig through your reviews and
               competitor signal, and write you a prioritised list of fixes
-              — every one mapped to a specific SoulPrint Engine Pro feature
+              — every one mapped to a specific Foundry feature
               that helps you act on it. No credit card. No fluff.
             </p>
           </div>

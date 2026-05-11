@@ -8,7 +8,7 @@ polished, brand-aware document:
     business-grade typography)
   • Brand primary colour drives heading colour + accent rules
   • Header on every content page: small org wordmark + doc title
-  • Footer: page N / total + small "Prepared by SoulPrint Engine Pro"
+  • Footer: page N / total + small "Prepared by Foundry"
     + ISO date
   • Markdown content rendered through the same `markdown` library used
     by reportlab path so we keep the existing feature set (tables,
@@ -350,7 +350,7 @@ def _build_html(*, body_md: str, title: str, brand: Dict[str, Any]) -> str:
     elif org_name:
         cover_brand_block = f'<div class="cover-org">{org_name}</div>'
     else:
-        cover_brand_block = '<div class="cover-org">SoulPrint Engine Pro</div>'
+        cover_brand_block = '<div class="cover-org">Foundry</div>'
 
     return f"""<!doctype html>
 <html lang="en">
@@ -381,11 +381,11 @@ def _build_html(*, body_md: str, title: str, brand: Dict[str, Any]) -> str:
     <div class="cover-bot">
       <div>
         <div class="key">Prepared by</div>
-        <div><strong>{org_name or "SoulPrint Engine Pro"}</strong></div>
+        <div><strong>{org_name or "Foundry"}</strong></div>
       </div>
       <div>
         <div class="key">Powered by</div>
-        <div><strong>SoulPrint Engine Pro</strong></div>
+        <div><strong>Foundry</strong></div>
       </div>
     </div>
   </section>
@@ -400,7 +400,7 @@ def _build_html(*, body_md: str, title: str, brand: Dict[str, Any]) -> str:
 # ── Page header / footer (Chrome PDF templates) ─────────────────────────
 def _header_template(title: str, org_name: str) -> str:
     safe_title = escape(title or "")
-    safe_org = escape(org_name or "SoulPrint Engine Pro")
+    safe_org = escape(org_name or "Foundry")
     return f"""
     <div style="font-size:8pt;font-family:'Inter',Arial,sans-serif;color:#888;width:100%;
                 padding:0 0.7in;display:flex;justify-content:space-between;align-items:center;">
@@ -414,7 +414,7 @@ def _footer_template(primary: str) -> str:
     return f"""
     <div style="font-size:8pt;font-family:'Inter',Arial,sans-serif;color:#888;width:100%;
                 padding:0 0.7in;display:flex;justify-content:space-between;align-items:center;">
-      <span>Prepared by <span style="color:{primary};font-weight:600;">SoulPrint Engine Pro</span></span>
+      <span>Prepared by <span style="color:{primary};font-weight:600;">Foundry</span></span>
       <span><span class="pageNumber"></span> / <span class="totalPages"></span></span>
     </div>
     """

@@ -34,7 +34,7 @@ const SLIDES = [
     eyebrow: "A guided tour",
     title: "Your AI agency,\nbrand-aware on day one.",
     subtitle:
-      "SoulPrint Engine Pro turns one prompt into a polished deliverable — \n drafted, designed, and shipped by 169+ specialist agents that already \n know your brand voice.",
+      "Foundry turns one prompt into a polished deliverable — \n drafted, designed, and shipped by 169+ specialist agents that already \n know your brand voice.",
     cta: "Use ← / → to explore",
   },
 
@@ -168,7 +168,7 @@ const SLIDES = [
     title: "Drop a URL.\nShip a real audit\nin 60 seconds.",
     body: [
       "Anyone with a website link can self-serve a personalised audit from the homepage — no signup, no credit card.",
-      "Our agents scrape the site, fetch reviews and competitor signal, score the brand, and write back a prioritised fix list mapped to features they can act on inside SoulPrint Engine Pro.",
+      "Our agents scrape the site, fetch reviews and competitor signal, score the brand, and write back a prioritised fix list mapped to features they can act on inside Foundry.",
     ],
     bullets: [
       "Public report, branded teaser → lead-gated full PDF",
@@ -230,7 +230,7 @@ const SLIDES = [
     primaryHref: "/auth?mode=register",
     primaryLabel: "Create your free org",
     secondaryHref: "/about",
-    secondaryLabel: "What is SoulPrint Engine Pro?",
+    secondaryLabel: "What is Foundry?",
   },
 ];
 

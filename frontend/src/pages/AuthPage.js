@@ -172,7 +172,7 @@ export default function AuthPage() {
         <ArrowLeft className="w-4 h-4" /> Home
       </Link>
       <div className="w-full max-w-md sp-glass-strong rounded-3xl p-8 sp-fade-up">
-        <Link to="/" aria-label="SoulPrint Engine Pro home" className="block mb-8">
+        <Link to="/" aria-label="Foundry home" className="block mb-8">
           <Logo variant="wordmark" className="h-10 w-auto mx-auto" />
         </Link>
 

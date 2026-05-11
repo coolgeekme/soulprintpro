@@ -60,7 +60,7 @@ export default function TopBar({ children, right = null }) {
       <div>
         <div className="max-w-7xl mx-auto flex items-center justify-between px-4 sm:px-6 py-3 gap-2 sm:gap-4">
           <div className="flex items-center gap-3 min-w-0">
-            <Link to="/app" className="flex items-center gap-2 shrink-0" data-testid="topbar-brand" aria-label="SoulPrint Engine Pro home">
+            <Link to="/app" className="flex items-center gap-2 shrink-0" data-testid="topbar-brand" aria-label="Foundry home">
               {/* Compact mark on mobile, full wordmark from sm: up so it
                   matches the landing & auth screens. */}
               <Logo variant="mark" className="w-9 h-9 sm:hidden" />
@@ -166,7 +166,7 @@ export default function TopBar({ children, right = null }) {
                   className="cursor-pointer"
                 >
                   <HelpCircle className="w-4 h-4 mr-2" />
-                  What is SoulPrint Engine Pro?
+                  What is Foundry?
                 </DropdownMenuItem>
                 {/* Trust & Security — same dropdown slot as About so
                     it's discoverable for in-app users (and easy to show

@@ -6,7 +6,7 @@ artifact types (briefs, plans, reports) continue to use
 
 Design goals:
   • **Cover page** — big brand name, hero score circle, prep date,
-    SoulPrint Engine Pro footer
+    Foundry footer
   • **Score band coloring** — green ≥80, amber ≥60, red <60. The
     score number, ring, and band label all reflect the same color
   • **Card-style sections** — strengths/issues/recommendations rendered
@@ -252,7 +252,7 @@ def _cover_page(canvas: _canvas.Canvas, doc):
     # Footer — left-aligned brand, right-aligned date
     canvas.setFillColor(MUTED)
     canvas.setFont(FONT_REG, 8)
-    canvas.drawString(0.75 * inch, 0.42 * inch, "SoulPrint Engine Pro · Business Audit")
+    canvas.drawString(0.75 * inch, 0.42 * inch, "Foundry · Business Audit")
     today = datetime.now(timezone.utc).strftime("%B %d, %Y")
     canvas.drawRightString(LETTER[0] - 0.75 * inch, 0.42 * inch, today)
     canvas.restoreState()
@@ -266,7 +266,7 @@ def _content_page(canvas: _canvas.Canvas, doc):
     canvas.rect(0.75 * inch, LETTER[1] - 0.55 * inch, 0.4 * inch, 2, stroke=0, fill=1)
     canvas.setFillColor(INK)
     canvas.setFont(FONT_BOLD, 9)
-    canvas.drawString(1.25 * inch, LETTER[1] - 0.55 * inch, "SoulPrint Engine Pro")
+    canvas.drawString(1.25 * inch, LETTER[1] - 0.55 * inch, "Foundry")
     canvas.setFillColor(MUTED)
     canvas.setFont(FONT_REG, 8)
     canvas.drawString(1.25 * inch, LETTER[1] - 0.7 * inch, "Business Audit")
@@ -402,7 +402,7 @@ def render_audit_pdf(audit: dict) -> bytes:
         leftMargin=0.75 * inch, rightMargin=0.75 * inch,
         topMargin=0.95 * inch, bottomMargin=0.85 * inch,
         title=f"Business Audit — {audit.get('business_name','Audit')}",
-        author="SoulPrint Engine Pro",
+        author="Foundry",
     )
     doc._audit_brand = audit.get("business_name") or ""
 
@@ -476,7 +476,7 @@ def _build_cover(story: list, audit: dict):
         textColor=MUTED, leading=12, alignment=TA_CENTER,
     )
     story.append(Paragraph(
-        "Prepared by SoulPrint Engine Pro · "
+        "Prepared by Foundry · "
         "Comprehensive read of website, social presence, reviews, "
         "brand voice, and competitive position.",
         style,

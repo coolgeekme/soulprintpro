@@ -167,7 +167,7 @@ async def recover_bytes_from_gridfs(filename: str) -> tuple[Optional[bytes], Opt
     return blob, rec.get("mime") or None, rec.get("original_name") or filename
 
 # ── App ──────────────────────────────────────────────────────────────────────
-app = FastAPI(title="SoulPrint Engine API")
+app = FastAPI(title="Foundry API")
 
 # ── Security middleware (headers + brute-force lockout) ──────────────────
 # Security headers must be added BEFORE other middleware so they're applied
@@ -1719,7 +1719,7 @@ async def create_invite(org_id: str, body: InviteCreateBody, request: Request, u
             text = (
                 f"Hi,\n\n"
                 f"{inviter_name} has invited you to join {org_name} on "
-                f"SoulPrint Engine as a {body.role}.\n\n"
+                f"Foundry as a {body.role}.\n\n"
                 f"Accept your invite:\n{invite_url}\n\n"
                 f"This link expires in 14 days.\n"
             )
@@ -5797,7 +5797,7 @@ async def unfurl(url: str, u: dict = Depends(get_current_user)):
         preview["host"] = host
         async with httpx.AsyncClient(timeout=8.0, follow_redirects=True,
                                     headers={
-                                        "User-Agent": "Mozilla/5.0 (compatible; SoulPrintEngineBot/1.0; +https://soulprintengine.ai/bot)",
+                                        "User-Agent": "Mozilla/5.0 (compatible; FoundryBot/1.0; +https://soulprintengine.ai/bot)",
                                         "Accept": "text/html,application/xhtml+xml",
                                         "Accept-Language": "en-US,en;q=0.9",
                                     }) as client:
@@ -6335,7 +6335,7 @@ async def get_about():
     try:
         md = _ABOUT_MD_PATH.read_text(encoding="utf-8")
     except FileNotFoundError:
-        md = "# SoulPrint Engine Pro\n\nAbout content not configured."
+        md = "# Foundry\n\nAbout content not configured."
     return {"markdown": md}
 
 app.include_router(base_r)
@@ -6916,7 +6916,7 @@ async def public_verify_file(gridfs_id: str):
     """Public, no-auth proof lookup. Returns just the cryptographic
     primitives — anyone (a prospect, an auditor, a journalist) can hit
     this URL with a file_id from a `/v/<id>` share-link and confirm the
-    file is Bitcoin-anchored without needing a SoulPrint account.
+    file is Bitcoin-anchored without needing a Foundry account.
     """
     row = await poi.get_proof_for_subject(db, kind="file", subject_id=gridfs_id)
     if not row:
@@ -7349,7 +7349,7 @@ async def startup():
             logger.info("GridFS backfill: mirrored %d existing brand logo(s).", backfilled)
     except Exception as exc:
         logger.warning("Brand-logo GridFS backfill skipped: %s", exc)
-    logger.info("SoulPrint API ready.")
+    logger.info("Foundry API ready.")
 
 @app.on_event("shutdown")
 async def shutdown():

@@ -20,7 +20,7 @@ export default function AuditFullReport({ audit }) {
           act on this" hook so the prospect sees the natural next
           step without us overpromising autonomous execution. */}
       <section>
-        <SectionHeader icon={Wand2} title="Prioritized recommendations" subtitle="The highest-leverage fixes — and how SoulPrint Engine Pro can help you act on each one." />
+        <SectionHeader icon={Wand2} title="Prioritized recommendations" subtitle="The highest-leverage fixes — and how Foundry can help you act on each one." />
         <ol className="space-y-3 mt-3">
           {(audit.recommendations || []).map((r, i) => (
             <li key={i} className="sp-glass rounded-xl p-5">
@@ -113,7 +113,7 @@ export default function AuditFullReport({ audit }) {
           <div className="flex items-center gap-2 mb-3">
             <Rocket className="w-4 h-4 text-orange-300" />
             <div className="text-[11px] uppercase tracking-widest text-orange-300/90 font-medium">
-              Tackle these with SoulPrint Engine Pro
+              Tackle these with Foundry
             </div>
           </div>
           <p className="text-base sm:text-lg leading-relaxed mb-4">
@@ -125,7 +125,7 @@ export default function AuditFullReport({ audit }) {
             className="sp-btn sp-btn-primary text-base"
             data-testid="audit-spe-cta-button"
           >
-            <Rocket className="w-4 h-4" /> Start with SoulPrint Engine Pro
+            <Rocket className="w-4 h-4" /> Start with Foundry
           </a>
         </section>
       )}

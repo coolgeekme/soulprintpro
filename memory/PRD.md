@@ -696,3 +696,15 @@ pattern. Users must be able to:
   - Idempotent re-redeem of the same code by the same user returns `{ok: true, already_granted: true}`.
 
   **Setup user has to do once**: nothing — runs out of the box. Optionally mint codes via `/admin` → "Access Codes" tab. Trial codes from `/get-audit` continue to work without changes.
+
+- ✅ **Foundry rebrand** (Feb 11, 2026) — full product rename "SoulPrint Engine Pro" → **Foundry**, with parent company **SoulPrint Engine** intact. Done as a surgical rename in 19 files / 56 replacements via a one-shot script; "SoulPrint" alone preserved everywhere because it remains the domain noun for per-team identity documents.
+  - Brand constants centralised in `/app/frontend/src/lib/brand.js` (PRODUCT_NAME, COMPANY_NAME, FULL_NAME, AGENCY_NAME, DOMAIN).
+  - `Logo.js` rewritten — wordmark variant now renders a typographic "FOUNDRY" + tiny "BY SOULPRINT ENGINE" subline (Cormorant Garamond + Inter), keeps the swirl mark for the icon variant. Auto-theme-aware. Easy SVG swap-in path documented.
+  - `index.html` title + meta description + apple-mobile-web-app-title, `manifest.json` name + short_name, `sw.js` header all updated.
+  - Backend: FastAPI app title → "Foundry API", agent invite emails reference "Foundry", admin signup notifications subject → `[Foundry]`, all PDF footers + email templates updated.
+  - Pricing page: Tier 2 renamed "Tempered" → **Temper**. Spark repriced **$39 → $79/mo monthly ($59 annual)** with beefed deliverables (1,500 msgs / 10 missions / 30 audits / 120 min Crucible / 3 GB / 2 social / 3 GH repos). Agency arm referenced everywhere as **ArcheForge Studios**.
+  - Crucible (new product name for the live remote browser layer, replacing "Agent Mode") used consistently on pricing page; global rename inside the app shell + agent prompts still pending until the user confirms (currently only on /pricing).
+
+- ✅ **API Spend tab unified** (Feb 11, 2026) — admin "LLM Usage" tab renamed to "API Spend" and merged LLM + utility-API metrics into a single view: one header row of 4 cards (total, language models, other services, blended $/call), one stacked daily chart, one Top Providers table with both buckets, and a new Top Users by Spend table merging LLM + external attribution per user.
+
+- ✅ **Site Access Gate v2 — register-side** (Feb 11, 2026) — moved gate from post-auth to registration form. Added `POST /api/access-codes/validate` for client-side pre-check, `access_code` field on `POST /api/auth/register` (required). Trial redemption now stamps `access_granted_at`. **Startup migration grandfathered 394 existing users** so sign-in is friction-free for everyone who registered before the gate. Frontend renders the access-code input only in register mode.

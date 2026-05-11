@@ -35,14 +35,14 @@ export default function LandingPage() {
           paddingRight: "max(1.5rem, env(safe-area-inset-right, 0px))",
         }}
       >
-        <Link to="/" className="flex items-center gap-2" data-testid="brand-logo" aria-label="SoulPrint Engine Pro home">
+        <Link to="/" className="flex items-center gap-2" data-testid="brand-logo" aria-label="Foundry home">
           <Logo variant="wordmark" className="h-9 w-auto" />
         </Link>
         <nav className="hidden md:flex items-center gap-8 text-sm sp-subtle">
           <a href="#features" className="hover:text-white transition-colors">How it works</a>
           <a href="#agents" className="hover:text-white transition-colors">Agents</a>
           <a href="#teams" className="hover:text-white transition-colors">Teams</a>
-          <Link to="/about" className="hover:text-white transition-colors" data-testid="nav-about">What is SoulPrint Engine Pro?</Link>
+          <Link to="/about" className="hover:text-white transition-colors" data-testid="nav-about">What is Foundry?</Link>
           <Link to="/pricing" className="hover:text-white transition-colors" data-testid="nav-pricing">Pricing</Link>
           <Link to="/trust" className="hover:text-white transition-colors" data-testid="nav-trust">Trust &amp; Security</Link>
         </nav>
@@ -51,8 +51,8 @@ export default function LandingPage() {
             to="/about"
             className="sp-btn sp-btn-ghost text-sm md:hidden"
             data-testid="nav-about-mobile"
-            title="What is SoulPrint Engine Pro?"
-            aria-label="What is SoulPrint Engine Pro?"
+            title="What is Foundry?"
+            aria-label="What is Foundry?"
           >
             <HelpCircle className="w-4 h-4" />
           </Link>
@@ -73,7 +73,7 @@ export default function LandingPage() {
             <span className="italic text-white/75">Teach it to your AI.</span>
           </h1>
           <p className="sp-subtle text-base md:text-lg max-w-2xl leading-relaxed">
-            SoulPrint Engine Pro gives your team a working crew of specialised AI agents that know your mission,
+            Foundry gives your team a working crew of specialised AI agents that know your mission,
             your tone, and your people. Spin up org-wide teams, brief them once, and collaborate in direct
             and group chats that actually feel like yours.
           </p>
@@ -185,7 +185,7 @@ export default function LandingPage() {
       </section>
 
       <footer className="relative z-10 max-w-6xl mx-auto px-6 md:px-10 py-10 flex items-center justify-between text-xs sp-subtle">
-        <div>© {new Date().getFullYear()} SoulPrint Engine Pro</div>
+        <div>© {new Date().getFullYear()} Foundry · by SoulPrint Engine</div>
         <div className="flex items-center gap-4"><span>Built for teams</span></div>
       </footer>
     </div>

@@ -40,9 +40,9 @@ export default function AuditConversionCTA({ audit, leadId }) {
   // scores get "you're ahead, here's how SPE Pro keeps you there".
   const isLowScore = score && score < 70;
   const heroLine = isLowScore
-    ? `We found ${recCount || "several"} specific opportunit${recCount === 1 ? "y" : "ies"} on your site. Want SoulPrint Engine Pro to draft the top 3 fixes for you right now?`
+    ? `We found ${recCount || "several"} specific opportunit${recCount === 1 ? "y" : "ies"} on your site. Want Foundry to draft the top 3 fixes for you right now?`
     : recCount > 0
-      ? `You're already ahead. SoulPrint Engine Pro keeps you there — drafting briefs, monitoring competitors, and turning your wins into content automatically.`
+      ? `You're already ahead. Foundry keeps you there — drafting briefs, monitoring competitors, and turning your wins into content automatically.`
       : `Ready to put a team of AI agents to work on your business? Set up takes 5 minutes.`;
 
   const onRequest = async (e) => {
@@ -251,7 +251,7 @@ export default function AuditConversionCTA({ audit, leadId }) {
           </div>
           <div className="text-lg font-medium mb-1.5">Book a demo</div>
           <div className="text-sm sp-subtle mb-4 leading-relaxed">
-            Want to see SoulPrint Engine Pro operated by a human first?
+            Want to see Foundry operated by a human first?
             We'll set up your workspace live and run your first mission with you.
           </div>
           <a
