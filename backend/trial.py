@@ -193,7 +193,7 @@ def make_trial_router(*, db, set_auth_cookies, create_access_token,
             return {
                 "ok": False,
                 "already_registered": True,
-                "detail": ("That email already has a SoulPrint Engine "
+                "detail": ("That email already has a Foundry "
                            "account. Sign in instead — we'll show your "
                            "trial status from there."),
             }

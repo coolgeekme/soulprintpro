@@ -16,8 +16,8 @@
  * for the per-team mission/identity document. NEVER rename that.
  */
 export const PRODUCT_NAME = "Foundry";
-export const COMPANY_NAME = "SoulPrint Engine";
-export const FULL_NAME = "Foundry by SoulPrint Engine";
+export const COMPANY_NAME = "Foundry";
+export const FULL_NAME = "Foundry";
 export const AGENCY_NAME = "ArcheForge Studios";
 export const DOMAIN = "foundryagents.ai";
 

@@ -365,7 +365,7 @@ export default function MockupPricingV2Page() {
                          border-t border-white/5 flex items-center justify-between
                          text-xs chr-mute font-medium">
         <span className="tracking-widest uppercase">
-          © {new Date().getFullYear()} Foundry · Powered by SoulPrint Engine
+          © {new Date().getFullYear()} Foundry · by Foundry
         </span>
         <span className="inline-flex items-center gap-2 tracking-widest uppercase">
           <ShieldCheck className="w-3 h-3 text-blue-300" />

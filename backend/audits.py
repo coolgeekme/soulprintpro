@@ -275,22 +275,22 @@ You will receive raw data the team has gathered:
 ═══════════════════════════════════════════════════════════════════════
 PLATFORM CAPABILITY MAP — what Foundry can actually do
 ═══════════════════════════════════════════════════════════════════════
-This audit is delivered through Foundry (SPE Pro). EVERY
+This audit is delivered through Foundry. EVERY
 recommendation you make MUST include a ``soulprint_execution`` field
-that explains — concretely, in 1–2 sentences — exactly how SPE Pro
+that explains — concretely, in 1–2 sentences — exactly how Foundry
 helps the user act on the fix (which agent drafts it, which mission
 researches it, which feature schedules it). Use only the capabilities
 listed below; do NOT invent features that don't exist.
 
-Be honest about the boundary: SPE Pro PRODUCES the work product
+Be honest about the boundary: Foundry PRODUCES the work product
 (drafts, briefs, plans, research, reports, monitoring); the user or
 their team is the one who clicks publish, files paperwork, books the
 meeting, etc. A recommendation like "redirect 301 your /old to /new"
-isn't something SPE Pro literally does — but SPE Pro can DRAFT the
+isn't something Foundry literally does — but Foundry can DRAFT the
 exact .htaccess block, EXPLAIN what to paste where, and MONITOR the
 result. Frame it that way.
 
-SPE Pro is a B2B platform (built by ArcheForge) that lets a company:
+Foundry is a B2B platform (built by ArcheForge) that lets a company:
 
 A. **Multi-agent Org Workspace** — every business creates an
    "Organization" with named Teams (Marketing, Sales, Ops, etc.).
@@ -346,15 +346,15 @@ K. **Custom Agents** — admins can author new specialist agents that
 ═══════════════════════════════════════════════════════════════════════
 HOW TO MAP RECOMMENDATIONS TO PLATFORM CAPABILITIES
 ═══════════════════════════════════════════════════════════════════════
-For every recommendation, choose the most direct path SPE Pro can help
+For every recommendation, choose the most direct path Foundry can help
 with. Be specific — name the agent, the mission, or the feature. Be
-honest about the boundary: SPE Pro DRAFTS, BRIEFS, RESEARCHES, PLANS,
+honest about the boundary: Foundry DRAFTS, BRIEFS, RESEARCHES, PLANS,
 and MONITORS; the user (or their team) is the one who hits publish,
 files paperwork, books the meeting, makes the phone call. Words like
 "drafts", "surfaces", "monitors", "briefs", "schedules a draft",
 "prepares" are GOOD. Words like "executes", "ships", "publishes
 automatically", "fixes for you" overpromise and should be avoided
-unless the action genuinely happens autonomously inside SPE Pro
+unless the action genuinely happens autonomously inside Foundry
 (e.g. social posts via the Social Queue with auto-publish on, which
 the user explicitly opts into).
 
@@ -402,7 +402,7 @@ Synthesize a structured audit and return ONLY valid JSON matching this schema:
       "title": "Action verb + specific change",
       "detail": "What to do, why it works, how to measure success.",
       "estimated_impact": "1 sentence: the lift they should expect.",
-      "soulprint_execution": "1-2 sentences: how SPE Pro helps the user act on this — which agent or mission would brief, draft, plan, or research it. Be honest about the boundary: SPE Pro produces the playbook, copy, brief, or analysis; the user (or their team) is the one who hits publish, files the form, books the meeting, etc. Reference at least one named agent or mission. Never imply SPE Pro autonomously ships work to live customer-facing channels unless that's literally the case. Do NOT invent features."
+      "soulprint_execution": "1-2 sentences: how Foundry helps the user act on this — which agent or mission would brief, draft, plan, or research it. Be honest about the boundary: Foundry produces the playbook, copy, brief, or analysis; the user (or their team) is the one who hits publish, files the form, books the meeting, etc. Reference at least one named agent or mission. Never imply Foundry autonomously ships work to live customer-facing channels unless that's literally the case. Do NOT invent features."
     }
   ],
   "competitors": [           // exactly 3 — named direct competitors
@@ -419,7 +419,7 @@ Synthesize a structured audit and return ONLY valid JSON matching this schema:
     "reviews_summary": "Paragraph: sentiment + 2-3 specific recurring complaints or themes (cite review excerpts when available).",
     "competitive_context": "Paragraph: where they sit vs the 3 named competitors."
   },
-  "how_soulprint_helps": "3-4 sentence closing pitch: tie the audit's findings together and explain how Foundry helps the user act on the recommended fixes — by drafting the copy, building the briefs, surfacing the research, and keeping the playbooks current. Be honest about the split: SPE Pro prepares the work, the user (or their team) ships it. Reference 2-3 specific SPE Pro features by name. End with a soft CTA inviting them to start with SPE Pro. Do NOT use marketing fluff — be specific and grounded in THEIR audit."
+  "how_soulprint_helps": "3-4 sentence closing pitch: tie the audit's findings together and explain how Foundry helps the user act on the recommended fixes — by drafting the copy, building the briefs, surfacing the research, and keeping the playbooks current. Be honest about the split: Foundry prepares the work, the user (or their team) ships it. Reference 2-3 specific Foundry features by name. End with a soft CTA inviting them to start with Foundry. Do NOT use marketing fluff — be specific and grounded in THEIR audit."
 }
 
 Rules:
@@ -514,7 +514,7 @@ def _audit_to_markdown(a: dict) -> str:
                 f"{rec.get('detail','')}  \n"
                 f"_Expected impact: {rec.get('estimated_impact','')}_\n"
             )
-            # Execution hook — explicitly tied to a SoulPrint Engine
+            # Execution hook — explicitly tied to a Foundry
             # Pro feature so the prospect sees the natural next step.
             spe = rec.get("soulprint_execution") or ""
             if spe:
@@ -536,7 +536,7 @@ def _audit_to_markdown(a: dict) -> str:
         if isinstance(c, dict):
             out.append(f"\n- **{c.get('name','')}** ({c.get('url','')}) — {c.get('edge','')}")
     # Closing pitch — ties the audit to the platform and prompts the
-    # prospect toward the natural next step (booking a SPE Pro setup).
+    # prospect toward the natural next step (booking a Foundry setup).
     helps = a.get("how_soulprint_helps") or ""
     if helps:
         out.append("\n\n## Tackle These Fixes With Foundry\n")
@@ -893,7 +893,7 @@ def make_audits_router(
             f"Questions or want help acting on what you found? Reply to "
             f"this email or grab a 20-minute slot at "
             f"https://zcal.co/reggie-archeforge.\n\n"
-            f"— The SoulPrint Engine team\n"
+            f"— The Foundry team\n"
         )
         # Pre-escape user-controlled values for the HTML view.
         from html import escape as _esc

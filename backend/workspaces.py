@@ -595,7 +595,7 @@ def make_workspaces_router(
                 text = (
                     f"Hi,\n\n"
                     f"{inviter_name} has invited you to join {ws_name} on "
-                    f"SoulPrint Engine as a workspace {body.ws_role}.\n\n"
+                    f"Foundry as a workspace {body.ws_role}.\n\n"
                     f"You'll get access to:\n{org_list_text}\n\n"
                     f"Accept your invite:\n{invite_url}\n\n"
                     f"This link expires in 14 days. If you weren't expecting "

@@ -380,7 +380,7 @@ export default function MockupHomePage() {
 
       <footer className="relative z-10 max-w-7xl mx-auto px-6 md:px-10 py-10 border-t border-white/5
                          flex flex-wrap items-center justify-between gap-3 text-xs fdy-mute">
-        <span>© {new Date().getFullYear()} Foundry · Powered by SoulPrint Engine</span>
+        <span>© {new Date().getFullYear()} Foundry · by Foundry</span>
         <span className="inline-flex items-center gap-2">
           <ShieldCheck className="w-3 h-3 text-orange-400" />
           foundryagents.ai

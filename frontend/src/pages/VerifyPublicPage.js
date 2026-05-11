@@ -241,7 +241,7 @@ export default function VerifyPublicPage() {
               </div>
               <Link to="/about" className="sp-btn sp-btn-primary text-xs"
                     data-testid="verify-cta-learn-more">
-                Learn about SoulPrint Engine →
+                Learn about Foundry →
               </Link>
             </div>
           </>

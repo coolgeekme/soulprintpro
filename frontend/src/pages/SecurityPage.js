@@ -75,7 +75,7 @@ export default function SecurityPage() {
             Built so business teams can sleep at night.
           </h1>
           <p className="text-base sm:text-lg sp-subtle leading-relaxed max-w-2xl">
-            Every conversation, file, and mission your team runs on SoulPrint Engine
+            Every conversation, file, and mission your team runs on Foundry
             is protected by encryption in transit and at rest, strict per-org
             authorization, and a credential vault that even our admins can't read.
             Below is the current state of our security posture — kept in sync

@@ -1,5 +1,5 @@
 """
-SoulPrint Engine — Backend
+Foundry — Backend
 ==========================
 Multi-tenant B2B platform: Organizations → Teams → Agents + Conversations.
 

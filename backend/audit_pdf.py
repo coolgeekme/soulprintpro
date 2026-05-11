@@ -540,7 +540,7 @@ def _build_recommendations(story: list, audit: dict):
     story.append(_eyebrow("Prioritized Recommendations"))
     story.append(_h2("The highest-leverage fixes"))
     story.append(_muted(
-        "Each recommendation is paired with a concrete way SoulPrint Engine "
+        "Each recommendation is paired with a concrete way Foundry "
         "Pro helps you act on it — drafting, research, monitoring, or "
         "preparing the deliverable for you to ship.",
         italic=True,

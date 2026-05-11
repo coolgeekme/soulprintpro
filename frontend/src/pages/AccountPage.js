@@ -115,7 +115,7 @@ export default function AccountPage() {
           <div className="text-[10px] uppercase tracking-widest sp-subtle">Account</div>
           <h1 className="text-3xl sm:text-4xl font-medium tracking-tight">Your profile</h1>
           <p className="text-sm sp-subtle mt-1">
-            Update how you appear across SoulPrint Engine and how we reach you.
+            Update how you appear across Foundry and how we reach you.
           </p>
         </div>
 

@@ -36,8 +36,8 @@ export default function AuditConversionCTA({ audit, leadId }) {
   const slug = audit?.slug || "";
 
   // Hero copy adapts to the audit's posture. Low scores get a
-  // "we found N issues, want SPE Pro to draft fixes?" hook. High
-  // scores get "you're ahead, here's how SPE Pro keeps you there".
+  // "we found N issues, want Foundry to draft fixes?" hook. High
+  // scores get "you're ahead, here's how Foundry keeps you there".
   const isLowScore = score && score < 70;
   const heroLine = isLowScore
     ? `We found ${recCount || "several"} specific opportunit${recCount === 1 ? "y" : "ies"} on your site. Want Foundry to draft the top 3 fixes for you right now?`

@@ -16,7 +16,7 @@ export default function AuditFullReport({ audit }) {
   const sections = audit.sections || {};
   return (
     <div className="space-y-8" data-testid="audit-full-report">
-      {/* Recommendations — each one carries a "how SPE Pro helps you
+      {/* Recommendations — each one carries a "how Foundry helps you
           act on this" hook so the prospect sees the natural next
           step without us overpromising autonomous execution. */}
       <section>
@@ -41,7 +41,7 @@ export default function AuditFullReport({ audit }) {
                   <Zap className="w-4 h-4 text-orange-300 shrink-0 mt-0.5" />
                   <div className="text-sm leading-relaxed">
                     <span className="text-orange-300/90 uppercase tracking-widest text-[10px] font-medium block mb-1">
-                      How SoulPrint Engine helps you act on this
+                      How Foundry helps you act on this
                     </span>
                     {r.soulprint_execution}
                   </div>
@@ -101,7 +101,7 @@ export default function AuditFullReport({ audit }) {
         <SectionParagraph title="Competitive context" body={sections.competitive_context} />
       </div>
 
-      {/* Closing pitch — ties the audit's findings to how SPE Pro can
+      {/* Closing pitch — ties the audit's findings to how Foundry can
           help them act on the recommendations. The single highest-value
           section for converting an audit reader into a paying customer.
           Hidden when empty (legacy audits or LLM omitted the field). */}

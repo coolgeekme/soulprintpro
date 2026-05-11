@@ -42,7 +42,7 @@ function useActiveTheme() {
 export default function Logo({
   className = "w-4 h-4",
   variant = "mark",
-  alt = "Foundry by SoulPrint Engine",
+  alt = "Foundry",
   showSubline = true,
 }) {
   const theme = useActiveTheme();
@@ -97,7 +97,7 @@ export default function Logo({
               letterSpacing: "0.32em",
             }}
           >
-            by SoulPrint Engine
+            foundryagents.ai
           </span>
         )}
       </span>

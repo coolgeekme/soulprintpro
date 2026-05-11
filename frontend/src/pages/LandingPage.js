@@ -185,7 +185,7 @@ export default function LandingPage() {
       </section>
 
       <footer className="relative z-10 max-w-6xl mx-auto px-6 md:px-10 py-10 flex items-center justify-between text-xs sp-subtle">
-        <div>© {new Date().getFullYear()} Foundry · by SoulPrint Engine</div>
+        <div>© {new Date().getFullYear()} Foundry</div>
         <div className="flex items-center gap-4"><span>Built for teams</span></div>
       </footer>
     </div>

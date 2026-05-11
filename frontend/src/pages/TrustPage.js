@@ -17,7 +17,7 @@ import Logo from "../components/Logo";
  *
  *   1. Hero — "Built so business teams don't have to compromise."
  *   2. The four trust pillars (visual grid)
- *   3. Comparison table: typical AI platforms vs SoulPrint Engine
+ *   3. Comparison table: typical AI platforms vs Foundry
  *   4. Differentiator deep-dives (Proof of Integrity, Credential Vault,
  *      Private Chief of Staff, Brute-force defence) with real concrete
  *      claims — every line is shippable today, no hand-waving.
@@ -72,7 +72,7 @@ export default function TrustPage() {
 
       <footer className="border-t border-white/5 mt-12">
         <div className="max-w-6xl mx-auto px-4 sm:px-6 py-8 text-xs sp-subtle flex items-center justify-between flex-wrap gap-3">
-          <div>© SoulPrint Engine — security-first AI for business teams.</div>
+          <div>© Foundry — security-first AI for business teams.</div>
           <div className="flex items-center gap-4">
             <Link to="/security" className="hover:text-white">Technical policy</Link>
             <Link to="/about" className="hover:text-white">About</Link>
@@ -105,7 +105,7 @@ function Hero() {
       <p className="mt-5 text-base sm:text-lg sp-subtle leading-relaxed max-w-2xl">
         Most AI platforms hand you a SOC 2 PDF and call it a day. We took the
         opposite approach: every conversation, file, credential, and decision
-        your team makes on SoulPrint Engine is protected by primitives we can
+        your team makes on Foundry is protected by primitives we can
         actually point at — encryption you can verify, anchors you can
         cryptographically check, audit trails no one (including us) can
         rewrite.
@@ -225,7 +225,7 @@ function Comparison() {
           </div>
           <div className="bg-black/30 px-3 py-3 text-[10px] uppercase tracking-widest text-center font-medium"
                style={{ color: "rgba(251,146,60,1)" }}>
-            SoulPrint Engine
+            Foundry
           </div>
           {rows.map((r, i) => (
             <React.Fragment key={i}>
