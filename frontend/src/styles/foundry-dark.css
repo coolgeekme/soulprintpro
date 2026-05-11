@@ -1,0 +1,237 @@
+/* Foundry — Industrial Dark Theme (mockup pages)
+ * ================================================
+ * Pure-black foundry aesthetic borrowed from the brand artwork:
+ *   - molten orange/amber glow embedded in dark steel
+ *   - heavy condensed display type for headings
+ *   - grain + ember particle ambience
+ *
+ * Scope: only the mockup routes (.fdy-* classes). Doesn't touch the
+ * live cream-theme pages so the user can A/B them side-by-side.
+ */
+
+:root {
+  --fdy-black:     #050505;
+  --fdy-coal:      #0d0d0d;
+  --fdy-steel:     #1c1c1f;
+  --fdy-steel-2:   #26262a;
+  --fdy-ink:       #ededee;
+  --fdy-mute:      #8d8d92;
+  --fdy-mute-2:    #5a5a5f;
+  --fdy-molten:    #ff5a18;
+  --fdy-molten-2:  #ff8a3a;
+  --fdy-ember:     #ffb152;
+  --fdy-glow:      0 0 24px rgba(255, 90, 24, .35),
+                   0 0 60px rgba(255, 90, 24, .18);
+}
+
+/* ── Page shell ───────────────────────────────────────────────────── */
+.fdy-page {
+  background: var(--fdy-black);
+  color: var(--fdy-ink);
+  min-height: 100vh;
+  font-family: "Inter", system-ui, sans-serif;
+  position: relative;
+  overflow-x: hidden;
+}
+.fdy-page::before {
+  /* Faint diagonal carbon-steel grain. */
+  content: "";
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 0;
+  background:
+    repeating-linear-gradient(
+      135deg,
+      rgba(255,255,255,.012) 0 1px,
+      transparent 1px 3px
+    ),
+    radial-gradient(
+      circle at 50% -10%,
+      rgba(255, 90, 24, .12),
+      transparent 60%
+    );
+}
+
+/* ── Typography ───────────────────────────────────────────────────── */
+.fdy-display {
+  font-family: "Bebas Neue", "Oswald", "Inter", sans-serif;
+  letter-spacing: 0.02em;
+  font-weight: 400;
+  line-height: 0.95;
+  text-transform: uppercase;
+}
+.fdy-display-condensed {
+  font-family: "Oswald", "Inter", sans-serif;
+  letter-spacing: 0.04em;
+  font-weight: 600;
+  text-transform: uppercase;
+}
+.fdy-eyebrow {
+  font-family: "Inter", sans-serif;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.32em;
+  text-transform: uppercase;
+  color: var(--fdy-mute);
+}
+.fdy-mute  { color: var(--fdy-mute); }
+
+/* Molten gradient text — the headline accent. */
+.fdy-molten-text {
+  background: linear-gradient(180deg, var(--fdy-ember) 0%,
+              var(--fdy-molten) 55%, #c43500 100%);
+  -webkit-background-clip: text;
+          background-clip: text;
+  -webkit-text-fill-color: transparent;
+  color: transparent;
+  text-shadow: 0 0 30px rgba(255, 90, 24, .35);
+}
+
+/* ── Buttons ──────────────────────────────────────────────────────── */
+.fdy-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-weight: 600;
+  font-size: 14px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  padding: 0.85rem 1.5rem;
+  border-radius: 999px;
+  transition: transform .15s ease, box-shadow .25s ease,
+              background-color .25s ease;
+  cursor: pointer;
+  border: 0;
+  user-select: none;
+}
+.fdy-btn-primary {
+  background: linear-gradient(135deg, var(--fdy-molten),
+              var(--fdy-molten-2));
+  color: #1a0a02;
+  box-shadow: var(--fdy-glow);
+}
+.fdy-btn-primary:hover {
+  transform: translateY(-1px);
+  box-shadow:
+    0 0 30px rgba(255, 90, 24, .55),
+    0 0 80px rgba(255, 90, 24, .25);
+}
+.fdy-btn-ghost {
+  background: rgba(255,255,255,.03);
+  color: var(--fdy-ink);
+  border: 1px solid rgba(255,255,255,.08);
+}
+.fdy-btn-ghost:hover {
+  background: rgba(255,255,255,.06);
+  border-color: rgba(255, 90, 24, .35);
+}
+
+/* ── Cards ────────────────────────────────────────────────────────── */
+.fdy-card {
+  position: relative;
+  background:
+    linear-gradient(180deg, rgba(255,255,255,.025), rgba(255,255,255,.005)),
+    var(--fdy-steel);
+  border: 1px solid rgba(255,255,255,.06);
+  border-radius: 20px;
+  padding: 1.75rem;
+  overflow: hidden;
+}
+.fdy-card::after {
+  /* Molten edge — looks like the bottom of the card is cooling steel. */
+  content: "";
+  position: absolute;
+  inset: auto -2px -2px -2px;
+  height: 2px;
+  background: linear-gradient(90deg,
+              transparent 0%, var(--fdy-molten) 25%,
+              var(--fdy-ember) 50%, var(--fdy-molten) 75%,
+              transparent 100%);
+  opacity: 0.5;
+  filter: blur(1px);
+}
+.fdy-card-hot {
+  /* Highlighted tier (Temper). Goes one tone hotter. */
+  border-color: rgba(255, 90, 24, .35);
+  box-shadow: var(--fdy-glow);
+}
+.fdy-card-hot::before {
+  content: "";
+  position: absolute;
+  inset: -1px;
+  border-radius: 20px;
+  padding: 1px;
+  background: linear-gradient(135deg,
+              rgba(255, 90, 24, .45), transparent 50%,
+              rgba(255, 90, 24, .3));
+  -webkit-mask: linear-gradient(#000 0 0) content-box,
+                linear-gradient(#000 0 0);
+          mask: linear-gradient(#000 0 0) content-box,
+                linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor;
+          mask-composite: exclude;
+  pointer-events: none;
+}
+
+/* ── Ember particles (decorative) ─────────────────────────────────── */
+.fdy-embers {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  overflow: hidden;
+  z-index: 0;
+}
+.fdy-ember-dot {
+  position: absolute;
+  width: 2px;
+  height: 2px;
+  background: var(--fdy-ember);
+  border-radius: 999px;
+  box-shadow: 0 0 8px var(--fdy-ember), 0 0 20px var(--fdy-molten);
+  opacity: 0.8;
+  animation: fdy-rise linear infinite;
+}
+@keyframes fdy-rise {
+  0%   { transform: translateY(20vh) scale(0.8); opacity: 0; }
+  20%  { opacity: 0.9; }
+  100% { transform: translateY(-110vh) scale(1.4); opacity: 0; }
+}
+
+/* ── Metallic divider ─────────────────────────────────────────────── */
+.fdy-rule {
+  height: 1px;
+  background: linear-gradient(90deg,
+              transparent, rgba(255,255,255,.08) 20%,
+              rgba(255, 90, 24, .35) 50%,
+              rgba(255,255,255,.08) 80%, transparent);
+}
+
+/* ── Wordmark ─────────────────────────────────────────────────────── */
+.fdy-wordmark {
+  font-family: "Bebas Neue", "Oswald", sans-serif;
+  font-size: 1.8rem;
+  letter-spacing: 0.14em;
+  background: linear-gradient(180deg, #e0e0e2, #888);
+  -webkit-background-clip: text; background-clip: text;
+  -webkit-text-fill-color: transparent;
+  position: relative;
+}
+.fdy-wordmark::after {
+  /* Molten underline. */
+  content: "";
+  position: absolute;
+  inset: auto 0 -4px 0;
+  height: 1px;
+  background: linear-gradient(90deg, transparent,
+              var(--fdy-molten), transparent);
+  opacity: 0.7;
+}
+.fdy-sub-wordmark {
+  font-size: 9px;
+  letter-spacing: 0.32em;
+  color: var(--fdy-mute);
+  text-transform: uppercase;
+  margin-top: 4px;
+}
+.fdy-sub-wordmark .accent { color: var(--fdy-molten); }
