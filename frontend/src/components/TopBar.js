@@ -1,11 +1,12 @@
 import React, { useState, useEffect } from "react";
-import { Link, useNavigate } from "react-router-dom";
+import { Link, useNavigate, useLocation } from "react-router-dom";
 import { useAuth } from "../context/AuthContext";
 import { useTheme } from "../context/ThemeContext";
-import { LogOut, Sun, Moon, MapPin, ChevronDown, HelpCircle, ShieldCheck, UserCog, Rocket } from "lucide-react";
+import { LogOut, Sun, Moon, MapPin, ChevronDown, HelpCircle, ShieldCheck, UserCog, Rocket, Search } from "lucide-react";
 import Logo from "./Logo";
 import DynamicIntelligencePicker from "./DynamicIntelligencePicker";
-import { captureUserLocation, getCachedLocation, setCachedLocation } from "../lib/api";
+import SpotlightSearch from "./SpotlightSearch";
+import api, { captureUserLocation, getCachedLocation, setCachedLocation } from "../lib/api";
 import { toast } from "sonner";
 import {
   DropdownMenu,
@@ -16,15 +17,62 @@ import {
   DropdownMenuSeparator,
 } from "./ui/dropdown-menu";
 
+const ACTIVE_ORG_KEY = "sp:active-org";
+
 export default function TopBar({ children, right = null }) {
   const { user, logout } = useAuth();
   const { mode, toggle } = useTheme();
   const nav = useNavigate();
+  const location = useLocation();
   const [loc, setLoc] = useState(getCachedLocation());
+  const [searchOpen, setSearchOpen] = useState(false);
+  const [activeOrgId, setActiveOrgId] = useState(() => {
+    try { return window.localStorage.getItem(ACTIVE_ORG_KEY) || ""; }
+    catch { return ""; }
+  });
 
   useEffect(() => {
     // Re-read on mount in case another tab updated localStorage
     setLoc(getCachedLocation());
+  }, []);
+
+  // Track active org from URL (/app/org/:id/...) and persist for use
+  // when on routes that don't carry the org id (e.g. /app/team/:id).
+  useEffect(() => {
+    const m = location.pathname.match(/\/app\/org\/([a-f0-9]{24})/i);
+    if (m) {
+      setActiveOrgId(m[1]);
+      try { window.localStorage.setItem(ACTIVE_ORG_KEY, m[1]); } catch {}
+    }
+  }, [location.pathname]);
+
+  // Fallback: if no active org is known yet but the user is logged in,
+  // pull /api/orgs and pick the first one.
+  useEffect(() => {
+    if (activeOrgId || !user) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const { data } = await api.get("/orgs");
+        if (!cancelled && Array.isArray(data) && data[0]) {
+          setActiveOrgId(data[0].id);
+          try { window.localStorage.setItem(ACTIVE_ORG_KEY, data[0].id); } catch {}
+        }
+      } catch { /* ignore */ }
+    })();
+    return () => { cancelled = true; };
+  }, [activeOrgId, user]);
+
+  // ⌘K / Ctrl+K global shortcut for search
+  useEffect(() => {
+    const onKey = (e) => {
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") {
+        e.preventDefault();
+        setSearchOpen((v) => !v);
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
   }, []);
 
   const askLocation = async () => {
@@ -84,6 +132,17 @@ export default function TopBar({ children, right = null }) {
                 <DynamicIntelligencePicker compact />
               </div>
             )}
+            {/* Spotlight search trigger */}
+            <button
+              onClick={() => setSearchOpen(true)}
+              className="sp-btn sp-btn-ghost text-xs flex items-center gap-1.5"
+              data-testid="topbar-search"
+              aria-label="Search"
+              title="Search (⌘K)"
+            >
+              <Search className="w-4 h-4" />
+              <kbd className="hidden lg:inline text-[10px] sp-subtle font-mono">⌘K</kbd>
+            </button>
             {/* Icon-only theme toggle — label removed to reclaim space. */}
             <button
               onClick={toggle}
@@ -194,6 +253,11 @@ export default function TopBar({ children, right = null }) {
           </div>
         </div>
       </div>
+      <SpotlightSearch
+        open={searchOpen}
+        onClose={() => setSearchOpen(false)}
+        orgId={activeOrgId}
+      />
     </header>
   );
 }

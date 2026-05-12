@@ -6427,6 +6427,22 @@ _init_custom_agents(
 )
 app.include_router(_custom_agents_router)
 
+# ── Unified org-wide search + AI synthesis (Spotlight / ⌘K) ───────────────
+from search import (  # noqa: E402
+    router as _search_router,
+    init as _init_search,
+)
+_init_search(
+    db=db,
+    AGENTS=AGENTS,
+    get_current_user=get_current_user,
+    require_org_member=require_org_member,
+    LlmChat=LlmChat,
+    UserMessage=UserMessage,
+    EMERGENT_LLM_KEY=EMERGENT_LLM_KEY,
+)
+app.include_router(_search_router)
+
 from activity import make_activity_router  # noqa: E402
 activity_r = make_activity_router(
     db=db, AGENTS=AGENTS,
