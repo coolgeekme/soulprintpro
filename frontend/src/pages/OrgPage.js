@@ -16,6 +16,7 @@ import SchedulesPanel from "../components/SchedulesPanel";
 import SoulSuggestionsPanel from "../components/SoulSuggestionsPanel";
 import WorkingIndicator from "../components/WorkingIndicator";
 import { compressImageFile } from "../lib/imageCompress";
+import { parseServerDate } from "../lib/datetime";
 
 const formatBytes = (n) => {
   if (!n) return "0 B";
@@ -1098,9 +1099,8 @@ function MyChiefOfStaffCard({ orgId: _orgId, primary, threads, expanded, onToggl
   const count = list.length;
 
   const fmtRel = (iso) => {
-    if (!iso) return "";
-    const d = new Date(iso);
-    if (Number.isNaN(d.getTime())) return "";
+    const d = parseServerDate(iso);
+    if (!d) return "";
     const diff = Math.max(0, Date.now() - d.getTime());
     const m = Math.floor(diff / 60000);
     if (m < 1) return "just now";

@@ -5,6 +5,7 @@ import {
 import { toast } from "sonner";
 import api from "../lib/api";
 import AuditFullReport from "./AuditFullReport";
+import { formatLocalDateTime } from "../lib/datetime";
 
 /**
  * AdminAuditsPanel — superadmin-only prospecting tool.
@@ -608,7 +609,7 @@ function LeadsModal({ audit, leads, loading, onClose }) {
               <li key={l.id} className="sp-glass rounded-xl p-3" data-testid={`lead-row-${l.id}`}>
                 <div className="flex items-baseline justify-between gap-3">
                   <div className="font-medium">{l.name} <span className="sp-subtle text-xs">— {l.role} @ {l.company}</span></div>
-                  <div className="text-[10px] sp-subtle tabular-nums shrink-0">{new Date(l.submitted_at).toLocaleString()}</div>
+                  <div className="text-[10px] sp-subtle tabular-nums shrink-0">{formatLocalDateTime(l.submitted_at)}</div>
                 </div>
                 <div className="flex flex-wrap gap-3 text-xs sp-subtle mt-1">
                   <a href={`mailto:${l.email}`} className="inline-flex items-center gap-1 hover:text-orange-300">

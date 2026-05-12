@@ -9,6 +9,7 @@ import {
 } from "lucide-react";
 import AssetPickerModal from "../components/AssetPickerModal";
 import WorkingIndicator from "../components/WorkingIndicator";
+import { parseServerDate, formatLocalDateTime } from "../lib/datetime";
 
 // ── Platform metadata ─────────────────────────────────────────────────────
 // Each platform: a friendly label, the colour we tint pills with, and a
@@ -91,22 +92,16 @@ const joinPostText = (p) => {
 };
 
 const formatScheduleLocal = (iso) => {
-  if (!iso) return "";
-  try {
-    const d = new Date(iso);
-    return d.toLocaleString([], { dateStyle: "medium", timeStyle: "short" });
-  } catch { return iso; }
+  return formatLocalDateTime(iso, { dateStyle: "medium", timeStyle: "short" }) || iso || "";
 };
 
 // `<input type="datetime-local">` wants `YYYY-MM-DDTHH:mm` in local time —
 // strip seconds and timezone from the ISO we get back from the API.
 const isoToLocalInput = (iso) => {
-  if (!iso) return "";
-  try {
-    const d = new Date(iso);
-    const pad = (n) => String(n).padStart(2, "0");
-    return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
-  } catch { return ""; }
+  const d = parseServerDate(iso);
+  if (!d) return "";
+  const pad = (n) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
 };
 
 // ──────────────────────────────────────────────────────────────────────────

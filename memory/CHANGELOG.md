@@ -3,6 +3,14 @@
 Plain-English feature inventory of **Foundry by SoulPrint Engine** for non-technical teammates. Each section is a category of capabilities and what they do for users.
 
 ---
+## 🕒 May 12, 2026 — Timestamps Now Local to the Viewer
+- All UI timestamps (chat messages, audits, missions, social queue, schedules, documents, recent conversations, activity feed, admin tables, public verify page, integrity badges) now reflect each user's browser timezone.
+- New shared helper at `/app/frontend/src/lib/datetime.js` (`parseServerDate`, `formatLocalDateTime`, `formatLocalDate`, `formatLocalTime`, `formatRelativeTime`, `formatShortDateTime`).
+- Root cause: MongoDB returns naive datetimes; FastAPI serialised them as ISO strings without `Z`, which the browser parsed as **local** time instead of UTC. The helper appends `Z` when no offset is present so naive timestamps are correctly anchored to UTC before being rendered in the user's locale.
+
+---
+
+
 
 ## 🏢 Multi-Org & Team Setup
 - **Organizations & Teams** — each business gets its own private workspace, with teams inside that have their own brand voice ("Soul")

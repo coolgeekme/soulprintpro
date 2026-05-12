@@ -5,6 +5,7 @@ import {
   Loader2, Search, ShieldCheck, Plus, Pencil, Trash2, X as XIcon, Save,
   CheckCircle2, Ban, KeyRound, Users as UsersIcon,
 } from "lucide-react";
+import { formatLocalDate } from "../lib/datetime";
 
 /**
  * AdminUsersPanel — superadmin user management (list + add + edit +
@@ -162,7 +163,7 @@ export default function AdminUsersPanel({ currentUserId }) {
                       : (u.firebase_uid ? "firebase" : "password")}
                   </td>
                   <td className="px-3 py-2 text-xs sp-subtle">
-                    {u.created_at ? new Date(u.created_at).toLocaleDateString() : "—"}
+                    {u.created_at ? formatLocalDate(u.created_at) : "—"}
                   </td>
                   <td className="px-3 py-2">
                     <div className="flex items-center gap-1 justify-end">

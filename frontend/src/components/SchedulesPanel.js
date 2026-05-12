@@ -2,10 +2,11 @@ import React, { useEffect, useMemo, useState } from "react";
 import api from "../lib/api";
 import { toast } from "sonner";
 import { Plus, Trash2, Play, Pause, Clock, X as XIcon, Save, Calendar, Repeat } from "lucide-react";
+import { formatLocalDateTime } from "../lib/datetime";
 
 const fmt = (iso) => {
   if (!iso) return "—";
-  try { return new Date(iso).toLocaleString(); } catch { return iso; }
+  return formatLocalDateTime(iso) || iso;
 };
 
 const userTimezone = () => {

@@ -15,6 +15,7 @@ import TopBar from "../components/TopBar";
 import AdminUsersPanel from "../components/AdminUsersPanel";
 import AdminAuditsPanel from "../components/AdminAuditsPanel";
 import AdminAccessCodesPanel from "../components/AdminAccessCodesPanel";
+import { formatLocalDateTime, formatLocalDate } from "../lib/datetime";
 
 /**
  * AdminDashboard — superadmin-only analytics + tooling surface.
@@ -504,7 +505,7 @@ function MissionsPanel() {
                 <td className="py-2 px-3">{m.lead_agent_name}</td>
                 <td className="py-2 px-3"><span className="sp-chip text-[10px]">{m.status}</span></td>
                 <td className="py-2 px-3 text-right">{m.iteration_count}</td>
-                <td className="py-2 px-3 text-xs sp-subtle">{m.created_at ? new Date(m.created_at).toLocaleString() : "—"}</td>
+                <td className="py-2 px-3 text-xs sp-subtle">{m.created_at ? formatLocalDateTime(m.created_at) : "—"}</td>
               </tr>
             ))}
           </tbody>
@@ -528,7 +529,7 @@ export default function AdminDashboard() {
     { key: "llm_cost", label: "LLM cost", align: "right",
       render: (r) => `$${Number(r.llm_cost || 0).toFixed(2)}` },
     { key: "created_at", label: "Created",
-      render: (r) => r.created_at ? new Date(r.created_at).toLocaleDateString() : "—" },
+      render: (r) => r.created_at ? formatLocalDate(r.created_at) : "—" },
   ], []);
 
   if (loading) return null;

@@ -3,18 +3,17 @@ import { Link } from "react-router-dom";
 import api from "../lib/api";
 import { MessageCircle, ArrowRight, Clock, Lock, Users, Trash2, Loader2 } from "lucide-react";
 import { toast } from "sonner";
+import { parseServerDate } from "../lib/datetime";
 
 const relTime = (iso) => {
-  if (!iso) return "";
-  try {
-    const d = new Date(iso);
-    const diff = (Date.now() - d.getTime()) / 1000;
-    if (diff < 60) return "just now";
-    if (diff < 3600) return `${Math.floor(diff / 60)}m ago`;
-    if (diff < 86400) return `${Math.floor(diff / 3600)}h ago`;
-    if (diff < 86400 * 7) return `${Math.floor(diff / 86400)}d ago`;
-    return d.toLocaleDateString();
-  } catch { return ""; }
+  const d = parseServerDate(iso);
+  if (!d) return "";
+  const diff = (Date.now() - d.getTime()) / 1000;
+  if (diff < 60) return "just now";
+  if (diff < 3600) return `${Math.floor(diff / 60)}m ago`;
+  if (diff < 86400) return `${Math.floor(diff / 3600)}h ago`;
+  if (diff < 86400 * 7) return `${Math.floor(diff / 86400)}d ago`;
+  return d.toLocaleDateString();
 };
 
 /**

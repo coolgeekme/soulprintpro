@@ -4,6 +4,7 @@ import TopBar from "../components/TopBar";
 import api from "../lib/api";
 import { useAuth } from "../context/AuthContext";
 import { toast } from "sonner";
+import { parseServerDate, formatLocalDateTime } from "../lib/datetime";
 import {
   Search, Loader2, ArrowRight, Download, ExternalLink, Trophy,
   Clock, AlertTriangle, FileText, Sparkles, BarChart3, RefreshCw, Trash2,
@@ -169,8 +170,9 @@ export default function AuditsPage() {
   const isStuck = (a) => {
     if (a.status !== "generating") return false;
     const t = a.updated_at || a.created_at;
-    if (!t) return false;
-    return (Date.now() - new Date(t).getTime()) > 2 * 60 * 1000;
+    const d = parseServerDate(t);
+    if (!d) return false;
+    return (Date.now() - d.getTime()) > 2 * 60 * 1000;
   };
 
   return (
@@ -325,7 +327,7 @@ export default function AuditsPage() {
                   <div className="flex items-center justify-between gap-2 pt-1 border-t border-white/10">
                     <div className="text-[10px] sp-subtle flex items-center gap-1">
                       <Clock className="w-3 h-3" />
-                      {a.created_at ? new Date(a.created_at).toLocaleString() : ""}
+                      {a.created_at ? formatLocalDateTime(a.created_at) : ""}
                     </div>
                     <div className="flex items-center gap-1">
                       {a.status === "ready" && (

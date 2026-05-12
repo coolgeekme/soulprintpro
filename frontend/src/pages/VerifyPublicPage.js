@@ -3,6 +3,7 @@ import { useParams, Link } from "react-router-dom";
 import { ShieldCheck, Loader2, Anchor, Copy, Check, Download, RefreshCw, ExternalLink, AlertCircle } from "lucide-react";
 import Logo from "../components/Logo";
 import { BACKEND_URL } from "../lib/api";
+import { formatLocalDateTime } from "../lib/datetime";
 
 /**
  * Public verify page — `/v/<gridfs_id>`.
@@ -337,9 +338,5 @@ function Step({ n, title, children }) {
 
 function fmtDate(iso) {
   if (!iso) return "—";
-  try {
-    return new Date(iso).toLocaleString();
-  } catch (_) {
-    return iso;
-  }
+  return formatLocalDateTime(iso) || iso;
 }

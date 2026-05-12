@@ -16,11 +16,9 @@ import { MessageActions } from "../components/MessageActions";
 import EmptyPromisePill from "../components/EmptyPromisePill";
 import WorkingIndicator from "../components/WorkingIndicator";
 import { useRoutingPrefs } from "../components/DynamicIntelligencePicker";
+import { formatLocalTime, parseServerDate } from "../lib/datetime";
 
-const formatTime = (ts) => {
-  try { return new Date(ts).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }); }
-  catch { return ""; }
-};
+const formatTime = (ts) => formatLocalTime(ts);
 
 
 /** Recovery poll for chat sends that failed with a network error.
@@ -39,7 +37,7 @@ const formatTime = (ts) => {
  * from ConversationPage) so we can keep this as a pure module-level
  * helper without React context. */
 function _recoverFailedSend({ convId, optimisticId, optimisticTs, setMessages, setConv, setSending, recoveryActiveRef }) {
-  const startedAt = Date.parse(optimisticTs) || Date.now();
+  const startedAt = (parseServerDate(optimisticTs)?.getTime()) || Date.now();
   let attempts = 0;
   const maxAttempts = 22; // ~88s of polling at 4s cadence
   if (recoveryActiveRef) recoveryActiveRef.current = true;
@@ -56,7 +54,7 @@ function _recoverFailedSend({ convId, optimisticId, optimisticTs, setMessages, s
       // turn — replace UI state with the canonical thread.
       const recovered = (data || []).some((m) =>
         m.sender_type === "agent"
-        && (Date.parse(m.timestamp) || 0) > startedAt
+        && ((parseServerDate(m.timestamp)?.getTime()) || 0) > startedAt
       );
       if (recovered) {
         setMessages(data);

@@ -2,6 +2,7 @@ import React, { useEffect, useState } from "react";
 import { Loader2, Plus, Copy, Trash2, Check, KeyRound } from "lucide-react";
 import { toast } from "sonner";
 import api from "../lib/api";
+import { parseServerDate, formatLocalDate } from "../lib/datetime";
 
 /**
  * AdminAccessCodesPanel — superadmin tab for the pre-launch site
@@ -23,7 +24,7 @@ function CodeRow({ row, onRevoke }) {
     }
   };
   const expired =
-    row.expires_at && new Date(row.expires_at).getTime() < Date.now();
+    row.expires_at && (parseServerDate(row.expires_at)?.getTime() || 0) < Date.now();
   const exhausted =
     row.usage_type === "single"
       ? row.used_count >= 1
@@ -79,12 +80,12 @@ function CodeRow({ row, onRevoke }) {
       <td className="py-3 pr-4 text-xs sp-subtle">{usageLabel}</td>
       <td className="py-3 pr-4 text-xs sp-subtle">
         {row.expires_at
-          ? new Date(row.expires_at).toLocaleDateString()
+          ? formatLocalDate(row.expires_at)
           : "never"}
       </td>
       <td className="py-3 pr-4 text-xs sp-subtle">
         {row.created_at
-          ? new Date(row.created_at).toLocaleDateString()
+          ? formatLocalDate(row.created_at)
           : "—"}
       </td>
       <td className={`py-3 pr-4 text-xs uppercase tracking-widest ${statusColor}`}>

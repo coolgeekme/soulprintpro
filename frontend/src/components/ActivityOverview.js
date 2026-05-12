@@ -5,6 +5,7 @@ import {
   Activity, MessageCircle, Megaphone, Calendar, FileText, Image as ImageIcon,
   CheckCircle2, Clock, Edit3, Send,
 } from "lucide-react";
+import { parseServerDate } from "../lib/datetime";
 
 // Maps the backend feed `kind` to icon, accent color, and a friendly label.
 const KIND_META = {
@@ -19,15 +20,16 @@ const KIND_META = {
 };
 
 const fmtRelative = (iso) => {
-  if (!iso) return "";
-  const then = new Date(iso).getTime();
+  const d = parseServerDate(iso);
+  if (!d) return "";
+  const then = d.getTime();
   const now = Date.now();
   const s = Math.floor((now - then) / 1000);
   if (s < 60) return "just now";
   if (s < 3600) return `${Math.floor(s / 60)}m ago`;
   if (s < 86400) return `${Math.floor(s / 3600)}h ago`;
   if (s < 86400 * 7) return `${Math.floor(s / 86400)}d ago`;
-  try { return new Date(iso).toLocaleDateString(); } catch { return ""; }
+  return d.toLocaleDateString();
 };
 
 export default function ActivityOverview({ orgId }) {

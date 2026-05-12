@@ -5,6 +5,7 @@ import {
   FileText, FileCode2, FileSpreadsheet, Calendar, Mail, User as UserIcon,
   Download, Trash2, Search, ScrollText, Wand2, X as XIcon,
 } from "lucide-react";
+import { formatLocalDateTime } from "../lib/datetime";
 
 /**
  * DocumentsPanel — Org-wide library of every artifact agents have generated.
@@ -44,11 +45,9 @@ const niceSize = (n) => {
 };
 
 const niceDate = (iso) => {
-  try {
-    return new Date(iso).toLocaleString([], {
-      month: "short", day: "numeric", hour: "2-digit", minute: "2-digit",
-    });
-  } catch { return ""; }
+  return formatLocalDateTime(iso, {
+    month: "short", day: "numeric", hour: "2-digit", minute: "2-digit",
+  });
 };
 
 // Initial number of documents to show before the user expands the list. Org

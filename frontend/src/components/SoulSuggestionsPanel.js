@@ -1,6 +1,7 @@
 import React, { useEffect, useState, useCallback } from "react";
 import api from "../lib/api";
 import { toast } from "sonner";
+import { formatLocalDateTime } from "../lib/datetime";
 import {
   Wand2,
   Send,
@@ -75,7 +76,7 @@ function SuggestionCard({ s, currentSoul, role, onAction, busyId }) {
               {s.submitted_by_name || s.submitted_by_email || "A teammate"}
             </span>
             <span className="text-[11px] sp-subtle">
-              {s.created_at ? new Date(s.created_at).toLocaleString() : ""}
+              {s.created_at ? formatLocalDateTime(s.created_at) : ""}
             </span>
           </div>
           {s.note && (

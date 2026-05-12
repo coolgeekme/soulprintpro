@@ -10,6 +10,7 @@ import {
   ChevronRight, Check, AlertTriangle, HelpCircle, Send, Download, Image as ImageIcon,
   Trash2, CornerDownRight, UploadCloud, Lock,
 } from "lucide-react";
+import { parseServerDate } from "../lib/datetime";
 
 /**
  * MissionsPage — list + detail view for autonomous agent runs ("Missions").
@@ -28,14 +29,13 @@ const STATUS_MAP = {
 };
 
 const relTime = (iso) => {
-  if (!iso) return "";
-  try {
-    const d = new Date(iso); const diff = (Date.now() - d.getTime()) / 1000;
-    if (diff < 60) return "just now";
-    if (diff < 3600) return `${Math.floor(diff / 60)}m ago`;
-    if (diff < 86400) return `${Math.floor(diff / 3600)}h ago`;
-    return d.toLocaleString();
-  } catch { return ""; }
+  const d = parseServerDate(iso);
+  if (!d) return "";
+  const diff = (Date.now() - d.getTime()) / 1000;
+  if (diff < 60) return "just now";
+  if (diff < 3600) return `${Math.floor(diff / 60)}m ago`;
+  if (diff < 86400) return `${Math.floor(diff / 3600)}h ago`;
+  return d.toLocaleString();
 };
 
 export default function MissionsPage() {
@@ -397,9 +397,9 @@ function MissionDetail({ orgId, missionId }) {
   }, [isLive]);
   const stalledSeconds = (() => {
     if (!isLive || !lastActivityIso) return 0;
-    try {
-      return Math.max(0, Math.floor((now - new Date(lastActivityIso).getTime()) / 1000));
-    } catch { return 0; }
+    const d = parseServerDate(lastActivityIso);
+    if (!d) return 0;
+    return Math.max(0, Math.floor((now - d.getTime()) / 1000));
   })();
   const isStalled = isLive && stalledSeconds >= 120;
 

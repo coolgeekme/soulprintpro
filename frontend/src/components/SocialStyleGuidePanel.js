@@ -5,6 +5,7 @@ import {
   Wand2, Plus, Trash2, RefreshCw, ExternalLink, Save, Pencil, X as XIcon, Loader2, AlertTriangle, Eye, EyeOff
 } from "lucide-react";
 import WorkingIndicator from "./WorkingIndicator";
+import { formatLocalDateTime } from "../lib/datetime";
 
 const PLATFORMS = [
   { key: "twitter", label: "X / Twitter" },
@@ -127,12 +128,9 @@ export default function SocialStyleGuidePanel({ orgId }) {
   };
 
   const generatedLabel = useMemo(() => {
-    if (!data?.generated_at) return "";
-    try {
-      return new Date(data.generated_at).toLocaleString([], {
-        month: "short", day: "numeric", hour: "2-digit", minute: "2-digit",
-      });
-    } catch { return ""; }
+    return formatLocalDateTime(data?.generated_at, {
+      month: "short", day: "numeric", hour: "2-digit", minute: "2-digit",
+    });
   }, [data]);
 
   return (

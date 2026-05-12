@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from "react";
 import api from "../lib/api";
 import { ShieldCheck, Loader2, ExternalLink, Copy, Check, Link as LinkIcon } from "lucide-react";
+import { formatLocalDateTime } from "../lib/datetime";
 
 /**
  * Tamper-evident integrity badge for any agent-generated artifact.
@@ -128,9 +129,9 @@ function ProofPopover({ proof, gridfsId, onClose, onUpgrade, copied, onCopyDiges
               {copied ? <Check className="w-3 h-3 text-green-400" /> : <Copy className="w-3 h-3" />}
             </button>
           } />
-          <Row label="Stamped" value={new Date(proof.created_at).toLocaleString()} mono={false}/>
+          <Row label="Stamped" value={formatLocalDateTime(proof.created_at)} mono={false}/>
           {anchored && proof.anchored_at && (
-            <Row label="Anchored" value={new Date(proof.anchored_at).toLocaleString()} mono={false}/>
+            <Row label="Anchored" value={formatLocalDateTime(proof.anchored_at)} mono={false}/>
           )}
           <Row label="Calendars" value={`${(proof.calendars || []).length} of 3`} mono={false}/>
         </div>
