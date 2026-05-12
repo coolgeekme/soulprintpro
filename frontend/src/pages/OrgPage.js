@@ -3,7 +3,7 @@ import { useParams, Link, useNavigate, useLocation } from "react-router-dom";
 import api, { BACKEND_URL } from "../lib/api";
 import TopBar from "../components/TopBar";
 import { toast } from "sonner";
-import { Plus, Users, ArrowRight, Copy, UserPlus, FileText, Image as ImageIcon, FileBox, Trash2, UploadCloud, Download, File as FileIcon, MessageCircle, Pencil, Save, X as XIcon, RefreshCw, Megaphone, Paperclip, Send, Loader2, Rocket, Network, Minimize2, ChevronRight } from "lucide-react";
+import { Plus, Users, ArrowRight, Copy, UserPlus, FileText, Image as ImageIcon, FileBox, Trash2, UploadCloud, Download, File as FileIcon, MessageCircle, Pencil, Save, X as XIcon, RefreshCw, Megaphone, Paperclip, Send, Loader2, Rocket, Network, Minimize2, ChevronRight, BarChart3 } from "lucide-react";
 import BrandAssetsPanel from "../components/BrandAssetsPanel";
 import CustomAgentsPanel from "../components/CustomAgentsPanel";
 import ActivityOverview from "../components/ActivityOverview";
@@ -483,6 +483,23 @@ export default function OrgPage() {
           <div className="flex-1 min-w-0">
             <div className="text-white font-medium">Social Queue</div>
             <div className="text-xs sp-subtle">Generate posts with your agents, schedule them, then one-click open in any platform's web composer.</div>
+          </div>
+          <ArrowRight className="w-4 h-4 text-white/60 group-hover:text-white transition" />
+        </Link>
+
+        {/* Business audits — automated 90-second business analyses. */}
+        <Link
+          to="/app/audits"
+          className="sp-glass rounded-2xl p-5 mb-4 flex items-center gap-4 hover:border-white/25 transition group"
+          data-testid="open-audits"
+        >
+          <div className="w-10 h-10 rounded-xl flex items-center justify-center"
+               style={{ background: "linear-gradient(160deg, rgba(251,146,60,0.45), rgba(251,146,60,0.08))" }}>
+            <BarChart3 className="w-4 h-4 text-white" />
+          </div>
+          <div className="flex-1 min-w-0">
+            <div className="text-white font-medium">Business audits</div>
+            <div className="text-xs sp-subtle">Drop a website — get a scored brief with gaps, opportunities, and a downloadable PDF in ~90 seconds. Great for prospecting and client onboarding.</div>
           </div>
           <ArrowRight className="w-4 h-4 text-white/60 group-hover:text-white transition" />
         </Link>

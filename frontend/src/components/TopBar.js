@@ -193,6 +193,14 @@ export default function TopBar({ children, right = null }) {
                   <UserCog className="w-4 h-4 mr-2" />
                   Account settings
                 </DropdownMenuItem>
+                <DropdownMenuItem
+                  onSelect={() => nav("/app/audits")}
+                  data-testid="topbar-menu-audits"
+                  className="cursor-pointer"
+                >
+                  <Rocket className="w-4 h-4 mr-2 text-orange-300" />
+                  Run a business audit
+                </DropdownMenuItem>
                 <DropdownMenuSeparator />
                 {/* Moved from top-bar surface to the menu (UX audit #1):
                     location toggle + About link live here so the nav only

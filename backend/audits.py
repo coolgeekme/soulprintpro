@@ -131,6 +131,16 @@ class PublicAuditStartBody(BaseModel):
     hint: Optional[str] = Field(default="", max_length=600)
 
 
+class InAppAuditBody(BaseModel):
+    """Body for logged-in users running audits inside the app —
+    org-scoped, no lead capture."""
+    org_id: str = Field(..., min_length=1, max_length=64)
+    business_name: str = Field(..., min_length=1, max_length=200)
+    website_url: str = Field(..., min_length=1, max_length=400)
+    socials: Optional[dict] = None
+    hint: Optional[str] = Field(default="", max_length=600)
+
+
 # ── Helpers ──────────────────────────────────────────────────────────────────
 _SLUG_NOISE_RE = re.compile(r"[^a-z0-9]+")
 
@@ -551,6 +561,7 @@ def make_audits_router(
     db,
     get_current_user,
     require_superadmin,
+    require_org_member,
     LlmChat,
     UserMessage,
     EMERGENT_LLM_KEY: str,
@@ -560,13 +571,14 @@ def make_audits_router(
     upload_dir: Path,
     render_pdf,
 ):
-    """Two routers in one — admin (gated) and public.
+    """Three routers — admin (gated), public (lead-capture), in-app (auth + org).
 
-    Wired into FastAPI by importing from server.py and including BOTH.
-    Returns ``(admin_router, public_router)``.
+    Wired into FastAPI by importing from server.py and including all three.
+    Returns ``(admin_router, public_router, app_router)``.
     """
     admin_r = APIRouter(prefix="/api/admin")
     public_r = APIRouter(prefix="/api/public")
+    app_r = APIRouter(prefix="/api/audits")
 
     # ── Audit generation pipeline ──────────────────────────────────────────
     async def _run_audit(audit_id):
@@ -1206,4 +1218,106 @@ def make_audits_router(
             "filename": a["pdf_filename"],
         }
 
-    return admin_r, public_r
+    # ── In-app endpoints (authenticated users running audits from
+    # inside Foundry — no lead capture, scoped to user's orgs) ────────
+    @app_r.post("")
+    async def create_in_app_audit(
+        body: InAppAuditBody, u: dict = Depends(get_current_user),
+    ):
+        """Authenticated users running audits inside the app — no lead
+        capture, attributed to the user + org, counts against the org's
+        monthly audit usage."""
+        await require_org_member(body.org_id, u["id"])
+        slug = _slugify(body.business_name)
+        for _ in range(3):
+            if not await db.business_audits.find_one({"slug": slug}):
+                break
+            slug = _slugify(body.business_name)
+        now = datetime.now(timezone.utc)
+        doc = {
+            "slug": slug,
+            "business_name": body.business_name.strip(),
+            "website_url": _normalise_url(body.website_url),
+            "socials": body.socials or {},
+            "hint": (body.hint or "").strip(),
+            "status": "generating",
+            "score": None,
+            "lead_count": 0,
+            "view_count": 0,
+            "pdf_filename": "",
+            "created_by": u["id"],
+            "created_by_email": (u.get("email") or "").lower(),
+            "org_id": body.org_id,
+            "created_via": "in_app",
+            "created_at": now,
+            "updated_at": now,
+        }
+        res = await db.business_audits.insert_one(doc)
+        doc["_id"] = res.inserted_id
+        asyncio.create_task(_run_audit(res.inserted_id))
+        return _full_serialize(doc)
+
+    @app_r.get("")
+    async def list_in_app_audits(
+        org_id: str,
+        limit: int = 50,
+        u: dict = Depends(get_current_user),
+    ):
+        """List audits run in this org (any seat — surfaces every member's
+        history so teams see what each other has already analysed)."""
+        await require_org_member(org_id, u["id"])
+        # Cap to keep payloads bounded; pagination can come later.
+        limit = max(1, min(int(limit or 50), 200))
+        cur = db.business_audits.find(
+            {"org_id": org_id}
+        ).sort("created_at", -1).limit(limit)
+        return [_full_serialize(a) async for a in cur]
+
+    @app_r.get("/{audit_id}")
+    async def get_in_app_audit(
+        audit_id: str, u: dict = Depends(get_current_user),
+    ):
+        try:
+            a = await db.business_audits.find_one({"_id": ObjectId(audit_id)})
+        except Exception as exc:
+            raise HTTPException(400, "Invalid audit id") from exc
+        if not a:
+            raise HTTPException(404, "Audit not found")
+        # Org-membership check unless this is the creator
+        org_id = a.get("org_id")
+        if org_id:
+            await require_org_member(org_id, u["id"])
+        elif a.get("created_by") != u["id"]:
+            raise HTTPException(403, "Not your audit")
+        return _full_serialize(a)
+
+    @app_r.get("/{audit_id}/pdf")
+    async def in_app_audit_pdf(
+        audit_id: str, request: Request,
+        u: dict = Depends(get_current_user),
+    ):
+        try:
+            a = await db.business_audits.find_one({"_id": ObjectId(audit_id)})
+        except Exception as exc:
+            raise HTTPException(400, "Invalid audit id") from exc
+        if not a:
+            raise HTTPException(404, "Audit not found")
+        org_id = a.get("org_id")
+        if org_id:
+            await require_org_member(org_id, u["id"])
+        elif a.get("created_by") != u["id"]:
+            raise HTTPException(403, "Not your audit")
+        if not a.get("pdf_filename"):
+            raise HTTPException(404, "PDF not yet generated")
+        try:
+            from workspaces import _public_origin as _origin_helper
+            origin = _origin_helper(request)
+        except Exception:
+            origin = ""
+        path = f"/api/files/{a['pdf_filename']}"
+        return {
+            "url": f"{origin.rstrip('/')}{path}" if origin else path,
+            "filename": a["pdf_filename"],
+        }
+
+    return admin_r, public_r, app_r

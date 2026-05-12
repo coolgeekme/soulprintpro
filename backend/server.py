@@ -6509,10 +6509,11 @@ async def _require_superadmin_dep(u: dict = Depends(get_current_user)) -> dict:
         raise HTTPException(403, "Superadmin only")
     return u
 
-_audit_admin_router, _audit_public_router = make_audits_router(
+_audit_admin_router, _audit_public_router, _audit_app_router = make_audits_router(
     db=db,
     get_current_user=get_current_user,
     require_superadmin=_require_superadmin_dep,
+    require_org_member=require_org_member,
     LlmChat=LlmChat, UserMessage=UserMessage,
     EMERGENT_LLM_KEY=EMERGENT_LLM_KEY,
     brave_web_search=_audit_brave_search,
@@ -6523,6 +6524,7 @@ _audit_admin_router, _audit_public_router = make_audits_router(
 )
 app.include_router(_audit_admin_router)
 app.include_router(_audit_public_router)
+app.include_router(_audit_app_router)
 
 # ── GitHub OAuth integration (per-user + per-org) ──────────────────────────
 # Lets users connect GitHub once → mission agents can read repos, open
