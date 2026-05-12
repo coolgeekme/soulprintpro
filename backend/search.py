@@ -107,17 +107,95 @@ def _excerpt(text: str, q: str, ctx: int = 80) -> str:
 
 
 async def _team_ids_for_org(org_id: str) -> list:
+    """Every team_id in this org (no visibility filter). Internal use
+    only — callers must additionally filter by `_viewable_team_ids`."""
     cur = _db.teams.find({"org_id": org_id}, {"_id": 1})
     return [str(t["_id"]) async for t in cur]
 
 
-async def _search_conversations(org_id: str, rx: re.Pattern, limit: int):
-    team_ids = await _team_ids_for_org(org_id)
-    if not team_ids:
+async def _viewable_team_ids(org_id: str, user_id: str) -> tuple:
+    """Return (viewable_team_ids, is_org_owner_flag) for this user in
+    this org. Honours team visibility — closed teams the user isn't a
+    member of are EXCLUDED. Org owners see every team.
+
+    Mirrors the `can_user_view_team` semantics from team_access.py so
+    search returns exactly what the rest of the app shows the user.
+    """
+    org = await _db.organizations.find_one({"_id": ObjectId(org_id)}) if org_id else None
+    is_owner = bool(org and str(org.get("owner_id")) == str(user_id))
+
+    # All org members (for "open team = visible to all members" rule).
+    org_members = []
+    if org_id:
+        cur = _db.org_members.find({"org_id": org_id}, {"user_id": 1, "_id": 0})
+        org_members = [str(m["user_id"]) async for m in cur]
+    user_is_org_member = is_owner or (str(user_id) in org_members)
+
+    teams = []
+    async for t in _db.teams.find({"org_id": org_id}):
+        teams.append(t)
+
+    viewable = []
+    for t in teams:
+        if is_owner:
+            viewable.append(str(t["_id"]))
+            continue
+        if t.get("is_general"):
+            if user_is_org_member:
+                viewable.append(str(t["_id"]))
+            continue
+        vis = t.get("visibility")
+        if vis not in ("open", "closed"):
+            vis = "open"  # legacy default
+        if vis == "open":
+            if user_is_org_member:
+                viewable.append(str(t["_id"]))
+            continue
+        # Closed team — only members
+        members = t.get("member_user_ids") or []
+        if str(user_id) in [str(x) for x in members]:
+            viewable.append(str(t["_id"]))
+    return viewable, is_owner
+
+
+async def _search_conversations(org_id: str, user_id: str, rx, limit: int):
+    """Conversations the user actually has access to:
+      • Team conversations: only in teams they can view (open/general/closed-member/owner)
+      • Direct conversations: only ones they're a participant in (member_ids)
+      • Private CoS conversations: only their own (owner_user_id), unless org owner
+    """
+    viewable_team_ids, is_owner = await _viewable_team_ids(org_id, user_id)
+    if not viewable_team_ids:
         return []
+    # Build the OR clauses for "this conversation is visible to me"
+    or_clauses = []
+    # Team-scoped conversations the user can view, EXCLUDING private CoS
+    # they don't own (handled below).
+    or_clauses.append({
+        "team_id": {"$in": viewable_team_ids},
+        "$or": [
+            {"kind": {"$ne": "private_cos"}},
+            {"owner_user_id": user_id},
+        ],
+    })
+    if is_owner:
+        # Org owner audit access — include every private CoS in any of
+        # their viewable teams (which is all teams).
+        or_clauses.append({
+            "team_id": {"$in": viewable_team_ids},
+            "kind": "private_cos",
+        })
+    # Direct (1:1) conversations the user is a member of
+    or_clauses.append({
+        "team_id": {"$in": viewable_team_ids},
+        "type": "direct",
+        "member_ids": user_id,
+    })
+    query = {"$and": [{"title": rx}, {"$or": or_clauses}]}
     docs = await _db.conversations.find(
-        {"team_id": {"$in": team_ids}, "title": rx},
-        {"_id": 1, "title": 1, "team_id": 1, "type": 1, "created_at": 1},
+        query,
+        {"_id": 1, "title": 1, "team_id": 1, "type": 1, "kind": 1,
+         "owner_user_id": 1, "member_ids": 1, "created_at": 1},
     ).limit(limit * 2).to_list(limit * 2)
     out = []
     for d in docs:
@@ -134,17 +212,49 @@ async def _search_conversations(org_id: str, rx: re.Pattern, limit: int):
     return out
 
 
-async def _search_messages(org_id: str, q: str, rx: re.Pattern, limit: int):
-    team_ids = await _team_ids_for_org(org_id)
-    if not team_ids:
+async def _accessible_conversations(org_id: str, user_id: str) -> dict:
+    """Return {conv_id_str: conv_meta} for every conversation in the org
+    this user can read. Shared helper used by messages + documents
+    searches to keep the gating identical across kinds.
+    """
+    viewable_team_ids, is_owner = await _viewable_team_ids(org_id, user_id)
+    if not viewable_team_ids:
+        return {}
+    or_clauses = [
+        # Team-scoped conversations excluding private CoS the user doesn't own
+        {
+            "team_id": {"$in": viewable_team_ids},
+            "$or": [
+                {"kind": {"$ne": "private_cos"}},
+                {"owner_user_id": user_id},
+            ],
+        },
+    ]
+    if is_owner:
+        or_clauses.append({
+            "team_id": {"$in": viewable_team_ids},
+            "kind": "private_cos",
+        })
+    # Direct conversations the user is a participant of
+    or_clauses.append({
+        "team_id": {"$in": viewable_team_ids},
+        "type": "direct",
+        "member_ids": user_id,
+    })
+    cur = _db.conversations.find(
+        {"$or": or_clauses},
+        {"_id": 1, "team_id": 1, "title": 1, "type": 1, "kind": 1,
+         "owner_user_id": 1, "member_ids": 1},
+    )
+    return {str(c["_id"]): c async for c in cur}
+
+
+async def _search_messages(org_id: str, user_id: str, q: str, rx, limit: int):
+    """Messages — only within conversations this user is allowed to read."""
+    conv_meta = await _accessible_conversations(org_id, user_id)
+    if not conv_meta:
         return []
-    convs = await _db.conversations.find(
-        {"team_id": {"$in": team_ids}}, {"_id": 1, "team_id": 1, "title": 1},
-    ).to_list(2000)
-    if not convs:
-        return []
-    conv_ids = [str(c["_id"]) for c in convs]
-    conv_meta = {str(c["_id"]): c for c in convs}
+    conv_ids = list(conv_meta.keys())
     docs = await _db.messages.find(
         {"conversation_id": {"$in": conv_ids}, "text": rx},
         {"_id": 0, "id": 1, "conversation_id": 1, "text": 1, "sender_name": 1,
@@ -168,6 +278,78 @@ async def _search_messages(org_id: str, q: str, rx: re.Pattern, limit: int):
     return out
 
 
+async def _search_documents(org_id: str, user_id: str, q: str, rx, limit: int):
+    """Documents — visible if (a) the doc isn't conversation-scoped (org-
+    level upload) OR (b) the user has access to the parent conversation.
+    """
+    conv_meta = await _accessible_conversations(org_id, user_id)
+    accessible_conv_ids = set(conv_meta.keys())
+    docs = await _db.documents.find(
+        {"org_id": org_id,
+         "$or": [{"original_name": rx}, {"preview": rx}, {"filename": rx}]},
+        {"_id": 0, "id": 1, "filename": 1, "original_name": 1, "kind": 1,
+         "mime": 1, "preview": 1, "size": 1, "created_at": 1, "agent_name": 1,
+         "conversation_id": 1},
+    ).sort("created_at", -1).limit(limit * 3).to_list(limit * 3)
+    out = []
+    for d in docs:
+        cid = (d.get("conversation_id") or "").strip()
+        if cid and cid not in accessible_conv_ids:
+            # Doc was produced in a conversation this user can't see.
+            continue
+        name = d.get("original_name") or d.get("filename") or "Document"
+        out.append({
+            "kind": "document",
+            "id": d.get("id") or "",
+            "title": name,
+            "excerpt": _excerpt(d.get("preview") or name, q),
+            "doc_kind": d.get("kind"),
+            "mime": d.get("mime"),
+            "size": d.get("size"),
+            "by": d.get("agent_name"),
+            "ts": d.get("created_at"),
+            "url": f"/api/files/docs/{org_id}/{d.get('filename','')}",
+        })
+        if len(out) >= limit * 2:
+            break
+    return out
+
+
+async def _search_social_posts(org_id: str, user_id: str, q: str, rx, limit: int):
+    """Social posts — filtered by viewable team set."""
+    viewable_team_ids, _ = await _viewable_team_ids(org_id, user_id)
+    query = {"org_id": org_id, "text": rx}
+    if viewable_team_ids:
+        # Closed-team posts shouldn't leak. Include legacy posts with no
+        # team_id (very old data) by allowing $exists: false too.
+        query["$or"] = [
+            {"team_id": {"$in": viewable_team_ids}},
+            {"team_id": {"$exists": False}},
+            {"team_id": None},
+        ]
+    docs = await _db.social_posts.find(
+        query,
+        {"_id": 0, "id": 1, "text": 1, "platforms": 1, "status": 1,
+         "scheduled_for": 1, "published_at": 1, "created_at": 1, "agent_name": 1},
+    ).sort("created_at", -1).limit(limit * 2).to_list(limit * 2)
+    out = []
+    for s in docs:
+        text = s.get("text") or ""
+        out.append({
+            "kind": "social_post",
+            "id": s.get("id") or "",
+            "title": text[:80] or "Social post",
+            "excerpt": _excerpt(text, q),
+            "platforms": s.get("platforms", []),
+            "status": s.get("status"),
+            "by": s.get("agent_name"),
+            "ts": (s.get("published_at") or s.get("scheduled_for")
+                   or s.get("created_at")),
+            "url": f"/app/org/{org_id}/social",
+        })
+    return out
+
+
 async def _search_missions(org_id: str, q: str, rx: re.Pattern, limit: int):
     docs = await _db.missions.find(
         {"org_id": org_id, "$or": [{"goal": rx}, {"summary": rx}]},
@@ -186,55 +368,6 @@ async def _search_missions(org_id: str, q: str, rx: re.Pattern, limit: int):
             "lead_agent": m.get("lead_agent_name"),
             "ts": m.get("finished_at") or m.get("started_at"),
             "url": f"/app/missions/{m.get('id','')}",
-        })
-    return out
-
-
-async def _search_documents(org_id: str, q: str, rx: re.Pattern, limit: int):
-    docs = await _db.documents.find(
-        {"org_id": org_id,
-         "$or": [{"original_name": rx}, {"preview": rx}, {"filename": rx}]},
-        {"_id": 0, "id": 1, "filename": 1, "original_name": 1, "kind": 1,
-         "mime": 1, "preview": 1, "size": 1, "created_at": 1, "agent_name": 1},
-    ).sort("created_at", -1).limit(limit * 2).to_list(limit * 2)
-    out = []
-    for d in docs:
-        name = d.get("original_name") or d.get("filename") or "Document"
-        out.append({
-            "kind": "document",
-            "id": d.get("id") or "",
-            "title": name,
-            "excerpt": _excerpt(d.get("preview") or name, q),
-            "doc_kind": d.get("kind"),
-            "mime": d.get("mime"),
-            "size": d.get("size"),
-            "by": d.get("agent_name"),
-            "ts": d.get("created_at"),
-            "url": f"/api/files/docs/{org_id}/{d.get('filename','')}",
-        })
-    return out
-
-
-async def _search_social_posts(org_id: str, q: str, rx: re.Pattern, limit: int):
-    docs = await _db.social_posts.find(
-        {"org_id": org_id, "text": rx},
-        {"_id": 0, "id": 1, "text": 1, "platforms": 1, "status": 1,
-         "scheduled_for": 1, "published_at": 1, "created_at": 1, "agent_name": 1},
-    ).sort("created_at", -1).limit(limit * 2).to_list(limit * 2)
-    out = []
-    for s in docs:
-        text = s.get("text") or ""
-        out.append({
-            "kind": "social_post",
-            "id": s.get("id") or "",
-            "title": text[:80] or "Social post",
-            "excerpt": _excerpt(text, q),
-            "platforms": s.get("platforms", []),
-            "status": s.get("status"),
-            "by": s.get("agent_name"),
-            "ts": (s.get("published_at") or s.get("scheduled_for")
-                   or s.get("created_at")),
-            "url": f"/app/org/{org_id}/social",
         })
     return out
 
@@ -322,20 +455,21 @@ async def search(
 ):
     """Unified org-wide search. Returns hits grouped by kind."""
     await _require_org_member(org_id, user["id"])
-    return await _search_impl(org_id=org_id, q=q, limit=limit)
+    return await _search_impl(org_id=org_id, user_id=user["id"], q=q, limit=limit)
 
 
-async def _search_impl(*, org_id: str, q: str, limit: int):
-    # Resolve user manually since this function is the body of a Depends
-    # chain; FastAPI is already calling _user_dep through the route below.
-    # (We piggy-back the route declared with Depends for auth.)
+async def _search_impl(*, org_id: str, user_id: str, q: str, limit: int):
+    """Run all six per-kind searches in parallel. Every per-kind helper
+    scopes by `user_id` so closed teams, private CoS chats, and direct
+    chats the user isn't a member of are never leaked.
+    """
     rx = _safe_regex(q)
 
-    convs = await _search_conversations(org_id, rx, limit)
-    msgs = await _search_messages(org_id, q, rx, limit)
+    convs = await _search_conversations(org_id, user_id, rx, limit)
+    msgs = await _search_messages(org_id, user_id, q, rx, limit)
     missions = await _search_missions(org_id, q, rx, limit)
-    docs = await _search_documents(org_id, q, rx, limit)
-    posts = await _search_social_posts(org_id, q, rx, limit)
+    docs = await _search_documents(org_id, user_id, q, rx, limit)
+    posts = await _search_social_posts(org_id, user_id, q, rx, limit)
     agents = _search_agents(org_id, q, rx, limit)
 
     grouped = {
@@ -372,7 +506,7 @@ async def search_v1(
 ):
     """Alias kept for FE forward-compat. Same impl as /api/search."""
     await _require_org_member(org_id, user["id"])
-    return await _search_impl(org_id=org_id, q=q, limit=limit)
+    return await _search_impl(org_id=org_id, user_id=user["id"], q=q, limit=limit)
 
 
 # ── AI synthesis ────────────────────────────────────────────────────────────
@@ -387,7 +521,9 @@ async def synthesize(body: SynthesizeBody, user: dict = Depends(_resolve_user)):
     await _require_org_member(body.org_id, user["id"])
     if not body.top:
         # Run a fresh search if the caller didn't pass hits
-        data = await _search_impl(org_id=body.org_id, q=body.q, limit=10)
+        data = await _search_impl(
+            org_id=body.org_id, user_id=user["id"], q=body.q, limit=10,
+        )
         body.top = data["top"]
 
     if not body.top:
