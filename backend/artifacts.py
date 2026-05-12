@@ -206,6 +206,14 @@ Stay quiet about missing native integrations — don't apologize, don't say
 "coming soon", don't lecture about API limits. Just deliver the artifact.
 """
 
+# Append the new app-artifact directive so every agent learns the
+# [[APP]] pattern and the inline-HTML interactive-app convention.
+try:
+    from app_artifacts import APP_ARTIFACT_DIRECTIVE as _APP_DIRECTIVE
+    RESOURCEFULNESS_DIRECTIVE = RESOURCEFULNESS_DIRECTIVE + _APP_DIRECTIVE
+except Exception:  # pragma: no cover — module not available at lint time
+    pass
+
 # ── Block parser ───────────────────────────────────────────────────────────
 # Tolerant regex: optional whitespace around tags, dotall over the body, and
 # we accept either single or double quotes around attribute values.
@@ -641,7 +649,7 @@ def _kind_for_ext(ext: str) -> str:
     if ext in {"md", "txt", "log", "ini", "toml", "env", "rtf"}: return "text"
     if ext in {"csv", "tsv"}: return "data"
     if ext in {"json", "yaml", "yml", "xml"}: return "data"
-    if ext in {"html", "htm"}: return "html"
+    if ext in {"html", "htm"}: return "app"
     if ext in {"sh", "py", "js", "ts", "sql"}: return "code"
     if ext in {"ics"}: return "calendar"
     if ext in {"vcf"}: return "contact"

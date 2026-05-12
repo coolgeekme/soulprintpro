@@ -1,0 +1,78 @@
+<!DOCTYPE html>
+<html lang="en" >
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Pricing Calculator</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-gray-50 min-h-screen flex items-center justify-center p-4">
+  <main class="bg-white shadow-lg rounded-lg max-w-md w-full p-8">
+    <h1 class="text-2xl font-semibold text-gray-800 mb-6 text-center">Pricing Calculator</h1>
+    <form id="pricing-form" class="space-y-6" onsubmit="return false;">
+      <div>
+        <label for="users" class="block text-gray-700 font-medium mb-1">Number of users</label>
+        <input
+          id="users"
+          name="users"
+          type="number"
+          min="0"
+          value="0"
+          class="w-full rounded-md border border-gray-300 px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+          aria-describedby="users-help"
+          inputmode="numeric"
+          pattern="[0-9]*"
+        />
+        <p id="users-help" class="text-gray-500 text-sm mt-1">Enter the number of users for this plan</p>
+      </div>
+      
+      <div>
+        <label for="plan" class="block text-gray-700 font-medium mb-1">Select plan</label>
+        <select
+          id="plan"
+          name="plan"
+          class="w-full rounded-md border border-gray-300 px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+          aria-describedby="plan-help"
+        >
+          <option value="80">Spark — $80 /user</option>
+          <option value="300">Temper — $300 /user</option>
+        </select>
+        <p id="plan-help" class="text-gray-500 text-sm mt-1">Choose your subscription plan</p>
+      </div>
+    </form>
+
+    <div class="mt-8 text-center">
+      <p class="text-gray-700 text-lg font-semibold">Total Monthly Cost:</p>
+      <p id="total-cost" class="text-3xl font-extrabold text-blue-600 mt-2" aria-live="polite" aria-atomic="true">$0</p>
+    </div>
+  </main>
+
+  <script>
+    (() => {
+      const usersInput = document.getElementById('users');
+      const planSelect = document.getElementById('plan');
+      const totalCostEl = document.getElementById('total-cost');
+
+      function calculateTotal() {
+        const users = parseInt(usersInput.value, 10);
+        const planPrice = Number(planSelect.value);
+
+        if (isNaN(users) || users < 0) {
+          // If invalid input, show $0
+          totalCostEl.textContent = '$0';
+          return;
+        }
+
+        const total = users * planPrice;
+        totalCostEl.textContent = `$${total.toLocaleString()}`;
+      }
+
+      // Initial calculation
+      calculateTotal();
+
+      usersInput.addEventListener('input', calculateTotal);
+      planSelect.addEventListener('change', calculateTotal);
+    })();
+  </script>
+</body>
+</html>

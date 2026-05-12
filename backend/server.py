@@ -3301,21 +3301,31 @@ async def generate_agent_reply(conv: dict, team: dict, agent_id: str,
 
 async def process_agent_artifacts(reply_text: str, *, conv: dict, agent_id: str,
                                   message_id: str, created_by: str) -> tuple[str, list]:
-    """Pull [[ARTIFACT]] blocks out of an agent reply, persist them as files
-    + Documents records, and return (cleaned_text, attachments_list).
+    """Pull [[ARTIFACT]] + [[APP]] blocks out of an agent reply, persist
+    them as files + Documents records, and return (cleaned_text,
+    attachments_list).
 
     `conv` must include `team_id` so we can resolve the org. If artifact
     extraction fails for any reason we swallow the error and return the
     original reply unchanged — never block a chat reply on a side-effect.
     """
+    from app_artifacts import (
+        extract_app_bundles, strip_app_blocks, looks_like_html_app,
+        save_app_bundle, upgrade_html_to_app,
+    )
     try:
+        # ── Stage 1: multi-file [[APP]] bundles ───────────────────────
+        # Extract bundles first (they own their own block syntax), then
+        # strip the raw JSON from the reply so the chat bubble shows
+        # clean prose, not the manifest.
+        app_bundles = extract_app_bundles(reply_text or "")
+        if app_bundles:
+            reply_text = strip_app_blocks(reply_text)
+
+        # ── Stage 2: standard [[ARTIFACT]] blocks ─────────────────────
         cleaned, blocks = extract_artifact_blocks(reply_text or "")
-        if not blocks:
-            # No artifacts attached — but the agent might have promised
-            # async work that won't actually happen. Append a clear next-
-            # step nudge so the user always knows what to type next.
+        if not blocks and not app_bundles:
             return _annotate_empty_promise(reply_text or "", has_artifacts=False), []
-        # Resolve org_id from the conversation's team
         team_id = conv.get("team_id")
         team_doc = await db.teams.find_one({"_id": ObjectId(team_id)}) if team_id else None
         if not team_doc:
@@ -3323,24 +3333,50 @@ async def process_agent_artifacts(reply_text: str, *, conv: dict, agent_id: str,
         org_id = team_doc.get("org_id") or ""
         if not org_id:
             return _annotate_empty_promise(reply_text or "", has_artifacts=False), []
-        attachments = await _save_artifacts(
-            db, blocks,
-            docs_root=DOCS_DIR,
-            org_id=org_id,
-            conversation_id=str(conv.get("_id") or ""),
-            message_id=message_id,
-            agent_id=agent_id,
-            agent_name=AGENTS[agent_id]["name"] if agent_id in AGENTS else "Agent",
-            created_by=created_by,
-        )
-        # If parsing left an empty cleaned reply, give the user a tiny
-        # placeholder so the bubble isn't blank.
+        attachments = []
+        if blocks:
+            attachments = await _save_artifacts(
+                db, blocks,
+                docs_root=DOCS_DIR,
+                org_id=org_id,
+                conversation_id=str(conv.get("_id") or ""),
+                message_id=message_id,
+                agent_id=agent_id,
+                agent_name=AGENTS[agent_id]["name"] if agent_id in AGENTS else "Agent",
+                created_by=created_by,
+            )
+            # Promote single-file HTML artifacts to interactive apps so
+            # they get a sandboxed preview + share URL + ZIP download
+            # treatment in the chat stream.
+            for i, att in enumerate(attachments):
+                if att.get("mime") == "text/html" or (att.get("original_name") or "").lower().endswith((".html", ".htm")):
+                    doc_id = att.get("document_id")
+                    block_body = blocks[i].get("content") if i < len(blocks) else ""
+                    if doc_id and looks_like_html_app(block_body or ""):
+                        token = await upgrade_html_to_app(db, doc_id)
+                        if token:
+                            att["kind"] = "app"
+                            att["app_token"] = token
+                            att["share_url"] = f"/api/share/app/{token}"
+                            att["download_url"] = f"/api/share/app/{token}/_download"
+        # Multi-file bundles persist via their own helper
+        for bundle in app_bundles:
+            att = await save_app_bundle(
+                db,
+                bundle=bundle,
+                org_id=org_id,
+                conversation_id=str(conv.get("_id") or ""),
+                message_id=message_id,
+                agent_id=agent_id,
+                agent_name=AGENTS[agent_id]["name"] if agent_id in AGENTS else "Agent",
+                created_by=created_by,
+            )
+            if att:
+                attachments.append(att)
+
         if not cleaned.strip():
             n = len(attachments)
             cleaned = f"📎 Attached {n} file{'s' if n != 1 else ''} for you."
-        # Even when artifacts were attached, the prose around them might
-        # still contain promise language ("I'll send the rest tomorrow…").
-        # Pass has_artifacts=True to suppress the footer in that case.
         cleaned = _annotate_empty_promise(cleaned, has_artifacts=bool(attachments))
         return cleaned, attachments
     except Exception as exc:
@@ -6580,6 +6616,13 @@ docs_r = make_documents_router(
     get_current_user=get_current_user,
 )
 app.include_router(docs_r)
+
+# Public app-artifact share router — capability-URL serving for the
+# interactive HTML/JS apps agents generate. See app_artifacts.py.
+from app_artifacts import make_share_router as _make_app_share_router  # noqa: E402
+app.include_router(_make_app_share_router(
+    db, docs_root=DOCS_DIR, read_blob_from_gridfs=read_blob_from_gridfs,
+))
 
 # Social Style Guide — analyzes the org's social profiles + samples to
 # produce a structured brand-voice + visual-style guide that's auto-injected

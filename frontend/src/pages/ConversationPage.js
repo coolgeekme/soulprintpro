@@ -10,6 +10,7 @@ import {
 } from "lucide-react";
 import LinkPreviewCard from "../components/LinkPreviewCard";
 import IntegrityBadge from "../components/IntegrityBadge";
+import AppPreview from "../components/AppPreview";
 import { MissionCard } from "../components/MissionCard";
 import { MessageActions } from "../components/MessageActions";
 import EmptyPromisePill from "../components/EmptyPromisePill";
@@ -1352,6 +1353,13 @@ export default function ConversationPage() {
                           </div>
                         )}
                         {others.map((a, i) => {
+                          if (a.kind === "app") return (
+                            <AppPreview
+                              key={`${m.id}-app-${i}`}
+                              attachment={a}
+                              apiBase={BACKEND_URL}
+                            />
+                          );
                           if (a.kind === "video") return (
                             <div key={`${m.id}-v-${i}`} className="relative group/media">
                               <video
