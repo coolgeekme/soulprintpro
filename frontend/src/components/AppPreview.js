@@ -35,16 +35,29 @@ export default function AppPreview({ attachment, apiBase }) {
   const token = attachment.app_token;
   const shareUrl = attachment.share_url || `/api/share/app/${token}`;
   const downloadUrl = attachment.download_url || `/api/share/app/${token}/_download`;
-  const fullShareUrl = shareUrl.startsWith("http")
+  // Two distinct URLs:
+  //   • `iframeUrl` / `downloadHref` — point at the backend so the
+  //     <iframe> and <a download> actually fetch the right host.
+  //   • `displayShareUrl` — what we show to users + copy to clipboard.
+  //     Always uses the CURRENT browser origin (foundryagents.ai on
+  //     production, the preview domain on staging) so the link they
+  //     send is a nice user-facing URL, never a raw backend host.
+  const iframeUrl = shareUrl.startsWith("http")
     ? shareUrl
     : `${apiBase}${shareUrl}`;
+  const downloadHref = downloadUrl.startsWith("http")
+    ? downloadUrl
+    : `${apiBase}${downloadUrl}`;
+  const displayShareUrl = shareUrl.startsWith("http")
+    ? shareUrl
+    : (typeof window !== "undefined" ? window.location.origin : "") + shareUrl;
   const title = attachment.title || attachment.original_name || "Interactive app";
 
   const loadSource = async () => {
     if (source !== null) return;
     setLoadingSource(true);
     try {
-      const res = await fetch(fullShareUrl, { credentials: "omit" });
+      const res = await fetch(iframeUrl, { credentials: "omit" });
       const txt = await res.text();
       setSource(txt);
     } catch {
@@ -61,7 +74,7 @@ export default function AppPreview({ attachment, apiBase }) {
 
   const copyLink = async () => {
     try {
-      await navigator.clipboard.writeText(fullShareUrl);
+      await navigator.clipboard.writeText(displayShareUrl);
       setCopied(true);
       toast.success("Share link copied");
       setTimeout(() => setCopied(false), 1500);
@@ -83,7 +96,7 @@ export default function AppPreview({ attachment, apiBase }) {
   const refresh = () => {
     if (iframeRef.current) {
       // Reload by re-assigning src
-      iframeRef.current.src = `${fullShareUrl}?t=${Date.now()}`;
+      iframeRef.current.src = `${iframeUrl}?t=${Date.now()}`;
     }
   };
 
@@ -135,7 +148,7 @@ export default function AppPreview({ attachment, apiBase }) {
               {copied ? <Check className="w-3.5 h-3.5 text-emerald-300" /> : <Share2 className="w-3.5 h-3.5" />}
             </button>
             <a
-              href={fullShareUrl}
+              href={displayShareUrl}
               target="_blank"
               rel="noreferrer noopener"
               className="p-1.5 rounded hover:bg-white/10"
@@ -145,7 +158,7 @@ export default function AppPreview({ attachment, apiBase }) {
               <ExternalLink className="w-3.5 h-3.5" />
             </a>
             <a
-              href={apiBase + downloadUrl}
+              href={downloadHref}
               download
               className="p-1.5 rounded hover:bg-white/10"
               title="Download as ZIP"
@@ -169,7 +182,7 @@ export default function AppPreview({ attachment, apiBase }) {
           {mode === "preview" ? (
             <iframe
               ref={iframeRef}
-              src={fullShareUrl}
+              src={iframeUrl}
               title={title}
               sandbox="allow-scripts allow-forms allow-popups allow-modals allow-same-origin"
               className="w-full"
@@ -211,7 +224,7 @@ export default function AppPreview({ attachment, apiBase }) {
             <Play className="w-3 h-3" /> Rerun
           </button>
           <span className="truncate">
-            Share URL: <code className="text-orange-300">{fullShareUrl}</code>
+            Share URL: <code className="text-orange-300">{displayShareUrl}</code>
           </span>
         </div>
       </div>
@@ -229,7 +242,7 @@ export default function AppPreview({ attachment, apiBase }) {
             <span className="font-medium">{title}</span>
             <div className="flex items-center gap-2">
               <a
-                href={fullShareUrl}
+                href={displayShareUrl}
                 target="_blank"
                 rel="noreferrer noopener"
                 className="sp-btn sp-btn-ghost text-xs"
@@ -245,7 +258,7 @@ export default function AppPreview({ attachment, apiBase }) {
             </div>
           </div>
           <iframe
-            src={fullShareUrl}
+            src={iframeUrl}
             title={`${title} fullscreen`}
             sandbox="allow-scripts allow-forms allow-popups allow-modals allow-same-origin"
             className="flex-1 w-full bg-white"
