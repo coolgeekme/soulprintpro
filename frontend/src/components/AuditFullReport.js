@@ -1,5 +1,5 @@
 import React from "react";
-import { Wand2, Building2, ExternalLink, Zap, Rocket } from "lucide-react";
+import { Wand2, Building2, ExternalLink, Zap, Rocket, ShieldAlert } from "lucide-react";
 
 /**
  * AuditFullReport — the full rendered audit body.
@@ -16,6 +16,37 @@ export default function AuditFullReport({ audit }) {
   const sections = audit.sections || {};
   return (
     <div className="space-y-8" data-testid="audit-full-report">
+      {/* Honest disclosure banner — when the prospect's site sits behind
+          Cloudflare / DataDome / Akamai-style anti-bot protection, our
+          headless browser is served the challenge page instead of the
+          real homepage. We blank the on-page text in that case and lean
+          on Perplexity + Brave for the audit body; the banner tells the
+          reader where the analysis came from so the audit reads as
+          credible, not magical. */}
+      {audit.website_fetch_blocked && (
+        <div
+          className="rounded-xl border border-amber-500/30 bg-amber-500/5 p-4 flex items-start gap-3"
+          data-testid="audit-fetch-blocked-banner"
+        >
+          <ShieldAlert className="w-5 h-5 text-amber-300 shrink-0 mt-0.5" />
+          <div className="text-sm leading-relaxed">
+            <div className="font-medium text-amber-200 mb-1">
+              Site behind anti-bot protection
+            </div>
+            <div className="sp-subtle">
+              We couldn't crawl{" "}
+              {audit.website_url && (
+                <span className="text-amber-100/90">{audit.website_url}</span>
+              )}{" "}
+              directly — it's protected by anti-bot software (Cloudflare,
+              DataDome, or similar). This audit is built from live web
+              research (Perplexity), brand mentions, and review signals
+              instead of on-page copy. Findings that would normally cite
+              your hero text or CTAs draw on those external sources here.
+            </div>
+          </div>
+        </div>
+      )}
       {/* Recommendations — each one carries a "how Foundry helps you
           act on this" hook so the prospect sees the natural next
           step without us overpromising autonomous execution. */}

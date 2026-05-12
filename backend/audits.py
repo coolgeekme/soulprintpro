@@ -267,6 +267,7 @@ def _public_full(a: dict) -> dict:
         "competitors", "brand_voice", "sections",
         "how_soulprint_helps",
         "executive_summary", "pdf_filename",
+        "website_fetch_blocked",
     )
     out = {k: a.get(k) for k in keys}
     return out
@@ -446,7 +447,13 @@ Synthesize a structured audit and return ONLY valid JSON matching this schema:
 Rules:
   • If a data source is empty/missing, acknowledge it ("No public reviews surfaced in our scan…") rather than fabricating.
   • The input includes ``perplexity_company_summary`` — Perplexity Sonar's live web research on the business. Treat it as ADDITIVE CONTEXT (market position, what they actually do, recent mentions) — NOT as a substitute for verbatim on-page copy. When grading voice/tone/CTAs, cite the ``website_rendered_text_excerpt`` first; only fall back to the Perplexity summary when on-page text is empty or shows a bot-challenge wall.
-  • If ``website_rendered_text_excerpt`` looks like a Cloudflare / bot-verification interstitial (e.g. "Verifying that you are not a robot", "Just a moment", "Checking your browser"), make that itself a finding — first-time visitors hitting that wall is a real conversion problem — and lean on the Perplexity summary for the rest of the audit.
+  • The input ALSO includes ``website_fetch_blocked`` — a boolean. When TRUE, the site sits behind anti-bot protection (Cloudflare, DataDome, Akamai, PerimeterX) and our crawler could not read the real homepage. In that case:
+       — You MUST NOT invent copy-level findings ("sparse hero", "weak CTA", "confusing nav") — you did not see the page.
+       — Open the ``executive_summary`` with one sentence acknowledging the wall: "We could not crawl {website_url} directly — it's protected by anti-bot software — so this audit is built from Perplexity's live web research, third-party citations, and review signals."
+       — Add ONE issue with priority "medium" titled "Anti-bot protection blocks crawlers (including ours)" explaining the conversion + SEO implication (some legitimate prospects, comparison shoppers, and AI search agents will be blocked too).
+       — Lean on Perplexity + Brave brand/reviews search for positioning, voice signals, and competitive context.
+       — Every other section (recommendations, competitors, brand voice) must STILL be specific and useful, just sourced from web research instead of homepage copy.
+  • If ``website_rendered_text_excerpt`` is NOT empty but looks like a Cloudflare / bot-verification interstitial (e.g. "Verifying that you are not a robot", "Just a moment", "Checking your browser"), treat it the same as the blocked case above.
   • Cite specific copy, URLs, or themes when possible.
   • Be specific over diplomatic — this is a paid audit. Vague platitudes lose deals.
   • Score must reflect reality, not flattery.
@@ -461,6 +468,7 @@ async def _synthesise_audit_via_llm(
     website_text: str, brand_search: list, reviews_search: list,
     competitors_search: list, socials: dict, hint: str,
     perplexity_summary: str = "",
+    website_blocked: bool = False,
 ):
     """Call the audit synthesis model and parse its JSON.
 
@@ -478,6 +486,12 @@ async def _synthesise_audit_via_llm(
         "admin_hint": hint,
         "socials_provided": socials or {},
         "website_rendered_text_excerpt": (website_text or "")[:8000],
+        # When the on-page fetch was blocked by anti-bot protection, the
+        # excerpt above is intentionally empty. The synthesizer must NOT
+        # invent "weak copy / sparse hero" findings in that case — it
+        # leans on Perplexity for positioning and uses Brave snippets for
+        # voice signals. The flag below tells it exactly that.
+        "website_fetch_blocked": bool(website_blocked),
         # Perplexity Sonar summary — independent of the page scrape, so
         # it's useful even when Playwright succeeded (real-time market
         # context, customer mentions, positioning) and CRITICAL when the
@@ -502,7 +516,7 @@ async def _synthesise_audit_via_llm(
         data = json.loads(text)
     except json.JSONDecodeError as exc:
         raise RuntimeError(f"Audit LLM returned non-JSON: {exc}") from exc
-    _scrub_platform_name(data)
+    data = _scrub_platform_name(data)
     return data, choice
 
 
@@ -638,18 +652,29 @@ def make_audits_router(
                     return []
 
             async def _safe_browse():
-                """Fetch on-page text via Playwright. Returns the raw
-                rendered text (may be a bot-challenge interstitial — the
-                caller decides whether to use it based on `_looks_blocked`).
+                """Fetch on-page text via Playwright. Returns
+                ``(text, blocked)`` — when the site is behind anti-bot
+                protection we surface that as a separate flag and
+                deliberately blank the text so the synthesizer prompt's
+                "fall back to Perplexity" branch fires instead of trying
+                to grade the audit from a 180-character interstitial.
                 """
                 if not url:
-                    return ""
+                    return "", False
                 try:
                     snap = await browse_url(url, take_screenshot=False)
-                    return (snap or {}).get("text", "") or ""
                 except Exception as exc:
                     logger.warning("browse %s failed: %s", url, exc)
-                    return ""
+                    return "", False
+                text = (snap or {}).get("text", "") or ""
+                # `browse_url` flips `bot_challenge` when its own sniffer
+                # finds challenge markers. We also re-check with our
+                # local heuristic so audits get a unified "blocked"
+                # signal even if upstream missed a marker.
+                blocked = bool((snap or {}).get("bot_challenge")) or _looks_blocked(text)
+                if blocked:
+                    return "", True
+                return text, False
 
             async def _safe_perplexity():
                 """Always-on Perplexity Sonar summary. Independent of
@@ -669,7 +694,7 @@ def make_audits_router(
             # All five fetches run in parallel — total wall time is the
             # slowest one, not the sum.
             (
-                website_text, perplexity_text,
+                browse_result, perplexity_text,
                 brand_hits, reviews_hits, comp_hits,
             ) = await asyncio.gather(
                 _safe_browse(),
@@ -678,17 +703,27 @@ def make_audits_router(
                 _safe_brave(f"{brand} reviews"),
                 _safe_brave(f"{brand} competitors OR alternatives"),
             )
+            website_text, website_blocked = browse_result
 
-            # If the on-page text looks like a bot wall, log it so the
-            # synthesizer's prompt can frame the audit honestly. The text
-            # itself is still passed through (sometimes the wall reveals
-            # which protection vendor is in use, which IS a finding).
-            if _looks_blocked(website_text):
+            # If the on-page text was an anti-bot wall (`_safe_browse`
+            # already blanked it) or otherwise looks thin, log it and
+            # stamp the audit row so the UI can render an honest
+            # "Site behind anti-bot protection — analysis based on web
+            # research" banner instead of pretending the LLM read the
+            # real homepage.
+            if website_blocked or _looks_blocked(website_text):
                 logger.info(
                     "Audit fetch for %s blocked / thin (%d chars). "
                     "Perplexity summary len=%d will carry the audit.",
                     url, len(website_text), len(perplexity_text or ""),
                 )
+                try:
+                    await db.business_audits.update_one(
+                        {"_id": audit_id},
+                        {"$set": {"website_fetch_blocked": bool(website_blocked)}},
+                    )
+                except Exception:
+                    pass
 
             # Stage B — synthesise (Dynamic Intelligence picks the model
             # based on task signature; the choice + rationale is stamped
@@ -700,6 +735,7 @@ def make_audits_router(
                 website_url=url,
                 website_text=website_text,
                 perplexity_summary=perplexity_text,
+                website_blocked=website_blocked,
                 brand_search=brand_hits,
                 reviews_search=reviews_hits,
                 competitors_search=comp_hits,

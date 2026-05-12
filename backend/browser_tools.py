@@ -551,9 +551,13 @@ async def _drive_navigate(page, url: str, *, take_screenshot: bool,
                     const t = (document.body && document.body.innerText || '').toLowerCase();
                     if (!t || t.length < 200) return false;
                     return !t.includes('checking your browser')
+                        && !t.includes('checking the site connection security')
+                        && !t.includes('robot challenge screen')
                         && !t.includes('just a moment')
                         && !t.includes('verifying you are human')
-                        && !t.includes('verify you are human');
+                        && !t.includes('verify you are human')
+                        && !t.includes('this page requires cookies')
+                        && !t.includes('pardon our interruption');
                 }""",
                 timeout=12000,
             )
@@ -578,13 +582,20 @@ def _looks_like_bot_challenge(text: str) -> bool:
         return False
     markers = (
         "checking your browser",
+        "checking the site connection security",  # DataDome / generic CDN
+        "robot challenge screen",                  # DataDome title
         "just a moment",
         "verifying you are human",
         "verify you are human",
+        "please verify you are human",
         "enable javascript and cookies to continue",
+        "this page requires cookies",              # DataDome / GeeTest
         "performance & security by cloudflare",
         "ddos protection by cloudflare",
+        "attention required",                       # Cloudflare 403
+        "pardon our interruption",                  # PerimeterX / HUMAN
         "this site has been blocked",
+        "access denied",
     )
     return any(m in t for m in markers)
 
