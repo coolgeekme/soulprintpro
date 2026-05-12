@@ -6,7 +6,7 @@ import { useAuth } from "../context/AuthContext";
 import { toast } from "sonner";
 import {
   Search, Loader2, ArrowRight, Download, ExternalLink, Trophy,
-  Clock, AlertTriangle, FileText, Sparkles, BarChart3,
+  Clock, AlertTriangle, FileText, Sparkles, BarChart3, RefreshCw,
 } from "lucide-react";
 
 const STATUS_META = {
@@ -135,6 +135,28 @@ export default function AuditsPage() {
     } catch {
       toast.error("Could not fetch PDF");
     }
+  };
+
+  const retryAudit = async (a) => {
+    try {
+      const { data } = await api.post(`/audits/${a.id}/retry`);
+      toast.success(`Re-running "${a.business_name}"`);
+      setAudits((prev) => prev.map((x) => (x.id === a.id ? data : x)));
+    } catch (err) {
+      const msg = err?.response?.data?.detail || "Could not retry";
+      toast.error(typeof msg === "string" ? msg : "Could not retry");
+    }
+  };
+
+  // A "generating" audit that hasn't progressed for >2 minutes is
+  // almost certainly stuck (the watchdog will eventually flip it to
+  // failed at 4 min, but the user shouldn't wait that long without
+  // an escape hatch).
+  const isStuck = (a) => {
+    if (a.status !== "generating") return false;
+    const t = a.updated_at || a.created_at;
+    if (!t) return false;
+    return (Date.now() - new Date(t).getTime()) > 2 * 60 * 1000;
   };
 
   return (
@@ -315,9 +337,19 @@ export default function AuditsPage() {
                           )}
                         </>
                       )}
-                      {a.status === "failed" && (
-                        <span className="text-[10px] text-red-300" title={a.error}>
-                          <FileText className="w-3.5 h-3.5 inline" /> Open log
+                      {(a.status === "failed" || isStuck(a)) && (
+                        <button
+                          onClick={() => retryAudit(a)}
+                          className="sp-btn sp-btn-ghost !p-1.5 text-[11px] text-orange-300"
+                          data-testid={`audit-retry-${a.id}`}
+                          title={a.status === "failed" ? "Retry this audit" : "Audit appears stuck — retry"}
+                        >
+                          <RefreshCw className="w-3.5 h-3.5" />
+                        </button>
+                      )}
+                      {a.status === "failed" && a.error && (
+                        <span className="text-[10px] text-red-300/80 max-w-[180px] truncate" title={a.error}>
+                          {a.error}
                         </span>
                       )}
                     </div>

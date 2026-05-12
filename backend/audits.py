@@ -43,7 +43,7 @@ import re
 import secrets
 import time
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional
 
@@ -739,6 +739,66 @@ def make_audits_router(
                 }},
             )
 
+    # ── Watchdog wrapper: cap any single run at 4 minutes ───────────────
+    # Without this, a wedged Playwright fetch or unresponsive LLM call
+    # can leave the audit stuck at "generating" indefinitely. We hard-
+    # stop after 240 s and mark the row failed so the UI shows a clear
+    # retry affordance instead of a forever-spinning state.
+    AUDIT_MAX_RUNTIME_SEC = 240
+
+    async def _run_audit_guarded(audit_id):
+        try:
+            await asyncio.wait_for(
+                _run_audit(audit_id), timeout=AUDIT_MAX_RUNTIME_SEC,
+            )
+        except asyncio.TimeoutError:
+            logger.warning(
+                "Audit %s exceeded %ds — marking failed",
+                audit_id, AUDIT_MAX_RUNTIME_SEC,
+            )
+            try:
+                await db.business_audits.update_one(
+                    {"_id": audit_id},
+                    {"$set": {
+                        "status": "failed",
+                        "error": (
+                            f"Audit exceeded {AUDIT_MAX_RUNTIME_SEC}s. "
+                            "This usually means the target site was unreachable "
+                            "or one of our research APIs timed out. Try again."
+                        ),
+                        "updated_at": datetime.now(timezone.utc),
+                    }},
+                )
+            except Exception:
+                pass
+        except Exception:
+            # _run_audit handles its own exception → no-op here.
+            pass
+
+    # ── Orphan recovery: re-kick any audit stuck at "generating" on
+    # startup. This catches rows orphaned by a redeploy or crash that
+    # killed the asyncio task mid-flight. We use a 3-minute grace
+    # window so freshly-started audits aren't picked up.
+    async def recover_orphans():
+        try:
+            cutoff = datetime.now(timezone.utc) - timedelta(minutes=3)
+            n = 0
+            cur = db.business_audits.find({
+                "status": "generating",
+                "$or": [
+                    {"updated_at": {"$lt": cutoff}},
+                    {"updated_at": {"$exists": False}, "created_at": {"$lt": cutoff}},
+                ],
+            }, {"_id": 1})
+            async for a in cur:
+                logger.info("Re-kicking orphaned audit %s", a["_id"])
+                asyncio.create_task(_run_audit_guarded(a["_id"]))
+                n += 1
+            if n:
+                logger.info("Recovered %d orphaned audits", n)
+        except Exception as exc:
+            logger.warning("Orphan recovery failed: %s", exc)
+
     # ── Admin endpoints ────────────────────────────────────────────────────
     @admin_r.post("/audits")
     async def create_audit(body: AuditCreateBody, u: dict = Depends(require_superadmin)):
@@ -766,7 +826,7 @@ def make_audits_router(
         res = await db.business_audits.insert_one(doc)
         doc["_id"] = res.inserted_id
         # Fire-and-forget the heavy pipeline
-        asyncio.create_task(_run_audit(res.inserted_id))
+        asyncio.create_task(_run_audit_guarded(res.inserted_id))
         return _full_serialize(doc)
 
     @admin_r.get("/audits")
@@ -833,7 +893,7 @@ def make_audits_router(
             {"_id": oid},
             {"$set": {"status": "generating", "updated_at": datetime.now(timezone.utc), "error": ""}},
         )
-        asyncio.create_task(_run_audit(oid))
+        asyncio.create_task(_run_audit_guarded(oid))
         return {"ok": True}
 
     @admin_r.get("/audits/{audit_id}/leads")
@@ -1068,7 +1128,7 @@ def make_audits_router(
         }
         lead_res = await db.audit_leads.insert_one(lead_doc)
         # Fire-and-forget the heavy generation pipeline.
-        asyncio.create_task(_run_audit(res.inserted_id))
+        asyncio.create_task(_run_audit_guarded(res.inserted_id))
         # Kick off the standard "new lead" admin notification email so
         # we don't lose the operational visibility we already built.
         try:
@@ -1254,7 +1314,7 @@ def make_audits_router(
         }
         res = await db.business_audits.insert_one(doc)
         doc["_id"] = res.inserted_id
-        asyncio.create_task(_run_audit(res.inserted_id))
+        asyncio.create_task(_run_audit_guarded(res.inserted_id))
         return _full_serialize(doc)
 
     @app_r.get("")
@@ -1320,4 +1380,36 @@ def make_audits_router(
             "filename": a["pdf_filename"],
         }
 
-    return admin_r, public_r, app_r
+    @app_r.post("/{audit_id}/retry")
+    async def retry_in_app_audit(
+        audit_id: str, u: dict = Depends(get_current_user),
+    ):
+        """Re-run an audit that's stuck at 'generating' or marked 'failed'.
+        Resets the row's status + timestamps and kicks the pipeline."""
+        try:
+            oid = ObjectId(audit_id)
+            a = await db.business_audits.find_one({"_id": oid})
+        except Exception as exc:
+            raise HTTPException(400, "Invalid audit id") from exc
+        if not a:
+            raise HTTPException(404, "Audit not found")
+        org_id = a.get("org_id")
+        if org_id:
+            await require_org_member(org_id, u["id"])
+        elif a.get("created_by") != u["id"]:
+            raise HTTPException(403, "Not your audit")
+        if a.get("status") == "ready":
+            raise HTTPException(400, "Audit already completed")
+        await db.business_audits.update_one(
+            {"_id": oid},
+            {"$set": {
+                "status": "generating",
+                "error": None,
+                "updated_at": datetime.now(timezone.utc),
+            }},
+        )
+        asyncio.create_task(_run_audit_guarded(oid))
+        a = await db.business_audits.find_one({"_id": oid})
+        return _full_serialize(a)
+
+    return admin_r, public_r, app_r, recover_orphans

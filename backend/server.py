@@ -6558,7 +6558,7 @@ async def _require_superadmin_dep(u: dict = Depends(get_current_user)) -> dict:
         raise HTTPException(403, "Superadmin only")
     return u
 
-_audit_admin_router, _audit_public_router, _audit_app_router = make_audits_router(
+_audit_admin_router, _audit_public_router, _audit_app_router, _audit_recover_orphans = make_audits_router(
     db=db,
     get_current_user=get_current_user,
     require_superadmin=_require_superadmin_dep,
@@ -6612,6 +6612,13 @@ async def _seed_superadmins():
             logger.info("Loaded %d custom agents from DB into catalogue", n)
     except Exception as exc:
         logger.warning("Could not load custom agents: %s", exc)
+    # Recover any audits orphaned by the previous boot (status stuck at
+    # 'generating' with no live task) — re-kick them so they finish or
+    # cleanly fail rather than hanging forever.
+    try:
+        await _audit_recover_orphans()
+    except Exception as exc:
+        logger.warning("Audit orphan recovery failed: %s", exc)
     # Grandfather any pre-existing users into the site access gate so
     # the gate is invite-only for NEW signups, never a friction for
     # existing customers. Idempotent — only touches rows missing
