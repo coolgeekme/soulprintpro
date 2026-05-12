@@ -142,12 +142,16 @@ Plain-English feature inventory of **Foundry by SoulPrint Engine** for non-techn
 
 | When | What we shipped |
 |---|---|
-| **Late April 2026** | Foundation — orgs, teams, agents, Soul, image/video gen, light/dark, PWA |
-| **Early May 2026** | Group chat polish, Social Queue MVP, Style Guide, Mission engine with browser tools |
-| **February 2026 (early)** | PDF/DOCX generation, anti-hallucination, autonomous social posting, brand reliability fixes |
-| **February 2026 (mid)** | Foundry rebrand, Pre-Launch Gate, Public Audits, Crucible (live browser), Pricing rebuild |
-| **February 11-12, 2026** | Custom Agents, Interactive App Artifacts, Search with ⌘K, In-App Audits, JWT persistence, Audit watchdog, Mission research-breadth gate, Pricing matrix + add-ons |
+| **Apr 17, 2026** | Initial scaffold |
+| **Apr 27–30, 2026** | Foundation — orgs, teams, 169 agents, Soul, image/video gen, light/dark, PWA, Social Queue MVP, in-chat file uploads, Style Guide, Resourceful Agents (artifact generation) |
+| **May 1, 2026** | Mission engine — headless browser, form-fill, page-map intelligence, missions inside conversations, loop-quality hardening, owner UX polish (composer pinning, reactions) |
+| **May 2–4, 2026** | Real PDF & DOCX synthesis, autonomous scheduled social posting via Missions, Media Library + Social Queue integration, WorkingIndicator, stop-mid-reply cancel button, light/dark contrast pass |
+| **May 5–7, 2026** | iPhone PWA notch fix, theme-aware logo wiring, anti-hallucination (auto-fetch user URLs as ground truth), brand assets owner-gating, bulletproof artifact rendering, GridFS-backed logo persistence |
+| **May 8–10, 2026** | Foundry rebrand (from SoulPrint Engine Pro), Pre-Launch Access Gate, Public Business Audits (`/get-audit`), Crucible (live remote browser + credential vault), pitch deck refresh, ArcheForge Studios pricing arm |
+| **May 11–12, 2026** | Custom Agents, Interactive App Artifacts (sandboxed iframe + share URL + ZIP export), unified `⌘K` Search with AI synthesis + access controls, In-App Audits with watchdog & retry, JWT secret persistence (no more re-login after deploys), Mission research-breadth gate, Pricing matrix + Add-ons strip, theme toggle on homepage |
+
+_Roughly 3.5 weeks from blank repo to the platform that lives at `foundryagents.ai` today._
 
 ---
 
-_Last updated: Feb 12, 2026 — kept in `/app/memory/CHANGELOG.md`_
+_Last updated: May 12, 2026 — kept in `/app/memory/CHANGELOG.md`_
