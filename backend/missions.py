@@ -60,6 +60,64 @@ _BROWSER_TOOL_NAMES = {
 DUPLICATE_CALL_SOFT_LIMIT = 2  # 2nd identical call: warning injected
 DUPLICATE_CALL_HARD_LIMIT = 3  # 3rd identical call: auto-aborted with error
 
+# ── Research-breadth enforcement ────────────────────────────────────────────
+# Goals that imply broad, multi-source research must finish with ≥ N
+# distinct domains browsed. Fewer than that → finish call is rejected
+# and the agent is forced back into research mode.
+_RESEARCH_GOAL_TERMS = (
+    "research", "find ", "identify ", "common ", "top ", " most ", " biggest ",
+    " best ", "compare", "analyse", "analyze", "analysis", "survey", "study",
+    "trend", "industry", "market ", "competitive", "audit", "evaluate",
+    "review", "report on", "investigate", "complaint", " issues", "problem",
+    "pain point", "list of", "breakdown", "overview", "findings",
+)
+RESEARCH_MIN_DISTINCT_DOMAINS = 5
+
+
+def _is_research_goal(goal: str) -> bool:
+    """Heuristic: does this mission goal demand broad multi-source research?
+    Liberal on purpose — false positives just trigger a soft enforcement
+    that costs the agent 1-2 extra iterations on a non-research goal,
+    which is far cheaper than letting a real research goal finish thin."""
+    if not goal:
+        return False
+    g = " " + goal.lower() + " "
+    return any(term in g for term in _RESEARCH_GOAL_TERMS)
+
+
+def _extract_domain(url: str) -> Optional[str]:
+    """Return the registrable hostname (minus www.) or None if not a URL."""
+    if not url or not isinstance(url, str):
+        return None
+    try:
+        host = urlparse(url).hostname
+        if not host:
+            return None
+        host = host.lower()
+        if host.startswith("www."):
+            host = host[4:]
+        return host or None
+    except Exception:
+        return None
+
+
+def _count_distinct_browsed_domains(history: list) -> int:
+    """Walk the mission history of tool_call events and count distinct
+    domains that `browse_url` was invoked against."""
+    domains = set()
+    for ev in history or []:
+        if ev.get("kind") != "tool_call":
+            continue
+        if ev.get("tool") != "browse_url":
+            continue
+        args = ev.get("args") or {}
+        url = args.get("url") or args.get("href") or ""
+        dom = _extract_domain(url)
+        if dom:
+            domains.add(dom)
+    return len(domains)
+
+
 # Active mission Tasks keyed by mission_id — for cancel / pause signalling.
 _RUNNING: Dict[str, asyncio.Task] = {}
 _PAUSE_FLAGS: Dict[str, asyncio.Event] = {}
@@ -544,6 +602,53 @@ async def run_mission_loop(
 
             if action == "finish":
                 summary = (args.get("summary") or thought or "").strip()[:2000] or "Mission complete."
+                # ── Research-breadth gate ───────────────────────────────
+                # If the goal demands broad research, refuse to finish
+                # until we've actually browsed multiple distinct sources.
+                # Bypass when the goal could not be researched (`FAILED:`
+                # / network errors) or when finishing as an `ask_user`
+                # outcome rather than a real deliverable.
+                mission_row = await db.missions.find_one(
+                    {"id": mission_id}, {"goal": 1, "research_gate_warned": 1}
+                )
+                goal = (mission_row or {}).get("goal", "")
+                already_warned = bool((mission_row or {}).get("research_gate_warned"))
+                summary_is_failure = summary.upper().startswith("FAILED:")
+                if (
+                    _is_research_goal(goal)
+                    and not summary_is_failure
+                    and not already_warned
+                ):
+                    n_domains = _count_distinct_browsed_domains(history)
+                    if n_domains < RESEARCH_MIN_DISTINCT_DOMAINS:
+                        needed = RESEARCH_MIN_DISTINCT_DOMAINS - n_domains
+                        nudge = (
+                            f"FINISH BLOCKED — research breadth not yet met. "
+                            f"This goal looks like research / multi-source "
+                            f"analysis, but you've only browsed {n_domains} "
+                            f"distinct domain(s). A credible research artifact "
+                            f"requires at least {RESEARCH_MIN_DISTINCT_DOMAINS} "
+                            f"distinct sources (different domains). "
+                            f"Go gather {needed} more — call web_search with "
+                            f"a fresh angle (try alternative query phrasings: "
+                            f"government stats, industry reports, trade pubs, "
+                            f"practitioner forums), then browse_url 2-4 of "
+                            f"the most relevant NEW results that aren't yet "
+                            f"in your history. Update the artifact to cite "
+                            f"each source inline with its URL. Then call "
+                            f"finish again."
+                        )
+                        await _append_event(
+                            db, mission_id, kind="system",
+                            text=nudge, iteration=iteration,
+                        )
+                        # Stamp so we don't loop forever — the next finish
+                        # call goes through even if breadth still short.
+                        await db.missions.update_one(
+                            {"id": mission_id},
+                            {"$set": {"research_gate_warned": True}},
+                        )
+                        continue  # back into the loop, don't actually finish
                 await _append_event(db, mission_id, kind="finish",
                                     text=summary, iteration=iteration)
                 # If the mission finishes WITHOUT producing any binary
