@@ -1416,6 +1416,52 @@ def make_audits_router(
             raise HTTPException(404, "Audit not found")
         return _full_serialize(a)
 
+    @app_r.delete("/{audit_id}")
+    async def delete_in_app_audit(
+        audit_id: str, u: dict = Depends(get_current_user),
+    ):
+        """Delete an audit + its PDF file. Org members can delete any
+        audit in their org. Superadmin always allowed."""
+        try:
+            oid = ObjectId(audit_id)
+            a = await db.business_audits.find_one({"_id": oid})
+        except Exception as exc:
+            raise HTTPException(400, "Invalid audit id") from exc
+        if not a:
+            raise HTTPException(404, "Audit not found")
+        org_id = a.get("org_id")
+        allowed = False
+        if bool(u.get("is_superadmin")):
+            allowed = True
+        elif org_id:
+            try:
+                await require_org_member(org_id, u["id"])
+                allowed = True
+            except HTTPException:
+                allowed = False
+        elif a.get("created_by") == u["id"]:
+            allowed = True
+        if not allowed:
+            raise HTTPException(403, "Not your audit")
+        # Best-effort: remove PDF file from disk if present.
+        pdf_filename = a.get("pdf_filename")
+        if pdf_filename:
+            try:
+                pdf_path = upload_dir / pdf_filename
+                if pdf_path.is_file():
+                    pdf_path.unlink()
+            except Exception as exc:
+                logger.warning(
+                    "Could not unlink audit PDF %s: %s", pdf_filename, exc,
+                )
+        # Also drop any captured leads — they're tied to this slug only.
+        try:
+            await db.audit_leads.delete_many({"audit_slug": a.get("slug")})
+        except Exception:
+            pass
+        await db.business_audits.delete_one({"_id": oid})
+        return {"ok": True}
+
     @app_r.post("/{audit_id}/retry")
     async def retry_in_app_audit(
         audit_id: str, u: dict = Depends(get_current_user),

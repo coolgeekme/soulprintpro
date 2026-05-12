@@ -6,7 +6,7 @@ import { useAuth } from "../context/AuthContext";
 import { toast } from "sonner";
 import {
   Search, Loader2, ArrowRight, Download, ExternalLink, Trophy,
-  Clock, AlertTriangle, FileText, Sparkles, BarChart3, RefreshCw,
+  Clock, AlertTriangle, FileText, Sparkles, BarChart3, RefreshCw, Trash2,
 } from "lucide-react";
 
 const STATUS_META = {
@@ -145,6 +145,20 @@ export default function AuditsPage() {
     } catch (err) {
       const msg = err?.response?.data?.detail || "Could not retry";
       toast.error(typeof msg === "string" ? msg : "Could not retry");
+    }
+  };
+
+  const deleteAudit = async (a) => {
+    if (!window.confirm(
+      `Delete the audit for "${a.business_name}"? This removes the PDF, the public page, and any captured leads. This cannot be undone.`
+    )) return;
+    try {
+      await api.delete(`/audits/${a.id}`);
+      toast.success(`Deleted "${a.business_name}"`);
+      setAudits((prev) => prev.filter((x) => x.id !== a.id));
+    } catch (err) {
+      const msg = err?.response?.data?.detail || "Could not delete";
+      toast.error(typeof msg === "string" ? msg : "Could not delete");
     }
   };
 
@@ -352,6 +366,14 @@ export default function AuditsPage() {
                           {a.error}
                         </span>
                       )}
+                      <button
+                        onClick={() => deleteAudit(a)}
+                        className="sp-btn sp-btn-ghost !p-1.5 text-[11px] hover:text-red-300"
+                        data-testid={`audit-delete-${a.id}`}
+                        title="Delete this audit"
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
+                      </button>
                     </div>
                   </div>
                 </article>
