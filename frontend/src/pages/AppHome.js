@@ -1,11 +1,13 @@
 import React, { useEffect, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import api from "../lib/api";
+import { useAuth } from "../context/AuthContext";
 import TopBar from "../components/TopBar";
 import { toast } from "sonner";
-import { Plus, ArrowRight, Ticket, MessageCircle, Settings, Users, LayoutGrid } from "lucide-react";
+import { Plus, ArrowRight, Ticket, MessageCircle, Settings, Users, LayoutGrid, Loader2 } from "lucide-react";
 
 export default function AppHome() {
+  const { user } = useAuth();
   const [orgs, setOrgs] = useState([]);
   const [workspaces, setWorkspaces] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -17,23 +19,46 @@ export default function AppHome() {
   const [joining, setJoining] = useState(false);
   const nav = useNavigate();
 
-  const load = async () => {
-    setLoading(true);
-    try {
-      const [orgsR, wsR] = await Promise.all([
-        api.get("/orgs"),
-        api.get("/workspaces").catch(() => ({ data: [] })),
-      ]);
-      setOrgs(orgsR.data);
-      setWorkspaces(wsR.data);
-    } catch (e) {
-      toast.error("Could not load organizations");
-    } finally {
-      setLoading(false);
+  const load = async ({ silent = false } = {}) => {
+    if (!silent) setLoading(true);
+    // Retry the orgs fetch with backoff so the page survives the brief
+    // window after a cold-start redeploy when the backend may still be
+    // warming up. We never toast on transient errors — only on the
+    // definitive final-attempt failure.
+    let lastErr = null;
+    for (let attempt = 1; attempt <= 4; attempt++) {
+      try {
+        const [orgsR, wsR] = await Promise.all([
+          api.get("/orgs"),
+          api.get("/workspaces").catch(() => ({ data: [] })),
+        ]);
+        setOrgs(orgsR.data || []);
+        setWorkspaces(wsR.data || []);
+        setLoading(false);
+        return;
+      } catch (e) {
+        lastErr = e;
+        const status = e?.response?.status;
+        // 401/403 → don't retry; the auth context's own poller will
+        // sort the user state out. Just exit silently.
+        if (status === 401 || status === 403) break;
+        // Otherwise wait 400ms → 800ms → 1.6s → 3.2s and try again.
+        if (attempt < 4) {
+          await new Promise((r) => setTimeout(r, 400 * 2 ** (attempt - 1)));
+        }
+      }
     }
+    setLoading(false);
+    if (lastErr && !silent) toast.error("Could not load organizations");
   };
 
-  useEffect(() => { load(); }, []);
+  // Initial load — and re-run whenever the auth context settles on a
+  // real user (e.g. right after login when this component mounted
+  // before the token was in localStorage).
+  useEffect(() => {
+    if (user) load({ silent: orgs.length > 0 });
+  /* eslint-disable-next-line */
+  }, [user?.id]);
 
   const createOrg = async (e) => {
     e.preventDefault();

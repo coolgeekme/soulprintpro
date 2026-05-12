@@ -186,6 +186,55 @@ _poi_upgrade_task: Optional[asyncio.Task] = None
 JWT_SECRET = os.environ.get("JWT_SECRET", "soulprint-dev-secret")
 JWT_ALGO = "HS256"
 
+
+async def _ensure_persistent_jwt_secret():
+    """Make the JWT signing secret survive any redeployment.
+
+    Resolution order:
+      1. `JWT_SECRET` env var if set AND not the fallback dev value
+         → respect it (the operator has explicitly pinned it).
+      2. A persisted value in the `_system_secrets` MongoDB collection
+         → use that (token from a previous boot is still valid).
+      3. First boot ever → generate a fresh 64-hex-char secret,
+         persist it to Mongo, then use it.
+
+    Why this matters: Emergent's deploy pipeline can rotate auto-
+    generated env vars between deploys. Without this safeguard, every
+    redeploy invalidates every signed-in user. By keeping the secret
+    in Mongo (which persists across deploys), tokens stay valid for
+    their full 30-day lifetime regardless of how often the app is
+    redeployed.
+    """
+    import secrets as _stdlib_secrets
+    global JWT_SECRET
+    env_val = os.environ.get("JWT_SECRET", "").strip()
+    if env_val and env_val != "soulprint-dev-secret":
+        JWT_SECRET = env_val
+        return
+    try:
+        row = await db.system_secrets.find_one({"_id": "jwt"})
+        if row and row.get("value"):
+            JWT_SECRET = row["value"]
+            return
+        new_val = _stdlib_secrets.token_hex(32)
+        await db.system_secrets.update_one(
+            {"_id": "jwt"},
+            {"$setOnInsert": {
+                "value": new_val,
+                "created_at": datetime.now(timezone.utc),
+            }},
+            upsert=True,
+        )
+        # Re-read in case a concurrent boot won the race.
+        row = await db.system_secrets.find_one({"_id": "jwt"})
+        if row and row.get("value"):
+            JWT_SECRET = row["value"]
+    except Exception as exc:
+        logger.warning("Could not persist JWT secret to Mongo: %s", exc)
+        # Fall back to the env value (even if it's the dev default) so
+        # the app still boots — just with the regression that tokens
+        # may invalidate on the next deploy.
+
 # ── LLM key resolution ──────────────────────────────────────────────────────
 # Prefer the user's own OPENAI_API_KEY when it's set (per Reggie's explicit
 # choice on Feb 5, 2026 — "default to my OpenAI key whenever an LLM is
@@ -6544,6 +6593,9 @@ async def _seed_superadmins():
     """Stamp configured emails as superadmin if their accounts already
     exist. New sign-ups with these emails are promoted in the register
     handler. Idempotent — safe to run on every boot."""
+    # FIRST: lock in a persistent JWT secret so tokens survive any
+    # subsequent redeployment of this container.
+    await _ensure_persistent_jwt_secret()
     await ensure_superadmin_seed(db, SUPERADMIN_EMAILS)
     # Helpful index for the LLM telemetry queries.
     try:
