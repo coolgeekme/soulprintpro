@@ -13,7 +13,7 @@ Design goals:
     as bordered tables with subtle backgrounds, not raw paragraphs
   • **Priority pills** — recommendations carry coloured HIGH / MED /
     LOW pills inline with the title
-  • **"How SoulPrint helps" callouts** — orange accent inset card on
+  • **"How Foundry helps" callouts** — orange accent inset card on
     every recommendation, mirroring the in-app design
   • **Section eyebrows** — uppercase tracking-widest micro-labels above
     each section, mirroring the SPA

@@ -6575,7 +6575,7 @@ async def _require_superadmin_dep(u: dict = Depends(get_current_user)) -> dict:
         raise HTTPException(403, "Superadmin only")
     return u
 
-_audit_admin_router, _audit_public_router, _audit_app_router, _audit_recover_orphans = make_audits_router(
+_audit_admin_router, _audit_public_router, _audit_app_router, _audit_recover_orphans, _audit_backfill_platform_name = make_audits_router(
     db=db,
     get_current_user=get_current_user,
     require_superadmin=_require_superadmin_dep,
@@ -6636,6 +6636,12 @@ async def _seed_superadmins():
         await _audit_recover_orphans()
     except Exception as exc:
         logger.warning("Audit orphan recovery failed: %s", exc)
+    # Sweep legacy audits to replace any "SoulPrint" / "SoulPrint Engine"
+    # text with "Foundry". Idempotent — the next boot finds nothing.
+    try:
+        await _audit_backfill_platform_name()
+    except Exception as exc:
+        logger.warning("Audit platform-name backfill failed: %s", exc)
     # Grandfather any pre-existing users into the site access gate so
     # the gate is invite-only for NEW signups, never a friction for
     # existing customers. Idempotent — only touches rows missing

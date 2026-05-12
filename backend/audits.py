@@ -370,7 +370,7 @@ the user explicitly opts into).
 
 Examples of good ``soulprint_execution`` text:
 
-  • "SoulPrint's **Conversion Copywriter agent** drafts a new hero
+  • "Foundry's **Conversion Copywriter agent** drafts a new hero
      using your Brand Soul + the top phrases from your G2 reviews
      (pulled in by the Reviews Listener mission). You review and
      paste into your CMS."
@@ -381,7 +381,7 @@ Examples of good ``soulprint_execution`` text:
      approve and post."
 
   • "Use the **Social Queue** to keep a LinkedIn cadence ready —
-     SoulPrint drafts 5 posts a week from your latest customer wins
+     Foundry drafts 5 posts a week from your latest customer wins
      and generates the cover images. With auto-publish on you can
      have it post directly; otherwise it queues drafts for your
      30-second approval."
@@ -389,6 +389,17 @@ Examples of good ``soulprint_execution`` text:
   • "Spin up a **'Pricing comparison' brief mission** — the
      Competitive Researcher agent scans 3 named competitors weekly
      and produces a PDF you can drop into sales decks."
+
+═══════════════════════════════════════════════════════════════════════
+PLATFORM NAMING — CRITICAL
+═══════════════════════════════════════════════════════════════════════
+The platform's name is **Foundry**. Always write "Foundry" in every
+user-facing string — recommendations, executive summary, brand-voice
+read, sections, the closing pitch, agent-citation examples, anywhere.
+NEVER use the words "SoulPrint" or "SoulPrint Engine" anywhere in the
+generated audit text. The field name ``soulprint_execution`` is an
+internal schema key only — its VALUE must say "Foundry", never
+"SoulPrint".
 
 ═══════════════════════════════════════════════════════════════════════
 JSON SCHEMA
@@ -491,7 +502,36 @@ async def _synthesise_audit_via_llm(
         data = json.loads(text)
     except json.JSONDecodeError as exc:
         raise RuntimeError(f"Audit LLM returned non-JSON: {exc}") from exc
+    _scrub_platform_name(data)
     return data, choice
+
+
+# ── Defensive platform-name scrub ───────────────────────────────────────────
+# The audit synthesis prompt explicitly tells the LLM to write "Foundry",
+# but some models (especially older Gemini / Claude variants) still leak
+# the legacy "SoulPrint" / "SoulPrint Engine" name from their training
+# data when they cite the platform in recommendations or the closing
+# pitch. We sweep every user-visible string field after JSON parse and
+# replace the legacy name with "Foundry" so users never see it.
+# Schema-internal keys like ``soulprint_execution`` / ``how_soulprint_helps``
+# are deliberately left untouched — they're persisted by name and renaming
+# would orphan every existing audit row.
+def _scrub_platform_name(node):
+    if isinstance(node, dict):
+        return {k: _scrub_platform_name(v) for k, v in node.items()}
+    if isinstance(node, list):
+        return [_scrub_platform_name(x) for x in node]
+    if isinstance(node, str):
+        # Order matters — strip the longer marketing form before the
+        # bare brand so "SoulPrint Engine" doesn't degrade to
+        # "Foundry Engine". Possessive forms (curly or straight quote)
+        # are preserved as "Foundry's" to keep recommendation copy
+        # natural ("Have Foundry's Copywriter agent draft …").
+        out = re.sub(r"SoulPrint\s+Engine", "Foundry", node, flags=re.I)
+        out = re.sub(r"SoulPrint['\u2019]s", "Foundry's", out, flags=re.I)
+        out = re.sub(r"SoulPrints?", "Foundry", out, flags=re.I)
+        return out
+    return node
 
 
 # ── PDF rendering (uses existing reportlab helper) ───────────────────────────
@@ -670,7 +710,7 @@ def make_audits_router(
             # Stage C — render PDF (best-effort; non-blocking on failure).
             # Uses the dedicated, brand-aligned audit renderer which
             # consumes the structured audit dict directly (cover page,
-            # score ring, priority pills, "How SoulPrint helps" cards).
+            # score ring, priority pills, "How Foundry helps" cards).
             pdf_filename = ""
             pdf_bytes_for_email = b""
             try:
@@ -774,6 +814,73 @@ def make_audits_router(
         except Exception:
             # _run_audit handles its own exception → no-op here.
             pass
+
+    # ── One-time backfill: rename "SoulPrint" → "Foundry" in existing
+    # audit documents. The audit synthesizer used to leak the legacy
+    # brand name into recommendations / the closing pitch; the prompt +
+    # post-process scrub now prevent that for NEW audits, but older
+    # rows are still in the DB. We sweep them on boot. Cheap (only
+    # touches docs that actually contain the legacy string) and safe
+    # to re-run — once scrubbed, the query returns nothing.
+    async def backfill_platform_name():
+        try:
+            cur = db.business_audits.find(
+                {"$text": {"$search": "SoulPrint"}},
+                {"_id": 1},
+            ) if False else db.business_audits.find(
+                # Fall back to a regex scan since there's no text index
+                # on business_audits. The pattern matches the legacy
+                # marketing name in any string field of the document
+                # serialized as JSON. We rescan the doc's content with
+                # `_scrub_platform_name` to mutate in place.
+                {"$or": [
+                    {"executive_summary": {"$regex": "SoulPrint", "$options": "i"}},
+                    {"how_soulprint_helps": {"$regex": "SoulPrint", "$options": "i"}},
+                    {"recommendations.soulprint_execution": {"$regex": "SoulPrint", "$options": "i"}},
+                    {"recommendations.detail": {"$regex": "SoulPrint", "$options": "i"}},
+                    {"strengths.detail": {"$regex": "SoulPrint", "$options": "i"}},
+                    {"issues.detail": {"$regex": "SoulPrint", "$options": "i"}},
+                    {"sections.website_analysis": {"$regex": "SoulPrint", "$options": "i"}},
+                    {"sections.social_presence": {"$regex": "SoulPrint", "$options": "i"}},
+                    {"sections.reviews_summary": {"$regex": "SoulPrint", "$options": "i"}},
+                    {"sections.competitive_context": {"$regex": "SoulPrint", "$options": "i"}},
+                    {"brand_voice.stated_mission": {"$regex": "SoulPrint", "$options": "i"}},
+                    {"brand_voice.actual_voice": {"$regex": "SoulPrint", "$options": "i"}},
+                    {"brand_voice.gap": {"$regex": "SoulPrint", "$options": "i"}},
+                    {"score_rationale": {"$regex": "SoulPrint", "$options": "i"}},
+                ]},
+            )
+            n = 0
+            async for row in cur:
+                full = await db.business_audits.find_one({"_id": row["_id"]})
+                if not full:
+                    continue
+                # The scrub mutates user-visible string values in place
+                # but ignores schema-internal keys. Skip the few admin
+                # bookkeeping fields by patching only the audit payload.
+                patch = {}
+                for key in ("executive_summary", "score_rationale",
+                            "how_soulprint_helps"):
+                    v = full.get(key)
+                    if isinstance(v, str):
+                        patch[key] = _scrub_platform_name(v)
+                for key in ("strengths", "issues", "recommendations",
+                            "competitors", "brand_voice", "sections"):
+                    v = full.get(key)
+                    if v is not None:
+                        patch[key] = _scrub_platform_name(v)
+                # Apply only when something actually changed — keeps the
+                # mtime stable for unaffected fields.
+                changed = {k: v for k, v in patch.items() if v != full.get(k)}
+                if changed:
+                    await db.business_audits.update_one(
+                        {"_id": row["_id"]}, {"$set": changed},
+                    )
+                    n += 1
+            if n:
+                logger.info("Backfilled platform-name in %d audits", n)
+        except Exception as exc:
+            logger.warning("Audit name-backfill skipped: %s", exc)
 
     # ── Orphan recovery: re-kick any audit stuck at "generating" on
     # startup. This catches rows orphaned by a redeploy or crash that
@@ -952,7 +1059,7 @@ def make_audits_router(
             origin = (os.environ.get("FRONTEND_URL") or "").strip()
         origin = origin.rstrip("/")
         view_url = f"{origin}/audit/{slug}?lead_id={primary['_id']}" if origin else f"/audit/{slug}"
-        subject = f"Your SoulPrint audit for {biz} is ready"
+        subject = f"Your Foundry audit for {biz} is ready"
         text = (
             f"Hi {first_name},\n\n"
             f"Your business audit for {biz} is ready. The PDF is attached "
@@ -989,7 +1096,7 @@ def make_audits_router(
       Open the rich web version →
     </a>
     <p style="font-size:13px;line-height:1.6;color:#6b7280;margin:24px 0 0 0;">
-      The web version has the live competitor links, the per-recommendation "How SoulPrint helps you act on this" hooks, and the brand voice gap analysis with the full text intact. The PDF is the portable mirror.
+      The web version has the live competitor links, the per-recommendation "How Foundry helps you act on this" hooks, and the brand voice gap analysis with the full text intact. The PDF is the portable mirror.
     </p>
     <hr style="border:none;border-top:1px solid #e5e7eb;margin:32px 0;" />
     <p style="font-size:13px;line-height:1.6;color:#6b7280;margin:0;">
@@ -1494,4 +1601,4 @@ def make_audits_router(
         a = await db.business_audits.find_one({"_id": oid})
         return _full_serialize(a)
 
-    return admin_r, public_r, app_r, recover_orphans
+    return admin_r, public_r, app_r, recover_orphans, backfill_platform_name
