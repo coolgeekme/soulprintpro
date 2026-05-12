@@ -2852,6 +2852,12 @@ async def detect_image_intent(message: str) -> bool:
     """
     if not message.strip():
         return False
+    # Long pasted bodies (transcripts, briefs) blow up LLM classifier
+    # latency without affecting the answer. The intent is virtually always
+    # determined by the first ~1KB ("summarize this transcript:"). Clip
+    # for classification only — the full text still flows to the agent.
+    if len(message) > 2000:
+        message = message[:1500] + "\n…\n" + message[-300:]
     fast = _quick_image_intent(message)
     if fast is not None:
         return fast
@@ -2890,6 +2896,10 @@ async def detect_video_intent(message: str) -> bool:
     """
     if not message.strip():
         return False
+    # Clip very long inputs so the classifier doesn't time out on
+    # transcript-length bodies — the head + tail captures the intent.
+    if len(message) > 2000:
+        message = message[:1500] + "\n…\n" + message[-300:]
     fast = _quick_video_intent(message)
     if fast is not None:
         return fast
@@ -3462,6 +3472,13 @@ async def route_best_agent(team: dict, message: str,
 
     Falls back to ROUTER_FALLBACK if the LLM returns something unparseable.
     """
+    # Long pasted transcripts (10k-100k chars) make the router LLM slow
+    # and prone to timeout. The route is determined by the *kind* of
+    # request, which is virtually always clear in the first ~1.5KB
+    # ("summarize this transcript: …" / "draft a press release for: …").
+    # Clip for routing only — the full text still goes to the agent.
+    if len(message) > 2000:
+        message = message[:1500] + "\n…[truncated for routing]…\n" + message[-300:]
     menu = _agent_menu(exclude_ids)
     sp_brief = _soulprint_brief(team)
     system = (
