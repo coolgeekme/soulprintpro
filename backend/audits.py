@@ -1380,6 +1380,42 @@ def make_audits_router(
             "filename": a["pdf_filename"],
         }
 
+    @app_r.get("/by-slug/{slug}")
+    async def get_audit_by_slug(
+        slug: str, u: dict = Depends(get_current_user),
+    ):
+        """Authenticated, ungated view of an audit by its slug.
+
+        Used by the in-app "View" button on /app/audits so creators
+        + every member of the audit's org get the FULL audit (same
+        view an admin sees) without having to fill out the public
+        lead-capture form.
+
+        Returns 404 if the audit isn't found OR if the caller isn't
+        a member of the audit's org (we don't disclose existence to
+        prevent slug enumeration by random authed users)."""
+        a = await db.business_audits.find_one({"slug": slug})
+        if not a:
+            raise HTTPException(404, "Audit not found")
+        org_id = a.get("org_id")
+        allowed = False
+        if org_id:
+            try:
+                await require_org_member(org_id, u["id"])
+                allowed = True
+            except HTTPException:
+                allowed = False
+        if not allowed and a.get("created_by") == u["id"]:
+            allowed = True
+        # Superadmin bypass — supports the admin path so we don't have
+        # to duplicate this endpoint for the admin panel later.
+        if not allowed and bool(u.get("is_superadmin")):
+            allowed = True
+        if not allowed:
+            # Don't leak existence to enumeration attempts.
+            raise HTTPException(404, "Audit not found")
+        return _full_serialize(a)
+
     @app_r.post("/{audit_id}/retry")
     async def retry_in_app_audit(
         audit_id: str, u: dict = Depends(get_current_user),

@@ -1,10 +1,11 @@
 import React, { useEffect, useState } from "react";
 import { useParams, useSearchParams, Link } from "react-router-dom";
 import {
-  Loader2, Lock, ShieldCheck, ExternalLink, Download, TrendingUp, AlertTriangle, Wand2, Phone, Mail
+  Loader2, Lock, ShieldCheck, ExternalLink, Download, TrendingUp, AlertTriangle, Wand2, Phone, Mail, Share2, Check
 } from "lucide-react";
 import { toast } from "sonner";
 import api from "../lib/api";
+import { useAuth } from "../context/AuthContext";
 import AuditFullReport from "../components/AuditFullReport";
 import AuditConversionCTA from "../components/AuditConversionCTA";
 
@@ -26,10 +27,34 @@ import AuditConversionCTA from "../components/AuditConversionCTA";
 export default function PublicAuditPage() {
   const { slug } = useParams();
   const [params] = useSearchParams();
+  const { user } = useAuth();
   const [teaser, setTeaser] = useState(null);
   const [loading, setLoading] = useState(true);
   const [notFound, setNotFound] = useState(false);
-  const [unlocked, setUnlocked] = useState(null); // {audit, leadId}
+  const [unlocked, setUnlocked] = useState(null); // {audit, leadId, via}
+  const [shareCopied, setShareCopied] = useState(false);
+
+  // If the visitor is a logged-in member of this audit's org (or its
+  // creator, or a superadmin), bypass the lead-capture gate entirely —
+  // they should see the same full view an admin sees, AND get a
+  // separate "Share with prospect" affordance for the gated URL.
+  useEffect(() => {
+    if (!user || unlocked) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const { data } = await api.get(`/audits/by-slug/${slug}`);
+        if (!cancelled && data) {
+          setUnlocked({ audit: data, leadId: null, via: "member" });
+          setNotFound(false);
+        }
+      } catch (_) {
+        // Not a member — fall through to the public teaser flow.
+      }
+    })();
+    return () => { cancelled = true; };
+  /* eslint-disable-next-line */
+  }, [user?.id, slug]);
 
   // When the visitor arrives from the homepage self-serve flow
   // (`/audit/<slug>?lead_id=<id>`), they already gave us their email
@@ -192,6 +217,40 @@ export default function PublicAuditPage() {
             full={showFull}
           />
         </div>
+
+        {/* ── Member share strip — only shown to authed members of
+             this audit's org. Lets them copy the GATED public URL to
+             send to a prospect, without losing their own ungated view. */}
+        {unlocked?.via === "member" && (
+          <div
+            className="sp-glass rounded-xl px-4 py-3 flex items-center justify-between gap-3 border border-orange-400/25"
+            data-testid="audit-member-share-strip"
+          >
+            <div className="text-xs sp-subtle leading-relaxed">
+              <span className="text-orange-300 font-medium">You're viewing as a member</span> — full audit unlocked.
+              Use the button to copy the lead-gated link you can send to a prospect.
+            </div>
+            <button
+              type="button"
+              onClick={async () => {
+                const url = `${window.location.origin}/audit/${slug}`;
+                try {
+                  await navigator.clipboard.writeText(url);
+                  setShareCopied(true);
+                  toast.success("Prospect share link copied");
+                  setTimeout(() => setShareCopied(false), 1800);
+                } catch {
+                  toast.error("Could not copy");
+                }
+              }}
+              className="sp-btn sp-btn-primary text-xs whitespace-nowrap"
+              data-testid="audit-copy-prospect-link"
+            >
+              {shareCopied ? <Check className="w-3.5 h-3.5" /> : <Share2 className="w-3.5 h-3.5" />}
+              {shareCopied ? "Copied" : "Copy share link"}
+            </button>
+          </div>
+        )}
 
         {/* ── Gate or full report ──────────────────────────────────── */}
         {!showFull ? (
