@@ -3,6 +3,14 @@
 Plain-English feature inventory of **Foundry by SoulPrint Engine** for non-technical teammates. Each section is a category of capabilities and what they do for users.
 
 ---
+## 🔒 May 13, 2026 — Memory: Strict Per-Org Isolation
+- Memories are now **strictly scoped to one organization** — a fact captured inside *Client A's* workspace can never leak into *Client B's* agent replies (critical for agencies running multiple client workspaces under one Foundry account).
+- Adding a memory manually now **requires picking an org** — no more accidental "global" memories.
+- One-time **migration banner** surfaces any legacy untagged memories so users can assign each to an org or delete it (untagged memories are never injected into any agent reply until they're triaged).
+- New **org picker** on /app/account → Memory: pick which workspace's memories you're auditing.
+- Live-verified: same question to *Reggie Lab's* General team mentions the seeded "fintech agency" fact; same question to *SG Test's* General team does NOT (because the memory was tagged to Reggie Lab only).
+
+---
 ## 🧠 May 13, 2026 — Memory Phase 1 (User-Scoped)
 - Foundry now **remembers durable facts about each user** across every conversation — brand voice, ICP, pricing preferences, past clients, agency playbooks, agent feedback, work context, and general preferences.
 - Auto-captured in the background (no chat latency) by an LLM extractor after every user/agent exchange — gpt-5.2-mini distills the turn into structured memories, then dedupes case-insensitively so the list stays clean.

@@ -273,7 +273,7 @@ function UntaggedMigrationBanner({ untagged, orgs, activeOrgId, onUntaggedChange
         <AlertCircle className="w-4 h-4 text-amber-400 mt-0.5 shrink-0" />
         <div className="flex-1 min-w-0">
           <div className="text-sm font-medium text-amber-200">
-            {untagged.length} memor{untagged.length === 1 ? "y" : "ies"} need an
+            {untagged.length} memor{untagged.length === 1 ? "y" : "ies"} need{untagged.length === 1 ? "s" : ""} an
             organization
           </div>
           <p className="text-xs text-amber-200/80 mt-0.5">
