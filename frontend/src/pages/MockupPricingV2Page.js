@@ -15,7 +15,7 @@ import "../styles/foundry-chrome.css";
  * three "states" stay visually fused to the source artwork.
  */
 
-const SIGIL_IMG = "https://customer-assets.emergentagent.com/job_emergent-wing/artifacts/pn78udxc_Foundry%20v2.png";
+const SIGIL_IMG = "https://customer-assets.emergentagent.com/job_emergent-wing/artifacts/1uouv1t6_image%20%2826%29.png";
 
 const TIERS = [
   {
@@ -142,8 +142,10 @@ function TierSigil({ offset = "50%" }) {
         style={{
           backgroundImage: `url('${SIGIL_IMG}')`,
           backgroundRepeat: "no-repeat",
-          backgroundPosition: `${offset} 35%`,
-          backgroundSize: "300% auto",
+          // Skip the wordmark band ("SPARK"/"TEMPER"/"REFINE") under each
+          // emblem in the source artwork so the card shows only the sigil.
+          backgroundPosition: `${offset} 22%`,
+          backgroundSize: "320% auto",
           filter: "drop-shadow(0 0 12px rgba(95,168,214,.25))",
         }}
       />

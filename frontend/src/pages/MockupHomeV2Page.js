@@ -17,7 +17,8 @@ import "../styles/foundry-chrome.css";
  * separate sprites.
  */
 
-const SIGIL_IMG = "https://customer-assets.emergentagent.com/job_emergent-wing/artifacts/pn78udxc_Foundry%20v2.png";
+const SIGIL_IMG = "https://customer-assets.emergentagent.com/job_emergent-wing/artifacts/1uouv1t6_image%20%2826%29.png";
+const HERO_LOGO = "https://customer-assets.emergentagent.com/job_emergent-wing/artifacts/w4pi4fve_Foundry%20logo.png";
 
 const TIERS = [
   {
@@ -85,8 +86,11 @@ function TierSigil({ offset = "50%" }) {
         style={{
           backgroundImage: `url('${SIGIL_IMG}')`,
           backgroundRepeat: "no-repeat",
-          backgroundPosition: `${offset} 35%`,
-          backgroundSize: "300% auto",
+          // The new sigil sheet has the wordmark ("SPARK"/"TEMPER"/"REFINE")
+          // baked underneath each emblem; we crop to the upper portion so
+          // only the sigil itself is visible inside the card.
+          backgroundPosition: `${offset} 22%`,
+          backgroundSize: "320% auto",
           filter: "drop-shadow(0 0 12px rgba(95,168,214,.25))",
         }}
       />
@@ -172,9 +176,9 @@ export default function MockupHomeV2Page() {
                  filter: "blur(40px)",
                }} />
           <img
-            src={SIGIL_IMG}
-            alt="Foundry sigils — Spark · Temper · Refine"
-            className="w-full"
+            src={HERO_LOGO}
+            alt="Foundry — Forge your edge"
+            className="w-full max-w-[560px] mx-auto"
             style={{
               filter: "drop-shadow(0 30px 80px rgba(95,168,214,.18))",
             }}
