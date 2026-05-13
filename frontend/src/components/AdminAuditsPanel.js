@@ -152,7 +152,7 @@ export default function AdminAuditsPanel() {
       <div className="flex items-center justify-between flex-wrap gap-2">
         <div>
           <div className="text-[10px] uppercase tracking-widest sp-subtle">Prospecting tool</div>
-          <h2 className="text-2xl font-medium tracking-tight">Business Audits</h2>
+          <h2 className="text-2xl font-medium tracking-tight">Signal Audits</h2>
           <p className="text-xs sp-subtle mt-1 max-w-2xl leading-relaxed">
             Generate a full audit of any business — website, social, reviews, brand voice, competitors —
             then share a gated public link that converts cold prospects into qualified leads. Leads land
@@ -509,7 +509,7 @@ function CreateAuditModal({ onClose, onCreated }) {
         <div className="flex items-center justify-between">
           <div>
             <div className="text-[10px] uppercase tracking-widest sp-subtle">Prospect</div>
-            <h3 className="text-xl font-medium">New business audit</h3>
+            <h3 className="text-xl font-medium">New Signal Audit</h3>
           </div>
           <button type="button" onClick={onClose} className="sp-btn sp-btn-ghost text-xs">
             <X className="w-3.5 h-3.5" />

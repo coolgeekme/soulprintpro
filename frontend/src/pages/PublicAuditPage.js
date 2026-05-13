@@ -176,14 +176,14 @@ export default function PublicAuditPage() {
             <Wand2 className="w-4 h-4 opacity-80" />
             <span className="text-sm tracking-tight font-medium">Foundry</span>
           </Link>
-          <span className="text-[10px] uppercase tracking-widest sp-subtle">Business Audit</span>
+          <span className="text-[10px] uppercase tracking-widest sp-subtle">Signal Audit</span>
         </div>
       </header>
 
       <main className="max-w-5xl mx-auto px-6 py-12 space-y-10" data-testid="public-audit-page">
         {/* ── Hero — score + business name ─────────────────────────── */}
         <section className="text-center space-y-3">
-          <div className="text-[11px] uppercase tracking-widest sp-subtle">Business Audit for</div>
+          <div className="text-[11px] uppercase tracking-widest sp-subtle">Signal Audit for</div>
           <h1 className="text-4xl sm:text-5xl font-medium tracking-tight">{audit.business_name}</h1>
           {audit.website_url && (
             <a href={audit.website_url} target="_blank" rel="noopener noreferrer"

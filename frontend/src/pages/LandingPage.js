@@ -94,7 +94,7 @@ export default function LandingPage() {
             <Link to="/auth?mode=register" className="sp-btn sp-btn-primary" data-testid="hero-cta-primary">
               Start your SoulPrint <ArrowRight className="w-4 h-4" />
             </Link>
-            {/* New: free audit CTA — drives prospects into the
+            {/* Signal Audit CTA — drives prospects into the
                 self-serve audit funnel. Visually distinct from the
                 primary "register" CTA so they don't compete: this is
                 accent-orange-bordered ghost, the primary stays solid. */}
@@ -108,7 +108,7 @@ export default function LandingPage() {
               }}
               data-testid="hero-cta-audit"
             >
-              <Wand2 className="w-4 h-4" /> Get a free audit
+              <Wand2 className="w-4 h-4" /> Try a Signal Audit
             </Link>
             <a href="#agents" className="sp-btn sp-btn-ghost" data-testid="hero-cta-secondary">Meet the agents</a>
           </div>

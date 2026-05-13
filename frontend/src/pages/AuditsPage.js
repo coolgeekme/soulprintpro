@@ -189,16 +189,18 @@ export default function AuditsPage() {
             <div className="flex items-center gap-2 mb-2">
               <BarChart3 className="w-5 h-5 text-orange-300" />
               <span className="text-[10px] uppercase tracking-widest sp-subtle">
-                Business audits
+                Signal Audits
               </span>
             </div>
             <h1 className="sp-display text-3xl sm:text-4xl leading-tight">
               Audit any business in <span className="text-orange-300">~90 seconds</span>
             </h1>
             <p className="text-sm sp-subtle max-w-xl mt-2 leading-relaxed">
-              Drop a website. We scan the public site, social signals, and live
-              market context to surface gaps, opportunities, and a scored
-              executive brief. Every audit is org-scoped and saved here.
+              Drop a website. We scan the public site, run Core Web Vitals,
+              inventory tracking pixels, check email security, pull social
+              signals and live market context — then surface gaps,
+              opportunities, and a scored executive brief. Every Signal
+              Audit is org-scoped and saved here.
             </p>
           </div>
           <div className="flex items-center gap-2">
@@ -253,7 +255,7 @@ export default function AuditsPage() {
                 data-testid="audit-submit"
               >
                 {running ? <Loader2 className="w-4 h-4 animate-spin" /> : <Sparkles className="w-4 h-4" />}
-                {running ? "Starting…" : "Run audit"}
+                {running ? "Starting…" : "Run Signal Audit"}
               </button>
             </div>
             <div className="sm:col-span-3">

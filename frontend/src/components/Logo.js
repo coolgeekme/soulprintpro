@@ -97,7 +97,7 @@ export default function Logo({
               letterSpacing: "0.32em",
             }}
           >
-            powered by soulprint engine
+            built for agency teams
           </span>
         )}
       </span>

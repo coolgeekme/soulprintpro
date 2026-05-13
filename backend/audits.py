@@ -604,7 +604,7 @@ def _audit_to_markdown(a: dict) -> str:
     bv = a.get("brand_voice") or {}
     secs = a.get("sections") or {}
     out = []
-    out.append(f"# Business Audit — {name}\n")
+    out.append(f"# Signal Audit — {name}\n")
     out.append(f"**Health Score:** {score} / 100 — {rationale}\n")
     if summary:
         out.append(f"\n_{summary}_\n")
@@ -1220,10 +1220,10 @@ def make_audits_router(
             origin = (os.environ.get("FRONTEND_URL") or "").strip()
         origin = origin.rstrip("/")
         view_url = f"{origin}/audit/{slug}?lead_id={primary['_id']}" if origin else f"/audit/{slug}"
-        subject = f"Your Foundry audit for {biz} is ready"
+        subject = f"Your Foundry Signal Audit for {biz} is ready"
         text = (
             f"Hi {first_name},\n\n"
-            f"Your business audit for {biz} is ready. The PDF is attached "
+            f"Your Signal Audit for {biz} is ready. The PDF is attached "
             f"to this email — print it, share it with your team, save it "
             f"for later.\n\n"
             f"Health score: {score_line}\n\n"

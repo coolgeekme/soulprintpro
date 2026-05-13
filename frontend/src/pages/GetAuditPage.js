@@ -69,9 +69,13 @@ export default function GetAuditPage() {
       } else if (r?.status === 429) {
         msg = "Too many audits started recently from this network — please try again in a few minutes.";
       } else if (r?.status >= 500) {
-        msg = "Our servers are having a moment. Please try again in a few seconds.";
+        msg = "The audit service is having a brief moment. Wait 10–20 seconds and tap retry — your details are still here.";
       } else if (!r) {
-        msg = "We couldn't reach the audit service. Check your connection and try again.";
+        // No response usually means a transient network hiccup, not a
+        // permanent outage. The endpoint is healthy in the vast majority
+        // of these cases, so the messaging frames it as transient and
+        // surfaces the retry button below.
+        msg = "Couldn't reach the audit service that time — likely a brief network blip. Wait a moment and tap retry; your details are still here.";
       }
       setError(msg
         || "We couldn't start that audit. Please double-check the URL and try again.");
@@ -97,20 +101,23 @@ export default function GetAuditPage() {
         <div className="w-full max-w-2xl">
           <div className="text-center mb-7">
             <div className="inline-flex items-center gap-1.5 sp-glass rounded-full px-3 py-1 text-[10px] uppercase tracking-widest sp-subtle mb-4">
-              <Wand2 className="w-3 h-3" /> Free business audit
+              <Wand2 className="w-3 h-3" /> Signal Audit
             </div>
             <h1 className="text-3xl sm:text-4xl font-medium tracking-tight leading-[1.1]">
-              Drop your URL. Get a personalised audit in <span style={{
+              Drop your URL. Get a personalised Signal Audit in <span style={{
                 background: "linear-gradient(120deg, rgba(251,146,60,1), rgba(74,222,128,1))",
                 WebkitBackgroundClip: "text",
                 WebkitTextFillColor: "transparent",
               }}>~60 seconds</span>.
             </h1>
             <p className="text-sm sm:text-base sp-subtle leading-relaxed mt-3 max-w-xl mx-auto">
-              Our agents will scan your site, dig through your reviews and
-              competitor signal, and write you a prioritised list of fixes
-              — every one mapped to a specific Foundry feature
-              that helps you act on it. No credit card. No fluff.
+              The same Signal Audit engine our paying customers use.
+              Our agents scan your site, pull Core Web Vitals from Google
+              PageSpeed, inventory your tracking pixels, check your email
+              security, dig through reviews + competitor signal, and
+              write you a prioritised list of fixes — each mapped to a
+              specific Foundry feature that helps you act on it. We'll
+              send the PDF to your email and host a shareable copy here.
             </p>
           </div>
 
@@ -220,14 +227,24 @@ export default function GetAuditPage() {
                 data-testid="get-audit-submit"
               >
                 {phase === "submitting"
-                  ? <><Loader2 className="w-4 h-4 animate-spin" /> Starting your audit…</>
-                  : <>Generate my audit <ArrowRight className="w-4 h-4" /></>}
+                  ? <><Loader2 className="w-4 h-4 animate-spin" /> Starting your Signal Audit…</>
+                  : <>Run my Signal Audit <ArrowRight className="w-4 h-4" /></>}
               </button>
 
               {error && (
-                <div className="text-[12px] text-red-400 leading-relaxed pt-1"
-                     data-testid="get-audit-error">
-                  {error}
+                <div
+                  className="rounded-lg border border-red-500/30 bg-red-500/[0.04] p-3 text-[12px] text-red-300 leading-relaxed"
+                  data-testid="get-audit-error"
+                >
+                  <div className="mb-1.5">{error}</div>
+                  <button
+                    type="button"
+                    onClick={() => { setError(""); setPhase("idle"); }}
+                    className="text-[11px] underline underline-offset-2 hover:text-red-200"
+                    data-testid="get-audit-retry"
+                  >
+                    Dismiss & try again
+                  </button>
                 </div>
               )}
 

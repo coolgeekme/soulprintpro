@@ -252,7 +252,7 @@ def _cover_page(canvas: _canvas.Canvas, doc):
     # Footer — left-aligned brand, right-aligned date
     canvas.setFillColor(MUTED)
     canvas.setFont(FONT_REG, 8)
-    canvas.drawString(0.75 * inch, 0.42 * inch, "Foundry · Business Audit")
+    canvas.drawString(0.75 * inch, 0.42 * inch, "Foundry · Signal Audit")
     today = datetime.now(timezone.utc).strftime("%B %d, %Y")
     canvas.drawRightString(LETTER[0] - 0.75 * inch, 0.42 * inch, today)
     canvas.restoreState()
@@ -269,7 +269,7 @@ def _content_page(canvas: _canvas.Canvas, doc):
     canvas.drawString(1.25 * inch, LETTER[1] - 0.55 * inch, "Foundry")
     canvas.setFillColor(MUTED)
     canvas.setFont(FONT_REG, 8)
-    canvas.drawString(1.25 * inch, LETTER[1] - 0.7 * inch, "Business Audit")
+    canvas.drawString(1.25 * inch, LETTER[1] - 0.7 * inch, "Signal Audit")
     # Right side — business name (passed via doc attr)
     biz = getattr(doc, "_audit_brand", "")
     if biz:
@@ -401,7 +401,7 @@ def render_audit_pdf(audit: dict) -> bytes:
         buf, pagesize=LETTER,
         leftMargin=0.75 * inch, rightMargin=0.75 * inch,
         topMargin=0.95 * inch, bottomMargin=0.85 * inch,
-        title=f"Business Audit — {audit.get('business_name','Audit')}",
+        title=f"Signal Audit — {audit.get('business_name','Audit')}",
         author="Foundry",
     )
     doc._audit_brand = audit.get("business_name") or ""
@@ -447,7 +447,7 @@ def _build_cover(story: list, audit: dict):
     summary = audit.get("executive_summary") or audit.get("score_rationale") or ""
 
     story.append(Spacer(1, 1.2 * inch))
-    story.append(_eyebrow("Business Audit Prepared For"))
+    story.append(_eyebrow("Signal Audit Prepared For"))
     story.append(_h1(name))
     if url:
         story.append(_body(url, color=MUTED, size=10))

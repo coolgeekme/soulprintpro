@@ -36,7 +36,7 @@ const TIERS = [
       "Full 150+ agent catalogue",
       "750 agent messages / month",
       "5 autonomous mission runs / month",
-      "15 free business audits / month",
+      "15 Signal Audits / month",
       "60 browser automation min / mo (Crucible + Missions)",
       "10 GB documents · 250 files",
       "Community email support",
@@ -61,11 +61,11 @@ const TIERS = [
       "Custom agent creation",
       "5,000 messages / month (pooled)",
       "75 mission runs / month",
-      "200 business audits / month",
+      "200 Signal Audits / month",
       "600 browser automation min / mo + 3 saved logins",
       "25 GB documents · unlimited files",
       "Proof of Integrity (Bitcoin-anchored)",
-      "White-label audit PDFs",
+      "White-label Signal Audit PDFs",
       "Priority support",
     ],
     studioPerk: "15% off all ArcheForge Studios services + priority queue",
@@ -230,7 +230,7 @@ const COMPARE_MATRIX = [
     rows: [
       { label: "Agent messages",          spark: "750",        tempered: "5,000 (pooled)",      refine: "100k fair-use" },
       { label: "Autonomous mission runs", spark: "5",          tempered: "75",                  refine: "1,000 fair-use" },
-      { label: "Business audits",         spark: "15",         tempered: "200",                 refine: "2,000 fair-use" },
+      { label: "Signal Audits",            spark: "15",         tempered: "200",                 refine: "2,000 fair-use" },
       { label: "Browser automation min (Crucible + Missions)", spark: "60 min",  tempered: "600 min", refine: "Unlimited" },
       { label: "Saved logins (cookies)",  spark: "0",          tempered: "3",                   refine: "Unlimited" },
     ],
@@ -246,7 +246,7 @@ const COMPARE_MATRIX = [
     group: "Trust, brand & enterprise",
     rows: [
       { label: "Proof of Integrity (Bitcoin-anchored)", spark: false, tempered: true, refine: true },
-      { label: "White-label audit PDFs",                spark: false, tempered: true, refine: true },
+      { label: "White-label Signal Audit PDFs",        spark: false, tempered: true, refine: true },
       { label: "White-label domain / logo / portal",    spark: false, tempered: false, refine: true },
       { label: "SSO / SAML · SCIM",                     spark: false, tempered: false, refine: "custom" },
       { label: "DPA + custom data retention",           spark: false, tempered: false, refine: "custom" },
@@ -305,8 +305,8 @@ const ADD_ONS = [
   },
   {
     id: "audits",
-    name: "Audit pack",
-    blurb: "10 extra business audits for client prospecting. Reuses your saved templates.",
+    name: "Signal Audit pack",
+    blurb: "10 extra Signal Audits for client prospecting. Reuses your saved templates.",
     price: 10, unit: "/ 10 audits",
     cadence: "one-time",
     icon: PenTool,
@@ -403,11 +403,11 @@ const FAQ = [
   },
   {
     q: "Can I add organizations or seats to Spark without upgrading?",
-    a: "Yes. Spark add-ons are designed for small agencies on Spark managing multiple clients: extra organization ($20/mo each), extra seat ($30/mo each). You can also top up one-time usage packs — 500 messages ($15), 200 browser automation minutes ($20), or 10 business audits ($10) — when a project spikes. Add-ons stack so a Spark + 2 orgs + 1 seat is still cheaper than jumping to Temper if you don't need the rest of Temper's features.",
+    a: "Yes. Spark add-ons are designed for small agencies on Spark managing multiple clients: extra organization ($20/mo each), extra seat ($30/mo each). You can also top up one-time usage packs — 500 messages ($15), 200 browser automation minutes ($20), or 10 Signal Audits ($10) — when a project spikes. Add-ons stack so a Spark + 2 orgs + 1 seat is still cheaper than jumping to Temper if you don't need the rest of Temper's features.",
   },
   {
     q: "Is there a free trial?",
-    a: "Yes — every public business audit you generate at /get-audit includes a 24-hour access code to the full platform. No card required.",
+    a: "Yes — every public Signal Audit you generate at /get-audit includes a 24-hour access code to the full platform. No card required.",
   },
   {
     q: "Annual vs monthly?",
@@ -698,9 +698,9 @@ function ComparisonMatrix() {
 }
 
 const LADDER = [
-  { step: 1, icon: Search, name: "Free Audit",
-    blurb: "Drop a URL on the homepage. Get a real audit in 60 seconds, no card.",
-    cta: "Try it free", href: "/get-audit" },
+  { step: 1, icon: Search, name: "Signal Audit",
+    blurb: "Drop a URL on the homepage. Get a real audit in 60 seconds — Core Web Vitals, tracking inventory, email security, and prioritised fixes.",
+    cta: "Try a Signal Audit", href: "/get-audit" },
   { step: 2, icon: Sparkles, name: "Spark",
     blurb: "$80/mo. Foundry tells you what to do — you ship it yourself.",
     cta: null },
@@ -899,7 +899,7 @@ export default function PricingPage() {
           <div className="flex gap-2">
             <Link to="/get-audit" className="sp-btn sp-btn-ghost"
                   data-testid="pricing-final-audit">
-              Try a free audit
+              Try a Signal Audit
             </Link>
             <Link to="/auth?mode=register" className="sp-btn sp-btn-primary"
                   data-testid="pricing-final-cta">
