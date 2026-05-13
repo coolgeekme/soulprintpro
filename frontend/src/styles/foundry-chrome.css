@@ -90,7 +90,8 @@
 }
 .chr-eyebrow {
   font-family: "Rajdhani", sans-serif;
-  font-size: 11px;
+  /* 11px → 0.6875rem so it scales with the global type ramp. */
+  font-size: 0.6875rem;
   font-weight: 600;
   letter-spacing: 0.4em;
   text-transform: uppercase;
@@ -128,7 +129,8 @@
   gap: 0.5rem;
   font-family: "Rajdhani", sans-serif;
   font-weight: 600;
-  font-size: 13px;
+  /* 13px → 0.8125rem so the button label scales with the global ramp. */
+  font-size: 0.8125rem;
   letter-spacing: 0.18em;
   text-transform: uppercase;
   padding: 0.85rem 1.5rem;
@@ -247,7 +249,8 @@
 }
 .chr-sub-wordmark {
   font-family: "Rajdhani", sans-serif;
-  font-size: 9px;
+  /* 9px → 0.5625rem so the micro-wordmark tracks the ramp. */
+  font-size: 0.5625rem;
   letter-spacing: 0.32em;
   color: var(--chr-mute);
   text-transform: uppercase;

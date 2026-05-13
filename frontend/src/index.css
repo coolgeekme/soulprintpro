@@ -5,6 +5,25 @@
 @tailwind utilities;
 
 /* ──────────────────────────────────────────────────────────────────────────
+   GLOBAL TYPE + SPACING SCALE
+   ────────────────────────────────────────────────────────────────────────── */
+/* Setting the root font-size to 120% scales every rem-based value in the
+   app at once: Tailwind's text-* classes (text-xs … text-6xl), spacing
+   classes (p-*, m-*, gap-*, space-*), and width/height token classes
+   (w-4, h-6 etc.) are all rem-based, so this single rule bumps the
+   entire visual hierarchy by 20% — body copy, headings, buttons, gaps,
+   container padding — proportionally. Any future "dial it back to 110%"
+   tuning is one number change here, nothing else.
+
+   Implementation note: most browsers default html to 16px, so 120%
+   yields 19.2px — the new "1rem". The body rule below uses `1rem`
+   (not a hard-coded px) so it inherits this scale; the original
+   16px override would have short-circuited everything below the body. */
+html {
+  font-size: 120%;
+}
+
+/* ──────────────────────────────────────────────────────────────────────────
    Theme tokens (default = dark). [data-theme="light"] overrides on <html>.
    ────────────────────────────────────────────────────────────────────────── */
 :root,
@@ -93,8 +112,9 @@ body {
     var(--bg);
   background-attachment: fixed;
   letter-spacing: -0.01em;
-  /* Bumped base size to match modern AI chat platforms (~16-17px) */
-  font-size: 16px;
+  /* Inherits from html (120% × 16px = 19.2px). Was hard-coded 16px,
+     which short-circuited the global scale. */
+  font-size: 1rem;
   line-height: 1.55;
 }
 
