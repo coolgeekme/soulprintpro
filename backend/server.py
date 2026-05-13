@@ -3267,6 +3267,16 @@ async def generate_agent_reply(conv: dict, team: dict, agent_id: str,
 
     system = build_system_prompt(agent_id, team, current_user_name=latest_user_name,
                                  org_assets=org_assets_brief, org=org_doc)
+    # Inject user-scoped memories (Phase 1). Empty string when the user
+    # has no extracted/manual memories yet, so the prompt stays clean.
+    if latest_user_id:
+        try:
+            from memory import build_memory_context_block as _mem_block
+            mem_block = await _mem_block(db, user_id=latest_user_id)
+            if mem_block:
+                system += "\n" + mem_block
+        except Exception as exc:
+            logger.info("memory injection skipped: %s", exc)
     if conv["type"] == "group":
         system += (
             "\n\nYou are one of several participants in a GROUP conversation. "
@@ -3926,6 +3936,26 @@ async def send_message(conv_id: str, body: SendMessageBody, u: dict = Depends(ge
             msg["empty_promise"] = True
         await db.messages.insert_one({**msg})
         agent_messages.append({k: v for k, v in msg.items() if k != "_id"})
+        # ── Background memory extraction (Phase 1, user-scoped) ────────
+        # Fire-and-forget: never blocks the response. The helper swallows
+        # every error so a slow/failing extraction can't break the chat.
+        try:
+            from memory import extract_and_store, schedule_extraction
+            schedule_extraction(extract_and_store(
+                db,
+                llm_chat_cls=LlmChat,
+                user_message_cls=UserMessage,
+                emergent_llm_key=EMERGENT_LLM_KEY,
+                user_id=u["id"],
+                user_message=body.text,
+                agent_message=clean_reply or "",
+                org_id=str(team.get("org_id") or "") or None,
+                team_id=str(team.get("_id") or "") or None,
+                conv_id=conv_id,
+                msg_id=msg_id,
+            ))
+        except Exception as exc:
+            logger.info("memory extraction schedule failed: %s", exc)
 
     user_doc_resp = {k: v for k, v in user_doc.items() if k != "_id"}
     # Re-fetch fresh conv so frontend can mirror new agent_ids if expanded
@@ -4093,6 +4123,25 @@ async def smart_start(team_id: str, body: SmartStartBody, u: dict = Depends(get_
         if artifacts:
             agent_msg["attachments"] = artifacts
         await db.messages.insert_one({**agent_msg})
+        # Background user-memory extraction (Phase 1) — same fire-and-forget
+        # pattern as send_message. Doesn't block, can't fail the request.
+        try:
+            from memory import extract_and_store, schedule_extraction
+            schedule_extraction(extract_and_store(
+                db,
+                llm_chat_cls=LlmChat,
+                user_message_cls=UserMessage,
+                emergent_llm_key=EMERGENT_LLM_KEY,
+                user_id=u["id"],
+                user_message=body.text,
+                agent_message=clean_reply or "",
+                org_id=str(team.get("org_id") or "") or None,
+                team_id=str(team.get("_id") or "") or None,
+                conv_id=conv_id,
+                msg_id=msg_id,
+            ))
+        except Exception as exc:
+            logger.info("memory extraction schedule failed (smart_start): %s", exc)
     except Exception as exc:
         logger.warning("smart_start agent reply failed: %s", exc)
         agent_msg = {
@@ -6506,6 +6555,12 @@ app.include_router(make_soul_suggestions_router(
     db=db,
     require_org_member=require_org_member,
     get_current_user=get_current_user,
+))
+
+# User-scoped Memory (Phase 1) — CRUD over /api/memory.
+from memory_routes import make_memory_router  # noqa: E402
+app.include_router(make_memory_router(
+    db=db, get_current_user=get_current_user,
 ))
 
 from social_posts import make_social_router  # noqa: E402

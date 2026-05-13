@@ -233,6 +233,10 @@ export default function AccountPage() {
             need an active org to render. We pick the first org from
             user.orgs as a default, since this page is org-agnostic. */}
         <Integrations user={user} />
+
+        {/* Memory — user-scoped long-term context Foundry remembers
+            across all conversations. Editable + auditable. */}
+        <MemoryPanel />
       </main>
     </div>
   );
@@ -243,6 +247,7 @@ export default function AccountPage() {
 // the user never opens the integrations section. Lifted to module
 // scope to keep the export profile clean.
 import GitHubConnectCard from "../components/GitHubConnectCard";
+import MemoryPanel from "../components/MemoryPanel";
 
 function Integrations({ user }) {
   // Fetch the caller's orgs directly — useAuth().user doesn't include
