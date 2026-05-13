@@ -43,7 +43,11 @@ logger = logging.getLogger(__name__)
 # is mobile-first, but desktop scores matter for B2B prospects who pitch
 # from a laptop. ~3-8 s typical wall time; capped at 25 s.
 _PSI_URL = "https://www.googleapis.com/pagespeedonline/v5/runPagespeed"
-_PSI_TIMEOUT = 25.0
+# Tightened from 25s → 18s. PSI typically returns in 4-9s when it works;
+# the only reason for a long timeout is to wait out their rate-limiter
+# returning slow 429s, which we can't fix anyway. Better to fail fast
+# and reclaim the budget for the synthesis LLM call.
+_PSI_TIMEOUT = 18.0
 
 
 async def fetch_web_vitals(url: str, *, api_key: Optional[str] = None) -> Dict[str, Any]:
@@ -154,7 +158,13 @@ async def capture_viewport_screenshots(
     upload_dir: Path,
     audit_id: str,
 ) -> Dict[str, Any]:
-    """Snapshot ``url`` at mobile / tablet / desktop viewports.
+    """Snapshot ``url`` at mobile / tablet / desktop viewports — IN PARALLEL.
+
+    Original implementation ran the three viewports sequentially: ~15s
+    per viewport × 3 = ~45s of the audit's 240s watchdog budget. That
+    pushed slow sites over the time limit. Now each viewport runs in
+    its own asyncio task on a fresh Playwright context, so wall time
+    collapses to ~the slowest single viewport (~15s).
 
     Returns:
       {
@@ -173,13 +183,12 @@ async def capture_viewport_screenshots(
     except Exception as exc:
         return {"available": False, "error": f"playwright not ready: {exc}"}
 
-    shots: List[Dict[str, Any]] = []
     try:
         browser = await _ensure_browser()
     except Exception as exc:
         return {"available": False, "error": f"browser unavailable: {exc}"}
 
-    for vp in _VIEWPORTS:
+    async def _one(vp: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         ctx = None
         try:
             kwargs = _hardened_context_kwargs()
@@ -188,9 +197,12 @@ async def capture_viewport_screenshots(
             ctx = await browser.new_context(**kwargs)
             await apply_stealth_init(ctx)
             page = await ctx.new_page()
-            await page.goto(url, wait_until="domcontentloaded", timeout=20000)
+            # Tightened goto/load timeouts: 15s + 4s. A slow site shouldn't
+            # eat 20+ seconds per viewport — we'd rather drop one viewport
+            # than blow the watchdog budget.
+            await page.goto(url, wait_until="domcontentloaded", timeout=15000)
             try:
-                await page.wait_for_load_state("networkidle", timeout=6000)
+                await page.wait_for_load_state("networkidle", timeout=4000)
             except Exception:
                 pass
             png = await page.screenshot(type="jpeg", quality=72, full_page=False)
@@ -201,15 +213,16 @@ async def capture_viewport_screenshots(
             fname = f"audit-{audit_id}-{vp['width']}.jpg"
             path = upload_dir / fname
             await persist_bytes(path, png, original_name=fname, mime="image/jpeg")
-            shots.append({
+            return {
                 "viewport": vp["name"],
                 "width": vp["width"],
                 "height": vp["height"],
                 "url": f"/api/files/{fname}",
                 "filename": fname,
-            })
+            }
         except Exception as exc:
             logger.info("screenshot at %s failed for %s: %s", vp["name"], url, exc)
+            return None
         finally:
             if ctx is not None:
                 try:
@@ -217,6 +230,8 @@ async def capture_viewport_screenshots(
                 except Exception:
                     pass
 
+    results = await asyncio.gather(*(_one(vp) for vp in _VIEWPORTS))
+    shots = [r for r in results if r is not None]
     if not shots:
         return {"available": False, "error": "no viewports captured"}
     return {"available": True, "shots": shots}
@@ -324,8 +339,10 @@ def _txt_records(domain: str) -> List[str]:
     try:
         import dns.resolver
         resolver = dns.resolver.Resolver()
-        resolver.lifetime = 4.0
-        resolver.timeout = 4.0
+        # Tightened from 4s → 2s so the DKIM probe (7 selectors) can't
+        # blow 28s of budget on slow / non-existent records.
+        resolver.lifetime = 2.0
+        resolver.timeout = 2.0
         answers = resolver.resolve(domain, "TXT")
         out: List[str] = []
         for r in answers:
@@ -341,8 +358,8 @@ def _mx_records(domain: str) -> List[str]:
     try:
         import dns.resolver
         resolver = dns.resolver.Resolver()
-        resolver.lifetime = 4.0
-        resolver.timeout = 4.0
+        resolver.lifetime = 2.0
+        resolver.timeout = 2.0
         answers = resolver.resolve(domain, "MX")
         return [str(r.exchange).rstrip(".") for r in answers]
     except Exception:
@@ -357,30 +374,41 @@ async def domain_reputation(url: str) -> Dict[str, Any]:
     "selector1/2", etc.). A miss here doesn't mean DKIM is broken — it
     just means we couldn't verify with the common selectors; the audit
     surfaces that nuance honestly.
+
+    All DNS lookups (SPF TXT, DMARC TXT, MX, 7 × DKIM TXT) fire in
+    parallel via ``asyncio.to_thread`` so the worst-case wall time is
+    the single slowest lookup (~2s) instead of sum-of-all (~18s).
     """
     host = _hostname(url)
     if not host:
         return {"available": False, "error": "no domain"}
 
-    def _check_sync() -> Dict[str, Any]:
-        spf_records = [t for t in _txt_records(host) if t.lower().startswith("v=spf1")]
-        dmarc_records = [
-            t for t in _txt_records(f"_dmarc.{host}") if t.lower().startswith("v=dmarc1")
-        ]
+    try:
+        # All 10 DNS queries fire concurrently. Each one is sync (dnspython
+        # has no async API in 2.x), so we offload each to a worker thread.
+        results = await asyncio.gather(
+            asyncio.to_thread(_txt_records, host),
+            asyncio.to_thread(_txt_records, f"_dmarc.{host}"),
+            asyncio.to_thread(_mx_records, host),
+            asyncio.to_thread(socket.gethostbyname, host),
+            *(asyncio.to_thread(_txt_records, f"{sel}._domainkey.{host}")
+              for sel in _DKIM_COMMON_SELECTORS),
+            return_exceptions=True,
+        )
+        spf_raw       = results[0] if isinstance(results[0], list) else []
+        dmarc_raw     = results[1] if isinstance(results[1], list) else []
+        mx            = results[2] if isinstance(results[2], list) else []
+        ip            = results[3] if isinstance(results[3], str)  else ""
+        dkim_results  = results[4:]
+
+        spf_records = [t for t in spf_raw if t.lower().startswith("v=spf1")]
+        dmarc_records = [t for t in dmarc_raw if t.lower().startswith("v=dmarc1")]
         dkim_found: List[str] = []
-        for sel in _DKIM_COMMON_SELECTORS:
-            recs = _txt_records(f"{sel}._domainkey.{host}")
-            if any("v=dkim1" in r.lower() for r in recs):
+        for sel, recs in zip(_DKIM_COMMON_SELECTORS, dkim_results):
+            if isinstance(recs, list) and any("v=dkim1" in r.lower() for r in recs):
                 dkim_found.append(sel)
-        mx = _mx_records(host)
 
-        # Resolve A record so we know the site is at least live.
-        try:
-            ip = socket.gethostbyname(host)
-        except Exception:
-            ip = ""
-
-        return {
+        result = {
             "domain": host,
             "ip": ip,
             "spf": {
@@ -398,9 +426,6 @@ async def domain_reputation(url: str) -> Dict[str, Any]:
             },
             "mx": mx[:5],
         }
-
-    try:
-        result = await asyncio.to_thread(_check_sync)
         # Derive a short "issues" list the audit can quote verbatim.
         issues: List[str] = []
         if not result["spf"]["present"]:

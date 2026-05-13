@@ -167,12 +167,16 @@ export default function AuditsPage() {
   // almost certainly stuck (the watchdog will eventually flip it to
   // failed at 4 min, but the user shouldn't wait that long without
   // an escape hatch).
+  // An audit is considered stuck once it's been "generating" longer
+  // than the backend watchdog (6 min) gives it. We pad to 6.5 min so
+  // a watchdog-killed audit lands in "failed" before the UI labels it
+  // stuck — keeps state consistent.
   const isStuck = (a) => {
     if (a.status !== "generating") return false;
     const t = a.updated_at || a.created_at;
     const d = parseServerDate(t);
     if (!d) return false;
-    return (Date.now() - d.getTime()) > 2 * 60 * 1000;
+    return (Date.now() - d.getTime()) > 6.5 * 60 * 1000;
   };
 
   return (

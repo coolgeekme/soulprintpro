@@ -749,6 +749,22 @@ def make_audits_router(
                 inventory_tracking_pixels, domain_reputation,
             )
 
+            # Per-stage timeouts so a single hung collector can't eat
+            # the entire watchdog budget. Each ceiling is generous
+            # vs typical wall time but tight enough to leave room for
+            # the synthesis LLM pass that follows.
+            async def _bounded(coro, ceiling: float, name: str):
+                try:
+                    return await asyncio.wait_for(coro, timeout=ceiling)
+                except asyncio.TimeoutError:
+                    logger.info(
+                        "audit signal '%s' exceeded %.1fs — dropping", name, ceiling
+                    )
+                    return {"available": False, "error": f"{name} timed out after {ceiling}s"}
+
+            async def _no_url(_msg: str):
+                return {"available": False, "error": _msg}
+
             (
                 browse_result, perplexity_text,
                 brand_hits, reviews_hits, comp_hits,
@@ -759,12 +775,14 @@ def make_audits_router(
                 _safe_brave(brand),
                 _safe_brave(f"{brand} reviews"),
                 _safe_brave(f"{brand} competitors OR alternatives"),
-                fetch_web_vitals(url) if url else asyncio.sleep(0, result={"available": False, "error": "no url"}),
-                capture_viewport_screenshots(
-                    url, persist_bytes=persist_bytes,
-                    upload_dir=upload_dir, audit_id=str(audit_id),
-                ) if url else asyncio.sleep(0, result={"available": False, "error": "no url"}),
-                domain_reputation(url) if url else asyncio.sleep(0, result={"available": False, "error": "no url"}),
+                _bounded(fetch_web_vitals(url), 20.0, "web_vitals") if url else _no_url("no url"),
+                _bounded(
+                    capture_viewport_screenshots(
+                        url, persist_bytes=persist_bytes,
+                        upload_dir=upload_dir, audit_id=str(audit_id),
+                    ), 35.0, "viewport_screenshots",
+                ) if url else _no_url("no url"),
+                _bounded(domain_reputation(url), 10.0, "domain_reputation") if url else _no_url("no url"),
             )
             website_text, website_blocked = browse_result
             # Pixel inventory works off the rendered HTML, so it only fires
@@ -903,12 +921,25 @@ def make_audits_router(
                 }},
             )
 
-    # ── Watchdog wrapper: cap any single run at 4 minutes ───────────────
+    # ── Watchdog wrapper: cap any single run at 6 minutes ───────────────
     # Without this, a wedged Playwright fetch or unresponsive LLM call
     # can leave the audit stuck at "generating" indefinitely. We hard-
-    # stop after 240 s and mark the row failed so the UI shows a clear
+    # stop after 360 s and mark the row failed so the UI shows a clear
     # retry affordance instead of a forever-spinning state.
-    AUDIT_MAX_RUNTIME_SEC = 240
+    #
+    # Budget breakdown for a healthy audit (all stages parallelized):
+    #   • Playwright site fetch       ~15-30 s
+    #   • Perplexity Sonar Pro        ~20-60 s
+    #   • Brave Search (x3)           ~3-6 s (parallel)
+    #   • Web Vitals (PSI mobile+desk)~10-18 s (parallel)
+    #   • Multi-viewport screenshots  ~15-20 s (parallel after this fix)
+    #   • Domain reputation DNS       ~2-3 s (parallel after this fix)
+    #   • Tracking-pixel HTML fetch   ~3-5 s
+    #   • Synthesis LLM call          ~30-90 s
+    #   • PDF render + persist        ~3-8 s
+    # Worst-case parallel-stage wall time + serial LLM ≈ 120-180 s.
+    # 360 s gives 2× headroom for slow real-world sites.
+    AUDIT_MAX_RUNTIME_SEC = 360
 
     async def _run_audit_guarded(audit_id):
         try:
@@ -1008,11 +1039,12 @@ def make_audits_router(
 
     # ── Orphan recovery: re-kick any audit stuck at "generating" on
     # startup. This catches rows orphaned by a redeploy or crash that
-    # killed the asyncio task mid-flight. We use a 3-minute grace
-    # window so freshly-started audits aren't picked up.
+    # killed the asyncio task mid-flight. We use a 7-minute grace
+    # window — just over the 6-min watchdog — so freshly-started or
+    # legitimately-slow audits aren't picked up.
     async def recover_orphans():
         try:
-            cutoff = datetime.now(timezone.utc) - timedelta(minutes=3)
+            cutoff = datetime.now(timezone.utc) - timedelta(minutes=7)
             n = 0
             cur = db.business_audits.find({
                 "status": "generating",
