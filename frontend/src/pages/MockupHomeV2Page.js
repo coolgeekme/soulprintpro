@@ -19,6 +19,10 @@ import "../styles/foundry-chrome.css";
 
 const SIGIL_IMG = "https://customer-assets.emergentagent.com/job_emergent-wing/artifacts/1uouv1t6_image%20%2826%29.png";
 const HERO_LOGO = "https://customer-assets.emergentagent.com/job_emergent-wing/artifacts/w4pi4fve_Foundry%20logo.png";
+// Compact stacked-mark used in the navbar (emblem + FOUNDRY + tagline).
+// Different file from HERO_LOGO so we can tune size/crop independently
+// when the hero artwork evolves.
+const NAV_LOGO = "https://customer-assets.emergentagent.com/job_emergent-wing/artifacts/zntnh88h_Foundry%20logo.png";
 
 const TIERS = [
   {
@@ -60,10 +64,16 @@ const TIERS = [
 
 function Wordmark() {
   return (
-    <Link to="/mockup/home-v2" className="block leading-none"
+    <Link to="/mockup/home-v2"
+          className="flex items-center gap-3 leading-none"
           data-testid="mockup-v2-wordmark">
-      <div className="chr-wordmark">FOUNDRY</div>
-      <div className="chr-sub-wordmark">
+      <img
+        src={NAV_LOGO}
+        alt="Foundry"
+        className="h-12 w-12 object-contain shrink-0"
+        style={{ filter: "drop-shadow(0 0 6px rgba(216,118,49,.22))" }}
+      />
+      <div className="chr-sub-wordmark leading-tight">
         POWERED BY <span className="accent">SOULPRINT</span> ENGINE
       </div>
     </Link>
