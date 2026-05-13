@@ -3,6 +3,17 @@
 Plain-English feature inventory of **Foundry by SoulPrint Engine** for non-technical teammates. Each section is a category of capabilities and what they do for users.
 
 ---
+## 🧙 May 13, 2026 — Custom Agent Builder: Guided Wizard
+- Replaced the single intimidating "system prompt" textarea with a **4-step guided wizard**: Identity → Role → Voice & rules → Preview.
+- **8 ready-made templates** on step 1 (Pricing Strategist · Snarky CFO · Brand Guardian · SDR Coach · Investor Memo Writer · User Researcher · Product Strategist · Ops Systematizer) — one click pre-fills the wizard so users can ship their first agent in <60 seconds.
+- **Voice & rules step** asks 3 plain-English questions ("how should it talk?", "what should it ALWAYS do?", "what should it NEVER do?") and the **drafter LLM** (gpt-4.1-mini) composes a production-grade system prompt automatically. Hide the "system prompt" jargon entirely from non-technical users.
+- **Live preview chat in step 4** — one-shot LLM call against the draft prompt so users can vibe-check their agent before saving. No history, fresh per message.
+- **Refine** affordance on the composed prompt — say *"make it more concise"* or *"add humor"* and get a v2 without re-typing.
+- **Advanced mode** toggle for power users who want the raw system-prompt textarea back.
+- Backend: `POST /api/orgs/{org_id}/custom-agents/draft-system` + `POST /.../preview` (both 30-45s timeouts, gpt-4.1-mini, defensive JSON parsing).
+- Live-verified: Snarky CFO template → wizard composed a 901-char prompt with citations to "public-company 10-K filings", LTV/CAC, Rule of 40. Preview chat then produced an in-voice reply roasting a "$50M ARR in 18 months" claim.
+
+---
 ## ✨ May 13, 2026 — Mission Goal Drafter
 - New "✨ Help me write this" affordance on the Start-a-mission dialog. Vague mission goals are the #1 cause of bad runs — this turns a rough idea into a polished goal that passes Foundry's mission best-practice checklist.
 - Three-field structured input: *Goal (rough)* + *Deliverable format (optional)* + *Success looks like (optional)*. The LLM enforces: named filename + extension (defaults to `.pdf`, never `.txt`), 3-5 measurable success criteria, ≥5 source citations for research, no vague qualifiers (*"comprehensive"*, *"thorough"*), no empty-promise verbs, definition-of-done sentence at the end.

@@ -6595,6 +6595,9 @@ _init_custom_agents(
     agents_dict=AGENTS,
     get_current_user=get_current_user,
     require_org_member=require_org_member,
+    LlmChat=LlmChat,
+    UserMessage=UserMessage,
+    EMERGENT_LLM_KEY=EMERGENT_LLM_KEY,
 )
 app.include_router(_custom_agents_router)
 
