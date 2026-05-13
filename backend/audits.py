@@ -775,7 +775,12 @@ def make_audits_router(
                 _safe_brave(brand),
                 _safe_brave(f"{brand} reviews"),
                 _safe_brave(f"{brand} competitors OR alternatives"),
-                _bounded(fetch_web_vitals(url), 20.0, "web_vitals") if url else _no_url("no url"),
+                # 90s ceiling — PSI takes 5-10s standalone but suffers
+                # severe slowdown under audit-pipeline concurrency (Playwright
+                # holding the loop, 3 brave searches, Perplexity, screenshots).
+                # 90s is comfortable inside the 360s watchdog and lets PSI
+                # ride out cold-cache + contention.
+                _bounded(fetch_web_vitals(url), 90.0, "web_vitals") if url else _no_url("no url"),
                 _bounded(
                     capture_viewport_screenshots(
                         url, persist_bytes=persist_bytes,

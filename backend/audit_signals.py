@@ -43,11 +43,13 @@ logger = logging.getLogger(__name__)
 # is mobile-first, but desktop scores matter for B2B prospects who pitch
 # from a laptop. ~3-8 s typical wall time; capped at 25 s.
 _PSI_URL = "https://www.googleapis.com/pagespeedonline/v5/runPagespeed"
-# Tightened from 25s → 18s. PSI typically returns in 4-9s when it works;
-# the only reason for a long timeout is to wait out their rate-limiter
-# returning slow 429s, which we can't fix anyway. Better to fail fast
-# and reclaim the budget for the synthesis LLM call.
-_PSI_TIMEOUT = 18.0
+# 50s per single strategy. Standalone calls return in 3-9s, but when the
+# audit pipeline runs the request concurrently with Playwright + 3 Brave
+# searches + Perplexity + viewport screenshots + DNS lookups, HTTP socket
+# contention can stretch a single PSI call to 30-40s. The audit-level
+# bound on `fetch_web_vitals` (60s, in audits.py) is the real ceiling;
+# this just lets a single strategy ride it out instead of failing early.
+_PSI_TIMEOUT = 50.0
 
 
 async def fetch_web_vitals(url: str, *, api_key: Optional[str] = None) -> Dict[str, Any]:
@@ -86,10 +88,20 @@ async def fetch_web_vitals(url: str, *, api_key: Optional[str] = None) -> Dict[s
         }
         if api_key:
             params["key"] = api_key
-        async with httpx.AsyncClient(timeout=_PSI_TIMEOUT) as client:
-            r = await client.get(_PSI_URL, params=params)
-            r.raise_for_status()
-            data = r.json()
+        import time
+        t0 = time.time()
+        try:
+            async with httpx.AsyncClient(timeout=_PSI_TIMEOUT) as client:
+                r = await client.get(_PSI_URL, params=params)
+                r.raise_for_status()
+                data = r.json()
+            logger.info("PSI %s for %s OK in %.1fs", strategy, url, time.time() - t0)
+        except Exception as exc:
+            logger.warning(
+                "PSI %s for %s failed in %.1fs: %s",
+                strategy, url, time.time() - t0, repr(exc)[:200],
+            )
+            raise
         lhr = data.get("lighthouseResult") or {}
         audits = lhr.get("audits") or {}
         cats = lhr.get("categories") or {}
@@ -112,17 +124,25 @@ async def fetch_web_vitals(url: str, *, api_key: Optional[str] = None) -> Dict[s
         }
 
     try:
-        mobile, desktop = await asyncio.gather(
-            _one("mobile"), _one("desktop"), return_exceptions=True,
-        )
+        # Google rate-limits aggressive concurrent calls from the same
+        # API key. Sequential mobile-then-desktop reliably returns each
+        # in 3-9s (~6-18s total); parallel calls stall both at the
+        # full read-timeout because PSI queues the second one behind
+        # the first internally anyway. Sequential is strictly faster.
+        try:
+            mobile = await _one("mobile")
+        except Exception as exc:
+            mobile = exc
+        try:
+            desktop = await _one("desktop")
+        except Exception as exc:
+            desktop = exc
         if isinstance(mobile, Exception) and isinstance(desktop, Exception):
-            # The most common failure here in production is "no key set
-            # + anonymous quota exhausted". Surface that explicitly so
-            # the admin knows the fix (set PAGESPEED_API_KEY) instead of
-            # chasing a vague network error.
-            msg = str(mobile) or str(desktop)
+            msg = repr(mobile)
             if "429" in msg or "rateLimit" in msg or "quota" in msg.lower():
                 msg = "PageSpeed Insights quota exceeded — set PAGESPEED_API_KEY in backend env"
+            elif "Timeout" in msg:
+                msg = "PageSpeed Insights timed out — site may be too slow to audit"
             return {"available": False, "error": msg[:300]}
         out: Dict[str, Any] = {
             "available": True,
@@ -135,7 +155,7 @@ async def fetch_web_vitals(url: str, *, api_key: Optional[str] = None) -> Dict[s
         return out
     except Exception as exc:
         logger.warning("PageSpeed Insights fetch failed for %s: %s", url, exc)
-        return {"available": False, "error": str(exc)[:200]}
+        return {"available": False, "error": repr(exc)[:200] or "unknown PSI error"}
 
 
 # ── 2. Multi-viewport screenshots ──────────────────────────────────────────
