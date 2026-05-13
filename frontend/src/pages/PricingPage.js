@@ -88,8 +88,8 @@ const TIERS = [
       "Unlimited browser automation min + unlimited saved logins",
       "Bring-your-own LLM key option",
       "White-label everything: domain, logo, client portal",
-      "SSO/SAML · SCIM · DPA · custom data retention",
-      "Dedicated infra option (your own cluster)",
+      "SSO/SAML · SCIM · DPA · custom data retention (scoped into your build)",
+      "Dedicated infra option — your own cluster (scoped into your build)",
       "Dedicated CSM + QBR",
     ],
     studioPerk: "$2,000/mo ArcheForge credits included + 30% off everything after",
@@ -248,9 +248,9 @@ const COMPARE_MATRIX = [
       { label: "Proof of Integrity (Bitcoin-anchored)", spark: false, tempered: true, refine: true },
       { label: "White-label audit PDFs",                spark: false, tempered: true, refine: true },
       { label: "White-label domain / logo / portal",    spark: false, tempered: false, refine: true },
-      { label: "SSO / SAML · SCIM",                     spark: false, tempered: false, refine: true },
-      { label: "DPA + custom data retention",           spark: false, tempered: false, refine: true },
-      { label: "Dedicated infra option",                spark: false, tempered: false, refine: true },
+      { label: "SSO / SAML · SCIM",                     spark: false, tempered: false, refine: "custom" },
+      { label: "DPA + custom data retention",           spark: false, tempered: false, refine: "custom" },
+      { label: "Dedicated infra option",                spark: false, tempered: false, refine: "custom" },
     ],
   },
   {
@@ -563,6 +563,21 @@ function CellValue({ value }) {
   if (value === false) {
     return <span className="text-white/25 text-sm select-none">—</span>;
   }
+  // Special-cased pill — used by Enterprise security / data items that
+  // are delivered as part of the custom-build engagement rather than
+  // shipped as off-the-shelf SaaS features. Rendering them as "Custom
+  // build" instead of a ✓ keeps the matrix honest while still showing
+  // the line items prospects expect to see when evaluating Enterprise.
+  if (value === "custom") {
+    return (
+      <span
+        className="inline-flex items-center gap-1 text-[10px] uppercase tracking-widest px-2 py-0.5 rounded-full border bg-violet-500/15 text-violet-200 border-violet-500/30"
+        title="Delivered as part of your Refine custom-build engagement"
+      >
+        Custom build
+      </span>
+    );
+  }
   return <span className="text-sm">{value}</span>;
 }
 
@@ -648,6 +663,18 @@ function ComparisonMatrix() {
             </tbody>
           </table>
         </div>
+        <p
+          className="mt-4 text-xs sp-subtle leading-relaxed"
+          data-testid="matrix-custom-build-note"
+        >
+          <span className="inline-block w-2 h-2 rounded-full bg-violet-400/70 mr-2 align-middle" />
+          Items marked <span className="text-violet-200">Custom build</span> —
+          SSO/SAML, SCIM, DPA + custom data retention, and dedicated
+          infrastructure — are scoped, built, and delivered as part of
+          your Refine custom engagement rather than shipped as
+          off-the-shelf toggles. Timeline and exact scope are set in
+          your kickoff.
+        </p>
       </div>
 
       <div className="flex flex-wrap justify-center gap-3 mt-8">
