@@ -126,17 +126,27 @@ RULES
 
 async def ensure_indexes(db) -> None:
     """Create the index set we rely on. Idempotent — safe to call on
-    every backend boot."""
+    every backend boot. We migrate the legacy `user_scope_content_unique_idx`
+    (which didn't include `org_id`) to a new key that does, so the same
+    content under two different orgs no longer collides."""
     await db.user_memories.create_index(
-        [("user_id", 1), ("scope", 1), ("is_archived", 1)],
-        name="user_scope_archived_idx",
+        [("user_id", 1), ("scope", 1), ("org_id", 1), ("is_archived", 1)],
+        name="user_scope_org_archived_idx",
     )
-    # Dedupe key: same content for the same (user, scope) — case-
-    # insensitive via the lowercased `content_key` we maintain.
+    # One-shot migration: drop the old unique index if present, then
+    # create the org-aware one. Safe to run on every boot.
+    try:
+        await db.user_memories.drop_index("user_scope_content_unique_idx")
+    except Exception:
+        pass
+    # Dedupe key: (user_id, scope, org_id, content_key) — case-
+    # insensitive via the lowercased `content_key`. Including `org_id`
+    # is what lets the same fact (e.g. "Prefers Slack") coexist under
+    # two different client orgs without one rejecting the other.
     await db.user_memories.create_index(
-        [("user_id", 1), ("scope", 1), ("content_key", 1)],
+        [("user_id", 1), ("scope", 1), ("org_id", 1), ("content_key", 1)],
         unique=True,
-        name="user_scope_content_unique_idx",
+        name="user_scope_org_content_unique_idx",
     )
 
 
@@ -145,12 +155,30 @@ def _content_key(content: str) -> str:
     return re.sub(r"\s+", " ", (content or "").strip().lower())
 
 
+# Sentinel used by callers that explicitly want "untagged" rows
+# (org_id IS NULL). Distinct from passing `None` for "any org" so
+# we can't accidentally leak across orgs.
+_UNTAGGED = object()
+
+
 async def list_memories(
     db, *, user_id: str, scope: str = "user",
+    org_id: Any = _UNTAGGED,
     include_archived: bool = False, limit: int = 200,
 ) -> List[Dict[str, Any]]:
-    """Return memories for a user, newest first."""
+    """Return memories for a user, newest first.
+
+    Org filtering rules (STRICT — no cross-org leaks):
+        org_id="<id>"  → only memories whose org_id == that id
+        org_id=None    → only UNTAGGED memories (org_id is null)
+        org_id omitted → ALL memories regardless of org (admin/UI-only use,
+                         never pass through to the prompt-injection path)
+    """
     q: Dict[str, Any] = {"user_id": user_id, "scope": scope}
+    if org_id is None:
+        q["org_id"] = None
+    elif org_id is not _UNTAGGED:
+        q["org_id"] = org_id
     if not include_archived:
         q["is_archived"] = {"$ne": True}
     cur = db.user_memories.find(q, {"_id": 0}).sort("created_at", -1).limit(limit)
@@ -210,9 +238,17 @@ async def update_memory(
     category: Optional[str] = None,
     importance: Optional[str] = None,
     is_archived: Optional[bool] = None,
+    org_id: Any = _UNTAGGED,
 ) -> bool:
     """Edit a memory. Users own their memories; the user_id is part of
-    the filter so one user can't modify another's row."""
+    the filter so one user can't modify another's row.
+
+    `org_id` accepts the same sentinel-based protocol as list_memories:
+    pass `_UNTAGGED` (the default) to leave the org assignment alone,
+    pass an org-id string to (re-)assign it, pass `None` to explicitly
+    untag. The migration UI uses this to move legacy untagged memories
+    into a specific org.
+    """
     patch: Dict[str, Any] = {"updated_at": datetime.now(timezone.utc)}
     if content is not None:
         c = content.strip()
@@ -226,6 +262,8 @@ async def update_memory(
         patch["importance"] = importance
     if is_archived is not None:
         patch["is_archived"] = bool(is_archived)
+    if org_id is not _UNTAGGED:
+        patch["org_id"] = org_id
     res = await db.user_memories.update_one(
         {"id": memory_id, "user_id": user_id},
         {"$set": patch},
@@ -243,14 +281,25 @@ async def delete_memory(db, *, memory_id: str, user_id: str) -> bool:
 
 
 async def build_memory_context_block(
-    db, *, user_id: str, max_chars: int = 2400,
+    db, *, user_id: str, org_id: Optional[str], max_chars: int = 2400,
 ) -> str:
     """Return a markdown block to inject into the agent's system prompt.
 
-    Empty string when the user has no memories — caller can append
-    unconditionally without polluting the prompt with empty headers.
+    STRICT ORG ISOLATION: only memories tagged with the given `org_id`
+    are returned. Untagged memories (org_id is null) are NEVER injected —
+    if a user has legacy untagged memories, the UI prompts them to
+    assign each one to an org (or delete it) before it can be used.
+
+    Empty string when the user has no memories for this org, OR when
+    `org_id` is empty (e.g. an admin endpoint without org context) —
+    so the caller can append unconditionally without polluting the
+    prompt with empty headers.
     """
-    rows = await list_memories(db, user_id=user_id, scope="user", limit=80)
+    if not org_id:
+        return ""
+    rows = await list_memories(
+        db, user_id=user_id, scope="user", org_id=org_id, limit=80,
+    )
     if not rows:
         return ""
     # Sort by importance weight desc, then recency desc.

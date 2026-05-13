@@ -3269,10 +3269,15 @@ async def generate_agent_reply(conv: dict, team: dict, agent_id: str,
                                  org_assets=org_assets_brief, org=org_doc)
     # Inject user-scoped memories (Phase 1). Empty string when the user
     # has no extracted/manual memories yet, so the prompt stays clean.
-    if latest_user_id:
+    # STRICT org isolation — only memories tagged with this org's id
+    # are returned, so a fact captured in Client A's workspace can't
+    # leak into Client B's agent replies.
+    if latest_user_id and team.get("org_id"):
         try:
             from memory import build_memory_context_block as _mem_block
-            mem_block = await _mem_block(db, user_id=latest_user_id)
+            mem_block = await _mem_block(
+                db, user_id=latest_user_id, org_id=str(team["org_id"]),
+            )
             if mem_block:
                 system += "\n" + mem_block
         except Exception as exc:

@@ -2,25 +2,27 @@ import React, { useEffect, useState } from "react";
 import { toast } from "sonner";
 import {
   Brain, Plus, Trash2, Pencil, Save, X, Archive, ArchiveRestore, Loader2,
+  AlertCircle, ArrowRight,
 } from "lucide-react";
 import api from "../lib/api";
 
 /**
- * MemoryPanel — user-scoped long-term memory editor.
+ * MemoryPanel — user-scoped long-term memory editor with STRICT
+ * per-organization isolation.
  *
- * Lets the signed-in user inspect, add, edit, archive, and purge the
- * durable facts agents remember about them across all conversations.
+ * Layout:
+ *   1. Org picker (top) — choose which organization's memory pool
+ *      you're viewing. Memories never leak across orgs.
+ *   2. "Needs cleanup" banner — appears only when the user has legacy
+ *      untagged memories from before isolation was enforced. Each
+ *      untagged memory must be assigned to an org or deleted before
+ *      it can be injected into any agent reply.
+ *   3. Add-memory form — content + category + importance; the org
+ *      is inherited from the picker so a user can't accidentally
+ *      tag a memory to the wrong workspace.
+ *   4. Filter chips + list — scoped to the selected org.
  *
- * Backed by /api/memory (see backend/memory_routes.py). Memories are
- * extracted automatically in the background after every agent reply,
- * but users can also seed them manually here on day one.
- *
- * Why a B2B platform ships this:
- *   • Transparency — buyers/security reviewers can see exactly what is
- *     stored.
- *   • Right-to-correct/delete (GDPR/CCPA) — one-click controls.
- *   • Faster onboarding — power users pre-seed brand voice / ICP /
- *     pricing preferences so all 169 agents are on-brand from message 1.
+ * Backend contract: see /app/backend/memory_routes.py.
  */
 
 const IMPORTANCE_COLORS = {
@@ -41,36 +43,80 @@ const CATEGORY_LABELS = {
   other: "Other",
 };
 
+const STORAGE_KEY = "memory.lastOrgId";
+
 export default function MemoryPanel() {
+  const [orgs, setOrgs] = useState([]);
+  const [orgId, setOrgId] = useState("");
   const [loading, setLoading] = useState(true);
   const [memories, setMemories] = useState([]);
+  const [untagged, setUntagged] = useState([]);
   const [categories, setCategories] = useState([]);
   const [filter, setFilter] = useState("all");
   const [showArchived, setShowArchived] = useState(false);
 
-  const load = async () => {
-    try {
-      const { data } = await api.get("/memory", {
-        params: { include_archived: showArchived },
-      });
-      setMemories(data.memories || []);
-      setCategories(data.categories || []);
-    } catch (e) {
-      toast.error("Could not load memories.");
-    } finally {
-      setLoading(false);
-    }
-  };
-
+  // Load the user's orgs once on mount, then pick the last-used org
+  // (persisted in localStorage) or fall back to the first one.
   useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const { data } = await api.get("/orgs");
+        const list = Array.isArray(data) ? data : [];
+        if (cancelled) return;
+        setOrgs(list);
+        const remembered = localStorage.getItem(STORAGE_KEY);
+        const chosen =
+          list.find((o) => o.id === remembered)?.id || list[0]?.id || "";
+        setOrgId(chosen);
+        if (!list.length) setLoading(false);
+      } catch (e) {
+        if (!cancelled) {
+          setOrgs([]);
+          setLoading(false);
+        }
+      }
+    })();
+    return () => { cancelled = true; };
+  }, []);
+
+  // (Re)load memories whenever the picked org or archived toggle changes.
+  useEffect(() => {
+    if (!orgId) return;
+    let cancelled = false;
     setLoading(true);
-    load();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [showArchived]);
+    (async () => {
+      try {
+        const [{ data: tagged }, { data: ut }] = await Promise.all([
+          api.get("/memory", {
+            params: { org_id: orgId, include_archived: showArchived },
+          }),
+          api.get("/memory/untagged"),
+        ]);
+        if (cancelled) return;
+        setMemories(tagged.memories || []);
+        setUntagged(ut.memories || []);
+        setCategories(tagged.categories || []);
+      } catch (e) {
+        if (!cancelled) toast.error("Could not load memories.");
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [orgId, showArchived]);
+
+  const pickOrg = (id) => {
+    setOrgId(id);
+    if (id) localStorage.setItem(STORAGE_KEY, id);
+  };
 
   const visible = filter === "all"
     ? memories
     : memories.filter((m) => m.category === filter);
+
+  const currentOrgName =
+    orgs.find((o) => o.id === orgId)?.name || "this organization";
 
   return (
     <section className="mt-8" data-testid="memory-section">
@@ -82,80 +128,257 @@ export default function MemoryPanel() {
       </h2>
       <p className="text-sm sp-subtle mb-4 max-w-xl">
         Foundry quietly captures durable facts from your chats so every agent
-        stays on-brand. You own this list — review, edit, or purge anything.
-        Add memories manually to onboard the platform faster.
+        stays on-brand. Each memory is scoped to one organization — facts from{" "}
+        <em>Client A</em> never leak into <em>Client B</em>'s agent replies.
       </p>
 
-      <AddMemoryForm
-        categories={categories}
-        onAdded={(m) => setMemories((prev) => [m, ...prev])}
-      />
-
-      <div className="flex flex-wrap gap-2 mt-5 mb-3 items-center" data-testid="memory-filters">
-        <FilterChip
-          active={filter === "all"}
-          onClick={() => setFilter("all")}
-          label={`All (${memories.length})`}
-          testId="memory-filter-all"
-        />
-        {categories.map((cat) => {
-          const n = memories.filter((m) => m.category === cat).length;
-          if (n === 0) return null;
-          return (
-            <FilterChip
-              key={cat}
-              active={filter === cat}
-              onClick={() => setFilter(cat)}
-              label={`${CATEGORY_LABELS[cat] || cat} (${n})`}
-              testId={`memory-filter-${cat}`}
-            />
-          );
-        })}
-        <label className="ml-auto text-xs sp-subtle flex items-center gap-2 cursor-pointer select-none">
-          <input
-            type="checkbox"
-            checked={showArchived}
-            onChange={(e) => setShowArchived(e.target.checked)}
-            className="rounded"
-            data-testid="memory-show-archived"
-          />
-          Show archived
-        </label>
-      </div>
-
-      {loading ? (
-        <div className="sp-glass rounded-2xl p-6 text-center text-sm sp-subtle flex items-center justify-center gap-2">
-          <Loader2 className="w-4 h-4 animate-spin" /> Loading memories…
-        </div>
-      ) : visible.length === 0 ? (
-        <div
-          className="sp-glass rounded-2xl p-6 text-sm sp-subtle text-center"
-          data-testid="memory-empty"
-        >
-          {memories.length === 0
-            ? "No memories yet. Chat with an agent or add one manually above."
-            : "No memories in this category."}
+      {orgs.length === 0 ? (
+        <div className="sp-glass rounded-2xl p-5 text-sm sp-subtle" data-testid="memory-no-orgs">
+          Join or create an organization to start using Memory.
         </div>
       ) : (
-        <ul className="space-y-2" data-testid="memory-list">
-          {visible.map((m) => (
-            <MemoryRow
-              key={m.id}
-              memory={m}
-              categories={categories}
-              onUpdated={(updated) =>
-                setMemories((prev) =>
-                  prev.map((x) => (x.id === updated.id ? { ...x, ...updated } : x))
-                )
-              }
-              onDeleted={(id) =>
-                setMemories((prev) => prev.filter((x) => x.id !== id))
-              }
+        <>
+          <OrgPicker orgs={orgs} value={orgId} onChange={pickOrg} />
+
+          {untagged.length > 0 && (
+            <UntaggedMigrationBanner
+              untagged={untagged}
+              orgs={orgs}
+              activeOrgId={orgId}
+              onUntaggedChange={setUntagged}
+              onMigratedToActive={(memory) => {
+                // If a memory was assigned to the currently-active org,
+                // splice it into the active list so the user sees the
+                // result immediately.
+                setMemories((prev) => [memory, ...prev]);
+              }}
             />
-          ))}
-        </ul>
+          )}
+
+          <AddMemoryForm
+            orgId={orgId}
+            orgName={currentOrgName}
+            categories={categories}
+            onAdded={(m) => setMemories((prev) => [m, ...prev])}
+          />
+
+          <div className="flex flex-wrap gap-2 mt-5 mb-3 items-center" data-testid="memory-filters">
+            <FilterChip
+              active={filter === "all"}
+              onClick={() => setFilter("all")}
+              label={`All (${memories.length})`}
+              testId="memory-filter-all"
+            />
+            {categories.map((cat) => {
+              const n = memories.filter((m) => m.category === cat).length;
+              if (n === 0) return null;
+              return (
+                <FilterChip
+                  key={cat}
+                  active={filter === cat}
+                  onClick={() => setFilter(cat)}
+                  label={`${CATEGORY_LABELS[cat] || cat} (${n})`}
+                  testId={`memory-filter-${cat}`}
+                />
+              );
+            })}
+            <label className="ml-auto text-xs sp-subtle flex items-center gap-2 cursor-pointer select-none">
+              <input
+                type="checkbox"
+                checked={showArchived}
+                onChange={(e) => setShowArchived(e.target.checked)}
+                className="rounded"
+                data-testid="memory-show-archived"
+              />
+              Show archived
+            </label>
+          </div>
+
+          {loading ? (
+            <div className="sp-glass rounded-2xl p-6 text-center text-sm sp-subtle flex items-center justify-center gap-2">
+              <Loader2 className="w-4 h-4 animate-spin" /> Loading memories…
+            </div>
+          ) : visible.length === 0 ? (
+            <div
+              className="sp-glass rounded-2xl p-6 text-sm sp-subtle text-center"
+              data-testid="memory-empty"
+            >
+              {memories.length === 0
+                ? `No memories yet for ${currentOrgName}. Chat with an agent in this workspace or add one manually above.`
+                : "No memories in this category."}
+            </div>
+          ) : (
+            <ul className="space-y-2" data-testid="memory-list">
+              {visible.map((m) => (
+                <MemoryRow
+                  key={m.id}
+                  memory={m}
+                  categories={categories}
+                  orgs={orgs}
+                  onUpdated={(updated) =>
+                    setMemories((prev) =>
+                      prev.map((x) => (x.id === updated.id ? { ...x, ...updated } : x))
+                    )
+                  }
+                  onMovedOut={(id) =>
+                    // Memory was reassigned to a different org — drop
+                    // it from the current view.
+                    setMemories((prev) => prev.filter((x) => x.id !== id))
+                  }
+                  onDeleted={(id) =>
+                    setMemories((prev) => prev.filter((x) => x.id !== id))
+                  }
+                />
+              ))}
+            </ul>
+          )}
+        </>
       )}
     </section>
+  );
+}
+
+function OrgPicker({ orgs, value, onChange }) {
+  return (
+    <div className="sp-glass-strong rounded-2xl p-4 mb-4 flex flex-wrap items-center gap-3" data-testid="memory-org-picker">
+      <label className="text-[10px] uppercase tracking-widest sp-subtle">
+        Viewing memory for
+      </label>
+      <select
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        className="sp-input text-sm py-1.5 min-w-[12rem]"
+        data-testid="memory-org-select"
+      >
+        {orgs.map((o) => (
+          <option key={o.id} value={o.id}>
+            {o.name}
+          </option>
+        ))}
+      </select>
+      <span className="text-[11px] sp-subtle">
+        Strict isolation — memories never cross between organizations.
+      </span>
+    </div>
+  );
+}
+
+function UntaggedMigrationBanner({ untagged, orgs, activeOrgId, onUntaggedChange, onMigratedToActive }) {
+  return (
+    <div
+      className="rounded-2xl p-4 mb-4 border border-amber-500/40 bg-amber-500/10"
+      data-testid="memory-untagged-banner"
+    >
+      <div className="flex items-start gap-3">
+        <AlertCircle className="w-4 h-4 text-amber-400 mt-0.5 shrink-0" />
+        <div className="flex-1 min-w-0">
+          <div className="text-sm font-medium text-amber-200">
+            {untagged.length} memor{untagged.length === 1 ? "y" : "ies"} need an
+            organization
+          </div>
+          <p className="text-xs text-amber-200/80 mt-0.5">
+            These were captured before we enforced strict org isolation.
+            Untagged memories are <strong>not</strong> injected into any agent
+            reply until you assign or delete them.
+          </p>
+        </div>
+      </div>
+      <ul className="mt-3 space-y-2" data-testid="memory-untagged-list">
+        {untagged.map((m) => (
+          <UntaggedRow
+            key={m.id}
+            memory={m}
+            orgs={orgs}
+            activeOrgId={activeOrgId}
+            onAssigned={(targetOrgId) => {
+              const updated = { ...m, org_id: targetOrgId };
+              onUntaggedChange(untagged.filter((x) => x.id !== m.id));
+              if (targetOrgId === activeOrgId) onMigratedToActive(updated);
+            }}
+            onDeleted={() =>
+              onUntaggedChange(untagged.filter((x) => x.id !== m.id))
+            }
+          />
+        ))}
+      </ul>
+    </div>
+  );
+}
+
+function UntaggedRow({ memory, orgs, activeOrgId, onAssigned, onDeleted }) {
+  const [target, setTarget] = useState(activeOrgId || (orgs[0]?.id ?? ""));
+  const [busy, setBusy] = useState(false);
+
+  const assign = async () => {
+    if (!target) return;
+    setBusy(true);
+    try {
+      await api.patch(`/memory/${memory.id}`, { org_id: target });
+      const orgName = orgs.find((o) => o.id === target)?.name || "that org";
+      toast.success(`Assigned to ${orgName}.`);
+      onAssigned(target);
+    } catch (err) {
+      const msg = err?.response?.data?.detail || "Could not assign memory.";
+      toast.error(msg);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const remove = async () => {
+    if (!window.confirm("Delete this untagged memory permanently?")) return;
+    setBusy(true);
+    try {
+      await api.delete(`/memory/${memory.id}`);
+      onDeleted();
+    } catch (err) {
+      toast.error("Could not delete memory.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <li className="rounded-xl p-3 bg-black/20 flex flex-wrap items-start gap-3" data-testid={`memory-untagged-row-${memory.id}`}>
+      <div className="flex-1 min-w-0">
+        <div className="text-sm leading-relaxed">{memory.content}</div>
+        <div className="text-[10px] uppercase tracking-wider sp-subtle mt-1">
+          {CATEGORY_LABELS[memory.category] || memory.category} · {memory.importance}
+        </div>
+      </div>
+      <div className="flex items-center gap-2 shrink-0">
+        <select
+          value={target}
+          onChange={(e) => setTarget(e.target.value)}
+          className="sp-input text-xs py-1"
+          data-testid={`memory-untagged-target-${memory.id}`}
+        >
+          {orgs.map((o) => (
+            <option key={o.id} value={o.id}>{o.name}</option>
+          ))}
+        </select>
+        <button
+          type="button"
+          onClick={assign}
+          disabled={busy || !target}
+          className="sp-btn sp-btn-primary text-xs inline-flex items-center gap-1"
+          data-testid={`memory-untagged-assign-${memory.id}`}
+        >
+          {busy ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <ArrowRight className="w-3.5 h-3.5" />}
+          Assign
+        </button>
+        <button
+          type="button"
+          onClick={remove}
+          disabled={busy}
+          className="p-1.5 rounded-md hover:bg-red-500/15 sp-subtle hover:text-red-300 transition"
+          title="Delete permanently"
+          data-testid={`memory-untagged-delete-${memory.id}`}
+        >
+          <Trash2 className="w-3.5 h-3.5" />
+        </button>
+      </div>
+    </li>
   );
 }
 
@@ -176,7 +399,7 @@ function FilterChip({ active, onClick, label, testId }) {
   );
 }
 
-function AddMemoryForm({ categories, onAdded }) {
+function AddMemoryForm({ orgId, orgName, categories, onAdded }) {
   const [content, setContent] = useState("");
   const [category, setCategory] = useState("preferences");
   const [importance, setImportance] = useState("medium");
@@ -185,18 +408,19 @@ function AddMemoryForm({ categories, onAdded }) {
 
   const submit = async (e) => {
     e.preventDefault();
-    if (!content.trim()) return;
+    if (!content.trim() || !orgId) return;
     setSaving(true);
     try {
       const { data } = await api.post("/memory", {
         content: content.trim(),
+        org_id: orgId,
         category,
         importance,
       });
       onAdded(data);
       setContent("");
       setOpen(false);
-      toast.success("Memory added.");
+      toast.success(`Memory added to ${orgName}.`);
     } catch (err) {
       const msg = err?.response?.data?.detail || "Could not add memory.";
       toast.error(msg);
@@ -213,7 +437,7 @@ function AddMemoryForm({ categories, onAdded }) {
         className="sp-btn sp-btn-secondary text-sm inline-flex items-center gap-2"
         data-testid="memory-add-toggle"
       >
-        <Plus className="w-4 h-4" /> Add a memory manually
+        <Plus className="w-4 h-4" /> Add a memory to {orgName}
       </button>
     );
   }
@@ -224,6 +448,9 @@ function AddMemoryForm({ categories, onAdded }) {
       className="sp-glass-strong rounded-2xl p-4 space-y-3"
       data-testid="memory-add-form"
     >
+      <div className="text-[10px] uppercase tracking-widest sp-subtle">
+        Adding to: <span className="text-orange-300">{orgName}</span>
+      </div>
       <textarea
         value={content}
         onChange={(e) => setContent(e.target.value)}
@@ -276,7 +503,7 @@ function AddMemoryForm({ categories, onAdded }) {
           </button>
           <button
             type="submit"
-            disabled={saving || !content.trim()}
+            disabled={saving || !content.trim() || !orgId}
             className="sp-btn sp-btn-primary text-xs inline-flex items-center gap-1.5"
             data-testid="memory-add-submit"
           >
@@ -289,32 +516,42 @@ function AddMemoryForm({ categories, onAdded }) {
   );
 }
 
-function MemoryRow({ memory, categories, onUpdated, onDeleted }) {
+function MemoryRow({ memory, categories, orgs, onUpdated, onMovedOut, onDeleted }) {
   const [editing, setEditing] = useState(false);
   const [content, setContent] = useState(memory.content);
   const [category, setCategory] = useState(memory.category);
   const [importance, setImportance] = useState(memory.importance);
+  const [targetOrg, setTargetOrg] = useState(memory.org_id || "");
   const [saving, setSaving] = useState(false);
 
   const save = async () => {
     if (!content.trim()) return;
     setSaving(true);
     try {
-      await api.patch(`/memory/${memory.id}`, {
+      const payload = {
         content: content.trim(),
         category,
         importance,
-      });
-      onUpdated({
-        ...memory,
-        content: content.trim(),
-        category,
-        importance,
-      });
+      };
+      const movingOrg = targetOrg && targetOrg !== memory.org_id;
+      if (movingOrg) payload.org_id = targetOrg;
+      await api.patch(`/memory/${memory.id}`, payload);
+      if (movingOrg) {
+        toast.success("Memory moved to a different organization.");
+        onMovedOut(memory.id);
+      } else {
+        onUpdated({
+          ...memory,
+          content: content.trim(),
+          category,
+          importance,
+        });
+        toast.success("Memory updated.");
+      }
       setEditing(false);
-      toast.success("Memory updated.");
     } catch (err) {
-      toast.error("Could not update memory.");
+      const msg = err?.response?.data?.detail || "Could not update memory.";
+      toast.error(msg);
     } finally {
       setSaving(false);
     }
@@ -374,6 +611,21 @@ function MemoryRow({ memory, categories, onUpdated, onDeleted }) {
             <option value="medium">Medium</option>
             <option value="high">High</option>
           </select>
+          {orgs.length > 1 && (
+            <select
+              value={targetOrg}
+              onChange={(e) => setTargetOrg(e.target.value)}
+              className="sp-input text-xs py-1"
+              title="Move this memory to a different organization"
+              data-testid={`memory-edit-org-${memory.id}`}
+            >
+              {orgs.map((o) => (
+                <option key={o.id} value={o.id}>
+                  {o.name}{o.id === memory.org_id ? " (current)" : ""}
+                </option>
+              ))}
+            </select>
+          )}
           <div className="ml-auto flex gap-2">
             <button
               type="button"
@@ -382,6 +634,7 @@ function MemoryRow({ memory, categories, onUpdated, onDeleted }) {
                 setContent(memory.content);
                 setCategory(memory.category);
                 setImportance(memory.importance);
+                setTargetOrg(memory.org_id || "");
               }}
               className="sp-btn sp-btn-ghost text-xs inline-flex items-center gap-1"
             >
