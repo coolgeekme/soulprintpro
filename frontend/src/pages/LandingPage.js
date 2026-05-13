@@ -197,9 +197,16 @@ export default function LandingPage() {
         </div>
       </section>
 
-      <footer className="relative z-10 max-w-6xl mx-auto px-6 md:px-10 py-10 flex items-center justify-between text-xs sp-subtle">
-        <div>© {new Date().getFullYear()} Foundry</div>
-        <div className="flex items-center gap-4"><span>Built for teams</span></div>
+      <footer className="relative z-10 max-w-6xl mx-auto px-6 md:px-10 py-10 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 text-xs sp-subtle">
+        <div>© {new Date().getFullYear()} ArcheForge, LLC · Foundry</div>
+        <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
+          <Link to="/legal/privacy" className="hover:text-white transition-colors" data-testid="footer-privacy">Privacy</Link>
+          <Link to="/legal/terms" className="hover:text-white transition-colors" data-testid="footer-terms">Terms</Link>
+          <Link to="/legal/sub-processors" className="hover:text-white transition-colors" data-testid="footer-subprocessors">Sub-processors</Link>
+          <Link to="/security" className="hover:text-white transition-colors" data-testid="footer-security">Security</Link>
+          <span className="opacity-50">·</span>
+          <span>Built for teams</span>
+        </div>
       </footer>
     </div>
   );

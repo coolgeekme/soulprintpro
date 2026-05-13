@@ -25,6 +25,9 @@ import TrustPage from "./pages/TrustPage";
 import TrialRedeemPage from "./pages/TrialRedeemPage";
 import GetAuditPage from "./pages/GetAuditPage";
 import PricingPage from "./pages/PricingPage";
+import PrivacyPage from "./pages/PrivacyPage";
+import TermsPage from "./pages/TermsPage";
+import SubProcessorsPage from "./pages/SubProcessorsPage";
 import MockupHomePage from "./pages/MockupHomePage";
 import MockupPricingPage from "./pages/MockupPricingPage";
 import MockupHomeV2Page from "./pages/MockupHomeV2Page";
@@ -79,6 +82,9 @@ function App() {
                 <Route path="/trial/redeem" element={<TrialRedeemPage />} />
                 <Route path="/get-audit" element={<GetAuditPage />} />
                 <Route path="/pricing" element={<PricingPage />} />
+                <Route path="/legal/privacy" element={<PrivacyPage />} />
+                <Route path="/legal/terms" element={<TermsPage />} />
+                <Route path="/legal/sub-processors" element={<SubProcessorsPage />} />
                 <Route path="/mockup/home" element={<MockupHomePage />} />
                 <Route path="/mockup/pricing" element={<MockupPricingPage />} />
                 <Route path="/mockup/home-v2" element={<MockupHomeV2Page />} />

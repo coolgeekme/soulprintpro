@@ -248,13 +248,25 @@ export default function GetAuditPage() {
                 </div>
               )}
 
-              <div className="text-[10px] sp-subtle text-center pt-3 border-t border-white/5 leading-relaxed">
-                By submitting you agree to receive your audit and occasional
-                follow-ups. Unsubscribe anytime — see our{" "}
-                <Link to="/trust" className="text-orange-300 hover:text-orange-200 underline-offset-2 hover:underline">
-                  privacy posture
-                </Link>
-                .
+              <div className="text-[10px] sp-subtle text-center pt-3 border-t border-white/5 leading-relaxed space-y-1">
+                <div>
+                  By submitting you agree to receive your audit and occasional
+                  follow-ups. Unsubscribe anytime.
+                </div>
+                <div>
+                  Your audit details are processed by Foundry's AI
+                  providers (OpenAI, Anthropic, Google, Perplexity).{" "}
+                  <b>None of them use this data to train their models.</b>{" "}
+                  See our{" "}
+                  <Link to="/legal/sub-processors" className="text-orange-300 hover:text-orange-200 underline-offset-2 hover:underline">
+                    sub-processor list
+                  </Link>
+                  {" "}and{" "}
+                  <Link to="/legal/privacy" className="text-orange-300 hover:text-orange-200 underline-offset-2 hover:underline">
+                    privacy policy
+                  </Link>
+                  .
+                </div>
               </div>
             </form>
           )}
