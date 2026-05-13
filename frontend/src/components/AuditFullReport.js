@@ -1,5 +1,5 @@
 import React from "react";
-import { Wand2, Building2, ExternalLink, Zap, Rocket, ShieldAlert, Gauge, Activity, ShieldCheck, Smartphone, Monitor, Tablet } from "lucide-react";
+import { Wand2, Building2, ExternalLink, Zap, Rocket, ShieldAlert, Gauge, Activity, ShieldCheck, Smartphone, Monitor, Tablet, MapPin, Layers, Megaphone, Briefcase, Heart, Settings2, LineChart, Users } from "lucide-react";
 
 const BACKEND = process.env.REACT_APP_BACKEND_URL || "";
 
@@ -36,6 +36,17 @@ export default function AuditFullReport({ audit }) {
   const sections = audit.sections || {};
   return (
     <div className="space-y-8" data-testid="audit-full-report">
+      {/* Industry classification pill — 8 words that tell the reader
+          "we know what you are" without adding any prose. Hidden
+          gracefully on legacy audits where the field doesn't exist. */}
+      {audit.industry_context && (audit.industry_context.industry || audit.industry_context.geography) && (
+        <div className="flex flex-wrap items-center gap-2 -mt-2" data-testid="audit-industry-pill">
+          <Pill icon={Layers}  label={audit.industry_context.industry} />
+          <Pill icon={MapPin}  label={audit.industry_context.geography} />
+          <Pill icon={Users}   label={audit.industry_context.size_hint} />
+        </div>
+      )}
+
       {/* Honest disclosure banner — when the prospect's site sits behind
           Cloudflare / DataDome / Akamai-style anti-bot protection, our
           headless browser is served the challenge page instead of the
@@ -151,6 +162,14 @@ export default function AuditFullReport({ audit }) {
         <SectionParagraph title="Reviews summary" body={sections.reviews_summary} />
         <SectionParagraph title="Competitive context" body={sections.competitive_context} />
       </div>
+
+      {/* Cross-functional opportunities — 6-card grid spanning Marketing,
+          Sales, CX, Ops, Finance, Talent. Shows the platform's breadth
+          without bloating the audit. Hidden gracefully on legacy audits
+          where the field doesn't exist. */}
+      {Array.isArray(audit.cross_functional_opportunities)
+        && audit.cross_functional_opportunities.length > 0
+        && <CrossFunctionalOpportunities items={audit.cross_functional_opportunities} />}
 
       {/* Technical signals — Core Web Vitals, viewport screenshots,
           tracking-pixel inventory, domain reputation. These are the
@@ -447,3 +466,71 @@ function ViewportShotsCard({ sc }) {
     </div>
   );
 }
+
+
+// ── Small pill used in the industry-context strip ────────────────────────
+function Pill({ icon: Icon, label }) {
+  if (!label) return null;
+  return (
+    <span className="inline-flex items-center gap-1.5 sp-glass rounded-full px-2.5 py-1 text-[10px] uppercase tracking-widest sp-subtle">
+      <Icon className="w-3 h-3" /> {label}
+    </span>
+  );
+}
+
+
+// ── Cross-functional opportunities ──────────────────────────────────────
+// Six cards, one per business function, in a fixed order so the reader
+// always sees the same matrix shape. The icon set is intentional: each
+// icon matches the function so a skimmer can land on a card by glyph
+// alone. We never invent cards — if the LLM returned fewer than six,
+// we render whatever it produced (the prompt requires 6, but defence
+// in depth in case of a degraded LLM response).
+const FUNCTION_ICONS = {
+  "Marketing & Brand": Megaphone,
+  "Sales & Lead Ops": Briefcase,
+  "Customer Experience": Heart,
+  "Operations": Settings2,
+  "Finance & Reporting": LineChart,
+  "Talent & Hiring": Users,
+};
+
+function CrossFunctionalOpportunities({ items }) {
+  return (
+    <section data-testid="audit-cross-functional">
+      <SectionHeader
+        icon={Layers}
+        title="Beyond the website — cross-functional opportunities"
+        subtitle="Foundry's agents and missions span the whole business, not just the digital front door. Here's one specific play per function for this organization."
+      />
+      <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-3 mt-3">
+        {items.map((op, i) => {
+          const Icon = FUNCTION_ICONS[op.function] || Layers;
+          return (
+            <div
+              key={i}
+              className="sp-glass rounded-xl p-4 flex flex-col gap-2"
+              data-testid={`audit-cross-fn-${i}`}
+            >
+              <div className="flex items-center gap-2 text-[10px] uppercase tracking-widest sp-subtle">
+                <Icon className="w-3.5 h-3.5 opacity-80" /> {op.function}
+              </div>
+              <div className="font-medium text-sm leading-snug">
+                {op.headline}
+              </div>
+              <div className="text-xs sp-subtle leading-relaxed">
+                {op.detail}
+              </div>
+              {op.foundry_feature && (
+                <div className="mt-auto pt-2 text-[10px] uppercase tracking-widest text-orange-300/90 flex items-center gap-1">
+                  <Wand2 className="w-3 h-3" /> {op.foundry_feature}
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
+    </section>
+  );
+}
+

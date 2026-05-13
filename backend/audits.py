@@ -269,6 +269,8 @@ def _public_full(a: dict) -> dict:
         "executive_summary", "pdf_filename",
         "website_fetch_blocked",
         "tech_signals",
+        "industry_context",
+        "cross_functional_opportunities",
     )
     out = {k: a.get(k) for k in keys}
     return out
@@ -460,11 +462,43 @@ Synthesize a structured audit and return ONLY valid JSON matching this schema:
     "reviews_summary": "Paragraph: sentiment + 2-3 specific recurring complaints or themes (cite review excerpts when available).",
     "competitive_context": "Paragraph: where they sit vs the 3 named competitors."
   },
-  "how_soulprint_helps": "3-4 sentence closing pitch: tie the audit's findings together and explain how Foundry helps the user act on the recommended fixes — by drafting the copy, building the briefs, surfacing the research, and keeping the playbooks current. Be honest about the split: Foundry prepares the work, the user (or their team) ships it. Reference 2-3 specific Foundry features by name. End with a soft CTA inviting them to start with Foundry. Do NOT use marketing fluff — be specific and grounded in THEIR audit."
+  "how_soulprint_helps": "3-4 sentence closing pitch: tie the audit's findings together and explain how Foundry helps the user act on the recommended fixes — by drafting the copy, building the briefs, surfacing the research, and keeping the playbooks current. Be honest about the split: Foundry prepares the work, the user (or their team) ships it. Reference 2-3 specific Foundry features by name. End with a soft CTA inviting them to start with Foundry. Do NOT use marketing fluff — be specific and grounded in THEIR audit.",
+
+  "industry_context": {
+    "industry": "Short label for what this business actually does — e.g. 'HVAC services', 'B2B SaaS · payment infrastructure', 'Personal injury law firm', 'DTC skincare brand'. Be specific; 'business services' is too vague.",
+    "geography": "Where they primarily serve. 'United States', 'Greater Toronto Area', 'EU + UK', etc. Inferable from site copy / Perplexity summary.",
+    "size_hint": "1-4 words estimating size from public signal: 'Solo founder', 'Small team (~2-10)', 'Mid-market (~50-200 staff)', 'Enterprise'. Use review volume, About-page headcount mentions, and Perplexity context — say 'Unknown' if there's no signal."
+  },
+
+  "cross_functional_opportunities": [
+    // EXACTLY 6 cards, one per business function in this exact order:
+    // Marketing, Sales, Customer Experience, Operations, Finance, Talent.
+    // Each card answers: "what's the most relevant Foundry-actionable
+    // opportunity for THIS business in THIS function?" — backed by an
+    // industry-aware benchmark or insight where possible.
+    //
+    // CRITICAL: each card must be SPECIFIC to the audited business —
+    // not generic SaaS advice. Cite a benchmark, named competitor
+    // behaviour, or a finding from the website/reviews when you can.
+    // 35-55 words per card. Reference at least one named Foundry agent
+    // or mission per card.
+    {
+      "function": "Marketing & Brand",
+      "headline": "5-9 word punchy hook",
+      "detail": "2-3 sentence specific opportunity. Cite an industry-aware insight or competitor pattern. Name the Foundry agent or mission that delivers it.",
+      "foundry_feature": "Specific named agent / mission / feature this maps to."
+    },
+    { "function": "Sales & Lead Ops",       "headline": "...", "detail": "...", "foundry_feature": "..." },
+    { "function": "Customer Experience",    "headline": "...", "detail": "...", "foundry_feature": "..." },
+    { "function": "Operations",             "headline": "...", "detail": "...", "foundry_feature": "..." },
+    { "function": "Finance & Reporting",    "headline": "...", "detail": "...", "foundry_feature": "..." },
+    { "function": "Talent & Hiring",        "headline": "...", "detail": "...", "foundry_feature": "..." }
+  ]
 }
 
 Rules:
   • If a data source is empty/missing, acknowledge it ("No public reviews surfaced in our scan…") rather than fabricating.
+  • The audit deliberately spans the WHOLE business — not just digital marketing. Foundry handles Marketing, Sales, Customer Experience, Operations, Finance reporting, and Talent / Hiring through specialist agents and mission templates. The ``cross_functional_opportunities`` section MUST surface ONE specific, industry-aware opportunity per function so the reader sees the platform's breadth without us bloating the audit with generic advice.
   • Whenever ``tech_signals`` provides a hard number (Core Web Vitals score, missing DMARC, no Meta Pixel detected, etc.) prefer it over LLM-judgement. Cite the actual number or fact verbatim — e.g. "Your mobile PageSpeed score is 38 with an LCP of 4,800 ms — search ranking and conversion both suffer." Hard data outranks vibe.
   • If ``tech_signals.web_vitals.available`` is true and the mobile performance score is below 60, you MUST add an issue with priority "high" titled with the exact score (e.g. "Mobile PageSpeed score: 38 — slow site costs conversions and rankings").
   • If ``tech_signals.tracking_pixels.gaps`` is non-empty, surface those gaps as findings. They're the difference between "you guess what works" and "you measure what works".
@@ -885,6 +919,8 @@ def make_audits_router(
                     "brand_voice": data.get("brand_voice", {}),
                     "sections": data.get("sections", {}),
                     "how_soulprint_helps": data.get("how_soulprint_helps", ""),
+                    "industry_context": data.get("industry_context", {}),
+                    "cross_functional_opportunities": data.get("cross_functional_opportunities", []),
                     "tech_signals": tech_signals,
                     "pdf_filename": pdf_filename,
                     # Dynamic Intelligence audit trail — admin can see

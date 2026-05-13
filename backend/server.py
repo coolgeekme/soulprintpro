@@ -7272,6 +7272,14 @@ async def startup():
     await db.conversations.create_index([("team_id", 1), ("created_at", -1)])
     await db.messages.create_index([("conversation_id", 1), ("timestamp", 1)])
     await db.messages.create_index("media_filename", sparse=True)
+    # User-memory store (Phase 1, user-scoped). The memory module owns
+    # its own index creation so the schema definition stays colocated
+    # with the code that uses it.
+    try:
+        from memory import ensure_indexes as _ensure_memory_indexes
+        await _ensure_memory_indexes(db)
+    except Exception as exc:
+        logger.warning("memory index creation failed: %s", exc)
     await db.schedules.create_index([("org_id", 1), ("created_at", -1)])
     await db.schedules.create_index("created_by")
     await db.unfurl_cache.create_index("url", unique=True)
