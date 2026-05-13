@@ -3,9 +3,43 @@ import api, { errorMessage } from "../lib/api";
 import { toast } from "sonner";
 import {
   Loader2, Search, ShieldCheck, Plus, Pencil, Trash2, X as XIcon, Save,
-  CheckCircle2, Ban, KeyRound, Users as UsersIcon,
+  CheckCircle2, Ban, KeyRound, Users as UsersIcon, Clock,
 } from "lucide-react";
-import { formatLocalDate } from "../lib/datetime";
+import { formatLocalDateTime, formatRelativeTime, parseServerDate } from "../lib/datetime";
+
+// Pill that shows "Xh left" while the user is inside their first 24h
+// window, and "expired" once they've crossed it. Helps the admin see
+// at a glance who still has time before their first-24h offer / SLA
+// runs out. Returns null when we don't have a created_at.
+function FirstDayBadge({ createdAt }) {
+  const d = parseServerDate(createdAt);
+  if (!d) return null;
+  const ageMs = Date.now() - d.getTime();
+  const dayMs = 24 * 60 * 60 * 1000;
+  if (ageMs >= dayMs) return null;
+  const leftMs = dayMs - ageMs;
+  const hoursLeft = Math.floor(leftMs / (60 * 60 * 1000));
+  const minsLeft = Math.floor((leftMs % (60 * 60 * 1000)) / (60 * 1000));
+  // Tighter "X min left" when we're inside the final hour so the
+  // window doesn't read as "0h left" for the last 59 minutes.
+  const label = hoursLeft >= 1 ? `${hoursLeft}h left` : `${minsLeft}m left`;
+  // Colour ramp — green > 12h, amber 4-12h, red < 4h. Mirrors the
+  // urgency the admin actually feels when triaging fresh signups.
+  const tone = hoursLeft >= 12
+    ? "bg-emerald-500/15 text-emerald-200 border-emerald-500/30"
+    : hoursLeft >= 4
+      ? "bg-amber-500/15 text-amber-200 border-amber-500/30"
+      : "bg-red-500/15 text-red-200 border-red-500/30";
+  return (
+    <span
+      className={`inline-flex items-center gap-1 text-[10px] uppercase tracking-widest px-1.5 py-0.5 rounded-full border ${tone}`}
+      title="Time remaining in the first 24 hours after signup"
+      data-testid="admin-user-24h-pill"
+    >
+      <Clock className="w-3 h-3" /> {label}
+    </span>
+  );
+}
 
 /**
  * AdminUsersPanel — superadmin user management (list + add + edit +
@@ -162,8 +196,19 @@ export default function AdminUsersPanel({ currentUserId }) {
                       ? u.firebase_provider.replace(".com", "")
                       : (u.firebase_uid ? "firebase" : "password")}
                   </td>
-                  <td className="px-3 py-2 text-xs sp-subtle">
-                    {u.created_at ? formatLocalDate(u.created_at) : "—"}
+                  <td
+                    className="px-3 py-2 text-xs sp-subtle whitespace-nowrap"
+                    title={u.created_at ? formatLocalDateTime(u.created_at) : ""}
+                  >
+                    {u.created_at ? (
+                      <div className="flex flex-col gap-1 items-start">
+                        <div className="flex items-center gap-2">
+                          <span className="tabular-nums">{formatLocalDateTime(u.created_at)}</span>
+                          <FirstDayBadge createdAt={u.created_at} />
+                        </div>
+                        <span className="text-[10px] sp-subtle">{formatRelativeTime(u.created_at)}</span>
+                      </div>
+                    ) : "—"}
                   </td>
                   <td className="px-3 py-2">
                     <div className="flex items-center gap-1 justify-end">
