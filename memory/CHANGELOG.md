@@ -3,6 +3,15 @@
 Plain-English feature inventory of **Foundry by SoulPrint Engine** for non-technical teammates. Each section is a category of capabilities and what they do for users.
 
 ---
+## 🧠 May 13, 2026 — Memory Phase 1 (User-Scoped)
+- Foundry now **remembers durable facts about each user** across every conversation — brand voice, ICP, pricing preferences, past clients, agency playbooks, agent feedback, work context, and general preferences.
+- Auto-captured in the background (no chat latency) by an LLM extractor after every user/agent exchange — gpt-5.2-mini distills the turn into structured memories, then dedupes case-insensitively so the list stays clean.
+- Injected into every agent's system prompt before generating a reply — so all 169 agents stay on-brand from message 1, not message 50.
+- Full audit + control panel on `/app/account`: add memories manually (great for day-one onboarding), filter by category, edit, archive, or hard-delete anything.
+- Live verified end-to-end: pre-seed "User runs a 5-person fintech agency in Austin called Reggie Lab" → next reply from the General team correctly answers *"What kind of business do I run?"* with "You run Reggie Lab, a fintech agency…" — the memory + org Soul fused naturally.
+- Compliance posture: users own their memory (right-to-correct + right-to-delete), cross-user isolation enforced at the DB filter layer, no credentials/PII can be extracted by design.
+
+---
 ## 🕒 May 12, 2026 — Timestamps Now Local to the Viewer
 - All UI timestamps (chat messages, audits, missions, social queue, schedules, documents, recent conversations, activity feed, admin tables, public verify page, integrity badges) now reflect each user's browser timezone.
 - New shared helper at `/app/frontend/src/lib/datetime.js` (`parseServerDate`, `formatLocalDateTime`, `formatLocalDate`, `formatLocalTime`, `formatRelativeTime`, `formatShortDateTime`).
