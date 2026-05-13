@@ -1,5 +1,25 @@
 import React from "react";
-import { Wand2, Building2, ExternalLink, Zap, Rocket, ShieldAlert } from "lucide-react";
+import { Wand2, Building2, ExternalLink, Zap, Rocket, ShieldAlert, Gauge, Activity, ShieldCheck, Smartphone, Monitor, Tablet } from "lucide-react";
+
+const BACKEND = process.env.REACT_APP_BACKEND_URL || "";
+
+// Pretty-print "2400 ms" as "2.4s" once a value crosses 1s — what users
+// actually read at a glance. CLS is a unitless float so it gets its own
+// formatter that keeps two decimals.
+const fmtMs = (n) => {
+  if (n == null) return "—";
+  if (n >= 1000) return `${(n / 1000).toFixed(1)}s`;
+  return `${Math.round(n)} ms`;
+};
+const fmtCls = (n) => (n == null ? "—" : Number(n).toFixed(3));
+// Score colours match Google's own Lighthouse bands so the UI feels
+// familiar to anyone who's run PageSpeed before.
+const scoreColor = (n) => {
+  if (n == null) return "text-white/40";
+  if (n >= 90) return "text-emerald-300";
+  if (n >= 50) return "text-amber-300";
+  return "text-red-300";
+};
 
 /**
  * AuditFullReport — the full rendered audit body.
@@ -132,6 +152,15 @@ export default function AuditFullReport({ audit }) {
         <SectionParagraph title="Competitive context" body={sections.competitive_context} />
       </div>
 
+      {/* Technical signals — Core Web Vitals, viewport screenshots,
+          tracking-pixel inventory, domain reputation. These are the
+          hard-data signals no chat agent can produce; they're what
+          turn the audit from "smart LLM report" into "investigation-
+          grade prospect dossier". Each sub-section hides gracefully
+          when its signal is unavailable, so older audits keep
+          rendering. */}
+      {audit.tech_signals && <TechnicalSignals signals={audit.tech_signals} />}
+
       {/* Closing pitch — ties the audit's findings to how Foundry can
           help them act on the recommendations. The single highest-value
           section for converting an audit reader into a paying customer.
@@ -202,6 +231,219 @@ function FullList({ title, items, accent }) {
           </li>
         ))}
       </ul>
+    </div>
+  );
+}
+
+
+// ── Technical signals section ────────────────────────────────────────────
+// Four sub-cards. Each one renders only when its signal is `available`
+// so we never show empty "—" stubs. The section header is suppressed
+// entirely when nothing's available (e.g. legacy audits).
+function TechnicalSignals({ signals }) {
+  const wv = signals?.web_vitals || {};
+  const sc = signals?.screenshots || {};
+  const tp = signals?.tracking_pixels || {};
+  const dr = signals?.domain_reputation || {};
+  const anyAvailable =
+    wv.available || sc.available || tp.available || dr.available;
+  if (!anyAvailable) return null;
+
+  return (
+    <section data-testid="audit-tech-signals">
+      <SectionHeader
+        icon={Activity}
+        title="Technical signals"
+        subtitle="Hard data from our crawlers — performance numbers, tracking inventory, email security, and how your site renders across devices."
+      />
+      <div className="grid lg:grid-cols-2 gap-4 mt-3">
+        {wv.available && <WebVitalsCard wv={wv} />}
+        {dr.available && <DomainReputationCard dr={dr} />}
+        {tp.available && <TrackingPixelsCard tp={tp} />}
+        {sc.available && <ViewportShotsCard sc={sc} />}
+      </div>
+    </section>
+  );
+}
+
+
+function WebVitalsCard({ wv }) {
+  const m = wv.mobile || {};
+  const d = wv.desktop || {};
+  return (
+    <div className="sp-glass rounded-xl p-5" data-testid="audit-web-vitals">
+      <div className="flex items-center gap-2 mb-3">
+        <Gauge className="w-4 h-4 opacity-80" />
+        <div className="text-[11px] uppercase tracking-widest sp-subtle">
+          Core Web Vitals · Google PageSpeed
+        </div>
+      </div>
+      <div className="grid grid-cols-2 gap-3">
+        <VitalsBlock label="Mobile" data={m} />
+        <VitalsBlock label="Desktop" data={d} />
+      </div>
+      <div className="text-[10px] sp-subtle mt-3 leading-relaxed">
+        Lighthouse-equivalent scores. Mobile is Google's primary ranking signal.
+      </div>
+    </div>
+  );
+}
+
+
+function VitalsBlock({ label, data }) {
+  if (!data || Object.keys(data).length === 0) {
+    return (
+      <div className="rounded-lg border border-white/10 p-3">
+        <div className="text-[10px] uppercase tracking-widest sp-subtle mb-1">{label}</div>
+        <div className="text-sm sp-subtle">Not available</div>
+      </div>
+    );
+  }
+  return (
+    <div className="rounded-lg border border-white/10 p-3">
+      <div className="flex items-baseline justify-between mb-2">
+        <div className="text-[10px] uppercase tracking-widest sp-subtle">{label}</div>
+        <div className={`text-2xl font-semibold tabular-nums ${scoreColor(data.performance)}`}>
+          {data.performance ?? "—"}
+        </div>
+      </div>
+      <dl className="space-y-1 text-xs">
+        <Row k="LCP" v={fmtMs(data.lcp_ms)} hint="Largest Contentful Paint — when the main content shows" />
+        <Row k="INP" v={fmtMs(data.inp_ms)} hint="Interaction-to-Next-Paint — input responsiveness" />
+        <Row k="CLS" v={fmtCls(data.cls)} hint="Cumulative Layout Shift — visual stability (lower is better)" />
+        <Row k="TTFB" v={fmtMs(data.ttfb_ms)} hint="Time to First Byte — server response latency" />
+        <Row k="FCP" v={fmtMs(data.fcp_ms)} hint="First Contentful Paint" />
+      </dl>
+    </div>
+  );
+}
+
+
+function Row({ k, v, hint }) {
+  return (
+    <div className="flex items-center justify-between gap-2" title={hint}>
+      <dt className="sp-subtle">{k}</dt>
+      <dd className="tabular-nums">{v}</dd>
+    </div>
+  );
+}
+
+
+function DomainReputationCard({ dr }) {
+  const has = (b) => b ? "text-emerald-300" : "text-red-300";
+  const word = (b) => b ? "Present" : "Missing";
+  return (
+    <div className="sp-glass rounded-xl p-5" data-testid="audit-domain-rep">
+      <div className="flex items-center gap-2 mb-3">
+        <ShieldCheck className="w-4 h-4 opacity-80" />
+        <div className="text-[11px] uppercase tracking-widest sp-subtle">
+          Email & domain security
+        </div>
+      </div>
+      <ul className="space-y-2 text-sm">
+        <li className="flex justify-between"><span className="sp-subtle">SPF record</span>
+          <span className={has(dr?.spf?.present)}>{word(dr?.spf?.present)}</span></li>
+        <li className="flex justify-between"><span className="sp-subtle">DMARC policy</span>
+          <span className={has(dr?.dmarc?.present)}>
+            {dr?.dmarc?.present ? (dr?.dmarc?.policy || "Present") : "Missing"}
+          </span></li>
+        <li className="flex justify-between"><span className="sp-subtle">DKIM (common selectors)</span>
+          <span className={has(dr?.dkim?.verified)}>
+            {dr?.dkim?.verified ? (dr?.dkim?.selectors_found || []).join(", ") : "None found"}
+          </span></li>
+      </ul>
+      {Array.isArray(dr.issues) && dr.issues.length > 0 && (
+        <div className="mt-3 rounded-lg border border-amber-500/30 bg-amber-500/5 p-3 text-xs leading-relaxed space-y-1">
+          {dr.issues.map((m, i) => (
+            <div key={i} className="text-amber-200">• {m}</div>
+          ))}
+        </div>
+      )}
+      <div className="text-[10px] sp-subtle mt-3 leading-relaxed">
+        Missing email auth = your domain is trivially spoofable for phishing.
+      </div>
+    </div>
+  );
+}
+
+
+function TrackingPixelsCard({ tp }) {
+  const byCat = (tp.pixels || []).reduce((acc, p) => {
+    acc[p.category] = acc[p.category] || [];
+    acc[p.category].push(p);
+    return acc;
+  }, {});
+  const cats = Object.keys(byCat);
+  return (
+    <div className="sp-glass rounded-xl p-5" data-testid="audit-tracking-pixels">
+      <div className="flex items-center gap-2 mb-3">
+        <Zap className="w-4 h-4 opacity-80" />
+        <div className="text-[11px] uppercase tracking-widest sp-subtle">
+          Tracking · analytics · ad pixels
+        </div>
+      </div>
+      {tp.count === 0 ? (
+        <div className="text-sm sp-subtle italic">
+          No analytics, ad, or marketing pixels detected in the rendered HTML.
+        </div>
+      ) : (
+        <div className="space-y-2">
+          {cats.map((c) => (
+            <div key={c}>
+              <div className="text-[10px] uppercase tracking-widest sp-subtle mb-1">{c}</div>
+              <div className="flex flex-wrap gap-1.5">
+                {byCat[c].map((p, i) => (
+                  <span key={i}
+                    className="text-[11px] px-2 py-0.5 rounded-full border border-white/15 bg-white/[0.04]"
+                    title={p.evidence}
+                  >
+                    {p.vendor}
+                  </span>
+                ))}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+      {Array.isArray(tp.gaps) && tp.gaps.length > 0 && (
+        <div className="mt-3 rounded-lg border border-amber-500/30 bg-amber-500/5 p-3 text-xs leading-relaxed space-y-1">
+          {tp.gaps.map((m, i) => (
+            <div key={i} className="text-amber-200">• {m}</div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+
+function ViewportShotsCard({ sc }) {
+  const icon = { mobile: Smartphone, tablet: Tablet, desktop: Monitor };
+  return (
+    <div className="sp-glass rounded-xl p-5 lg:col-span-2" data-testid="audit-viewport-shots">
+      <div className="flex items-center gap-2 mb-3">
+        <Smartphone className="w-4 h-4 opacity-80" />
+        <div className="text-[11px] uppercase tracking-widest sp-subtle">
+          How the site renders — mobile, tablet, desktop
+        </div>
+      </div>
+      <div className="grid grid-cols-3 gap-3">
+        {(sc.shots || []).map((s) => {
+          const Icon = icon[s.viewport] || Monitor;
+          const src = s.url?.startsWith("http") ? s.url : `${BACKEND}${s.url}`;
+          return (
+            <div key={s.viewport} className="space-y-2">
+              <div className="flex items-center gap-1.5 text-[10px] uppercase tracking-widest sp-subtle">
+                <Icon className="w-3 h-3" /> {s.viewport} · {s.width}px
+              </div>
+              <a href={src} target="_blank" rel="noopener noreferrer"
+                 className="block rounded-lg overflow-hidden border border-white/10 hover:border-orange-400/60 transition">
+                <img src={src} alt={`${s.viewport} viewport`} className="w-full h-auto" loading="lazy" />
+              </a>
+            </div>
+          );
+        })}
+      </div>
     </div>
   );
 }

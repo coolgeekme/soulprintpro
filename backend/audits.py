@@ -45,7 +45,7 @@ import time
 import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Optional
+from typing import Any, Dict, Optional
 
 import httpx
 from bson import ObjectId
@@ -268,6 +268,7 @@ def _public_full(a: dict) -> dict:
         "how_soulprint_helps",
         "executive_summary", "pdf_filename",
         "website_fetch_blocked",
+        "tech_signals",
     )
     out = {k: a.get(k) for k in keys}
     return out
@@ -282,6 +283,24 @@ You will receive raw data the team has gathered:
   • Brave Search results for "{brand} reviews" (Google, Yelp, Trustpilot, BBB, etc.)
   • Brave Search results for "{brand} competitors" / "{brand} vs"
   • Optional social profile URLs the admin provided
+  • ``tech_signals`` — HARD DATA gathered by our own crawlers, NOT LLM judgement:
+      - ``web_vitals`` — Google PageSpeed Insights v5 for both mobile + desktop:
+        performance score 0-100, LCP (ms), INP (ms), CLS, TTFB (ms), FCP (ms),
+        total-blocking-time (ms), speed-index (ms). Mobile is Google's
+        primary ranking signal. Cite the actual numbers in findings —
+        these are the most defensible signals in the entire audit.
+      - ``tracking_pixels`` — list of installed analytics / ad / chat /
+        marketing-automation tags actually found in the rendered HTML
+        (GA4, GTM, Meta Pixel, LinkedIn Insight, TikTok, Hotjar, Clarity,
+        Intercom, HubSpot, etc.) PLUS a ``gaps`` list calling out what's
+        missing. Use these to make recommendations real and specific.
+      - ``domain_reputation`` — SPF, DKIM (common selectors), DMARC presence
+        + policy, plus an ``issues`` list. Email security is a high-priority
+        finding most prospects don't know they have.
+      - ``screenshots_captured`` — a boolean telling you whether the audit
+        page will embed mobile / tablet / desktop screenshots. You don't
+        need to describe them, but you SHOULD reference responsive-design
+        observations when they're available.
 
 ═══════════════════════════════════════════════════════════════════════
 PLATFORM CAPABILITY MAP — what Foundry can actually do
@@ -446,6 +465,10 @@ Synthesize a structured audit and return ONLY valid JSON matching this schema:
 
 Rules:
   • If a data source is empty/missing, acknowledge it ("No public reviews surfaced in our scan…") rather than fabricating.
+  • Whenever ``tech_signals`` provides a hard number (Core Web Vitals score, missing DMARC, no Meta Pixel detected, etc.) prefer it over LLM-judgement. Cite the actual number or fact verbatim — e.g. "Your mobile PageSpeed score is 38 with an LCP of 4,800 ms — search ranking and conversion both suffer." Hard data outranks vibe.
+  • If ``tech_signals.web_vitals.available`` is true and the mobile performance score is below 60, you MUST add an issue with priority "high" titled with the exact score (e.g. "Mobile PageSpeed score: 38 — slow site costs conversions and rankings").
+  • If ``tech_signals.tracking_pixels.gaps`` is non-empty, surface those gaps as findings. They're the difference between "you guess what works" and "you measure what works".
+  • If ``tech_signals.domain_reputation.issues`` is non-empty, add a "Email & domain security" finding citing the missing record(s). Phishing impersonation and email deliverability are real revenue risks.
   • The input includes ``perplexity_company_summary`` — Perplexity Sonar's live web research on the business. Treat it as ADDITIVE CONTEXT (market position, what they actually do, recent mentions) — NOT as a substitute for verbatim on-page copy. When grading voice/tone/CTAs, cite the ``website_rendered_text_excerpt`` first; only fall back to the Perplexity summary when on-page text is empty or shows a bot-challenge wall.
   • The input ALSO includes ``website_fetch_blocked`` — a boolean. When TRUE, the site sits behind anti-bot protection (Cloudflare, DataDome, Akamai, PerimeterX) and our crawler could not read the real homepage. In that case:
        — You MUST NOT invent copy-level findings ("sparse hero", "weak CTA", "confusing nav") — you did not see the page.
@@ -469,6 +492,7 @@ async def _synthesise_audit_via_llm(
     competitors_search: list, socials: dict, hint: str,
     perplexity_summary: str = "",
     website_blocked: bool = False,
+    tech_signals: Optional[dict] = None,
 ):
     """Call the audit synthesis model and parse its JSON.
 
@@ -479,6 +503,23 @@ async def _synthesise_audit_via_llm(
     """
     from dynamic_intelligence import pick_text_model, TASK_AUDIT_SYNTHESIS
     choice = pick_text_model(TASK_AUDIT_SYNTHESIS)
+
+    # Trim the screenshots / pixel evidence so the prompt stays compact —
+    # the LLM only needs the SUMMARY of each tech signal, not the raw URLs.
+    ts = tech_signals or {}
+    compact_signals = {
+        "web_vitals": ts.get("web_vitals") or {"available": False},
+        "tracking_pixels": ts.get("tracking_pixels") or {"available": False},
+        "domain_reputation": {
+            k: v for k, v in (ts.get("domain_reputation") or {}).items()
+            if k != "mx"   # the MX list isn't useful to the analyst
+        },
+        # Screenshots are linked into the report by the UI/PDF directly;
+        # we don't need the LLM to "describe" them.
+        "screenshots_captured": bool(
+            (ts.get("screenshots") or {}).get("available")
+        ),
+    }
 
     user_text = json.dumps({
         "business_name": business_name,
@@ -501,6 +542,11 @@ async def _synthesise_audit_via_llm(
         "brave_brand_search": brand_search[:8],
         "brave_reviews_search": reviews_search[:8],
         "brave_competitors_search": competitors_search[:8],
+        # Hard-data signals — actual numbers from PageSpeed Insights,
+        # actual DNS records, actual tracking pixels in their DOM.
+        # These are precisely the signals a chat agent CAN'T produce,
+        # and they should drive the highest-priority recommendations.
+        "tech_signals": compact_signals,
     }, ensure_ascii=False)
 
     chat = LlmChat(
@@ -692,18 +738,52 @@ def make_audits_router(
                     return ""
 
             # All five fetches run in parallel — total wall time is the
-            # slowest one, not the sum.
+            # slowest one, not the sum. Adds four hard-data signals
+            # alongside the LLM-grade inputs: Core Web Vitals, multi-
+            # viewport screenshots, tracking-pixel inventory, and email
+            # domain reputation. These are precisely the signals a chat
+            # agent CAN'T produce in a 30-second response, and they're
+            # what justifies the audit as a paid deliverable.
+            from audit_signals import (
+                fetch_web_vitals, capture_viewport_screenshots,
+                inventory_tracking_pixels, domain_reputation,
+            )
+
             (
                 browse_result, perplexity_text,
                 brand_hits, reviews_hits, comp_hits,
+                web_vitals, screenshots, domain_rep,
             ) = await asyncio.gather(
                 _safe_browse(),
                 _safe_perplexity(),
                 _safe_brave(brand),
                 _safe_brave(f"{brand} reviews"),
                 _safe_brave(f"{brand} competitors OR alternatives"),
+                fetch_web_vitals(url) if url else asyncio.sleep(0, result={"available": False, "error": "no url"}),
+                capture_viewport_screenshots(
+                    url, persist_bytes=persist_bytes,
+                    upload_dir=upload_dir, audit_id=str(audit_id),
+                ) if url else asyncio.sleep(0, result={"available": False, "error": "no url"}),
+                domain_reputation(url) if url else asyncio.sleep(0, result={"available": False, "error": "no url"}),
             )
             website_text, website_blocked = browse_result
+            # Pixel inventory works off the rendered HTML, so it only fires
+            # when the browse succeeded. We fetch the raw HTML once via
+            # httpx (much cheaper than a second Playwright run) — that's
+            # enough since pixels are inserted as `<script src=...>` tags
+            # that are present in the static HTML.
+            pixel_inventory: Dict[str, Any]
+            if website_text and not website_blocked:
+                try:
+                    import httpx
+                    async with httpx.AsyncClient(timeout=15.0, follow_redirects=True) as c:
+                        r = await c.get(url, headers={"User-Agent": "Mozilla/5.0 (Foundry Audit)"})
+                        pixel_inventory = inventory_tracking_pixels(r.text)
+                except Exception as exc:
+                    logger.info("pixel inventory fetch failed for %s: %s", url, exc)
+                    pixel_inventory = {"available": False, "error": str(exc)[:200]}
+            else:
+                pixel_inventory = {"available": False, "error": "site fetch blocked or empty"}
 
             # If the on-page text was an anti-bot wall (`_safe_browse`
             # already blanked it) or otherwise looks thin, log it and
@@ -728,6 +808,12 @@ def make_audits_router(
             # Stage B — synthesise (Dynamic Intelligence picks the model
             # based on task signature; the choice + rationale is stamped
             # on the audit row for the admin's audit trail).
+            tech_signals = {
+                "web_vitals": web_vitals,
+                "screenshots": screenshots,
+                "tracking_pixels": pixel_inventory,
+                "domain_reputation": domain_rep,
+            }
             data, model_choice = await _synthesise_audit_via_llm(
                 LlmChat=LlmChat, UserMessage=UserMessage,
                 EMERGENT_LLM_KEY=EMERGENT_LLM_KEY,
@@ -739,6 +825,7 @@ def make_audits_router(
                 brand_search=brand_hits,
                 reviews_search=reviews_hits,
                 competitors_search=comp_hits,
+                tech_signals=tech_signals,
                 socials=a.get("socials") or {},
                 hint=a.get("hint") or "",
             )
@@ -775,6 +862,7 @@ def make_audits_router(
                     "brand_voice": data.get("brand_voice", {}),
                     "sections": data.get("sections", {}),
                     "how_soulprint_helps": data.get("how_soulprint_helps", ""),
+                    "tech_signals": tech_signals,
                     "pdf_filename": pdf_filename,
                     # Dynamic Intelligence audit trail — admin can see
                     # which model produced this report and why.
