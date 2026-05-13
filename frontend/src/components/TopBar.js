@@ -124,11 +124,16 @@ export default function TopBar({ children, right = null }) {
                 with stale info. */}
             {user && <TrialCountdownBadge user={user} />}
             {right}
-            {/* Global Dynamic Intelligence indicator. `nowrap` + max-width
-                with ellipsis so the pill never wraps and doubles the bar
-                height on narrow laptop viewports. */}
+            {/* Global Dynamic Intelligence indicator. The wrapper used
+                to enforce `max-w-[180px]` with `overflow-hidden`, but
+                after the +20% global type scale the label "Dynamic
+                Intelligence" overflows 180px and the overflow-hidden
+                also clipped the dropdown panel when opened. We now let
+                the chip size naturally and rely on the topbar's flex
+                gap + the responsive `hidden sm:block` to keep things
+                tidy on narrow viewports. */}
             {user && (
-              <div className="hidden sm:block whitespace-nowrap overflow-hidden text-ellipsis max-w-[180px]" data-testid="topbar-dynamic-intelligence">
+              <div className="hidden sm:block whitespace-nowrap" data-testid="topbar-dynamic-intelligence">
                 <DynamicIntelligencePicker compact />
               </div>
             )}
