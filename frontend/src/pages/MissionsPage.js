@@ -4,6 +4,7 @@ import api, { BACKEND_URL, displayMissionGoal, downloadFile, errorMessage, getTo
 import { getCurrentIdToken, FIREBASE_ENABLED } from "../lib/firebase";
 import TopBar from "../components/TopBar";
 import BrowserStreamCanvas from "../components/BrowserStreamCanvas";
+import MissionGoalDrafter from "../components/MissionGoalDrafter";
 import { toast } from "sonner";
 import {
   Rocket, Play, X, Loader2, ArrowLeft, Search, FileText, Wrench,
@@ -241,9 +242,26 @@ function StartMissionDialog({ orgId, onClose, onSubmit }) {
           <h3 className="sp-display text-2xl">Start a mission</h3>
           <button onClick={cleanupAndClose} className="text-white/60 hover:text-white"><X className="w-4 h-4" /></button>
         </div>
-        <p className="text-xs sp-subtle mb-3">
+        <p className="text-xs sp-subtle mb-2">
           Describe a goal in plain English. The lead agent will pick tools, iterate, and ship a deliverable when done.
         </p>
+        <div className="mb-3">
+          <MissionGoalDrafter
+            currentGoal={goal}
+            onAccept={(polished) => {
+              setGoal(polished);
+              // Re-focus + scroll caret to end so the user sees the
+              // new text without having to click into the textarea.
+              requestAnimationFrame(() => {
+                const ta = taRef.current;
+                if (!ta) return;
+                ta.focus();
+                ta.setSelectionRange(polished.length, polished.length);
+              });
+            }}
+            disabled={busy}
+          />
+        </div>
         <textarea
           ref={taRef}
           value={goal}

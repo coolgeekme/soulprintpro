@@ -3,6 +3,14 @@
 Plain-English feature inventory of **Foundry by SoulPrint Engine** for non-technical teammates. Each section is a category of capabilities and what they do for users.
 
 ---
+## ✨ May 13, 2026 — Mission Goal Drafter
+- New "✨ Help me write this" affordance on the Start-a-mission dialog. Vague mission goals are the #1 cause of bad runs — this turns a rough idea into a polished goal that passes Foundry's mission best-practice checklist.
+- Three-field structured input: *Goal (rough)* + *Deliverable format (optional)* + *Success looks like (optional)*. The LLM enforces: named filename + extension (defaults to `.pdf`, never `.txt`), 3-5 measurable success criteria, ≥5 source citations for research, no vague qualifiers (*"comprehensive"*, *"thorough"*), no empty-promise verbs, definition-of-done sentence at the end.
+- Character budget enforced: 200-1,200 chars (sweet spot verified across recent finished missions).
+- **Refine** button on the polished draft — say *"make it shorter"* or *"focus on B2B SaaS"* and get a v2 without re-typing.
+- Backend: `POST /api/missions/draft-goal` (gpt-4.1-mini, 45s timeout, strict-JSON output, defensive clip to char cap).
+
+---
 ## 🚦 May 13, 2026 — Mission Ask-User Loop Fix
 - Production bug: Missions kept re-asking the same clarifying question (e.g. *"can you provide more sources?"*) even after the user said *"I have nothing more to add / proceed / finish."*
 - Three guards added end-to-end:

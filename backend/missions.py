@@ -214,6 +214,59 @@ class ContinueMissionBody(BaseModel):
     instructions: str = Field("", max_length=2000)
 
 
+class DraftGoalBody(BaseModel):
+    """Payload for the goal drafter — turns a rough user idea into a
+    polished mission goal that follows our internal best practices
+    (concrete deliverable, named format, measurable success criteria,
+    source-breadth requirement, no fluff)."""
+    goal: str = Field(..., min_length=3, max_length=2000)
+    deliverable: str = Field("", max_length=400)
+    success_looks_like: str = Field("", max_length=600)
+    # Optional refine step: if set we treat `goal` as the previously-
+    # drafted goal and apply `refine_instruction` to it.
+    refine_instruction: str = Field("", max_length=400)
+
+
+# Target character budget for drafted mission goals. Verified across
+# the last 30 finished missions in this Foundry deployment — 200-1200
+# chars is the sweet spot (≤200 too vague; ≥1200 starts contradicting
+# itself). The drafter prompt enforces this.
+GOAL_MIN_CHARS = 200
+GOAL_MAX_CHARS = 1200
+
+_DRAFTER_SYSTEM = """You rewrite a rough user idea into a polished autonomous-mission goal for the Foundry lead-agent loop.
+
+Foundry missions are run by an LLM that picks tools (web_search, browse_url, browse_click/fill/submit, write_artifact, generate_image, read_org_document, …), iterates, and ships a deliverable. The single biggest predictor of a successful run is a precise goal. Your job is to write one.
+
+OUTPUT FORMAT — STRICT
+- Return JSON only. No prose, no markdown, no fences.
+- Shape: {"goal": "<the polished mission goal>"}
+- The `goal` value must be between 200 and 1200 characters.
+
+BEST PRACTICES THE GOAL MUST FOLLOW
+1. Lead with the concrete deliverable, named with a real filename and extension. Examples:
+   • "Produce `competitor_teardown.pdf` — a 1-page brief…"
+   • "Produce `linkedin_posts.md` — 5 ready-to-publish posts…"
+   • "Produce `top_pricing_changes.csv` — one row per competitor with columns name, plan, monthly price, source URL."
+2. Default file formats: `.pdf` for briefs/reports/audits/proposals; `.docx` only if the user mentioned Word; `.csv` for lists/tables; `.md` only when the user explicitly asked for raw markdown; `.ics` for calendars. NEVER `.txt`.
+3. Spell out 3-5 measurable success criteria — concrete things the agent can verify it did (e.g. "cite at least 5 distinct sources with URLs", "include a comparison table with ≥4 rows", "include current pricing for each app").
+4. If the work involves research, demand **breadth**: "cite ≥5 distinct sources" or "browse the official site of each of the top 5 competitors". Foundry's research-breadth gate refuses to finish a research mission with <5 sources, so this aligns with the engine.
+5. If the work involves visiting a specific site, include the exact URL.
+6. Strip vague qualifiers: "comprehensive", "thorough", "in-depth", "robust", "world-class", "robust analysis". Keep only quantifiable specifics.
+7. Strip empty-promise verbs that imply background work: "monitor", "keep an eye on", "stay on top of". Missions are single autonomous runs, not subscriptions.
+8. Never include sensitive data (API keys, passwords, full card numbers) even if it appears in the rough input — silently drop it.
+9. End with one short "Definition of done" sentence so the agent knows when to call `finish`.
+
+TONE
+- Direct, imperative, no fluff. The reader is an autonomous agent, not a teammate.
+- No politeness ("please", "kindly", "would you").
+- Present tense.
+
+REFINEMENT MODE
+- If a `refine_instruction` is present, the input `goal` is your existing draft. Apply the refinement (e.g. "make it shorter", "add a pricing focus") while still following ALL rules above. Return the updated goal in the same JSON shape.
+"""
+
+
 # ── Serialisers ────────────────────────────────────────────────────────────
 def _iso(d):
     return d.isoformat() if isinstance(d, datetime) else d
@@ -2003,6 +2056,77 @@ def make_missions_router(
     UPLOAD_DIR: Path,
 ):
     r = APIRouter(prefix="/api")
+
+    @r.post("/missions/draft-goal")
+    async def draft_mission_goal(
+        body: DraftGoalBody, u: dict = Depends(get_current_user),
+    ):
+        """Take a user's rough idea + optional structured hints and
+        return a polished mission goal that follows Foundry's mission
+        best practices (concrete deliverable, named format, measurable
+        success criteria, source-breadth requirement). Also supports a
+        `refine_instruction` mode so users can iterate on the draft
+        without re-typing everything.
+
+        Auth-gated only — no org binding because this is a stateless
+        LLM helper that doesn't read or write any user data.
+        """
+        # Compose the user-turn payload deterministically so the LLM
+        # always sees the same shape regardless of which fields the
+        # client populated.
+        if body.refine_instruction.strip():
+            payload = json.dumps({
+                "mode": "refine",
+                "existing_goal": body.goal,
+                "refine_instruction": body.refine_instruction,
+            }, ensure_ascii=False)
+        else:
+            payload = json.dumps({
+                "mode": "draft",
+                "rough_goal": body.goal,
+                "deliverable_hint": body.deliverable or "(none — infer the best deliverable)",
+                "success_looks_like": body.success_looks_like or "(none — infer reasonable criteria)",
+            }, ensure_ascii=False)
+        try:
+            chat = LlmChat(
+                api_key=EMERGENT_LLM_KEY,
+                session_id=f"mission-drafter:{u['id']}",
+                system_message=_DRAFTER_SYSTEM,
+            ).with_model("openai", "gpt-4.1-mini")
+            raw = await asyncio.wait_for(
+                chat.send_message(UserMessage(text=payload)),
+                timeout=45,
+            )
+        except asyncio.TimeoutError:
+            raise HTTPException(504, "Goal drafter timed out — try again.")
+        except Exception as exc:
+            logger.warning("mission goal drafter LLM error: %s", exc)
+            raise HTTPException(502, "Goal drafter is temporarily unavailable.")
+
+        text = (raw or "").strip()
+        # Defensive: strip a markdown fence if the model emitted one
+        # despite the strict-JSON instruction.
+        if text.startswith("```"):
+            text = re.sub(r"^```(?:json)?\s*|\s*```$", "", text, flags=re.M)
+        try:
+            data = json.loads(text)
+            polished = (data.get("goal") or "").strip()
+        except json.JSONDecodeError:
+            # Fall back: if it returned plain text, use it raw — the
+            # client still gets a usable string.
+            polished = text
+
+        if not polished:
+            raise HTTPException(502, "Goal drafter returned an empty response.")
+        # Clip to the upper budget so the textarea never gets flooded.
+        if len(polished) > GOAL_MAX_CHARS:
+            polished = polished[:GOAL_MAX_CHARS].rstrip()
+        return {
+            "goal": polished,
+            "char_count": len(polished),
+            "char_target": [GOAL_MIN_CHARS, GOAL_MAX_CHARS],
+        }
+
 
     # ── Mission attachments — files the user uploads BEFORE starting ────
     # Endpoint shape matches /conversations/{id}/upload. Files are saved
