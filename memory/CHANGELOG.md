@@ -3,6 +3,15 @@
 Plain-English feature inventory of **Foundry by SoulPrint Engine** for non-technical teammates. Each section is a category of capabilities and what they do for users.
 
 ---
+## 🚦 May 13, 2026 — Mission Ask-User Loop Fix
+- Production bug: Missions kept re-asking the same clarifying question (e.g. *"can you provide more sources?"*) even after the user said *"I have nothing more to add / proceed / finish."*
+- Three guards added end-to-end:
+  - **Hard cap of 2 `ask_user` calls per mission.** The 3rd is blocked server-side with a synthetic instruction forcing the agent to deliver from public data or finish honestly noting the gap.
+  - **"User is done" detector** on `/missions/{id}/answer` — phrases like *"proceed / skip / nothing more / use what you have / stop asking / wrap it up / I already replied"* flip a `user_declined_more_info` flag that blocks every subsequent `ask_user` for the rest of that mission.
+  - **New "Just finish with what you have" button** on the *agent is asking* card — one click hits `POST /api/missions/{id}/force-finish`, sets the same flag, and resumes the loop with `ask_user` blocked.
+- 26-case pytest covers the regex (declined phrases match; real new info does not); regression on the existing mission suite stable.
+
+---
 ## 🔒 May 13, 2026 — Memory: Strict Per-Org Isolation
 - Memories are now **strictly scoped to one organization** — a fact captured inside *Client A's* workspace can never leak into *Client B's* agent replies (critical for agencies running multiple client workspaces under one Foundry account).
 - Adding a memory manually now **requires picking an org** — no more accidental "global" memories.

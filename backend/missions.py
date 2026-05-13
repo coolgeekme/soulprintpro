@@ -168,6 +168,44 @@ class AnswerMissionBody(BaseModel):
     answer: str = Field(..., min_length=1, max_length=4000)
 
 
+# Regex catches phrases that mean "stop asking, work with what you have".
+# When the user's answer matches, we set a `user_declined_more_info` flag
+# on the mission so every subsequent `ask_user` call is blocked. This is
+# the fix for the production bug where missions kept asking the same
+# clarifying question even after the user explicitly said "proceed" or
+# "I have nothing more to add." Direct response to a real user report
+# Feb 2026 (AstraZeneca Virginia plant audit looped on the same
+# "provide sources/URLs" question).
+_USER_DONE_PATTERNS = re.compile(
+    r"\b("
+    r"proceed|continue(?:\s+anyway)?|go\s+ahead|just\s+(?:go|do\s+it|finish)|"
+    r"skip|move\s+on|carry\s+on|"
+    r"finish|wrap\s+(?:it\s+)?up|complete\s+(?:it|the\s+mission)|"
+    r"nothing\s+(?:more|else|to\s+add)|no\s+more(?:\s+info(?:rmation)?)?|"
+    r"don'?t\s+have|i\s+have\s+no(?:thing)?|i'?ve\s+(?:said|told|replied|answered)|"
+    r"already\s+(?:said|told|replied|answered|gave)|"
+    r"use\s+what\s+you\s+(?:have|know)|work\s+with\s+what\s+you\s+have|"
+    r"that'?s\s+(?:all|it)|no\s+(?:further|additional)|stop\s+asking|"
+    r"don'?t\s+ask\s+again"
+    r")\b",
+    re.IGNORECASE,
+)
+
+
+def _looks_like_user_declined(text: str) -> bool:
+    """Does the user's reply mean 'stop asking and proceed with what
+    you have'? Used to short-circuit further ask_user calls in the
+    mission loop."""
+    return bool(_USER_DONE_PATTERNS.search((text or "")))
+
+
+# Hard cap on how many times a single mission can call ask_user.
+# After this many asks the loop intercepts the next ask_user and
+# converts it into a synthetic system message that forces the agent
+# to proceed with public data or finish with a documented gap.
+MAX_ASK_USER_PER_MISSION = 2
+
+
 class ContinueMissionBody(BaseModel):
     """Payload for resuming a finished/cancelled/failed mission with
     extra instructions. Keep this at module scope — FastAPI needs to
@@ -686,14 +724,65 @@ async def run_mission_loop(
             if action == "ask_user":
                 question = (args.get("question") or "").strip()[:600] or \
                     "I need more information to continue — please clarify."
+                # ── Hard guards against ask_user abuse ─────────────────
+                # Production bug Feb 2026: agents kept re-asking the same
+                # clarifying question after the user had answered "I have
+                # nothing more to add / proceed / finish" multiple times.
+                # Two intercepts:
+                #   (a) the user has explicitly declined to add more info
+                #       (a flag set by the `answer` endpoint),
+                #   (b) the per-mission ask_user count has hit
+                #       MAX_ASK_USER_PER_MISSION.
+                # In either case we DROP the ask_user, append a system
+                # event telling the agent to proceed, and continue the
+                # loop so the next iteration must call a real tool or
+                # `finish` instead.
+                fresh = await db.missions.find_one({"id": mission_id})
+                declined = bool((fresh or {}).get("user_declined_more_info"))
+                ask_count = int((fresh or {}).get("ask_user_count") or 0)
+                if declined or ask_count >= MAX_ASK_USER_PER_MISSION:
+                    reason = (
+                        "The user has explicitly told you to proceed "
+                        "without more info."
+                        if declined else
+                        f"You have already asked the user "
+                        f"{ask_count} times this mission "
+                        f"(cap is {MAX_ASK_USER_PER_MISSION})."
+                    )
+                    block_msg = (
+                        f"BLOCKED ask_user — {reason} DO NOT call "
+                        "ask_user again. On the next iteration you MUST "
+                        "either (a) use web_search / browse_url / "
+                        "another tool to find what you can from public "
+                        "sources, or (b) call finish with a truthful "
+                        "deliverable that documents the gap (\"based on "
+                        "public sources X and Y; specific data on Z was "
+                        "not available\"). Calling ask_user again is "
+                        "forbidden."
+                    )
+                    await _append_event(
+                        db, mission_id, kind="system",
+                        text=block_msg, iteration=iteration,
+                    )
+                    # Heartbeat so the UI doesn't think we stalled.
+                    await db.missions.update_one(
+                        {"id": mission_id},
+                        {"$set": {
+                            "last_activity_at": datetime.now(timezone.utc),
+                        }},
+                    )
+                    continue
                 await _append_event(db, mission_id, kind="question",
                                     text=question, iteration=iteration)
                 await db.missions.update_one(
                     {"id": mission_id},
-                    {"$set": {
-                        "status": "awaiting_user",
-                        "question": question,
-                    }},
+                    {
+                        "$set": {
+                            "status": "awaiting_user",
+                            "question": question,
+                        },
+                        "$inc": {"ask_user_count": 1},
+                    },
                 )
                 return
 
@@ -2406,9 +2495,22 @@ def make_missions_router(
         await _append_event(db, mission_id, kind="system",
                             text=f"User answered: {body.answer.strip()[:400]}",
                             iteration=m.get("iteration_count", 0))
+        # If the user is clearly saying "stop asking, proceed" — flag
+        # the mission so the loop blocks any further ask_user calls.
+        # See _looks_like_user_declined for the matched phrases.
+        update_set: Dict[str, Any] = {"status": "running", "question": ""}
+        if _looks_like_user_declined(body.answer):
+            update_set["user_declined_more_info"] = True
+            await _append_event(
+                db, mission_id, kind="system",
+                text=("User signaled they have nothing more to add. "
+                      "ask_user is now BLOCKED for the rest of this "
+                      "mission — proceed with public sources or finish."),
+                iteration=m.get("iteration_count", 0),
+            )
         await db.missions.update_one(
             {"id": mission_id},
-            {"$set": {"status": "running", "question": ""}},
+            {"$set": update_set},
         )
 
         tools = build_tools_factory()
@@ -2427,6 +2529,66 @@ def make_missions_router(
             build_lead_system_prompt=build_lead_system_prompt,
         ))
         _RUNNING[mission_id] = task
+        return {"ok": True}
+
+    @r.post("/missions/{mission_id}/force-finish")
+    async def force_finish_mission(mission_id: str,
+                                   u: dict = Depends(get_current_user)):
+        """User-initiated escape hatch from an `awaiting_user` mission
+        when the agent is asking the same question on repeat. The user
+        clicks "Just finish with what you have" → we set the
+        user_declined_more_info flag, log an explicit "user forced
+        finish" event, then resume the loop. The hardened ask_user
+        guard will now refuse any further questions, forcing the agent
+        to deliver from public data or finish honestly with the gap
+        documented.
+
+        Safe on any mission state: if it's not awaiting_user we still
+        flip the flag so the rest of the run is question-free.
+        """
+        m = await db.missions.find_one({"id": mission_id})
+        if not m:
+            raise HTTPException(404, "Mission not found")
+        await require_org_member(m["org_id"], u["id"])
+
+        was_awaiting = m.get("status") == "awaiting_user"
+        await _append_event(
+            db, mission_id, kind="system",
+            text=("User clicked 'Just finish with what you have'. "
+                  "ask_user is BLOCKED for the rest of this mission. "
+                  "Deliver from public sources or finish with a "
+                  "documented data gap."),
+            iteration=m.get("iteration_count", 0),
+        )
+        await db.missions.update_one(
+            {"id": mission_id},
+            {"$set": {
+                "user_declined_more_info": True,
+                # Only flip status if we were stuck awaiting an answer.
+                **({"status": "running", "question": ""} if was_awaiting else {}),
+            }},
+        )
+
+        # Restart the loop only if the mission was paused on the user.
+        # For a running mission the live loop already polls the flag
+        # via the fresh DB read in the ask_user branch.
+        if was_awaiting:
+            tools = build_tools_factory()
+            ctx = {
+                "org_id": m["org_id"],
+                "mission_id": mission_id,
+                "lead_agent_id": m.get("lead_agent_id"),
+                "lead_agent_name": m.get("lead_agent_name"),
+                "created_by": u["id"],
+            }
+            fresh = await db.missions.find_one({"id": mission_id})
+            task = asyncio.create_task(run_mission_loop(
+                db=db, mission=fresh, tools=tools, ctx=ctx,
+                LlmChat=LlmChat, UserMessage=UserMessage,
+                EMERGENT_LLM_KEY=EMERGENT_LLM_KEY,
+                build_lead_system_prompt=build_lead_system_prompt,
+            ))
+            _RUNNING[mission_id] = task
         return {"ok": True}
 
     @r.post("/missions/{mission_id}/continue")

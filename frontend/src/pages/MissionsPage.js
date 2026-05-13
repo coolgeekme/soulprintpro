@@ -8,7 +8,7 @@ import { toast } from "sonner";
 import {
   Rocket, Play, X, Loader2, ArrowLeft, Search, FileText, Wrench,
   ChevronRight, Check, AlertTriangle, HelpCircle, Send, Download, Image as ImageIcon,
-  Trash2, CornerDownRight, UploadCloud, Lock,
+  Trash2, CornerDownRight, UploadCloud, Lock, Flag,
 } from "lucide-react";
 import { parseServerDate } from "../lib/datetime";
 
@@ -486,6 +486,29 @@ function MissionDetail({ orgId, missionId }) {
     } finally { setBusy(false); }
   };
 
+  // Escape hatch when the agent keeps re-asking the same clarifying
+  // question even after the user has said "proceed". Server flips a
+  // `user_declined_more_info` flag that blocks ask_user for the rest
+  // of the mission, then resumes the loop. The agent must now deliver
+  // from public data or finish with the gap documented.
+  const forceFinish = async () => {
+    if (!window.confirm(
+      "Stop asking and finish with what's already gathered?\n\n" +
+      "The agent will be told to deliver from public sources or " +
+      "finish honestly noting any data gap. It will not ask another " +
+      "question on this mission."
+    )) return;
+    setBusy(true);
+    try {
+      await api.post(`/missions/${missionId}/force-finish`);
+      setAnswer("");
+      toast.success("Agent told to finish without more questions.");
+      await load();
+    } catch (err) {
+      toast.error(errorMessage(err, "Couldn't force-finish the mission"));
+    } finally { setBusy(false); }
+  };
+
   const status = mission?.status ? STATUS_MAP[mission.status] : null;
 
   return (
@@ -708,6 +731,21 @@ function MissionDetail({ orgId, missionId }) {
                     {busy ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Send className="w-3.5 h-3.5" />}
                     Send
                   </button>
+                </div>
+                <div className="mt-3 flex items-center gap-2">
+                  <button
+                    onClick={forceFinish}
+                    disabled={busy}
+                    className="text-[11px] sp-subtle hover:text-amber-200 inline-flex items-center gap-1.5 transition disabled:opacity-50"
+                    title="Tell the agent to stop asking and deliver from what it already has."
+                    data-testid="mission-force-finish"
+                  >
+                    <Flag className="w-3.5 h-3.5" />
+                    Just finish with what you have
+                  </button>
+                  <span className="text-[10px] sp-subtle">
+                    — use this if the agent is asking the same thing on repeat.
+                  </span>
                 </div>
               </div>
             </div>
