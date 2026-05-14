@@ -1,4 +1,5 @@
 import React, { useEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { toast } from "sonner";
 import {
   X, Loader2, ArrowLeft, ArrowRight, Sparkles, Check, Bot, Send,
@@ -210,15 +211,16 @@ export default function CustomAgentWizard({
     return true;
   };
 
-  return (
+  return createPortal((
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/70 backdrop-blur-sm"
+      className="fixed inset-0 z-[60] flex items-center justify-center p-4 bg-black/85 backdrop-blur-md"
       onClick={onCancel}
       data-testid="custom-agent-wizard-overlay"
     >
       <div
-        className="sp-glass-strong rounded-2xl w-full max-w-3xl max-h-[92vh] flex flex-col"
+        className="rounded-2xl w-full max-w-3xl max-h-[92vh] flex flex-col shadow-2xl border border-white/10"
         onClick={(e) => e.stopPropagation()}
+        style={{ background: "var(--bg)", color: "var(--fg)" }}
       >
         {/* Header — title + advanced toggle + close */}
         <div className="px-6 pt-6 pb-4 flex items-center gap-3 border-b border-white/5 shrink-0">
@@ -390,7 +392,7 @@ export default function CustomAgentWizard({
         </div>
       </div>
     </div>
-  );
+  ), document.body);
 }
 
 function StepHeader({ step, onJump }) {
