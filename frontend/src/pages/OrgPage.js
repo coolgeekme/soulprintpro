@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from "react";
+import React, { useCallback, useEffect, useRef, useState } from "react";
 import { useParams, Link, useNavigate, useLocation } from "react-router-dom";
 import api, { BACKEND_URL } from "../lib/api";
 import TopBar from "../components/TopBar";
@@ -74,6 +74,10 @@ export default function OrgPage() {
   const [newTeamVisibility, setNewTeamVisibility] = useState("open");
   const [creating, setCreating] = useState(false);
   const [showInviteTools, setShowInviteTools] = useState(false);
+  // Seat policy (soft enforcement) — fetched when the invite UI opens
+  // and refreshed every time an invite is created. Drives the in-product
+  // banner that nudges over-cap admins toward upgrading or buying seats.
+  const [seatStatus, setSeatStatus] = useState(null);
   const [uploading, setUploading] = useState(false);
   const [uploadDesc, setUploadDesc] = useState("");
   const [uploadCategory, setUploadCategory] = useState(""); // product|lifestyle|team|venue|logo_variant|other
@@ -224,6 +228,23 @@ export default function OrgPage() {
   // the invite and the owner copies the link manually.
   const [inviteEmail, setInviteEmail] = useState("");
 
+  const refreshSeatStatus = useCallback(async () => {
+    if (!orgId || !canInvite) return;
+    try {
+      const { data } = await api.get(`/orgs/${orgId}/seat-status`);
+      setSeatStatus(data);
+    } catch (e) {
+      // Don't block the UI on seat-status errors — soft enforcement
+      // is purely informational. Failing silently is the right call.
+    }
+  }, [orgId, canInvite]);
+
+  // Load seat status whenever the invite tools first open. We rely on
+  // refreshSeatStatus from inside createInvite to keep it fresh.
+  useEffect(() => {
+    if (showInviteTools) refreshSeatStatus();
+  }, [showInviteTools, refreshSeatStatus]);
+
   const createInvite = async (role) => {
     try {
       const emailRaw = inviteEmail.trim().toLowerCase();
@@ -240,6 +261,13 @@ export default function OrgPage() {
           ? `Invite sent to ${emailRaw}`
           : `Invite created (${role})`,
       );
+      // Backend already computed post-insert seat status — adopt it
+      // so the banner updates without a round-trip.
+      if (data.seat_status) {
+        setSeatStatus({ ...data.seat_status, warning: data.seat_warning });
+      } else {
+        refreshSeatStatus();
+      }
     } catch (err) {
       toast.error(err?.response?.data?.detail || "Failed");
     }
@@ -718,6 +746,21 @@ export default function OrgPage() {
 
         {showInviteTools && canInvite && (
           <div className="sp-glass-strong rounded-2xl p-6 mb-10" data-testid="invite-tools">
+            {seatStatus && seatStatus.warning && (
+              <SeatWarningBanner status={seatStatus} />
+            )}
+            {seatStatus && seatStatus.boost_source === "access_code" && !seatStatus.warning && (
+              <div
+                className="text-xs rounded-xl px-3 py-2 mb-4 border border-emerald-500/40 bg-emerald-500/15"
+                style={{ color: "var(--fg)" }}
+                data-testid="seat-boost-banner"
+              >
+                <strong className="text-emerald-700 dark:text-emerald-200">Access-code boost active</strong> — you've got
+                Temper-equivalent seats ({seatStatus.seats_used} of{" "}
+                {seatStatus.seats_included}) included while your code is
+                active. No extra charge.
+              </div>
+            )}
             <div className="flex items-center justify-between mb-4 flex-wrap gap-2">
               <h3 className="text-sm uppercase tracking-widest sp-subtle">Invites</h3>
               <div className="flex items-center gap-2 flex-wrap">
@@ -1070,6 +1113,55 @@ export default function OrgPage() {
           );
         })()}
       </main>
+    </div>
+  );
+}
+
+
+// ── Soft-enforcement seat-cap banner ──────────────────────────────────────
+// Rendered inside the invite-tools card when the org is over (or about
+// to go over) its plan's seat allowance. Soft-warn only — invites still
+// go through. See backend/seat_policy.py for the policy.
+function SeatWarningBanner({ status }) {
+  const isSpark = (status.effective_plan || status.plan) === "spark";
+  return (
+    <div
+      className="rounded-xl px-3 py-3 mb-4 border border-amber-500/50 bg-amber-500/15 text-xs leading-relaxed"
+      style={{ color: "var(--fg)" }}
+      data-testid="seat-warning-banner"
+    >
+      <div className="flex items-start gap-3">
+        <div className="flex-1 min-w-0">
+          <div className="font-semibold mb-1 text-amber-700 dark:text-amber-200">
+            Seat allowance exceeded
+          </div>
+          <div className="opacity-90">{status.warning}</div>
+        </div>
+        <div className="flex flex-col gap-1.5 shrink-0">
+          {isSpark ? (
+            <Link
+              to="/pricing"
+              className="sp-btn sp-btn-primary text-[11px] whitespace-nowrap"
+              data-testid="seat-upgrade-btn"
+            >
+              Upgrade to Temper
+            </Link>
+          ) : (
+            <a
+              href="mailto:hello@foundryagents.ai?subject=Refine%20tier%20enquiry"
+              className="sp-btn sp-btn-primary text-[11px] whitespace-nowrap"
+            >
+              Talk to us
+            </a>
+          )}
+          <Link
+            to="/pricing"
+            className="sp-btn sp-btn-ghost text-[11px] whitespace-nowrap text-center"
+          >
+            See pricing
+          </Link>
+        </div>
+      </div>
     </div>
   );
 }

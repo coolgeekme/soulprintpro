@@ -3,6 +3,14 @@
 Plain-English feature inventory of **Foundry by SoulPrint Engine** for non-technical teammates. Each section is a category of capabilities and what they do for users.
 
 ---
+## 💺 May 14, 2026 — Seat Policy: Soft Enforcement + Access-Code Boost
+- New `seat_policy.py` helper + `GET /api/orgs/{org_id}/seat-status` endpoint surfaces each org's seat allowance vs. usage so the invite UI can render an in-product warning when admins go over their plan.
+- **Soft enforcement only** — invites still go through. The amber "Seat allowance exceeded" banner with "Upgrade to Temper" / "See pricing" CTAs appears above the invite controls instead of blocking the flow (so we don't break existing customers who already over-invited under the old code).
+- **Access-code boost**: owners who joined via one of our pre-launch private/trial codes get free **Temper-equivalent** allowance (5 seats) for the lifetime of their code — emerald "Access-code boost active" banner appears in place of the warning so they know they're inside the deal.
+- Boost respects code expiry: when an admin code expires (or the 24-hour trial timer runs out), the org drops back to its actual plan and the warning re-appears automatically.
+- Coverage: 5-case pytest verifies the Spark-no-boost warning, boost-lifts-to-Temper case, code-expired-drops-back case, and over-cap-while-boosted (still warns, mentions the boost).
+
+---
 ## 🧙 May 13, 2026 — Custom Agent Builder: Guided Wizard
 - Replaced the single intimidating "system prompt" textarea with a **4-step guided wizard**: Identity → Role → Voice & rules → Preview.
 - **8 ready-made templates** on step 1 (Pricing Strategist · Snarky CFO · Brand Guardian · SDR Coach · Investor Memo Writer · User Researcher · Product Strategist · Ops Systematizer) — one click pre-fills the wizard so users can ship their first agent in <60 seconds.

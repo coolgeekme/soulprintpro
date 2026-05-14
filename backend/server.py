@@ -1750,6 +1750,18 @@ async def create_invite(org_id: str, body: InviteCreateBody, request: Request, u
         "used_by": None,
     }
     await db.invites.insert_one(doc)
+    # Compute the post-insert seat status so the response can carry a
+    # soft-enforcement warning when the new invite pushes the org over
+    # its plan cap. We intentionally do NOT block here — soft
+    # enforcement only, per product call (Feb 2026). The UI surfaces
+    # this string as a banner + the inviter still gets the link.
+    try:
+        from seat_policy import compute_seat_status, warning_for_status
+        seat_status = await compute_seat_status(db, org_id)
+        seat_warning = warning_for_status(seat_status)
+    except Exception as exc:
+        logger.warning("seat-status check failed: %s", exc)
+        seat_status, seat_warning = None, None
     # Optional: email the invite link via Resend when the inviter gave
     # us an address. Best-effort — persistence already happened, caller
     # still gets the code to paste if Resend is unreachable.
@@ -1806,6 +1818,8 @@ async def create_invite(org_id: str, body: InviteCreateBody, request: Request, u
         "code": code, "role": body.role,
         "expires_at": doc["expires_at"].isoformat(),
         "email_sent": bool(body.email),
+        "seat_status": seat_status,
+        "seat_warning": seat_warning,
     }
 
 @org_r.get("/{org_id}/invites")
@@ -1818,6 +1832,26 @@ async def list_invites(org_id: str, u: dict = Depends(get_current_user)):
         "code": i["code"], "role": i["role"],
         "expires_at": i["expires_at"].isoformat() if isinstance(i["expires_at"], datetime) else i["expires_at"],
     } for i in invites]
+
+
+@org_r.get("/{org_id}/seat-status")
+async def get_seat_status(org_id: str, u: dict = Depends(get_current_user)):
+    """Return the org's current seat allowance + usage + warning copy.
+
+    Used by the invite UI to render an in-product banner that warns
+    the admin when they're inviting beyond their plan's allowance.
+    Soft enforcement only — the invite endpoint still creates the
+    invite. See seat_policy.py for the full policy doc.
+    """
+    ctx = await require_org_member(org_id, u["id"])
+    is_admin = ctx["member"]["role"] in ("owner", "admin")
+    from seat_policy import compute_seat_status, warning_for_status
+    status = await compute_seat_status(db, org_id)
+    return {
+        **status,
+        "warning": warning_for_status(status) if is_admin else None,
+        "can_invite": is_admin,
+    }
 
 invite_r = APIRouter(prefix="/api/invites")
 
