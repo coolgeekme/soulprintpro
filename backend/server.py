@@ -3783,6 +3783,38 @@ async def send_message(conv_id: str, body: SendMessageBody, u: dict = Depends(ge
                 if new_agent_id not in responders:
                     responders.append(new_agent_id)
 
+    # ── Private CoS guarantee ──────────────────────────────────────────
+    # Private Chief-of-Staff threads MUST always have the CoS agent in
+    # the responder set, regardless of router/smart_expand decisions.
+    # The whole point of the "private CoS" room is a 1:1 with the chief
+    # of staff — other specialists can still be pulled in by smart_expand
+    # alongside CoS, but CoS itself must never be silently dropped.
+    #
+    # Bug fix Feb 2026: ben@archeforge.com saw 3 user messages with zero
+    # agent replies because his legacy conv had auto_respond=False and
+    # smart_expand's router returned None three times in a row, leaving
+    # responders=[]. With CoS forced in, the loop is guaranteed to
+    # produce at least one reply. Also self-heals the conv document so
+    # the routing branch finds CoS in agent_ids on the next request.
+    if conv.get("kind") == "private_cos":
+        cos_id = "specialized-chief-of-staff"
+        if cos_id in AGENTS and cos_id not in responders:
+            responders.insert(0, cos_id)
+        try:
+            patch = {"auto_respond": True}
+            await db.conversations.update_one(
+                {"_id": ObjectId(conv_id)},
+                {
+                    "$addToSet": {"agent_ids": cos_id},
+                    "$set": patch,
+                },
+            )
+            if cos_id not in (conv.get("agent_ids") or []):
+                conv["agent_ids"] = list(conv.get("agent_ids", [])) + [cos_id]
+            conv["auto_respond"] = True
+        except Exception as exc:
+            logger.warning("private-CoS self-heal failed: %s", exc)
+
     # ── Video / Image generation auto-routing ─────────────────────────────
     # If the user clearly asked for a video, kick that off (async polling) and
     # skip any text reply. If not, fall through to the image classifier.
@@ -3902,6 +3934,19 @@ async def send_message(conv_id: str, body: SendMessageBody, u: dict = Depends(ge
                         responders = []  # Image(s) alone are enough
                 except Exception as exc:
                     logger.warning("auto image generation failed: %s", exc)
+
+    # ── Final private-CoS guarantee ────────────────────────────────────
+    # Last line of defense before the responder loop. The image/video
+    # intent classifiers clear responders when they fire — that's
+    # correct for Group chats (the image IS the reply) but WRONG for
+    # private Chief-of-Staff threads where the user expects the CoS to
+    # talk to them every message regardless. We force CoS back in here
+    # so a misfiring intent classifier (e.g. wrongly tagging "contract"
+    # as an image request) can't silence the room.
+    if conv.get("kind") == "private_cos":
+        cos_id = "specialized-chief-of-staff"
+        if cos_id in AGENTS and cos_id not in responders:
+            responders.append(cos_id)
 
     agent_messages = []
     for aid in responders:
@@ -6786,6 +6831,50 @@ async def _migrate_general_to_chief_of_staff():
             )
     except Exception as exc:
         logger.warning("Chief of Staff rename migration failed: %s", exc)
+
+
+@app.on_event("startup")
+async def _heal_private_cos_convs():
+    """Ensure every existing private-CoS thread has the fields it needs
+    to actually produce a reply when the user sends a message.
+
+    Background — the original team_access.create helpers stamp
+    ``auto_respond=True`` + ``agent_ids=[]`` (relying on smart-expand to
+    pull in CoS on the first message). When the router LLM ever failed
+    or the conv was created before that flag existed, ``agent_ids``
+    stayed empty AND no responder was picked, so the user's messages
+    saved silently with no agent reply (reported by ben@archeforge.com,
+    Feb 2026). The runtime safety net handles new messages on legacy
+    convs; this migration heals them proactively so the FIRST message
+    after deploy doesn't have to do it. Idempotent.
+    """
+    try:
+        cos_id = "specialized-chief-of-staff"
+        res = await db.conversations.update_many(
+            {"kind": "private_cos"},
+            [
+                {"$set": {
+                    "auto_respond": True,
+                    "agent_ids": {
+                        "$cond": [
+                            {"$in": [cos_id, {"$ifNull": ["$agent_ids", []]}]},
+                            "$agent_ids",
+                            {"$concatArrays": [
+                                {"$ifNull": ["$agent_ids", []]},
+                                [cos_id],
+                            ]},
+                        ]
+                    },
+                }},
+            ],
+        )
+        if res.modified_count:
+            logger.info(
+                "Healed %d private-CoS conv(s): auto_respond=True + CoS in agent_ids.",
+                res.modified_count,
+            )
+    except Exception as exc:
+        logger.warning("Private CoS heal migration failed: %s", exc)
 
 # ── Conversation summary (rolling AI recap for long threads) ──────────
 from conversation_summary import make_summary_router as _make_summary_r  # noqa: E402

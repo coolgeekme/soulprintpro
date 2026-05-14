@@ -3,6 +3,14 @@
 Plain-English feature inventory of **Foundry by SoulPrint Engine** for non-technical teammates. Each section is a category of capabilities and what they do for users.
 
 ---
+## 🩹 May 14, 2026 — Bug Fix: Chief of Staff silent dropout
+- **User-reported bug** (ben@archeforge.com): 3 consecutive messages to the private Chief of Staff produced zero replies — the thread looked dead.
+- **Root cause**: three-way pile-up. (1) Legacy private-CoS convs had `auto_respond=False` from before the flag was default-True. (2) The image-intent classifier wrongly tagged document-shaped phrasing like *"put together everything in a contract"* as an image request, clearing responders. (3) No safety net guaranteed at least one CoS reply per private-CoS conv.
+- **Fix shipped**: three layered guarantees in `server.py` — (a) startup migration that heals every legacy `kind=private_cos` conv (idempotent: stamps `auto_respond=True` + ensures CoS in `agent_ids`); (b) force CoS into responders after the router/smart-expand decision so smart-expand can add specialists alongside CoS but never replace it; (c) re-force CoS AFTER the image/video intent block clears responders so a misfiring classifier can't silence the room.
+- Verified end-to-end: reset Reggie's CoS to Ben's exact broken state (auto_respond=False, agent_ids=[]) → sent Ben's exact wording → CoS now replies *"to draft a consulting agreement contract for hire, I need several details..."* + conv self-heals to `auto_respond=True, agent_ids=[doc-generator, cos]`.
+- 8-case pytest covers the document-request false-positives + clear-image-request still-recognised side.
+
+---
 ## 💺 May 14, 2026 — Seat Policy: Soft Enforcement + Access-Code Boost
 - New `seat_policy.py` helper + `GET /api/orgs/{org_id}/seat-status` endpoint surfaces each org's seat allowance vs. usage so the invite UI can render an in-product warning when admins go over their plan.
 - **Soft enforcement only** — invites still go through. The amber "Seat allowance exceeded" banner with "Upgrade to Temper" / "See pricing" CTAs appears above the invite controls instead of blocking the flow (so we don't break existing customers who already over-invited under the old code).
