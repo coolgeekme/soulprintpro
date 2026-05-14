@@ -1,0 +1,38 @@
+{
+  "summary": "Validated the new live-polling endpoint GET /api/conversations/{id}/messages/since end-to-end. Backend pytest: 12/12 passed (4 cursor edge cases + 2 auth-gating + 2 parity + 1 regression + 1 multi-user live update + 1 ready_at $or branch + 1 missing-cursor variant). Frontend smoke test: ConversationPage loads existing thread, renders 9 message bubbles, polls /messages/since every ~3s (4 calls in 7.5s, all 200 OK), composer remains visible — live-polling effect does NOT break initial load or send flow.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "/app (AppHome org cards)", "issues": ["Pre-existing React hydration error: nested <a> inside <a> — `org-card-chat-{id}` <Link> is rendered INSIDE the outer `org-card-{id}` <Link> in AppHome.js (~lines 155-218). Causes console errors on every page load and a hydration mismatch. Unrelated to messages/since work but worth fixing — wrap the inner chat link as a sibling using stopPropagation, not a descendant."]}
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_messages_since.py",
+    "/app/test_reports/pytest/messages_since.xml"
+  ],
+  "action_items": [
+    "Pre-existing (not introduced by this change): fix nested <a> hydration warning in AppHome.js org card chat shortcut."
+  ],
+  "critical_code_review_comments": [
+    "server.py L2822-2884 get_messages_since — correctly reuses load_conv_or_403 for auth (verified: outsider gets 403, unauthenticated gets 401). Empty cursor short-circuits to []. ISO parsing handles trailing Z and naked timestamps (fromisoformat + tzinfo backfill). Garbage cursor → 400 with clear detail string. $or branch on ready_at correctly surfaces patched media messages — confirmed via direct Mongo patch test. Feedback aggregation pipeline mirrors get_messages exactly; up_count/down_count/my_feedback all present. _id excluded via projection so no ObjectId leak.",
+    "Potential micro-concern (NOT blocking): to_list(500) cap on the /since query. If a tab is hidden for hours and >500 messages accumulated, the client will only see the first 500 by timestamp asc and the cursor will advance past the rest. For team chats that's extremely unlikely; leave as-is, but worth a comment.",
+    "ConversationPage.js L324-384 — uses a ref + dual useEffects to keep the 3s interval stable while latest-cursor updates. document.hidden gate is in place (saves battery + LLM cost). Merge logic deduplicates by id and re-sorts by timestamp — handles the in-place media patch case correctly (same id, fresher ready_at, replaces existing bubble). Inflight guard prevents overlapping polls if a request hangs. Clean implementation.",
+    "Cursor URL is sent un-encoded (`cursor=2026-05-05T14:33:04.219000`). Axios encodes the params but `:` survives as-is in many backends. Backend handles it fine (verified 200s in browser network trace) so no action needed.",
+    "Multi-user verified: user B (a second user invited into A's open team) sees A's just-posted message via /since with cursor=<previous-newest> within one poll cycle. The product win is real."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_messages_since.py (new — 12 pytest cases covering all review_request bullet points)"
+  ],
+  "success_rate": {"backend": "100% (12/12)", "frontend": "100% (smoke test: login, conv load, polling, composer)"},
+  "test_credentials": "reggie@coolgeek.me / superadminpass123 (superadmin). Test code TESTPOLL* minted at runtime via /api/admin/access-codes for fresh user registration.",
+  "seed_data_creation": "Each pytest session mints a multi-use access code, registers 3 fresh TEST_poll{a,b,c}_<uuid>@example.com users, creates a TEST_PollOrg + TEST_PollTeam + conversation. No cleanup teardown today — recommend a future fixture to purge TEST_* orgs/users if the test runs often. The created data is harmless (org-scoped, members are TEST-prefixed).",
+  "retest_needed": false,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "The new GET /api/conversations/{id}/messages/since endpoint is fully validated. Reusable regression suite at /app/backend/tests/test_messages_since.py — runs in ~17s. Key paths covered: empty/missing/garbage/future/old cursor, auth gating (non-member 403, unauthenticated 401), feedback parity (up_count/down_count/my_feedback), no _id leak, multi-user live update (B sees A's marker via /since), ready_at $or branch (Mongo-direct patch verifies media-status updates surface). Frontend ConversationPage polling effect confirmed via browser automation: 3s cadence, 200 OK, pauses on document.hidden, no breakage to initial load or composer.",
+  "rca_of_the_issue": "N/A — no bugs found in the new feature. Only finding is a pre-existing unrelated React hydration warning on AppHome org cards (nested <Link> components)."
+}

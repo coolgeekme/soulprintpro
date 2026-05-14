@@ -2818,6 +2818,72 @@ async def get_messages(conv_id: str, u: dict = Depends(get_current_user)):
                     m["my_feedback"] = ""
     return msgs
 
+
+@conv_r.get("/conversations/{conv_id}/messages/since")
+async def get_messages_since(
+    conv_id: str,
+    cursor: str = "",
+    u: dict = Depends(get_current_user),
+):
+    """Cursor-based incremental fetch for live team-chat polling.
+
+    The frontend polls this every ~3s, passing the ISO timestamp of the
+    newest message it has in state. We return ONLY messages strictly
+    newer than that cursor, keyed by `timestamp`. Empty cursor returns
+    nothing — callers must do the initial load via `/messages` first.
+
+    Auth is enforced via `load_conv_or_403`, same as the full fetch.
+    Feedback tallies are inlined for parity with `get_messages` so newly-
+    arriving bubbles render with the up/down counts already populated.
+    """
+    await load_conv_or_403(conv_id, u["id"])
+    if not cursor:
+        return []
+    try:
+        # Frontend sends ISO 8601. `fromisoformat` handles "+00:00" and
+        # naked timestamps; we normalise to aware UTC for the comparison.
+        cur_dt = datetime.fromisoformat(cursor.replace("Z", "+00:00"))
+        if cur_dt.tzinfo is None:
+            cur_dt = cur_dt.replace(tzinfo=timezone.utc)
+    except (ValueError, TypeError):
+        raise HTTPException(400, "Invalid cursor — expected ISO 8601 timestamp")
+    msgs = await db.messages.find(
+        {
+            "conversation_id": conv_id,
+            "$or": [
+                {"timestamp": {"$gt": cur_dt}},
+                # Pending media messages get patched in-place with a
+                # `ready_at` timestamp when the background generator
+                # finishes. Surface those too so the placeholder bubble
+                # swaps to the rendered image/video without a refresh.
+                {"ready_at": {"$gt": cur_dt}},
+            ],
+        },
+        {"_id": 0},
+    ).sort("timestamp", 1).to_list(500)
+    if msgs:
+        ids = [m["id"] for m in msgs if m.get("id")]
+        if ids:
+            pipe = [
+                {"$match": {"message_id": {"$in": ids}}},
+                {"$group": {
+                    "_id": "$message_id",
+                    "up": {"$sum": {"$cond": [{"$eq": ["$value", "up"]}, 1, 0]}},
+                    "down": {"$sum": {"$cond": [{"$eq": ["$value", "down"]}, 1, 0]}},
+                    "mine": {"$max": {"$cond": [{"$eq": ["$user_id", u["id"]]}, "$value", None]}},
+                }},
+            ]
+            tally_by_id = {}
+            async for row in db.message_feedback.aggregate(pipe):
+                tally_by_id[row["_id"]] = row
+            for m in msgs:
+                t = tally_by_id.get(m.get("id"))
+                m["up_count"] = (t or {}).get("up") or 0
+                m["down_count"] = (t or {}).get("down") or 0
+                m["my_feedback"] = (t or {}).get("mine") or ""
+    return msgs
+
+
 def detect_mentions(text: str, agent_ids: List[str]) -> List[str]:
     """Return agent_ids that are @mentioned.
 

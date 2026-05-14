@@ -309,44 +309,78 @@ export default function ConversationPage() {
   // auto-detects intent (keyword fast-path + LLM fallback) and either
   // renders an image, kicks off a video, or replies with text.
 
-  // Poll the message list every 4s while any video is still rendering.
-  // Kie.ai typically finishes within 60-180s so we cap at ~6 min of polling.
-  // We deliberately keep this interval detached from `messages` state so the
-  // timer doesn't reset every tick (which previously created a feedback loop
-  // where the effect restarted on every poll, delaying the UI update by an
-  // extra 4-5s each cycle). Instead we track "is anything pending?" via a
-  // ref that the message renderer updates, and spin a single interval while
-  // the convId is mounted.
-  // Tracks whether ANY pending media request is in flight (video, image,
-  // or music). The kie.ai universal `/generate-media` endpoint creates
-  // a placeholder message with `media_status: "pending"` for every type
-  // and a background task patches it to "ready" once the model returns.
-  const hasPendingMediaRef = useRef(false);
+  // Live polling for new messages — gives team chats a Slack-like
+  // real-time feel without WebSockets. We poll `/messages/since` every
+  // 3s using the newest known message's timestamp as the cursor and
+  // merge any returned messages into state (deduped by id). Polling
+  // pauses while the tab is hidden to save battery + LLM cost, and
+  // resumes immediately on visibility-change. The interval is detached
+  // from `messages` state so the timer doesn't reset every tick;
+  // instead, we read the latest cursor from a ref that the renderer
+  // keeps fresh. Pending media (kie.ai videos, Banana images) is
+  // covered by the same loop — the in-flight placeholder message will
+  // get patched in-place to `media_status: "ready"`, so we replace any
+  // existing message-by-id on merge instead of blindly appending.
+  const latestCursorRef = useRef(null);
   useEffect(() => {
-    hasPendingMediaRef.current = messages.some(
-      (m) => ["video", "image", "music"].includes(m.media_type)
-        && m.media_status === "pending"
-    );
+    let newest = null;
+    for (const m of messages) {
+      // Use max(timestamp, ready_at) — pending media bubbles get
+      // patched in-place when generation finishes, and that patch
+      // carries a `ready_at` newer than the original `timestamp`. If
+      // we ignored `ready_at`, every poll would re-deliver the same
+      // ready message forever; advancing past it keeps the loop tight.
+      const ts = m.ready_at && m.ready_at > (m.timestamp || "")
+        ? m.ready_at
+        : m.timestamp;
+      if (ts && (!newest || ts > newest)) newest = ts;
+    }
+    latestCursorRef.current = newest;
   }, [messages]);
 
   useEffect(() => {
+    if (!convId) return;
     let cancelled = false;
-    let attempts = 0;
+    let inflight = false;
     const tick = async () => {
-      if (cancelled) return;
-      if (!hasPendingMediaRef.current) return; // nothing to do right now
-      attempts += 1;
+      if (cancelled || inflight) return;
+      if (typeof document !== "undefined" && document.hidden) return;
+      const cursor = latestCursorRef.current;
+      if (!cursor) return; // initial load hasn't completed yet
+      inflight = true;
       try {
-        const { data } = await api.get(`/conversations/${convId}/messages`);
-        if (cancelled) return;
-        setMessages(data);
-      } catch {/* swallow */}
+        const { data } = await api.get(
+          `/conversations/${convId}/messages/since`,
+          { params: { cursor } }
+        );
+        if (cancelled || !Array.isArray(data) || data.length === 0) return;
+        setMessages((prev) => {
+          const byId = new Map(prev.map((m) => [m.id, m]));
+          for (const m of data) {
+            if (m && m.id) byId.set(m.id, m);
+          }
+          // Re-sort by timestamp ascending so newcomers slot in correctly.
+          return Array.from(byId.values()).sort((a, b) => {
+            const at = a.timestamp || "";
+            const bt = b.timestamp || "";
+            return at < bt ? -1 : at > bt ? 1 : 0;
+          });
+        });
+      } catch {/* swallow — transient network blips are fine */}
+      finally { inflight = false; }
     };
-    const id = setInterval(() => {
-      if (attempts >= 90) { clearInterval(id); return; } // 90 * 4s = 6 min
-      tick();
-    }, 4000);
-    return () => { cancelled = true; clearInterval(id); };
+    const id = setInterval(tick, 3000);
+    const onVis = () => { if (!document.hidden) tick(); };
+    if (typeof document !== "undefined") {
+      document.addEventListener("visibilitychange", onVis);
+    }
+    return () => {
+      cancelled = true;
+      clearInterval(id);
+      if (typeof document !== "undefined") {
+        document.removeEventListener("visibilitychange", onVis);
+      }
+    };
   }, [convId]);
 
   // Shared staging logic — used by the paperclip picker, paste handler, and
