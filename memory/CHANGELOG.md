@@ -3,6 +3,13 @@
 Plain-English feature inventory of **Foundry by SoulPrint Engine** for non-technical teammates. Each section is a category of capabilities and what they do for users.
 
 ---
+## 👥 May 14, 2026 — Team Conversations Are Now Truly Team-Visible
+- **User-reported bug**: a member started a conversation in a team but the owner/admin couldn't see it. Team chat was acting like 1:1 DM by accident.
+- **Fix**: visibility logic in `list_conversations` + `load_conv_or_403` now widens from "you must be a direct member of this conv" → "you must be a member of the team that owns this conv." Reuses the existing `can_user_view_team` gate so visibility is consistent with how teams already work (open teams = everyone in org, closed teams = explicit members, owner-override always).
+- **Private Chief-of-Staff threads** (`kind=private_cos`) remain 1:1 with their owner. Org owners retain audit access to private CoS for moderation but those threads no longer appear in the team list view.
+- Verified live: owner can see member-created conv (`GET conv=200, GET messages=200`, listed in team feed); reverse direction also works (member sees owner's conv); cross-user private CoS still blocked (`403`).
+
+---
 ## 💰 May 14, 2026 — Phase A Billing Visibility: Workspace Spend Dashboard
 - New `GET /api/orgs/{org_id}/spend?period=current_month|previous_month` endpoint aggregates `llm_calls` cost/calls/tokens, missions, audits, and members for a given org+period. Per-member rollup hydrated with name + email so owners see real people, not opaque IDs.
 - New **Workspace spend** card on `/app/org/:orgId` (owners/admins only — members get a quiet 403) under the "Org setup & insights" panel. KPI strip + collapsible per-member table with % bars + per-kind chips ("$0.47 agent_reply · 121", "$0.04 mission_lead · 18") + "This month / Last month" toggle.

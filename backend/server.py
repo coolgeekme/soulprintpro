@@ -2531,13 +2531,43 @@ async def create_conversation(team_id: str, body: ConversationCreateBody, u: dic
 
 @conv_r.get("/teams/{team_id}/conversations")
 async def list_conversations(team_id: str, u: dict = Depends(get_current_user)):
+    """List conversations in this team that the caller is allowed to see.
+
+    Visibility rule (Feb 2026 product call): **team membership = read
+    access**. Any member of a team can see every conversation that
+    lives in that team — owners and admins can coach, members can
+    learn from each other's threads.
+
+    Exception: **private Chief-of-Staff threads** (`kind=private_cos`)
+    stay 1:1 with their owner. Org owners retain audit access (covered
+    by `load_conv_or_403` when they open the thread) but they don't
+    appear in the team list view to avoid drowning the list with
+    teammates' private CoS rooms.
+    """
     await require_team_member(team_id, u["id"])
-    convs = await db.conversations.find(
-        {"team_id": team_id, "member_ids": u["id"]}
-    ).sort("created_at", -1).to_list(500)
+    convs = await db.conversations.find({
+        "team_id": team_id,
+        "$or": [
+            # Public team conversations — visible to every team member.
+            {"kind": {"$ne": PRIVATE_COS_KIND}},
+            # The caller's own private CoS thread still surfaces in
+            # their list so they can find it.
+            {"kind": PRIVATE_COS_KIND, "member_ids": u["id"]},
+        ],
+    }).sort("created_at", -1).to_list(500)
     return [serialize_conv(c) for c in convs]
 
 async def load_conv_or_403(conv_id: str, user_id: str) -> dict:
+    """Authorize a single-conversation read.
+
+    Mirror of the list-time visibility rule above:
+      • Direct member of the conversation → allowed (covers the
+        legacy 1:1 / DM case).
+      • Member of the team that owns the conversation → allowed for
+        non-private-CoS threads (the open-by-default rule).
+      • Org owner → allowed for private CoS threads in their org
+        (moderation / oversight).
+    """
     try:
         c = await db.conversations.find_one({"_id": ObjectId(conv_id)})
     except Exception:
@@ -2547,6 +2577,30 @@ async def load_conv_or_403(conv_id: str, user_id: str) -> dict:
     # Direct member access — covers the vast majority of conversations.
     if user_id in c.get("member_ids", []):
         return c
+    # Team-membership access for non-private threads. This is the fix
+    # for the Feb 2026 report that owners/admins couldn't see member
+    # conversations in a team they manage. We reuse the same `can_user_view_team`
+    # gate that drives the team list so visibility is consistent
+    # across list / detail / messages endpoints.
+    if c.get("kind") != PRIVATE_COS_KIND and c.get("team_id"):
+        try:
+            team = await db.teams.find_one({"_id": ObjectId(c["team_id"])})
+        except Exception:
+            team = None
+        if team:
+            org = await db.organizations.find_one({"_id": ObjectId(team["org_id"])})
+            if org:
+                # Lazy-backfill so old teams have the membership arrays.
+                team = await backfill_team_membership(db, team, org)
+                member_rows = await db.org_members.find(
+                    {"org_id": team["org_id"]}, {"user_id": 1},
+                ).to_list(2000)
+                org_member_ids = [str(r["user_id"]) for r in member_rows]
+                if can_user_view_team(
+                    team=team, org=org,
+                    user_id=user_id, org_member_ids=org_member_ids,
+                ):
+                    return c
     # Private CoS audit-access: the org owner can read any private CoS
     # in their org for moderation / oversight purposes.
     if c.get("kind") == PRIVATE_COS_KIND:
