@@ -3,6 +3,18 @@
 Plain-English feature inventory of **Foundry by SoulPrint Engine** for non-technical teammates. Each section is a category of capabilities and what they do for users.
 
 ---
+## 🔌 May 14, 2026 — Composio Integration (Phase 1: Connections)
+- **New feature**: each org member can now connect their own SaaS accounts — Gmail, Google Calendar, Slack, Notion, HubSpot — via Composio's managed OAuth. No OAuth-app registration on our side; Composio handles all third-party credentials.
+- **Per-user, per-org scope**: connections are keyed by `{org_id}:{user_id}`, so the same Foundry user in two different orgs has two completely separate connection sets (mirrors how Memory isolates per workspace).
+- New backend module `/app/backend/composio_integration.py` wraps the SDK behind a thin interface so we can swap providers (Pipedream, Nango, MCP) later without touching routes or agent code.
+- Routes: `GET /api/orgs/{org_id}/composio/toolkits`, `POST /api/orgs/{org_id}/composio/connect`, `POST /api/orgs/{org_id}/composio/connections/{id}/refresh`, `DELETE /api/orgs/{org_id}/composio/connections/{id}` — all gated by `require_org_member`.
+- Frontend `ConnectionsPanel.js` mounted inside `OrgPage` "Org setup & insights" section — 5 toolkit cards with one-click Connect, post-OAuth polling auto-detects when a connection flips ACTIVE, Disconnect with confirm.
+- Auth configs bootstrapped idempotently at app startup; stored in `composio_auth_configs` collection so reboots don't churn.
+- Telemetry plumbed: every future `execute_tool` writes to `llm_calls` with `kind_label="composio:<toolkit>:<slug>"` so SpendDashboard rolls it up alongside LLM cost. **`execute_tool` is built but intentionally NOT HTTP-exposed yet** — Phase 2 will inject these tools into the agent loop.
+- 12/12 backend pytest pass at `/app/backend/tests/test_composio.py` covering auth gating, per-org isolation, idempotent bootstrap, cross-user disconnect protection, bad-toolkit 400.
+
+---
+
 ## 💬 May 14, 2026 — Live Polling for Team Chats (Slack-feel)
 - **User-reported bug**: in multi-member team chats, replies from other members or agents only appeared after a manual page refresh.
 - **Root cause**: `ConversationPage.js` only polled `/messages` while a media-generation placeholder was in flight. Regular text replies were never refetched — the UI was effectively static until reload.
