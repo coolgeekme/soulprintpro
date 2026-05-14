@@ -6876,6 +6876,106 @@ app.include_router(auth_r)
 app.include_router(org_r)
 app.include_router(invite_r)
 
+# Composio integration — per-user managed OAuth + tool execution.
+# Routes mounted under /api/orgs/{org_id}/composio so visibility is
+# automatically scoped by the existing require_org_member gate.
+composio_r = APIRouter(prefix="/api/orgs")
+
+
+@composio_r.get("/{org_id}/composio/toolkits")
+async def composio_list_toolkits(org_id: str, u: dict = Depends(get_current_user)):
+    """Catalogue of toolkits Foundry supports + which the caller has
+    already connected. Drives the Connections page UI."""
+    from composio_integration import (
+        list_supported_toolkits, list_connections, is_available,
+    )
+    await require_org_member(org_id, u["id"])
+    if not is_available():
+        return {"available": False, "toolkits": [], "connections": []}
+    return {
+        "available": True,
+        "toolkits": list_supported_toolkits(),
+        "connections": await list_connections(db, org_id, u["id"]),
+    }
+
+
+class _ComposioConnectBody(BaseModel):
+    toolkit: str
+
+
+@composio_r.post("/{org_id}/composio/connect")
+async def composio_connect(
+    org_id: str,
+    body: _ComposioConnectBody,
+    u: dict = Depends(get_current_user),
+):
+    """Begin OAuth for a toolkit. Returns the Composio-hosted redirect URL."""
+    from composio_integration import initiate_connection, is_available
+    await require_org_member(org_id, u["id"])
+    if not is_available():
+        raise HTTPException(503, "Composio is not configured on this deployment")
+    frontend_base = (
+        os.environ.get("FRONTEND_BASE_URL")
+        or os.environ.get("REACT_APP_BACKEND_URL")
+        or ""
+    ).rstrip("/")
+    callback_url = f"{frontend_base}/app/org/{org_id}/connections?composio_callback=1"
+    try:
+        return await initiate_connection(
+            db, org_id, u["id"], body.toolkit, callback_url,
+        )
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+    except Exception as exc:
+        logger.exception("Composio connect failed")
+        raise HTTPException(500, f"Failed to start OAuth: {exc}")
+
+
+@composio_r.post("/{org_id}/composio/connections/{connection_id}/refresh")
+async def composio_refresh(
+    org_id: str,
+    connection_id: str,
+    u: dict = Depends(get_current_user),
+):
+    """Pull latest status from Composio (called after the OAuth redirect lands)."""
+    from composio_integration import refresh_connection_status, composio_user_id
+    await require_org_member(org_id, u["id"])
+    # Auth gate: connection must belong to this (org, user).
+    row = await db.composio_connections.find_one(
+        {"connection_id": connection_id, "composio_user_id": composio_user_id(org_id, u["id"])},
+    )
+    if not row:
+        raise HTTPException(404, "Connection not found")
+    try:
+        return await refresh_connection_status(db, connection_id)
+    except Exception as exc:
+        logger.exception("Composio refresh failed")
+        raise HTTPException(500, f"Failed to refresh status: {exc}")
+
+
+@composio_r.delete("/{org_id}/composio/connections/{connection_id}")
+async def composio_disconnect(
+    org_id: str,
+    connection_id: str,
+    u: dict = Depends(get_current_user),
+):
+    """Revoke a connection. The composio_integration module enforces
+    (org, user) ownership before talking to Composio."""
+    from composio_integration import disconnect_connection
+    await require_org_member(org_id, u["id"])
+    try:
+        await disconnect_connection(db, org_id, u["id"], connection_id)
+        return {"status": "disconnected"}
+    except ValueError as exc:
+        raise HTTPException(404, str(exc))
+    except Exception as exc:
+        logger.exception("Composio disconnect failed")
+        raise HTTPException(500, f"Failed to disconnect: {exc}")
+
+
+app.include_router(composio_r)
+
+
 # Self-serve 24-hour trial — request a code, redeem it as registration,
 # clock starts at redeem time. See trial.py.
 from trial import make_trial_router  # noqa: E402
@@ -8032,6 +8132,16 @@ async def startup():
             logger.info("GridFS backfill: mirrored %d existing brand logo(s).", backfilled)
     except Exception as exc:
         logger.warning("Brand-logo GridFS backfill skipped: %s", exc)
+    # Composio: idempotently bootstrap one auth-config per supported
+    # toolkit so the OAuth flow is ready by first user click. Skipped
+    # silently when COMPOSIO_API_KEY isn't configured.
+    try:
+        from composio_integration import ensure_auth_configs, is_available as _composio_ready
+        if _composio_ready():
+            cfgs = await ensure_auth_configs(db)
+            logger.info("Composio: %d auth_config(s) ready.", len(cfgs))
+    except Exception as exc:
+        logger.warning("Composio bootstrap skipped: %s", exc)
     logger.info("Foundry API ready.")
 
 @app.on_event("shutdown")

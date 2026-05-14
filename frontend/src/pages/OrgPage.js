@@ -15,6 +15,7 @@ import CollapsibleSection from "../components/CollapsibleSection";
 import Logo from "../components/Logo";
 import SchedulesPanel from "../components/SchedulesPanel";
 import SoulSuggestionsPanel from "../components/SoulSuggestionsPanel";
+import ConnectionsPanel from "../components/ConnectionsPanel";
 import WorkingIndicator from "../components/WorkingIndicator";
 import { compressImageFile } from "../lib/imageCompress";
 import { parseServerDate } from "../lib/datetime";
@@ -895,6 +896,16 @@ export default function OrgPage() {
                   <SpendDashboard orgId={orgId} />
                 </div>
               )}
+
+              {/* Connections — each member connects their own SaaS accounts
+                  (Gmail, Slack, Notion, HubSpot, Calendar) via Composio's
+                  managed OAuth. Per-user scope, visible to every member. */}
+              <div className="sp-glass-strong rounded-2xl p-6 mb-6" id="connections" data-testid="connections-section">
+                <div className="flex items-center gap-2 mb-4">
+                  <h3 className="text-sm uppercase tracking-widest sp-subtle">Your connected accounts</h3>
+                </div>
+                <ConnectionsPanel orgId={orgId} />
+              </div>
 
               {/* Custom agents (per-org, owner/admin manageable) */}
               <div className="sp-glass-strong rounded-2xl p-6 mb-6" data-testid="custom-agents-section">
