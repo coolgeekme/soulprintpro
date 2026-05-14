@@ -3,6 +3,14 @@
 Plain-English feature inventory of **Foundry by SoulPrint Engine** for non-technical teammates. Each section is a category of capabilities and what they do for users.
 
 ---
+## 💰 May 14, 2026 — Phase A Billing Visibility: Workspace Spend Dashboard
+- New `GET /api/orgs/{org_id}/spend?period=current_month|previous_month` endpoint aggregates `llm_calls` cost/calls/tokens, missions, audits, and members for a given org+period. Per-member rollup hydrated with name + email so owners see real people, not opaque IDs.
+- New **Workspace spend** card on `/app/org/:orgId` (owners/admins only — members get a quiet 403) under the "Org setup & insights" panel. KPI strip + collapsible per-member table with % bars + per-kind chips ("$0.47 agent_reply · 121", "$0.04 mission_lead · 18") + "This month / Last month" toggle.
+- Footer states the future-state plainly: *"Once Stripe billing ships (target: June 1, 2026), this total becomes your invoice. Members above your plan's seat allowance will appear as separate per-seat line items."*
+- Seat warning copy + UI now offer **two clear paths** (per user request): **"+ Add a seat ($30/mo)"** secondary CTA alongside the primary **"Upgrade to Temper"**. Backend warning string updated to match.
+- Sets the data foundation Phase B (Stripe checkout + metered seat billing) will plug into.
+
+---
 ## 🩹 May 14, 2026 — Bug Fix: Chief of Staff silent dropout
 - **User-reported bug** (ben@archeforge.com): 3 consecutive messages to the private Chief of Staff produced zero replies — the thread looked dead.
 - **Root cause**: three-way pile-up. (1) Legacy private-CoS convs had `auto_respond=False` from before the flag was default-True. (2) The image-intent classifier wrongly tagged document-shaped phrasing like *"put together everything in a contract"* as an image request, clearing responders. (3) No safety net guaranteed at least one CoS reply per private-CoS conv.

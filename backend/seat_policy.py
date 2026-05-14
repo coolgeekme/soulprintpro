@@ -193,9 +193,10 @@ def warning_for_status(status: Dict[str, Any]) -> Optional[str]:
     if plan == "spark":
         return (
             f"Heads up — {seats_used} of {seats_included} included Spark "
-            f"seat used. Each extra seat is $30/mo on top of your "
-            f"$80/mo Spark plan. Upgrade to Temper for $300/mo "
-            f"(5 seats included) to save once you cross 4+ teammates."
+            f"seat used. You have two options: (a) add seats à-la-carte "
+            f"for $30/mo each on top of your $80/mo Spark plan, or "
+            f"(b) upgrade to Temper for $300/mo (5 seats included) — "
+            f"breaks even around your 4th teammate."
         )
     if plan == "temper":
         prefix = (

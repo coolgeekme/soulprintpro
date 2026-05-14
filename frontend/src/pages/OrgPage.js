@@ -9,6 +9,7 @@ import CustomAgentsPanel from "../components/CustomAgentsPanel";
 import ActivityOverview from "../components/ActivityOverview";
 import DocumentsPanel from "../components/DocumentsPanel";
 import SocialStyleGuidePanel from "../components/SocialStyleGuidePanel";
+import SpendDashboard from "../components/SpendDashboard";
 import RecentConversations from "../components/RecentConversations";
 import CollapsibleSection from "../components/CollapsibleSection";
 import Logo from "../components/Logo";
@@ -888,6 +889,13 @@ export default function OrgPage() {
               {/* Social Style Guide */}
               <SocialStyleGuidePanel orgId={orgId} />
 
+              {/* Spend dashboard — Phase A billing visibility (owners/admins only). */}
+              {canEdit && (
+                <div className="mb-6">
+                  <SpendDashboard orgId={orgId} />
+                </div>
+              )}
+
               {/* Custom agents (per-org, owner/admin manageable) */}
               <div className="sp-glass-strong rounded-2xl p-6 mb-6" data-testid="custom-agents-section">
                 <CustomAgentsPanel orgId={orgId} canEdit={canEdit} />
@@ -1139,13 +1147,22 @@ function SeatWarningBanner({ status }) {
         </div>
         <div className="flex flex-col gap-1.5 shrink-0">
           {isSpark ? (
-            <Link
-              to="/pricing"
-              className="sp-btn sp-btn-primary text-[11px] whitespace-nowrap"
-              data-testid="seat-upgrade-btn"
-            >
-              Upgrade to Temper
-            </Link>
+            <>
+              <Link
+                to="/pricing#seat-addon"
+                className="sp-btn sp-btn-secondary text-[11px] whitespace-nowrap"
+                data-testid="seat-addon-btn"
+              >
+                + Add a seat ($30/mo)
+              </Link>
+              <Link
+                to="/pricing"
+                className="sp-btn sp-btn-primary text-[11px] whitespace-nowrap"
+                data-testid="seat-upgrade-btn"
+              >
+                Upgrade to Temper
+              </Link>
+            </>
           ) : (
             <a
               href="mailto:hello@foundryagents.ai?subject=Refine%20tier%20enquiry"

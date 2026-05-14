@@ -20,7 +20,7 @@ from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
 from pathlib import Path
 from pydantic import BaseModel, Field, EmailStr
-from typing import List, Optional, Literal
+from typing import Dict, List, Optional, Literal
 from datetime import datetime, timezone, timedelta
 from bson import ObjectId
 import os, logging, uuid, secrets, re, json, base64, bcrypt, jwt
@@ -1851,6 +1851,164 @@ async def get_seat_status(org_id: str, u: dict = Depends(get_current_user)):
         **status,
         "warning": warning_for_status(status) if is_admin else None,
         "can_invite": is_admin,
+    }
+
+
+@org_r.get("/{org_id}/spend")
+async def get_org_spend(
+    org_id: str,
+    period: str = "current_month",
+    u: dict = Depends(get_current_user),
+):
+    """Per-org spend rollup for the billing dashboard (Phase A).
+
+    Returns aggregated LLM cost + activity counts for the current or
+    previous month, plus a per-member breakdown so an owner can see
+    *exactly* who is driving spend inside their workspace.
+
+    Powers the seat-policy → billing conversation: an owner sees that
+    Ben used $18 and Alice used $11, and decides whether to add seats
+    or upgrade the plan.
+
+    Auth: owners/admins only — regular members don't see whole-org
+    totals (would expose their teammates' usage to each other).
+    """
+    ctx = await require_org_member(org_id, u["id"])
+    if ctx["member"]["role"] not in ("owner", "admin"):
+        raise HTTPException(403, "Only owners/admins can view org spend.")
+
+    # Resolve the month window. Default to the current calendar month
+    # so the dashboard updates as usage accrues; `previous_month` lets
+    # the owner compare against last month's invoice-ready total.
+    now = datetime.now(timezone.utc)
+    if period == "previous_month":
+        if now.month == 1:
+            start = datetime(now.year - 1, 12, 1, tzinfo=timezone.utc)
+        else:
+            start = datetime(now.year, now.month - 1, 1, tzinfo=timezone.utc)
+        # End = first day of the calendar month we're in.
+        end = datetime(now.year, now.month, 1, tzinfo=timezone.utc)
+    else:
+        period = "current_month"
+        start = datetime(now.year, now.month, 1, tzinfo=timezone.utc)
+        end = now
+
+    match = {
+        "org_id": org_id,
+        "created_at": {"$gte": start, "$lt": end},
+    }
+    # Aggregate org-wide totals + per-user breakdown in two passes.
+    pipeline_org = [
+        {"$match": match},
+        {"$group": {
+            "_id": None,
+            "cost_usd": {"$sum": "$cost_usd"},
+            "calls": {"$sum": 1},
+            "prompt_tokens": {"$sum": "$prompt_tokens"},
+            "completion_tokens": {"$sum": "$completion_tokens"},
+        }},
+    ]
+    pipeline_users = [
+        {"$match": match},
+        {"$group": {
+            "_id": "$user_id",
+            "cost_usd": {"$sum": "$cost_usd"},
+            "calls": {"$sum": 1},
+            "last_active": {"$max": "$created_at"},
+        }},
+        {"$sort": {"cost_usd": -1}},
+    ]
+    pipeline_by_kind = [
+        {"$match": match},
+        {"$group": {
+            "_id": {"$ifNull": ["$kind_label", "other"]},
+            "cost_usd": {"$sum": "$cost_usd"},
+            "calls": {"$sum": 1},
+        }},
+        {"$sort": {"cost_usd": -1}},
+    ]
+
+    org_doc, by_user_rows, by_kind_rows = await asyncio.gather(
+        db.llm_calls.aggregate(pipeline_org).to_list(1),
+        db.llm_calls.aggregate(pipeline_users).to_list(200),
+        db.llm_calls.aggregate(pipeline_by_kind).to_list(50),
+    )
+    org_totals = (org_doc[0] if org_doc else {
+        "cost_usd": 0, "calls": 0,
+        "prompt_tokens": 0, "completion_tokens": 0,
+    })
+    org_totals.pop("_id", None)
+
+    # Hydrate user names so the dashboard displays real people, not
+    # opaque user IDs. One round-trip with $in keeps it cheap.
+    user_ids = [r["_id"] for r in by_user_rows if r.get("_id")]
+    user_oids = []
+    for uid in user_ids:
+        try:
+            user_oids.append(ObjectId(uid))
+        except Exception:
+            pass
+    name_map: Dict[str, Dict[str, str]] = {}
+    if user_oids:
+        async for u_doc in db.users.find(
+            {"_id": {"$in": user_oids}},
+            {"_id": 1, "name": 1, "email": 1},
+        ):
+            name_map[str(u_doc["_id"])] = {
+                "name": u_doc.get("name") or "",
+                "email": u_doc.get("email") or "",
+            }
+    by_user = [
+        {
+            "user_id": r["_id"] or "system",
+            "name": name_map.get(r["_id"] or "", {}).get("name") or "Unknown",
+            "email": name_map.get(r["_id"] or "", {}).get("email") or "",
+            "cost_usd": round(r["cost_usd"], 4),
+            "calls": r["calls"],
+            "last_active": (
+                r["last_active"].isoformat()
+                if isinstance(r.get("last_active"), datetime) else None
+            ),
+        }
+        for r in by_user_rows
+    ]
+    by_kind = [
+        {"label": r["_id"], "cost_usd": round(r["cost_usd"], 4), "calls": r["calls"]}
+        for r in by_kind_rows
+    ]
+
+    # Activity rollups — missions + audits started in the period.
+    missions_total = await db.missions.count_documents({
+        "org_id": org_id,
+        "created_at": {"$gte": start, "$lt": end},
+    })
+    audits_total = await db.business_audits.count_documents({
+        "org_id": org_id,
+        "created_at": {"$gte": start, "$lt": end},
+    })
+    members_total = await db.org_members.count_documents({"org_id": org_id})
+
+    # Seat status piggy-backs on the same payload so the dashboard
+    # can render the "X of Y seats used" pill without a second call.
+    from seat_policy import compute_seat_status
+    seat_status = await compute_seat_status(db, org_id)
+
+    return {
+        "period": period,
+        "period_start": start.isoformat(),
+        "period_end": end.isoformat(),
+        "totals": {
+            "cost_usd": round(org_totals.get("cost_usd", 0), 4),
+            "llm_calls": org_totals.get("calls", 0),
+            "prompt_tokens": org_totals.get("prompt_tokens", 0),
+            "completion_tokens": org_totals.get("completion_tokens", 0),
+            "missions_started": missions_total,
+            "audits_started": audits_total,
+            "members": members_total,
+        },
+        "by_user": by_user,
+        "by_kind": by_kind,
+        "seat_status": seat_status,
     }
 
 invite_r = APIRouter(prefix="/api/invites")
