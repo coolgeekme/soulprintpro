@@ -3678,6 +3678,32 @@ async def generate_agent_reply(conv: dict, team: dict, agent_id: str,
             "rich content: headings, bullets, tables, recommendations. End "
             "with one short sentence of prose introducing the file."
         )
+    # Composio tool-calling subturn — when the org has flipped the
+    # per-agent tools toggle ON AND the user has at least one connected
+    # account, route this turn through OpenAI's native function-calling
+    # so the agent can actually do things (send Gmail, post Slack, etc.)
+    # instead of just saying "I would send that email for you." Falls
+    # back silently to LlmChat when tools aren't applicable.
+    try:
+        if latest_user_id and team.get("org_id"):
+            from composio_agent import is_agent_tools_enabled, run_with_tools
+            if await is_agent_tools_enabled(db, str(team["org_id"]), agent_id):
+                tool_text, _audit = await run_with_tools(
+                    db,
+                    org_id=str(team["org_id"]),
+                    user_id=latest_user_id,
+                    agent_id=agent_id,
+                    agent_name=AGENTS[agent_id]["name"],
+                    conv_id=str(conv["_id"]),
+                    system_prompt=system,
+                    user_prompt=prompt,
+                )
+                if tool_text is not None:
+                    return tool_text, web_sources
+    except Exception as exc:
+        # Never let tool failures break the chat — fall through to the
+        # regular LlmChat path so the user still gets a reply.
+        logger.warning("Composio tool subturn failed (falling back to LlmChat): %s", exc)
     try:
         text = await chat.send_message(UserMessage(text=prompt))
     except Exception as exc:
@@ -6971,6 +6997,99 @@ async def composio_disconnect(
     except Exception as exc:
         logger.exception("Composio disconnect failed")
         raise HTTPException(500, f"Failed to disconnect: {exc}")
+
+
+class _ComposioExecuteBody(BaseModel):
+    tool_slug: str
+    arguments: Dict = Field(default_factory=dict)
+
+
+@composio_r.post("/{org_id}/composio/execute")
+async def composio_execute(
+    org_id: str,
+    body: _ComposioExecuteBody,
+    u: dict = Depends(get_current_user),
+):
+    """Run a single Composio tool action on behalf of the caller.
+
+    Any org member can call this against their OWN connected accounts —
+    no admin gate, because the credentials being used belong to them.
+    Telemetry lands in `llm_calls` with `kind_label="composio:<toolkit>:<slug>"`.
+    """
+    from composio_integration import execute_tool, is_available
+    await require_org_member(org_id, u["id"])
+    if not is_available():
+        raise HTTPException(503, "Composio is not configured on this deployment")
+    if not body.tool_slug.strip():
+        raise HTTPException(400, "tool_slug is required")
+    try:
+        return await execute_tool(db, org_id, u["id"], body.tool_slug, body.arguments)
+    except Exception as exc:
+        logger.exception("Composio execute failed")
+        raise HTTPException(500, f"Failed to execute tool: {exc}")
+
+
+@composio_r.get("/{org_id}/agent-tool-prefs")
+async def list_agent_tool_prefs(
+    org_id: str,
+    u: dict = Depends(get_current_user),
+):
+    """List which agents (built-in + custom) have Composio tools enabled
+    for this org. Every member can see the list; only admins can flip."""
+    ctx = await require_org_member(org_id, u["id"])
+    rows = await db.agent_tool_prefs.find(
+        {"org_id": org_id},
+        {"_id": 0, "agent_id": 1, "tools_enabled": 1, "updated_at": 1},
+    ).to_list(500)
+    enabled = {r["agent_id"]: bool(r.get("tools_enabled")) for r in rows}
+    # Surface the full agent catalogue so the UI can render every agent
+    # (built-in + this org's custom agents) with a toggle in one shot.
+    agents_out: List[Dict[str, Any]] = []
+    for aid, meta in AGENTS.items():
+        if meta.get("org_id") and meta.get("org_id") != org_id:
+            continue  # custom agent from another org — invisible
+        agents_out.append({
+            "agent_id": aid,
+            "name": meta.get("name"),
+            "role": meta.get("role"),
+            "division_key": meta.get("division_key"),
+            "tools_enabled": enabled.get(aid, False),
+            "is_custom": bool(meta.get("org_id")),
+        })
+    agents_out.sort(key=lambda a: (a["is_custom"], a["name"] or ""))
+    is_admin = ctx["member"].get("role") in ("owner", "admin")
+    return {"agents": agents_out, "can_edit": is_admin}
+
+
+class _AgentToolPrefBody(BaseModel):
+    tools_enabled: bool
+
+
+@composio_r.put("/{org_id}/agent-tool-prefs/{agent_id}")
+async def set_agent_tool_pref(
+    org_id: str,
+    agent_id: str,
+    body: _AgentToolPrefBody,
+    u: dict = Depends(get_current_user),
+):
+    """Flip the Composio tools toggle for one agent in this org. Admin-gated."""
+    ctx = await require_org_member(org_id, u["id"])
+    if ctx["member"].get("role") not in ("owner", "admin"):
+        raise HTTPException(403, "Only org owners/admins can change agent tool prefs")
+    if agent_id not in AGENTS:
+        raise HTTPException(404, "Unknown agent")
+    await db.agent_tool_prefs.update_one(
+        {"org_id": org_id, "agent_id": agent_id},
+        {"$set": {
+            "org_id": org_id,
+            "agent_id": agent_id,
+            "tools_enabled": bool(body.tools_enabled),
+            "updated_at": datetime.now(timezone.utc),
+            "updated_by": u["id"],
+        }},
+        upsert=True,
+    )
+    return {"agent_id": agent_id, "tools_enabled": bool(body.tools_enabled)}
 
 
 app.include_router(composio_r)

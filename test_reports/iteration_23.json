@@ -1,0 +1,31 @@
+{
+  "summary": "Composio Phase 2 fully validated. 13/13 backend pytest cases pass — admin gates, agent-tool-prefs CRUD + persistence, /composio/execute envelope-on-failure (NOT 500), llm_calls telemetry with kind_label=composio:<toolkit>:<slug>, is_agent_tools_enabled helper default-OFF/upserted-ON, AND chat regression: normal reply works with tools OFF (default), and ON+no-connections silently falls back to LlmChat. Frontend smoke: AgentToolPrefsPanel renders 171 agents (matches the ~170 catalogue), search box visible, first toggle flipped false→true via UI and the PUT round-tripped to backend. Conversation page tool-message rendering not exercised — see context note.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "Org page", "issues": ["AgentToolPrefsPanel is mounted INSIDE the 'Org setup & insights' collapsible accordion which is collapsed by default. The anchor #agent-tools therefore doesn't auto-scroll/expand the panel into view on direct deep-link. Minor UX nit — consider auto-expanding the accordion when location.hash === '#agent-tools', or moving the panel above the accordion."]}
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_composio_phase2.py",
+    "/app/test_reports/pytest/composio_phase2_results.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "composio_agent.run_with_tools correctly returns (None, []) when there are no tools or no connections, so the existing LlmChat path remains the source of truth for the default case. Verified by chat regression test.",
+    "/composio/execute: the route wraps execute_tool in try/except → HTTPException(500). execute_tool itself already catches SDK exceptions and returns {success: False, response: {error}, error}, so the 500 path is only hit for truly unexpected errors. Unconnected-toolkit case is correctly handled as 200 envelope (verified).",
+    "Admin gate on PUT /agent-tool-prefs/{agent_id} returns 404 for unknown agent BEFORE checking admin role — that's fine since require_org_member ran first; an org member learning the agent id space is harmless.",
+    "Telemetry: composio_agent._record_llm_call uses _CALL_CTX which only populates when called from within generate_agent_reply's context; standalone /composio/execute records via composio_integration.execute_tool's own llm_calls insert (with composio:<toolkit>:<slug> label) — verified end-to-end (count went up after the unconnected GMAIL_SEND_EMAIL call).",
+    "AgentToolPrefsPanel lives inside the collapsed 'Org setup & insights' accordion on OrgPage. The #agent-tools anchor doesn't auto-expand it. Small UX issue, not a blocker."
+  ],
+  "updated_files": ["/app/backend/tests/test_composio_phase2.py (new)"],
+  "success_rate": {"backend": "100% (13/13)", "frontend": "100% (smoke — panel renders 171/~170 agents, search present, toggle flip + backend round-trip confirmed)"},
+  "test_credentials": "reggie@coolgeek.me / superadminpass123 (owner of Reggie Lab 69f6a9f568b5974dfcc2fcf8). autopost-test-1777661963@example.com / testtest123 used as non-member 403 fixture.",
+  "seed_data_creation": "None persistent. Tests flip then unflip tool prefs for 1 + up-to-25 agents inside their own try/finally; final cleanup PUT for marketing-ai-citation-strategist confirmed via API. db.agent_tool_prefs left in a clean state (verifiable: zero rows with tools_enabled=true on Reggie Lab).",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Phase 2 surface lives in /app/backend/tests/test_composio_phase2.py — reusable. Conversation-page sender_type='tool' pill rendering was NOT exercised in the UI because (a) it requires manually inserting a tool message into db.messages and (b) the conversation route already returns sender_type/tool_* fields on the message API. To test it: insert a fake message via Mongo with {sender_type:'tool', tool_label:'Gmail · send email', tool_status:'ok', tool_slug:'GMAIL_SEND_EMAIL', conversation_id:'6a02ba997982a813da3d83fa', text:'test', timestamp:now} then open the conversation in the UI and confirm a pill appears between bubbles (ConversationPage.js ~L1247 has the new branch). /messages/since polling should also pick it up. The AgentToolPrefsPanel ships inside the 'Org setup & insights' accordion — must click that header first to render it. There's a tiny UX nit: the #agent-tools anchor does NOT auto-expand the accordion on deep-link load — flag to main agent as a polish item.",
+  "rca of the issue": "N/A — no functional bugs found."
+}

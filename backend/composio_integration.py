@@ -314,16 +314,28 @@ async def execute_tool(
         raise RuntimeError("Composio is not configured")
     cu = composio_user_id(org_id, user_id)
     client = _get_client()
+    # Composio v3 requires an explicit toolkit version for *manual* execute
+    # calls (the auto path inside .tools.get() handles versioning itself).
+    # Look it up once per slug and reuse — version pins are stable.
+    version: Optional[str] = None
+    try:
+        meta = client.tools.get_raw_composio_tool_by_slug(slug=tool_slug)
+        version = getattr(meta, "version", None)
+    except Exception as exc:
+        logger.warning("Composio: version lookup failed for %s: %s", tool_slug, exc)
     started = datetime.now(timezone.utc)
     success = True
     err_msg: Optional[str] = None
     response: Any = None
     try:
-        result = client.tools.execute(
-            slug=tool_slug,
-            arguments=arguments or {},
-            user_id=cu,
-        )
+        kwargs: Dict[str, Any] = {
+            "slug": tool_slug,
+            "arguments": arguments or {},
+            "user_id": cu,
+        }
+        if version:
+            kwargs["version"] = version
+        result = client.tools.execute(**kwargs)
         # SDK returns a Pydantic-ish object; pull the dict form.
         if hasattr(result, "model_dump"):
             response = result.model_dump()

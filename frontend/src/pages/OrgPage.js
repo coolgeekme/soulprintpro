@@ -16,6 +16,7 @@ import Logo from "../components/Logo";
 import SchedulesPanel from "../components/SchedulesPanel";
 import SoulSuggestionsPanel from "../components/SoulSuggestionsPanel";
 import ConnectionsPanel from "../components/ConnectionsPanel";
+import AgentToolPrefsPanel from "../components/AgentToolPrefsPanel";
 import WorkingIndicator from "../components/WorkingIndicator";
 import { compressImageFile } from "../lib/imageCompress";
 import { parseServerDate } from "../lib/datetime";
@@ -905,6 +906,16 @@ export default function OrgPage() {
                   <h3 className="text-sm uppercase tracking-widest sp-subtle">Your connected accounts</h3>
                 </div>
                 <ConnectionsPanel orgId={orgId} />
+              </div>
+
+              {/* Per-agent Composio tool toggles — admin-gated. Lives next
+                  to Connections so the "connect → enable agents" flow
+                  reads as one coherent journey. */}
+              <div className="sp-glass-strong rounded-2xl p-6 mb-6" id="agent-tools" data-testid="agent-tools-section">
+                <div className="flex items-center gap-2 mb-4">
+                  <h3 className="text-sm uppercase tracking-widest sp-subtle">Agent tool access</h3>
+                </div>
+                <AgentToolPrefsPanel orgId={orgId} />
               </div>
 
               {/* Custom agents (per-org, owner/admin manageable) */}

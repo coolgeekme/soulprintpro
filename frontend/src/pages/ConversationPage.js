@@ -1245,6 +1245,29 @@ export default function ConversationPage() {
                 </div>
               );
             }
+            // Tool-call audit messages — render as a slim inline indicator
+            // (not a chat bubble) so the timeline reads as
+            //   [user] → "Calling Gmail · send email…" → [agent]
+            if (m.sender_type === "tool") {
+              const ok = m.tool_status !== "error";
+              return (
+                <div key={m.id} className="flex justify-start sp-fade-up" data-testid={`tool-msg-${m.id}`}>
+                  <div className={`inline-flex items-center gap-2 text-[12px] px-3 py-1.5 rounded-full border ${ok ? "border-emerald-500/30 bg-emerald-500/5 text-emerald-200" : "border-red-500/40 bg-red-500/5 text-red-200"}`}>
+                    <span className="font-medium">{m.sender_name || "Agent"}</span>
+                    <span className="opacity-70">→</span>
+                    <span className="font-mono text-[11px]">{m.tool_label || m.tool_slug}</span>
+                    <span className={`text-[10px] uppercase tracking-wider px-1.5 py-0.5 rounded-full ${ok ? "bg-emerald-500/20" : "bg-red-500/20"}`}>
+                      {ok ? "ok" : "error"}
+                    </span>
+                    {m.tool_error && (
+                      <span className="opacity-70 truncate max-w-[280px]" title={m.tool_error}>
+                        {m.tool_error}
+                      </span>
+                    )}
+                  </div>
+                </div>
+              );
+            }
             // Mission cards — special rendering: live-updating status card
             // bound to the mission_id rather than a normal chat bubble.
             if (m.kind === "mission_card" && m.mission_id) {
