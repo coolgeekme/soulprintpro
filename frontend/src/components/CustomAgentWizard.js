@@ -2,7 +2,7 @@ import React, { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { toast } from "sonner";
 import {
-  X, Loader2, ArrowLeft, ArrowRight, Sparkles, Check, Bot, Send,
+  X, Loader2, ArrowLeft, ArrowRight, Check, Bot, Send,
   Wand2, BookOpen, Code2, AlertCircle, RotateCcw,
 } from "lucide-react";
 import api from "../lib/api";
@@ -623,7 +623,7 @@ function StepVoice({ form, set, drafting, onDraft, onRefine }) {
           {drafting ? (
             <Loader2 className="w-3.5 h-3.5 animate-spin" />
           ) : (
-            <Sparkles className="w-3.5 h-3.5" />
+            <Wand2 className="w-3.5 h-3.5" />
           )}
           {hasDraft ? "Re-generate prompt" : "Generate the agent prompt"}
         </button>

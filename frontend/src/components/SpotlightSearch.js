@@ -2,7 +2,7 @@ import React, { useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import api from "../lib/api";
 import {
-  Search, X, Loader2, Sparkles, MessageSquare, Rocket, FileText,
+  Search, X, Loader2, Brain, MessageSquare, Rocket, FileText,
   Megaphone, Bot, Hash, ArrowRight,
 } from "lucide-react";
 
@@ -214,7 +214,7 @@ export default function SpotlightSearch({ open, onClose, orgId }) {
                 >
                   {aiLoading
                     ? <Loader2 className="w-3 h-3 animate-spin" />
-                    : <Sparkles className="w-3 h-3" />}
+                    : <Brain className="w-3 h-3" />}
                   Ask Foundry
                 </button>
               </div>
@@ -225,7 +225,7 @@ export default function SpotlightSearch({ open, onClose, orgId }) {
                   data-testid="spotlight-ai-answer"
                 >
                   <div className="text-[10px] uppercase tracking-widest sp-subtle mb-1.5 flex items-center gap-1">
-                    <Sparkles className="w-3 h-3 text-orange-300" /> Synthesised answer
+                    <Brain className="w-3 h-3 text-orange-300" /> Synthesised answer
                   </div>
                   <div className="text-sm leading-relaxed whitespace-pre-wrap">
                     {aiAnswer.answer}

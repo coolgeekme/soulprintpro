@@ -1,5 +1,5 @@
 import React, { useState } from "react";
-import { Sparkles, Loader2, Check, X, RotateCcw, Wand2 } from "lucide-react";
+import { Loader2, Check, X, RotateCcw, Wand2 } from "lucide-react";
 import { toast } from "sonner";
 import api from "../lib/api";
 
@@ -110,7 +110,7 @@ export default function MissionGoalDrafter({ currentGoal, onAccept, disabled }) 
         title="Turn a rough idea into a polished mission goal."
         data-testid="mission-drafter-open"
       >
-        <Sparkles className="w-3.5 h-3.5" />
+        <Wand2 className="w-3.5 h-3.5" />
         Help me write this
       </button>
     );
@@ -196,7 +196,7 @@ export default function MissionGoalDrafter({ currentGoal, onAccept, disabled }) 
               {busy ? (
                 <Loader2 className="w-3.5 h-3.5 animate-spin" />
               ) : (
-                <Sparkles className="w-3.5 h-3.5" />
+                <Wand2 className="w-3.5 h-3.5" />
               )}
               Generate goal
             </button>

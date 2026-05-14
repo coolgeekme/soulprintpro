@@ -7,7 +7,7 @@ import { toast } from "sonner";
 import { parseServerDate, formatLocalDateTime } from "../lib/datetime";
 import {
   Search, Loader2, ArrowRight, Download, ExternalLink, Trophy,
-  Clock, AlertTriangle, FileText, Sparkles, BarChart3, RefreshCw, Trash2,
+  Clock, AlertTriangle, FileText, Play, BarChart3, RefreshCw, Trash2,
 } from "lucide-react";
 
 const STATUS_META = {
@@ -254,7 +254,7 @@ export default function AuditsPage() {
                 className="sp-btn sp-btn-primary text-sm w-full"
                 data-testid="audit-submit"
               >
-                {running ? <Loader2 className="w-4 h-4 animate-spin" /> : <Sparkles className="w-4 h-4" />}
+                {running ? <Loader2 className="w-4 h-4 animate-spin" /> : <Play className="w-4 h-4" />}
                 {running ? "Starting…" : "Run Signal Audit"}
               </button>
             </div>
