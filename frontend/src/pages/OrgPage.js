@@ -40,6 +40,22 @@ export default function OrgPage() {
   useEffect(() => {
     const hash = (location.hash || "").replace("#", "");
     if (!hash) return undefined;
+    // Several deep-link anchors (#connections, #agent-tools, #org-soul) live
+    // INSIDE the "Org setup & insights" accordion which is collapsed by
+    // default. If the user lands with one of those hashes, force the
+    // accordion open by pre-seeding its localStorage key before the
+    // CollapsibleSection mounts. Idempotent — only writes when needed.
+    const INSIDE_ADMIN_ACCORDION = new Set([
+      "connections", "agent-tools", "org-soul", "documents",
+    ]);
+    if (INSIDE_ADMIN_ACCORDION.has(hash)) {
+      try {
+        const key = `sp-collapse:org-admin-${orgId}`;
+        if (localStorage.getItem(key) !== "1") {
+          localStorage.setItem(key, "1");
+        }
+      } catch (_) { /* ignore quota / privacy mode */ }
+    }
     let attempts = 0;
     const tick = () => {
       const el = document.getElementById(hash);
@@ -53,7 +69,7 @@ export default function OrgPage() {
       if (++attempts < 12) setTimeout(tick, 250);  // ~3 seconds total
     };
     tick();
-  }, [location.hash]);
+  }, [location.hash, orgId]);
   const [org, setOrg] = useState(null);
   const [teams, setTeams] = useState([]);
   const [members, setMembers] = useState([]);

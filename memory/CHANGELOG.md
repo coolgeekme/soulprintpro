@@ -3,6 +3,18 @@
 Plain-English feature inventory of **Foundry by SoulPrint Engine** for non-technical teammates. Each section is a category of capabilities and what they do for users.
 
 ---
+## 🔧 May 14, 2026 — Composio Phase 2: Agent Tool Calling
+- **New capability**: agents can now actually invoke connected tools (Gmail, Slack, Notion, HubSpot, Google Calendar) instead of just describing what they would do. Per-agent toggle, max 3 tool calls per turn.
+- **Per-agent toggle** stored in `agent_tool_prefs` collection per `(org_id, agent_id)`. Default OFF — admins must explicitly opt each agent in. Managed by new `AgentToolPrefsPanel.js` (search box, per-agent switch, read-only for non-admins). Routes: `GET /api/orgs/{org_id}/agent-tool-prefs`, `PUT /api/orgs/{org_id}/agent-tool-prefs/{agent_id}` (owner/admin only).
+- **Tool subturn**: when an agent has tools_enabled AND the user has at least one active connection, `generate_agent_reply` routes through new `composio_agent.py` which calls OpenAI directly with `chat.completions.create(..., tools=[...])`. `LlmChat` (emergentintegrations) doesn't expose `tools=`, so we go native for this path. Falls back silently to LlmChat when tools don't apply.
+- **`/composio/execute` endpoint**: any org member can invoke a single tool on their own connected accounts. Auto-resolves the Composio toolkit version (v3 SDK quirk for manual exec). Records telemetry to `llm_calls` with `kind_label="composio:<toolkit>:<slug>"`.
+- **Tool messages**: every tool call persists a `sender_type="tool"` audit message into the conversation (`tool_label`, `tool_status`, `tool_error`, `tool_arguments` preview). `ConversationPage.js` renders these as inline pills (not bubbles) — "Frontend Developer → `Gmail · send email` [ok]". Live polling picks them up automatically via the `/messages/since` cursor.
+- **Telemetry**: tool-subturn OpenAI calls write to `llm_calls` with `kind_label="agent_reply:composio"` so SpendDashboard can split tool turns out of normal chat spend.
+- **UX fix**: anchors `#connections` / `#agent-tools` / `#org-soul` now auto-expand the "Org setup & insights" accordion on deep-link load (was a flag from the test agent).
+- 13/13 backend pytest pass at `/app/backend/tests/test_composio_phase2.py` covering admin gating, prefs CRUD, execute envelope-on-failure, telemetry kind_label, chat regression with tools OFF (default path unchanged), chat regression with tools ON + no connections (silent fallback to LlmChat).
+
+---
+
 ## 🔌 May 14, 2026 — Composio Integration (Phase 1: Connections)
 - **New feature**: each org member can now connect their own SaaS accounts — Gmail, Google Calendar, Slack, Notion, HubSpot — via Composio's managed OAuth. No OAuth-app registration on our side; Composio handles all third-party credentials.
 - **Per-user, per-org scope**: connections are keyed by `{org_id}:{user_id}`, so the same Foundry user in two different orgs has two completely separate connection sets (mirrors how Memory isolates per workspace).
