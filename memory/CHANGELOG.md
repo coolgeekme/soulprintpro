@@ -3,6 +3,15 @@
 Plain-English feature inventory of **Foundry by SoulPrint Engine** for non-technical teammates. Each section is a category of capabilities and what they do for users.
 
 ---
+## 💬 May 14, 2026 — Live Polling for Team Chats (Slack-feel)
+- **User-reported bug**: in multi-member team chats, replies from other members or agents only appeared after a manual page refresh.
+- **Root cause**: `ConversationPage.js` only polled `/messages` while a media-generation placeholder was in flight. Regular text replies were never refetched — the UI was effectively static until reload.
+- **Fix**: new `GET /api/conversations/{id}/messages/since?cursor=<ISO>` cursor endpoint returns only messages newer than the cursor (matches both `timestamp` and `ready_at` so in-place media patches still surface). Frontend runs a universal 3s polling loop that reads `max(timestamp, ready_at)` from current state as the cursor, dedupes results by `id`, re-sorts by timestamp, and pauses while the tab is hidden (battery + LLM cost saver).
+- Auth-gated via the same `load_conv_or_403` guard as the full fetch — non-members get 403, unauthenticated callers get 401.
+- 12-case pytest regression at `/app/backend/tests/test_messages_since.py` covers cursor edge cases, auth gating, feedback parity, multi-user live update, and the `ready_at` $or branch.
+
+---
+
 ## 👥 May 14, 2026 — Team Conversations Are Now Truly Team-Visible
 - **User-reported bug**: a member started a conversation in a team but the owner/admin couldn't see it. Team chat was acting like 1:1 DM by accident.
 - **Fix**: visibility logic in `list_conversations` + `load_conv_or_403` now widens from "you must be a direct member of this conv" → "you must be a member of the team that owns this conv." Reuses the existing `can_user_view_team` gate so visibility is consistent with how teams already work (open teams = everyone in org, closed teams = explicit members, owner-override always).
