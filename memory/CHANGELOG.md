@@ -3,6 +3,16 @@
 Plain-English feature inventory of **Foundry by SoulPrint Engine** for non-technical teammates. Each section is a category of capabilities and what they do for users.
 
 ---
+## 🔌 May 15, 2026 — Composio Phase 3: Multi-Account, Smart Defaults & 250+ Tool Catalog
+- **Multi-account per connector**: each user can now connect Gmail #1 (Work) and Gmail #2 (Personal) — same logic applies to Slack workspaces, HubSpot portals, every toolkit. `allow_multiple=true` passed to Composio's `link()`, plus a nickname captured at connect time and editable via inline pencil. Agent system-prompt now lists every connected account with its nickname so replies can say "sending from your Work Gmail".
+- **Featured list grew 5 → 20**: Gmail, Calendar, Slack, Notion, HubSpot, Linear, Jira, Asana, Drive, Dropbox, Discord, Salesforce, Mailchimp, Stripe, Calendly, Zoom, Twitter, LinkedIn, Airtable, GitLab. 19 bootstrap cleanly on startup (Twitter requires custom OAuth credentials — fails gracefully).
+- **Browse-all catalog**: new modal pulls the full ~250-toolkit Composio catalog, searchable by name/slug, featured-first sort. Lazy auth-config bootstrap (`ensure_auth_config_for`) creates the auth config on first user Connect click — no startup bloat for the long tail.
+- **Smart defaults via recommendations**: every agent's `division_key` maps to a curated toolkit list (Engineering → Linear+GitHub+Jira+GitLab+Slack, Sales → HubSpot+Salesforce+Gmail+Calendar+Calendly, etc., 12 divisions covered). New `GET /agent-tool-recommendations` returns agents whose role matches what the user has already connected. Banner in `AgentToolPrefsPanel` surfaces them and `POST /apply-recommendations` flips them all on in one bulk-upsert (admin-gated).
+- **New routes**: `GET /composio/catalog?q=`, `PUT /composio/connections/{id}/nickname`, `GET /agent-tool-recommendations`, `POST /agent-tool-prefs/apply-recommendations`.
+- 40/40 pytest pass across Phase 1 + 2 + 3 (one Phase 1 test relaxed to issubset since the featured list grew, no behavioural regression).
+
+---
+
 ## 🔧 May 14, 2026 — Composio Phase 2: Agent Tool Calling
 - **New capability**: agents can now actually invoke connected tools (Gmail, Slack, Notion, HubSpot, Google Calendar) instead of just describing what they would do. Per-agent toggle, max 3 tool calls per turn.
 - **Per-agent toggle** stored in `agent_tool_prefs` collection per `(org_id, agent_id)`. Default OFF — admins must explicitly opt each agent in. Managed by new `AgentToolPrefsPanel.js` (search box, per-agent switch, read-only for non-admins). Routes: `GET /api/orgs/{org_id}/agent-tool-prefs`, `PUT /api/orgs/{org_id}/agent-tool-prefs/{agent_id}` (owner/admin only).
