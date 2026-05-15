@@ -177,23 +177,69 @@ async def _publish_facebook(db, org_id, user_id, post, conn) -> Dict[str, Any]:
     ), tool="FACEBOOK_CREATE_POST")
 
 
+async def _resolve_instagram_user_id(
+    db, org_id: str, user_id: str, conn: Dict[str, Any],
+) -> Optional[str]:
+    """Look up the user's IG Business Account ID and cache it on the
+    connection row. Returns None if Composio can't resolve it (most
+    common cause: IG account isn't Business/Creator linked to a FB
+    Page the user admins).
+
+    The CREATE_MEDIA step requires the *numeric* ID, not the 'me'
+    alias — that was the bug we kept hitting.
+    """
+    try:
+        res = await _exec(db, org_id, user_id, "INSTAGRAM_GET_USER_INFO", {})
+    except Exception as exc:
+        logger.warning("IG user info lookup failed: %s", exc)
+        return None
+    if not res.get("success"):
+        return None
+    info = res.get("response") or {}
+    data = info.get("data") if isinstance(info, dict) and isinstance(info.get("data"), dict) else info
+    ig_id = None
+    username = None
+    if isinstance(data, dict):
+        ig_id = data.get("id") or data.get("user_id")
+        username = data.get("username") or data.get("name")
+    if ig_id:
+        await db.composio_connections.update_one(
+            {"connection_id": conn["connection_id"]},
+            {"$set": {
+                "instagram_user_id": str(ig_id),
+                "instagram_username": username,
+            }},
+        )
+    return str(ig_id) if ig_id else None
+
+
 async def _publish_instagram(db, org_id, user_id, post, conn) -> Dict[str, Any]:
     """Instagram's modern flow is two Meta Graph API calls:
         1. POST_IG_USER_MEDIA       → returns container_id
         2. POST_IG_USER_MEDIA_PUBLISH → publishes the container
 
-    The deprecated single-call INSTAGRAM_CREATE_POST only created an
-    unpublished draft — that was the v1 bug.
+    Critical detail: step 1 REQUIRES the actual numeric IG Business
+    Account ID — 'me' is NOT accepted (only the publish step accepts
+    'me'). That was the silent-success bug. We cache the resolved ID
+    on the connection row so subsequent publishes skip the lookup.
     """
     img = _image_url(post)
     if not img:
         return _result_payload(False, tool="INSTAGRAM_POST_IG_USER_MEDIA",
                                error="Instagram requires an image — generate or attach one first.")
     caption = _text_for(post, "instagram") or post.get("text", "")
-    ig_user_id = conn.get("instagram_user_id") or "me"
+    ig_user_id = conn.get("instagram_user_id")
+    if not ig_user_id:
+        ig_user_id = await _resolve_instagram_user_id(db, org_id, user_id, conn)
+    if not ig_user_id:
+        return _result_payload(
+            False, tool="INSTAGRAM_GET_USER_INFO",
+            error="Couldn't resolve Instagram Business Account ID. Confirm your IG account is "
+                  "Business/Creator and linked to a Facebook Page you admin.",
+        )
     step1 = await _exec(
         db, org_id, user_id, "INSTAGRAM_POST_IG_USER_MEDIA",
-        {"ig_user_id": ig_user_id, "image_url": img, "caption": caption},
+        {"ig_user_id": str(ig_user_id), "image_url": img, "caption": caption},
     )
     if not step1.get("success"):
         return _result_payload(False, tool="INSTAGRAM_POST_IG_USER_MEDIA",
@@ -206,7 +252,7 @@ async def _publish_instagram(db, org_id, user_id, post, conn) -> Dict[str, Any]:
                                response=step1.get("response"))
     step2 = await _exec(
         db, org_id, user_id, "INSTAGRAM_POST_IG_USER_MEDIA_PUBLISH",
-        {"ig_user_id": ig_user_id, "creation_id": str(container_id)},
+        {"ig_user_id": str(ig_user_id), "creation_id": str(container_id)},
     )
     return _result_envelope(step2, tool="INSTAGRAM_POST_IG_USER_MEDIA_PUBLISH",
                              extra={"container_id": container_id})
@@ -300,27 +346,16 @@ async def discover_connection_metadata(
             out["display_label"] = conn.get("facebook_page_name") or f"Page {page_id}"
             out["pages"] = conn.get("facebook_pages") or []
     elif toolkit == "instagram":
-        try:
-            res = await _exec(db, org_id, user_id, "INSTAGRAM_GET_USER_INFO", {})
-        except Exception:
-            res = {"success": False}
-        if res.get("success"):
-            info = res.get("response") or {}
-            data = info.get("data") if isinstance(info, dict) and isinstance(info.get("data"), dict) else info
-            if isinstance(data, dict):
-                handle = data.get("username") or data.get("name")
-                ig_id = data.get("id")
-                if ig_id:
-                    await db.composio_connections.update_one(
-                        {"connection_id": conn["connection_id"]},
-                        {"$set": {
-                            "instagram_user_id": str(ig_id),
-                            "instagram_username": handle,
-                        }},
-                    )
-                    out["instagram_user_id"] = str(ig_id)
-                    out["instagram_username"] = handle
-                    out["display_label"] = f"@{handle}" if handle else f"IG {ig_id}"
+        ig_user_id = conn.get("instagram_user_id")
+        if not ig_user_id:
+            ig_user_id = await _resolve_instagram_user_id(db, org_id, user_id, conn)
+        if ig_user_id:
+            # Re-read so we pick up the username that resolve cached.
+            conn = await _active_connection(db, org_id, user_id, toolkit) or conn
+            handle = conn.get("instagram_username")
+            out["instagram_user_id"] = str(ig_user_id)
+            out["instagram_username"] = handle
+            out["display_label"] = f"@{handle}" if handle else f"IG {ig_user_id}"
     return out
 
 
