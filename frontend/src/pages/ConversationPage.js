@@ -6,7 +6,7 @@ import TopBar from "../components/TopBar";
 import { toast } from "sonner";
 import { useAuth } from "../context/AuthContext";
 import {
-  Send, Trash2, AtSign, Users, Repeat, Search, X, Lock, Film, Globe, ArrowUp, ArrowDown, UserPlus, Paperclip, FileText, File as FileIcon, Download, CornerDownRight, Megaphone, Pencil, Wand2, Loader2, Rocket, Square, Minimize2
+  Send, Trash2, AtSign, Users, Repeat, Search, X, Lock, Film, Globe, ArrowUp, ArrowDown, UserPlus, Paperclip, FileText, File as FileIcon, Download, CornerDownRight, Megaphone, Pencil, Wand2, Loader2, Rocket, Square, Minimize2, Archive, ArchiveRestore
 } from "lucide-react";
 import LinkPreviewCard from "../components/LinkPreviewCard";
 import IntegrityBadge from "../components/IntegrityBadge";
@@ -939,13 +939,34 @@ export default function ConversationPage() {
   };
 
   const clearConv = async () => {
-    if (!window.confirm("Delete this conversation? This cannot be undone.")) return;
+    if (!window.confirm("Permanently DELETE this conversation? This cannot be undone. (Use Archive if you only want to hide it.)")) return;
     try {
       await api.delete(`/conversations/${convId}`);
       toast.success("Conversation deleted");
       nav(`/app/team/${teamId}`);
     } catch (err) {
       toast.error(err?.response?.data?.detail || "Failed");
+    }
+  };
+
+  const archiveConv = async () => {
+    try {
+      await api.post(`/conversations/${convId}/archive`);
+      toast.success("Archived — still searchable in the team's Archived view");
+      nav(`/app/team/${teamId}`);
+    } catch (err) {
+      toast.error(err?.response?.data?.detail || "Archive failed");
+    }
+  };
+
+  const unarchiveConv = async () => {
+    try {
+      await api.post(`/conversations/${convId}/unarchive`);
+      toast.success("Restored");
+      // Refresh local conv so the TopBar swaps Restore back to Archive.
+      setConv((prev) => prev ? { ...prev, is_archived: false, archived_at: null } : prev);
+    } catch (err) {
+      toast.error(err?.response?.data?.detail || "Restore failed");
     }
   };
 
@@ -1093,18 +1114,39 @@ export default function ConversationPage() {
       <TopBar
         right={
           conv.can_delete && (
-            <button
-              onClick={clearConv}
-              className="sp-btn sp-btn-ghost text-xs"
-              data-testid="delete-conv-btn"
-              title={
-                conv.is_creator
-                  ? "Delete this conversation"
-                  : "Delete this conversation (as org owner)"
-              }
-            >
-              <Trash2 className="w-3.5 h-3.5" /> <span className="hidden md:inline">Delete</span>
-            </button>
+            <div className="flex items-center gap-1">
+              {conv.is_archived ? (
+                <button
+                  onClick={unarchiveConv}
+                  className="sp-btn sp-btn-ghost text-xs"
+                  data-testid="unarchive-conv-btn"
+                  title="Restore this conversation back into the active list"
+                >
+                  <ArchiveRestore className="w-3.5 h-3.5" /> <span className="hidden md:inline">Restore</span>
+                </button>
+              ) : (
+                <button
+                  onClick={archiveConv}
+                  className="sp-btn sp-btn-ghost text-xs"
+                  data-testid="archive-conv-btn"
+                  title="Hide from default lists. Memory is preserved — agents can still recall what was discussed."
+                >
+                  <Archive className="w-3.5 h-3.5" /> <span className="hidden md:inline">Archive</span>
+                </button>
+              )}
+              <button
+                onClick={clearConv}
+                className="sp-btn sp-btn-ghost text-xs hover:!text-red-300"
+                data-testid="delete-conv-btn"
+                title={
+                  conv.is_creator
+                    ? "Permanently delete this conversation"
+                    : "Permanently delete this conversation (as org owner)"
+                }
+              >
+                <Trash2 className="w-3.5 h-3.5" /> <span className="hidden md:inline">Delete</span>
+              </button>
+            </div>
           )
         }
       >

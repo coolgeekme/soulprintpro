@@ -3,7 +3,7 @@ import { useParams, Link, useNavigate } from "react-router-dom";
 import api from "../lib/api";
 import TopBar from "../components/TopBar";
 import { toast } from "sonner";
-import { MessageCircle, Users, Plus, Radio, Search, X, Wand2, ArrowRight, Pencil, Save, Trash2, X as XIcon, Loader2 } from "lucide-react";
+import { MessageCircle, Users, Plus, Radio, Search, X, Wand2, ArrowRight, Pencil, Save, Trash2, X as XIcon, Loader2, Archive, ArchiveRestore } from "lucide-react";
 import Logo from "../components/Logo";
 import SchedulesPanel from "../components/SchedulesPanel";
 
@@ -72,6 +72,7 @@ export default function TeamPage() {
   const [agents, setAgents] = useState([]);
   const [divisions, setDivisions] = useState([]);
   const [conversations, setConversations] = useState([]);
+  const [showArchived, setShowArchived] = useState(false);
   const [members, setMembers] = useState([]);
   const [loading, setLoading] = useState(true);
   const [savingSP, setSavingSP] = useState(false);
@@ -123,7 +124,7 @@ export default function TeamPage() {
     e.preventDefault();
     e.stopPropagation();
     if (!c?.can_delete || deletingConvId) return;
-    if (!window.confirm(`Delete "${c.title || "this conversation"}"? This permanently removes the conversation and all its messages.`)) return;
+    if (!window.confirm(`Permanently DELETE "${c.title || "this conversation"}"? This cannot be undone. (Use Archive if you only want to hide it.)`)) return;
     setDeletingConvId(c.id);
     try {
       await api.delete(`/conversations/${c.id}`);
@@ -133,6 +134,39 @@ export default function TeamPage() {
       toast.error(err?.response?.data?.detail || "Could not delete this conversation");
     } finally {
       setDeletingConvId("");
+    }
+  };
+
+  // Per-conversation archive / unarchive — same permission rule.
+  const [archivingConvId, setArchivingConvId] = useState("");
+  const archiveConversation = async (e, c) => {
+    e.preventDefault();
+    e.stopPropagation();
+    if (!c?.can_delete || archivingConvId) return;
+    setArchivingConvId(c.id);
+    try {
+      await api.post(`/conversations/${c.id}/archive`);
+      setConversations((prev) => prev.filter((x) => x.id !== c.id));
+      toast.success("Archived — view under \"Archived\" toggle");
+    } catch (err) {
+      toast.error(err?.response?.data?.detail || "Could not archive this conversation");
+    } finally {
+      setArchivingConvId("");
+    }
+  };
+  const unarchiveConversation = async (e, c) => {
+    e.preventDefault();
+    e.stopPropagation();
+    if (!c?.can_delete || archivingConvId) return;
+    setArchivingConvId(c.id);
+    try {
+      await api.post(`/conversations/${c.id}/unarchive`);
+      setConversations((prev) => prev.filter((x) => x.id !== c.id));
+      toast.success("Restored");
+    } catch (err) {
+      toast.error(err?.response?.data?.detail || "Could not restore this conversation");
+    } finally {
+      setArchivingConvId("");
     }
   };
 
@@ -156,9 +190,10 @@ export default function TeamPage() {
     setLoading(true);
     try {
       const teamRes = await api.get(`/teams/${teamId}`);
+      const archParam = showArchived ? "true" : "false";
       const [agentsRes, convsRes, membersRes, divsRes] = await Promise.all([
         api.get(`/teams/${teamId}/agents`),
-        api.get(`/teams/${teamId}/conversations`),
+        api.get(`/teams/${teamId}/conversations`, { params: { archived: archParam } }),
         api.get(`/orgs/${teamRes.data.org_id}/members`),
         api.get(`/agents/divisions`),
       ]);
@@ -179,7 +214,7 @@ export default function TeamPage() {
     } finally { setLoading(false); }
   };
 
-  useEffect(() => { load(); /* eslint-disable-next-line */ }, [teamId]);
+  useEffect(() => { load(); /* eslint-disable-next-line */ }, [teamId, showArchived]);
 
   const saveSoulPrint = async () => {
     setSavingSP(true);
@@ -378,21 +413,50 @@ export default function TeamPage() {
             </section>
 
             <section>
-              <div className="flex items-center justify-between mb-3">
-                <h2 className="text-sm uppercase tracking-widest sp-subtle flex items-center gap-2"><MessageCircle className="w-4 h-4" /> Conversations</h2>
+              <div className="flex items-center justify-between mb-3 gap-2 flex-wrap">
+                <h2 className="text-sm uppercase tracking-widest sp-subtle flex items-center gap-2">
+                  <MessageCircle className="w-4 h-4" /> Conversations
+                </h2>
+                <div className="inline-flex rounded-lg overflow-hidden border border-white/10" role="tablist" aria-label="Conversation filter">
+                  <button
+                    type="button"
+                    role="tab"
+                    aria-selected={!showArchived}
+                    onClick={() => setShowArchived(false)}
+                    className={`text-xs px-3 py-1.5 transition ${!showArchived ? "bg-white/10 text-white" : "sp-subtle hover:bg-white/5"}`}
+                    data-testid="conv-filter-active"
+                  >
+                    Active
+                  </button>
+                  <button
+                    type="button"
+                    role="tab"
+                    aria-selected={showArchived}
+                    onClick={() => setShowArchived(true)}
+                    className={`text-xs px-3 py-1.5 transition inline-flex items-center gap-1 ${showArchived ? "bg-white/10 text-white" : "sp-subtle hover:bg-white/5"}`}
+                    data-testid="conv-filter-archived"
+                  >
+                    <Archive className="w-3 h-3" /> Archived
+                  </button>
+                </div>
               </div>
               <div className="grid sm:grid-cols-2 gap-3">
                 {conversations.map((c) => {
                   const ag = c.agent_ids.map(id => agentMap[id]?.name).filter(Boolean).join(", ");
                   return (
-                    <div key={c.id} className="relative group/conv">
+                    <div key={c.id} className={`relative group/conv ${c.is_archived ? "opacity-75" : ""}`}>
                       <Link
                         to={`/app/team/${teamId}/c/${c.id}`}
                         className="sp-glass rounded-xl p-4 hover:border-white/20 transition block"
                         data-testid={`conv-card-${c.id}`}
                       >
                         <div className="flex items-center justify-between mb-1 gap-2">
-                          <div className="text-white text-sm font-medium truncate pr-6">{c.title || "Untitled"}</div>
+                          <div className="text-white text-sm font-medium truncate pr-16 flex items-center gap-1.5">
+                            {c.is_archived && (
+                              <Archive className="w-3 h-3 shrink-0 sp-subtle" aria-label="Archived" />
+                            )}
+                            {c.title || "Untitled"}
+                          </div>
                           {(c.member_ids?.length || 0) > 1 ? (
                             <span className="sp-chip !bg-white/5">Shared · {c.member_ids.length}</span>
                           ) : (
@@ -408,27 +472,60 @@ export default function TeamPage() {
                         )}
                       </Link>
                       {c.can_delete && (
-                        <button
-                          type="button"
-                          onClick={(e) => deleteConversation(e, c)}
-                          disabled={deletingConvId === c.id}
-                          className="absolute top-2 right-2 rounded-md p-1.5 opacity-0 group-hover/conv:opacity-100 focus:opacity-100 transition hover:bg-red-500/15 disabled:opacity-60"
-                          style={{ color: "rgb(239 68 68)" }}
-                          title={c.is_creator ? "Delete this conversation" : "Delete this conversation (as org owner)"}
-                          aria-label={`Delete conversation ${c.title}`}
-                          data-testid={`conv-card-delete-${c.id}`}
-                        >
-                          {deletingConvId === c.id
-                            ? <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                            : <Trash2 className="w-3.5 h-3.5" />}
-                        </button>
+                        <div className="absolute top-2 right-2 flex items-center gap-1 opacity-0 group-hover/conv:opacity-100 focus-within:opacity-100 transition">
+                          {c.is_archived ? (
+                            <button
+                              type="button"
+                              onClick={(e) => unarchiveConversation(e, c)}
+                              disabled={archivingConvId === c.id}
+                              className="rounded-md p-1.5 hover:bg-emerald-500/15 disabled:opacity-60 text-emerald-300"
+                              title="Restore this conversation"
+                              aria-label={`Restore conversation ${c.title}`}
+                              data-testid={`conv-card-unarchive-${c.id}`}
+                            >
+                              {archivingConvId === c.id
+                                ? <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                                : <ArchiveRestore className="w-3.5 h-3.5" />}
+                            </button>
+                          ) : (
+                            <button
+                              type="button"
+                              onClick={(e) => archiveConversation(e, c)}
+                              disabled={archivingConvId === c.id}
+                              className="rounded-md p-1.5 hover:bg-amber-500/15 disabled:opacity-60 sp-subtle hover:text-amber-300"
+                              title="Archive — hides from default lists but keeps memory"
+                              aria-label={`Archive conversation ${c.title}`}
+                              data-testid={`conv-card-archive-${c.id}`}
+                            >
+                              {archivingConvId === c.id
+                                ? <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                                : <Archive className="w-3.5 h-3.5" />}
+                            </button>
+                          )}
+                          <button
+                            type="button"
+                            onClick={(e) => deleteConversation(e, c)}
+                            disabled={deletingConvId === c.id}
+                            className="rounded-md p-1.5 hover:bg-red-500/15 disabled:opacity-60"
+                            style={{ color: "rgb(239 68 68)" }}
+                            title={c.is_creator ? "Permanently delete" : "Permanently delete (as org owner)"}
+                            aria-label={`Delete conversation ${c.title}`}
+                            data-testid={`conv-card-delete-${c.id}`}
+                          >
+                            {deletingConvId === c.id
+                              ? <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                              : <Trash2 className="w-3.5 h-3.5" />}
+                          </button>
+                        </div>
                       )}
                     </div>
                   );
                 })}
                 {conversations.length === 0 && (
                   <div className="sp-glass rounded-xl p-6 col-span-full text-center text-sm sp-subtle">
-                    Start a new conversation to meet your crew.
+                    {showArchived
+                      ? "No archived conversations yet. Archive a thread to keep its memory but hide it from the active list."
+                      : "Start a new conversation to meet your crew."}
                   </div>
                 )}
               </div>

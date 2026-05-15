@@ -20,7 +20,7 @@ from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
 from pathlib import Path
 from pydantic import BaseModel, Field, EmailStr
-from typing import Dict, List, Optional, Literal
+from typing import Dict, List, Optional, Literal, Any
 from datetime import datetime, timezone, timedelta
 from bson import ObjectId
 import os, logging, uuid, secrets, re, json, base64, bcrypt, jwt
@@ -470,6 +470,9 @@ class OrgUpdateBody(BaseModel):
     website_url: Optional[str] = None
     soul_description: Optional[str] = None
     regenerate_soul: bool = False  # if True, re-run the soul generator with current url+desc
+    # Auto-archive policy: 0 = off (manual archive only), or 30 / 60 / 90 days
+    # of conversation inactivity after which we auto-archive idle threads.
+    archive_idle_days: Optional[int] = None
 
 class TeamCreateBody(BaseModel):
     name: str
@@ -612,6 +615,7 @@ def serialize_org(org: dict) -> dict:
         "brand_assets": _serialize_brand(org),
         "general_team_id": org.get("general_team_id", ""),
         "general_conversation_id": org.get("general_conversation_id", ""),
+        "archive_idle_days": int(org.get("archive_idle_days") or 0),
         "created_at": org["created_at"].isoformat() if isinstance(org["created_at"], datetime) else org["created_at"],
     }
 
@@ -658,6 +662,11 @@ def serialize_conv(c: dict) -> dict:
         "smart_expand": c.get("smart_expand", False),
         "created_by": c["created_by"],
         "created_at": c["created_at"].isoformat() if isinstance(c["created_at"], datetime) else c["created_at"],
+        "archived_at": (
+            c["archived_at"].isoformat()
+            if isinstance(c.get("archived_at"), datetime) else c.get("archived_at")
+        ),
+        "is_archived": bool(c.get("archived_at")),
     }
 
 # ── Auth routes ──────────────────────────────────────────────────────────────
@@ -1527,6 +1536,11 @@ async def update_org(org_id: str, body: OrgUpdateBody, u: dict = Depends(get_cur
         update["website_url"] = _normalise_user_url(body.website_url)
     if body.soul_description is not None:
         update["soul_description"] = body.soul_description.strip()
+    if body.archive_idle_days is not None:
+        days = int(body.archive_idle_days)
+        if days not in (0, 30, 60, 90):
+            raise HTTPException(400, "archive_idle_days must be one of 0, 30, 60, 90")
+        update["archive_idle_days"] = days
 
     new_soul: Optional[dict] = None
     if body.regenerate_soul:
@@ -2530,8 +2544,17 @@ async def create_conversation(team_id: str, body: ConversationCreateBody, u: dic
     return serialize_conv(doc)
 
 @conv_r.get("/teams/{team_id}/conversations")
-async def list_conversations(team_id: str, u: dict = Depends(get_current_user)):
+async def list_conversations(
+    team_id: str,
+    archived: str = "false",
+    u: dict = Depends(get_current_user),
+):
     """List conversations in this team that the caller is allowed to see.
+
+    Query param `archived`:
+      • `false` (default) — hide archived threads
+      • `true` — only archived threads
+      • `all` — both, sorted with active first then archived
 
     Visibility rule (Feb 2026 product call): **team membership = read
     access**. Any member of a team can see every conversation that
@@ -2545,16 +2568,34 @@ async def list_conversations(team_id: str, u: dict = Depends(get_current_user)):
     teammates' private CoS rooms.
     """
     ctx = await require_team_member(team_id, u["id"])
-    convs = await db.conversations.find({
+    # Decode the archive filter. Anything other than "true" / "all"
+    # means "hide archived" — safer default for everyday browsing.
+    archived = (archived or "false").strip().lower()
+    if archived == "true":
+        archive_q = {"archived_at": {"$ne": None, "$exists": True}}
+    elif archived == "all":
+        archive_q = {}
+    else:
+        archive_q = {"$or": [{"archived_at": None}, {"archived_at": {"$exists": False}}]}
+    base_q: Dict[str, Any] = {
         "team_id": team_id,
-        "$or": [
-            # Public team conversations — visible to every team member.
-            {"kind": {"$ne": PRIVATE_COS_KIND}},
-            # The caller's own private CoS thread still surfaces in
-            # their list so they can find it.
-            {"kind": PRIVATE_COS_KIND, "member_ids": u["id"]},
+        "$and": [
+            {"$or": [
+                # Public team conversations — visible to every team member.
+                {"kind": {"$ne": PRIVATE_COS_KIND}},
+                # The caller's own private CoS thread still surfaces in
+                # their list so they can find it.
+                {"kind": PRIVATE_COS_KIND, "member_ids": u["id"]},
+            ]},
+            archive_q,
+        ] if archive_q else [
+            {"$or": [
+                {"kind": {"$ne": PRIVATE_COS_KIND}},
+                {"kind": PRIVATE_COS_KIND, "member_ids": u["id"]},
+            ]},
         ],
-    }).sort("created_at", -1).to_list(500)
+    }
+    convs = await db.conversations.find(base_q).sort("created_at", -1).to_list(500)
     # Resolve org-ownership ONCE (the team has a single parent org) so
     # we can stamp `can_delete` on every conversation without N round-trips.
     is_org_owner = False
@@ -2713,6 +2754,118 @@ async def delete_conv(conv_id: str, u: dict = Depends(get_current_user)):
     await db.messages.delete_many({"conversation_id": conv_id})
     await db.conversations.delete_one({"_id": ObjectId(conv_id)})
     return {"ok": True}
+
+
+async def _archive_permission_or_403(conv_id: str, user_id: str) -> tuple[dict, dict | None, bool, bool]:
+    """Shared auth helper for archive/unarchive. Mirrors the delete rule:
+    creator OR org owner can flip the archive flag. The always-on Chief
+    of Staff thread (org.general_conversation_id) is protected.
+
+    Returns (conv, org, is_org_owner, is_protected).
+    """
+    try:
+        c = await db.conversations.find_one({"_id": ObjectId(conv_id)})
+    except Exception:
+        raise HTTPException(400, "Invalid conversation id")
+    if not c:
+        raise HTTPException(404, "Conversation not found")
+    is_creator = c.get("created_by") == user_id
+    is_org_owner = False
+    is_protected = False
+    org = None
+    try:
+        team = await db.teams.find_one({"_id": ObjectId(c["team_id"])})
+        if team:
+            org = await db.organizations.find_one({"_id": ObjectId(team["org_id"])})
+            if org:
+                if str(org.get("owner_id")) == str(user_id):
+                    is_org_owner = True
+                if str(org.get("general_conversation_id") or "") == str(c["_id"]):
+                    is_protected = True
+    except Exception:
+        pass
+    if is_protected:
+        raise HTTPException(
+            400,
+            "The always-on Chief of Staff thread can't be archived — "
+            "it's auto-created with the org and serves as your default workspace.",
+        )
+    if not (is_creator or is_org_owner):
+        if user_id in c.get("member_ids", []):
+            raise HTTPException(403, "Only the conversation creator or the org owner can archive this thread.")
+        raise HTTPException(403, "Not a participant")
+    return c, org, is_org_owner, is_protected
+
+
+@conv_r.post("/conversations/{conv_id}/archive")
+async def archive_conv(conv_id: str, u: dict = Depends(get_current_user)):
+    """Archive a conversation. Hidden from default lists but still
+    readable, still feeds user/org memory, and easy to restore via
+    `/unarchive`. Creator or org owner only — same rule as delete.
+    """
+    c, _org, _is_owner, _is_protected = await _archive_permission_or_403(conv_id, u["id"])
+    if c.get("archived_at"):
+        return {"ok": True, "already_archived": True}
+    now = datetime.now(timezone.utc)
+    await db.conversations.update_one(
+        {"_id": ObjectId(conv_id)},
+        {"$set": {"archived_at": now, "archived_by": u["id"]}},
+    )
+    return {"ok": True, "archived_at": now.isoformat()}
+
+
+@conv_r.post("/conversations/{conv_id}/unarchive")
+async def unarchive_conv(conv_id: str, u: dict = Depends(get_current_user)):
+    """Restore an archived conversation back into the default lists."""
+    c, _org, _is_owner, _is_protected = await _archive_permission_or_403(conv_id, u["id"])
+    if not c.get("archived_at"):
+        return {"ok": True, "already_active": True}
+    await db.conversations.update_one(
+        {"_id": ObjectId(conv_id)},
+        {"$unset": {"archived_at": "", "archived_by": ""}},
+    )
+    return {"ok": True}
+
+
+@conv_r.get("/orgs/{org_id}/archived-conversations")
+async def list_archived_in_org(
+    org_id: str,
+    limit: int = 200,
+    u: dict = Depends(get_current_user),
+):
+    """List every archived conversation in this org the caller can see
+    (creator/member or org owner). Used by the Org-level Archive view."""
+    ctx = await require_org_member(org_id, u["id"])
+    limit = max(1, min(500, limit))
+    team_docs = await db.teams.find(
+        {"org_id": org_id}, {"_id": 1, "name": 1},
+    ).to_list(500)
+    team_lookup = {str(t["_id"]): t.get("name", "") for t in team_docs}
+    team_ids = list(team_lookup.keys())
+    if not team_ids:
+        return []
+    is_owner = ctx["member"].get("role") == "owner"
+    base_q: Dict[str, Any] = {
+        "team_id": {"$in": team_ids},
+        "archived_at": {"$ne": None, "$exists": True},
+    }
+    if not is_owner:
+        base_q["member_ids"] = u["id"]
+    convs = await db.conversations.find(base_q).sort("archived_at", -1).limit(limit).to_list(limit)
+    protected_conv_id = str((ctx["org"] or {}).get("general_conversation_id") or "")
+    out: List[Dict[str, Any]] = []
+    for c in convs:
+        ser = serialize_conv(c)
+        ser["team_name"] = team_lookup.get(c.get("team_id", ""), "")
+        ser["deeplink"] = f"/app/team/{c.get('team_id', '')}/c/{str(c['_id'])}"
+        is_creator = c.get("created_by") == u["id"]
+        is_protected = str(c["_id"]) == protected_conv_id
+        ser["can_delete"] = (is_creator or is_owner) and not is_protected
+        ser["can_unarchive"] = (is_creator or is_owner) and not is_protected
+        out.append(ser)
+    return out
+
+
 
 
 async def _get_or_create_direct_team(org_id: str, user_id: str) -> dict:
@@ -8446,6 +8599,72 @@ async def startup():
         id="mission_watchdog",
         replace_existing=True,
         next_run_time=datetime.now(timezone.utc) + timedelta(seconds=60),
+    )
+
+    # ── Conversation auto-archive sweep ──────────────────────────────
+    # Once a day, for every org with `archive_idle_days` set to 30/60/90,
+    # archive any conversation whose `last_message_at` is older than the
+    # cutoff. Owner overrides are preserved (an org can set 0 to disable).
+    # The always-on Chief of Staff thread is always exempted via the
+    # `general_conversation_id` skip. Memory rows are untouched so the
+    # agent's recall of past discussions stays intact.
+    async def _auto_archive_tick():
+        try:
+            now = datetime.now(timezone.utc)
+            scanned = 0
+            archived = 0
+            async for org in db.organizations.find(
+                {"archive_idle_days": {"$in": [30, 60, 90]}},
+                {"_id": 1, "archive_idle_days": 1, "general_conversation_id": 1},
+            ):
+                days = int(org.get("archive_idle_days") or 0)
+                if days <= 0:
+                    continue
+                cutoff = now - timedelta(days=days)
+                # All teams in this org → conv lookup scope.
+                team_ids = [
+                    str(t["_id"])
+                    async for t in db.teams.find({"org_id": str(org["_id"])}, {"_id": 1})
+                ]
+                if not team_ids:
+                    continue
+                protected_conv_id = str(org.get("general_conversation_id") or "")
+                q: Dict[str, Any] = {
+                    "team_id": {"$in": team_ids},
+                    "$or": [
+                        {"archived_at": None},
+                        {"archived_at": {"$exists": False}},
+                    ],
+                    "$and": [
+                        {"$or": [
+                            {"last_message_at": {"$lt": cutoff}},
+                            {"last_message_at": {"$exists": False},
+                             "created_at": {"$lt": cutoff}},
+                        ]},
+                    ],
+                }
+                if protected_conv_id:
+                    q["_id"] = {"$ne": ObjectId(protected_conv_id)}
+                res = await db.conversations.update_many(
+                    q,
+                    {"$set": {"archived_at": now, "archived_by": "auto"}},
+                )
+                scanned += 1
+                archived += int(getattr(res, "modified_count", 0) or 0)
+            if archived:
+                logger.info(
+                    "Auto-archive sweep: archived %d idle conversation(s) across %d org(s)",
+                    archived, scanned,
+                )
+        except Exception as exc:
+            logger.warning("Auto-archive sweep failed: %s", exc)
+
+    scheduler.add_job(
+        _auto_archive_tick,
+        trigger="cron",
+        hour=4, minute=15,   # 04:15 UTC daily
+        id="conv_auto_archive",
+        replace_existing=True,
     )
     # ── Brand-logo GridFS backfill ───────────────────────────────────────
     # Older logos were saved to disk only and vanish on pod redeploys

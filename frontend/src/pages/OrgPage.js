@@ -108,6 +108,7 @@ export default function OrgPage() {
   const [editName, setEditName] = useState("");
   const [editUrl, setEditUrl] = useState("");
   const [editSoul, setEditSoul] = useState("");
+  const [editArchiveIdle, setEditArchiveIdle] = useState(0);
   const [savingOrg, setSavingOrg] = useState(false);
   const [regenSoul, setRegenSoul] = useState(false);
   const canEdit = org && (org.role === "owner" || org.role === "admin");
@@ -118,6 +119,7 @@ export default function OrgPage() {
     setEditName(org.name);
     setEditUrl(org.website_url || "");
     setEditSoul(org.soul_description || "");
+    setEditArchiveIdle(Number(org.archive_idle_days || 0));
     setRegenSoul(false);
     setEditOpen(true);
   };
@@ -135,6 +137,7 @@ export default function OrgPage() {
       if (isOwner) {
         body.soul_description = editSoul.trim();
         body.regenerate_soul = regenSoul;
+        body.archive_idle_days = Number(editArchiveIdle) || 0;
       }
       const { data } = await api.patch(`/orgs/${orgId}`, body);
       setOrg(data);
@@ -479,6 +482,28 @@ export default function OrgPage() {
                 <input type="checkbox" checked={regenSoul} onChange={(e) => setRegenSoul(e.target.checked)} className="accent-orange-500" data-testid="edit-org-regen" />
                 <RefreshCw className="w-3 h-3" /> Re-synthesise the company Soul from these inputs
               </label>
+            )}
+            {isOwner && (
+              <div className="pt-1">
+                <label htmlFor="edit-org-archive-idle" className="text-[11px] uppercase tracking-widest sp-subtle block mb-1">
+                  Auto-archive idle conversations
+                </label>
+                <select
+                  id="edit-org-archive-idle"
+                  value={editArchiveIdle}
+                  onChange={(e) => setEditArchiveIdle(Number(e.target.value))}
+                  data-testid="edit-org-archive-idle"
+                  className="w-full bg-white/[0.03] border border-white/10 rounded-xl px-4 py-3 text-sm text-white focus:border-white/30 focus:sp-focus"
+                >
+                  <option value={0}>Off — only manual archive</option>
+                  <option value={30}>After 30 days of no activity</option>
+                  <option value={60}>After 60 days of no activity</option>
+                  <option value={90}>After 90 days of no activity</option>
+                </select>
+                <p className="text-[11px] sp-subtle mt-1">
+                  Archived threads stay searchable and keep feeding agent memory. The always-on Chief of Staff thread is exempt.
+                </p>
+              </div>
             )}
             <div className="flex items-center justify-end gap-2 pt-1">
               <button type="button" onClick={() => setEditOpen(false)} className="sp-btn sp-btn-ghost text-xs">Cancel</button>

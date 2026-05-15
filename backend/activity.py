@@ -210,8 +210,18 @@ def make_activity_router(*, db, require_org_member, get_current_user, AGENTS):
 
         # Member-gated: only include conversations the caller is a member
         # of (direct chats are per-user, groups include the creator's id).
+        # Archived threads (`archived_at` set) are intentionally excluded
+        # from this "pick up where you left off" strip — they're still
+        # accessible via the Archive view.
         conv_cur = db.conversations.find(
-            {"team_id": {"$in": team_ids}, "member_ids": u["id"]},
+            {
+                "team_id": {"$in": team_ids},
+                "member_ids": u["id"],
+                "$or": [
+                    {"archived_at": None},
+                    {"archived_at": {"$exists": False}},
+                ],
+            },
         ).sort([("last_message_at", -1), ("created_at", -1)]).limit(limit * 2)
         convs = await conv_cur.to_list(limit * 2)
 
