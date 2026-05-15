@@ -305,10 +305,20 @@ async def refresh_connection_status(db, connection_id: str) -> Dict[str, Any]:
     Called when the user returns to our callback page so the UI can flip
     the toolkit card from "Connecting…" to "Connected" without waiting
     for the next page reload.
+
+    Side-effect: when a connection transitions to ACTIVE for the first
+    time, we auto-enable Composio tools for every agent in this org
+    whose division matches the toolkit (e.g. connect Gmail → enable
+    Sales / Support / HR agents). Agents the user has previously
+    set explicitly (ON or OFF) are left alone.
     """
     client = _get_client()
     acct = client.connected_accounts.get(nanoid=connection_id)
     status = getattr(acct, "status", None)
+    existing = await db.composio_connections.find_one(
+        {"connection_id": connection_id}, {"_id": 0},
+    )
+    was_active = (existing or {}).get("status") == "ACTIVE"
     updated = {
         "status": status,
         "last_synced_at": datetime.now(timezone.utc),
@@ -326,7 +336,80 @@ async def refresh_connection_status(db, connection_id: str) -> Dict[str, Any]:
         {"connection_id": connection_id},
         {"$set": updated},
     )
-    return {"connection_id": connection_id, **updated}
+    result = {"connection_id": connection_id, **updated}
+    # First-time activation: auto-enable matching agents.
+    if status == "ACTIVE" and not was_active and existing:
+        try:
+            applied = await _auto_enable_agents_for_toolkit(
+                db,
+                org_id=existing["org_id"],
+                toolkit=existing["toolkit"],
+                actor_user_id=existing.get("user_id"),
+            )
+            result["auto_enabled_agents"] = applied
+        except Exception as exc:
+            logger.warning("Composio: auto-enable on activation failed: %s", exc)
+    return result
+
+
+async def _auto_enable_agents_for_toolkit(
+    db,
+    *,
+    org_id: str,
+    toolkit: str,
+    actor_user_id: Optional[str],
+) -> int:
+    """When a toolkit goes ACTIVE for the first time in an org, flip
+    `tools_enabled=true` for every agent in this org whose division
+    maps to this toolkit AND that doesn't already have an explicit
+    pref (ON or OFF). Respects user overrides — once anyone has touched
+    the agent's toggle, we never re-flip it automatically.
+
+    Returns the number of agents we just enabled. Cross-imports are
+    confined here so the AGENTS catalog stays owned by server.py.
+    """
+    from server import AGENTS  # local import — avoids circular at module load
+    divisions = divisions_for_toolkit(toolkit)
+    if not divisions:
+        return 0
+    div_set = set(divisions)
+    candidate_ids: List[str] = []
+    for aid, meta in AGENTS.items():
+        if meta.get("org_id") and meta.get("org_id") != org_id:
+            continue
+        dk = (meta.get("division_key") or "").lower()
+        if dk in div_set:
+            candidate_ids.append(aid)
+    if not candidate_ids:
+        return 0
+    # Filter out agents the user has already set explicitly.
+    existing_rows = await db.agent_tool_prefs.find(
+        {"org_id": org_id, "agent_id": {"$in": candidate_ids}},
+        {"_id": 0, "agent_id": 1},
+    ).to_list(2000)
+    already_set = {r["agent_id"] for r in existing_rows}
+    to_enable = [a for a in candidate_ids if a not in already_set]
+    if not to_enable:
+        return 0
+    now = datetime.now(timezone.utc)
+    for aid in to_enable:
+        await db.agent_tool_prefs.update_one(
+            {"org_id": org_id, "agent_id": aid},
+            {"$set": {
+                "org_id": org_id,
+                "agent_id": aid,
+                "tools_enabled": True,
+                "updated_at": now,
+                "updated_by": actor_user_id,
+                "auto_enabled_by_toolkit": toolkit,
+            }},
+            upsert=True,
+        )
+    logger.info(
+        "Composio: auto-enabled %d agents in org %s for toolkit %s",
+        len(to_enable), org_id, toolkit,
+    )
+    return len(to_enable)
 
 
 async def list_connections(db, org_id: str, user_id: str) -> List[Dict[str, Any]]:
@@ -551,3 +634,17 @@ def recommended_toolkits_for_division(division_key: str) -> List[str]:
     if not division_key:
         return []
     return list(DIVISION_TOOLKIT_DEFAULTS.get(division_key.lower(), []))
+
+
+# Reverse index: toolkit slug → divisions it makes sense for. Used by the
+# auto-enable flow when a new connection goes ACTIVE — we sweep all
+# agents in those divisions and flip their tools_enabled to True (unless
+# the user has previously set it explicitly).
+_TOOLKIT_TO_DIVISIONS: Dict[str, List[str]] = {}
+for _div, _slugs in DIVISION_TOOLKIT_DEFAULTS.items():
+    for _slug in _slugs:
+        _TOOLKIT_TO_DIVISIONS.setdefault(_slug, []).append(_div)
+
+
+def divisions_for_toolkit(toolkit: str) -> List[str]:
+    return list(_TOOLKIT_TO_DIVISIONS.get((toolkit or "").lower(), []))

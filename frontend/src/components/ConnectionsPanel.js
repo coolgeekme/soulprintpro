@@ -71,6 +71,7 @@ export default function ConnectionsPanel({ orgId }) {
     if (params.get("composio_callback") !== "1") return undefined;
     let cancelled = false;
     let attempts = 0;
+    let autoEnabledTotal = 0;
     const poll = async () => {
       attempts += 1;
       try {
@@ -84,12 +85,21 @@ export default function ConnectionsPanel({ orgId }) {
         for (const c of data.connections || []) {
           if (c.status === "INITIATED") {
             try {
-              await api.post(`/orgs/${orgId}/composio/connections/${c.connection_id}/refresh`);
+              const { data: refreshed } = await api.post(`/orgs/${orgId}/composio/connections/${c.connection_id}/refresh`);
+              if (refreshed?.auto_enabled_agents) {
+                autoEnabledTotal += Number(refreshed.auto_enabled_agents) || 0;
+              }
             } catch (_) {/* keep polling */}
           }
         }
         if (!stillPending) {
-          toast.success("Account connected.");
+          if (autoEnabledTotal > 0) {
+            toast.success(
+              `Account connected. Enabled tools for ${autoEnabledTotal} matching agent${autoEnabledTotal === 1 ? "" : "s"}.`,
+            );
+          } else {
+            toast.success("Account connected.");
+          }
           cancelled = true;
           nav(`/app/org/${orgId}#connections`, { replace: true });
           load();
@@ -224,8 +234,9 @@ export default function ConnectionsPanel({ orgId }) {
       <div className="flex flex-wrap items-baseline justify-between gap-3">
         <p className="text-sm opacity-70 max-w-xl">
           Connect your own SaaS accounts so agents can read & write on your behalf.
-          Each connection is scoped to <span className="opacity-100 font-medium">your user</span>, not shared.
-          Connect <span className="opacity-100">multiple accounts per tool</span> with nicknames like "Work" / "Personal".
+          We automatically enable matching agents — connect Gmail, your Sales,
+          Support and HR agents can send mail. Each connection is scoped to{" "}
+          <span className="opacity-100 font-medium">your user</span>.
         </p>
         <div className="flex gap-2">
           <button

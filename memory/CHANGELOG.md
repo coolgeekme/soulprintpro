@@ -3,6 +3,17 @@
 Plain-English feature inventory of **Foundry by SoulPrint Engine** for non-technical teammates. Each section is a category of capabilities and what they do for users.
 
 ---
+## ⚡ May 15, 2026 — Smart Default-ON for Connected Toolkits
+- **New UX**: when a user connects a toolkit (e.g. Gmail) and it transitions to ACTIVE, agents in matching divisions get `tools_enabled=true` automatically — no manual toggling.
+- **Division → toolkit reverse index**: Gmail enables Sales/Support/HR/Legal agents (12 in the default catalog), Linear enables Engineering/Product (~30), Stripe enables Finance, etc.
+- **Respects explicit user overrides**: if a user has *ever* set an agent's toggle (ON or OFF), the auto-enable leaves it alone. Only truly-default agents (no row in `agent_tool_prefs`) get flipped.
+- **Idempotent**: re-activating a connection (e.g. after a disconnect/reconnect) doesn't churn the toggles.
+- **Audit-friendly**: `agent_tool_prefs` rows the auto-flow creates carry an `auto_enabled_by_toolkit` field so it's clear in the DB why the toggle was flipped.
+- **Toast feedback**: after OAuth completes, the user sees "Account connected. Enabled tools for N matching agents." Number bubbles up via `refresh_connection_status` → `result.auto_enabled_agents`.
+- **Duplicate-message bug fix bundled in**: `ConversationPage.js` now pauses the 3s live-poll while a send is in flight, and the POST resolution dedupes by *incoming* server ids before appending — kills the race where polling + post-success both inserted the same user/agent messages.
+
+---
+
 ## 🔌 May 15, 2026 — Composio Phase 3: Multi-Account, Smart Defaults & 250+ Tool Catalog
 - **Multi-account per connector**: each user can now connect Gmail #1 (Work) and Gmail #2 (Personal) — same logic applies to Slack workspaces, HubSpot portals, every toolkit. `allow_multiple=true` passed to Composio's `link()`, plus a nickname captured at connect time and editable via inline pencil. Agent system-prompt now lists every connected account with its nickname so replies can say "sending from your Work Gmail".
 - **Featured list grew 5 → 20**: Gmail, Calendar, Slack, Notion, HubSpot, Linear, Jira, Asana, Drive, Dropbox, Discord, Salesforce, Mailchimp, Stripe, Calendly, Zoom, Twitter, LinkedIn, Airtable, GitLab. 19 bootstrap cleanly on startup (Twitter requires custom OAuth credentials — fails gracefully).
