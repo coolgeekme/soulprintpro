@@ -6933,6 +6933,7 @@ class _ComposioConnectBody(BaseModel):
 async def composio_connect(
     org_id: str,
     body: _ComposioConnectBody,
+    request: Request,
     u: dict = Depends(get_current_user),
 ):
     """Begin OAuth for a toolkit. Returns the Composio-hosted redirect URL."""
@@ -6940,12 +6941,24 @@ async def composio_connect(
     await require_org_member(org_id, u["id"])
     if not is_available():
         raise HTTPException(503, "Composio is not configured on this deployment")
-    frontend_base = (
+    # Build callback URL from the user's *actual* current origin so the
+    # OAuth round-trip lands them back where they started — works on
+    # production custom domains, preview hosts, anywhere. Falls back to
+    # env vars only when no Origin header is present (e.g. curl tests).
+    origin = (request.headers.get("origin") or "").rstrip("/")
+    if not origin:
+        ref = request.headers.get("referer") or ""
+        if ref:
+            from urllib.parse import urlparse
+            p = urlparse(ref)
+            if p.scheme and p.netloc:
+                origin = f"{p.scheme}://{p.netloc}"
+    frontend_base = origin or (
         os.environ.get("FRONTEND_BASE_URL")
         or os.environ.get("REACT_APP_BACKEND_URL")
         or ""
     ).rstrip("/")
-    callback_url = f"{frontend_base}/app/org/{org_id}/connections?composio_callback=1"
+    callback_url = f"{frontend_base}/app/org/{org_id}?composio_callback=1#connections"
     try:
         return await initiate_connection(
             db, org_id, u["id"], body.toolkit, callback_url,
@@ -7044,7 +7057,7 @@ async def list_agent_tool_prefs(
     enabled = {r["agent_id"]: bool(r.get("tools_enabled")) for r in rows}
     # Surface the full agent catalogue so the UI can render every agent
     # (built-in + this org's custom agents) with a toggle in one shot.
-    agents_out: List[Dict[str, Any]] = []
+    agents_out: List[Dict[str, object]] = []
     for aid, meta in AGENTS.items():
         if meta.get("org_id") and meta.get("org_id") != org_id:
             continue  # custom agent from another org — invisible
