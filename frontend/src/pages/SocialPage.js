@@ -5,7 +5,7 @@ import api, { BACKEND_URL } from "../lib/api";
 import TopBar from "../components/TopBar";
 import { toast } from "sonner";
 import {
-  Send, Wand2, Calendar, CheckCircle2, Trash2, Copy, ExternalLink, Download, Save, X, Loader2, Megaphone, Image as ImageIcon, Zap, KeyRound, AlertTriangle, Rocket, Pencil, UploadCloud, ShieldCheck, ChevronRight, Lightbulb, RefreshCcw, FolderOpen
+  Send, Wand2, Calendar, CheckCircle2, Trash2, Copy, ExternalLink, Download, Save, X, Loader2, Megaphone, Image as ImageIcon, Zap, KeyRound, AlertTriangle, Rocket, Pencil, UploadCloud, ShieldCheck, ChevronRight, Lightbulb, RefreshCcw, FolderOpen, Plug
 } from "lucide-react";
 import AssetPickerModal from "../components/AssetPickerModal";
 import WorkingIndicator from "../components/WorkingIndicator";
@@ -539,12 +539,34 @@ function PostCard({ post, orgId, onUpdate, onReplace, onDelete, publishable, onA
 
   // Composio-backed "Publish via Foundry" — fires a background task on
   // the backend and polls until the post status flips to published /
-  // partial / failed. Hidden when no platforms on this post are
-  // connected.
-  const canPublishViaFoundry = useMemo(() => {
-    const connected = publishable?.connected || {};
-    return (post.platforms || []).some((p) => connected[p]);
-  }, [publishable, post.platforms]);
+  // partial / failed.
+  //
+  // Render rules (fix C — Feb 2026):
+  //  • If at least one of the post's platforms has an ACTIVE Composio
+  //    connection → enabled primary button.
+  //  • If the post has platforms but none are connected → disabled
+  //    button with a tooltip explaining what to connect, AND a small
+  //    "connect to publish" chip near the platform pills that links
+  //    straight to the Connections panel.
+  //  • If the platform isn't a supported direct-publish toolkit at all
+  //    (e.g. youtube, pinterest, bluesky, mastodon, threads) → hide
+  //    everything; those still flow through Copy / Mark posted.
+  const supportedSet = useMemo(() => new Set(publishable?.supported || []), [publishable?.supported]);
+  const connectedSet = useMemo(() => publishable?.connected || {}, [publishable?.connected]);
+  const platformsSupported = useMemo(
+    () => (post.platforms || []).filter((p) => supportedSet.has(p)),
+    [post.platforms, supportedSet],
+  );
+  const platformsConnected = useMemo(
+    () => platformsSupported.filter((p) => connectedSet[p]),
+    [platformsSupported, connectedSet],
+  );
+  const platformsMissing = useMemo(
+    () => platformsSupported.filter((p) => !connectedSet[p]),
+    [platformsSupported, connectedSet],
+  );
+  const canPublishViaFoundry = platformsConnected.length > 0;
+  const hasUnconnectedSupported = platformsMissing.length > 0;
 
   const publishViaFoundry = async () => {
     if (publishing) return;
@@ -603,13 +625,53 @@ function PostCard({ post, orgId, onUpdate, onReplace, onDelete, publishable, onA
         {post.platforms.map((id) => {
           const meta = PLATFORMS[id];
           if (!meta) return null;
+          const supported = supportedSet.has(id);
+          const connected = Boolean(connectedSet[id]);
+          // Compact connection indicator next to each platform pill so
+          // the user instantly knows whether one-click publishing will
+          // work for that platform. ✓ green = connected, • amber =
+          // supported-but-not-connected, no badge = direct publishing
+          // unsupported (copy-only).
           return (
-            <span key={id} className="px-2 py-0.5 rounded-full text-[11px] border border-white/15"
-                  style={{ borderColor: `${meta.accent}66`, color: meta.accent }}>
+            <span
+              key={id}
+              className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] border border-white/15"
+              style={{ borderColor: `${meta.accent}66`, color: meta.accent }}
+              title={
+                supported
+                  ? connected
+                    ? `${meta.label} connected — one-click publish ready.`
+                    : `${meta.label} supported but not connected. Connect it under your org's Connections panel to enable one-click publishing.`
+                  : `${meta.label}: direct publishing isn't supported yet. Use "Copy text" then paste into the ${meta.label} composer.`
+              }
+              data-testid={`platform-pill-${post.id}-${id}`}
+            >
               {meta.label}
+              {supported && connected && (
+                <CheckCircle2 className="w-3 h-3" data-testid={`pill-connected-${post.id}-${id}`} />
+              )}
+              {supported && !connected && (
+                <span
+                  className="inline-block w-1.5 h-1.5 rounded-full"
+                  style={{ background: "rgb(245 158 11)" }}
+                  data-testid={`pill-unconnected-${post.id}-${id}`}
+                />
+              )}
             </span>
           );
         })}
+        {post.status !== "published" && hasUnconnectedSupported && (
+          <Link
+            to={`/app/org/${orgId}#connections`}
+            className="text-[11px] inline-flex items-center gap-1 px-2 py-0.5 rounded-full border border-amber-500/40 bg-amber-500/10 hover:bg-amber-500/15 transition"
+            style={{ color: "rgb(245 158 11)" }}
+            title="Open the Connections panel for this org"
+            data-testid={`connect-hint-${post.id}`}
+          >
+            <Plug className="w-3 h-3" />
+            Connect {platformsMissing.map((p) => PLATFORMS[p]?.label || p).join(" + ")} to publish from here
+          </Link>
+        )}
         {post.status === "queued" && post.scheduled_for && (
           <span className="ml-auto text-[11px] sp-subtle flex items-center gap-1">
             <Calendar className="w-3 h-3" /> {formatScheduleLocal(post.scheduled_for)}
@@ -866,9 +928,12 @@ function PostCard({ post, orgId, onUpdate, onReplace, onDelete, publishable, onA
               </a>
             )}
             <div className="ml-auto flex items-center gap-2">
-              {/* Live publish via Composio — visible when at least one of
-                  this post's platforms is connected. Falls back to
-                  "Mark posted" for users who haven't connected anything yet. */}
+              {/* Live publish via Composio — visible whenever the post
+                  targets at least one supported direct-publish platform.
+                  Enabled when connected; otherwise disabled with a
+                  tooltip + click → scroll to Connections panel. Falls
+                  back to "Mark posted" for posts on un-supported
+                  platforms (Bluesky, Mastodon, Threads, etc.). */}
               {post.status !== "published" && canPublishViaFoundry && (
                 <button type="button" onClick={publishViaFoundry}
                         disabled={publishing}
@@ -883,6 +948,23 @@ function PostCard({ post, orgId, onUpdate, onReplace, onDelete, publishable, onA
                       <Send className="w-3 h-3" /> Publish via Foundry
                     </>
                   )}
+                </button>
+              )}
+              {post.status !== "published" && !canPublishViaFoundry && hasUnconnectedSupported && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    // Send them to the Connections panel on the Org page.
+                    // Hash anchor #connections is already used by the
+                    // OAuth-callback handler, so the panel scrolls into
+                    // view automatically.
+                    window.location.href = `/app/org/${orgId}#connections`;
+                  }}
+                  className="sp-btn sp-btn-ghost text-xs opacity-70"
+                  title={`Connect ${platformsMissing.map((p) => PLATFORMS[p]?.label || p).join(", ")} first to enable one-click publishing.`}
+                  data-testid={`publish-via-foundry-disabled-${post.id}`}
+                >
+                  <Send className="w-3 h-3" /> Publish via Foundry
                 </button>
               )}
               {post.status !== "published" && post.status !== "publishing" && (
