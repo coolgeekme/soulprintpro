@@ -387,12 +387,28 @@ export default function ConnectionsPanel({ orgId }) {
 
 // ─────────────────────────────────────────────────────────────────────────
 function NicknameModal({ slug, value, onChange, onCancel, onConfirm, existingCount }) {
+  // Platform-specific gotchas users should know BEFORE they start OAuth.
+  // Surfaced inside the nickname modal so it's seen at the moment of
+  // intent, not buried in some help doc.
+  const PLATFORM_NOTES = {
+    instagram: "Composio uses Meta's Graph API, which requires your Instagram to be a Business or Creator account linked to a Facebook Page. Personal accounts won't work — Meta blocks them.",
+    facebook:  "You'll be asked to grant permissions for a specific Facebook Page. Choose the page you want agents to post on behalf of.",
+    tiktok:    "TikTok requires a developer-approved app — Composio doesn't have managed credentials, so this connection may not work without your own TikTok dev account.",
+    twitter:   "Twitter / X requires your own developer app credentials — Composio doesn't have managed credentials for this platform.",
+  };
+  const note = PLATFORM_NOTES[slug];
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm" data-testid="nickname-modal">
       <div className="sp-glass-strong rounded-2xl p-6 w-full max-w-md mx-4 space-y-3" style={{ color: "var(--fg)" }}>
         <h3 className="font-medium">
           {existingCount > 0 ? `Add another ${slug}` : `Connect ${slug}`}
         </h3>
+        {note && (
+          <div className="text-xs rounded-lg border border-amber-500/30 bg-amber-500/5 px-3 py-2 flex gap-2" data-testid={`platform-note-${slug}`}>
+            <span className="text-amber-400 flex-shrink-0">⚠</span>
+            <span>{note}</span>
+          </div>
+        )}
         <p className="text-xs opacity-60">
           Give this account a nickname so you can tell it apart from others
           (e.g. "Work", "Personal", "Client X"). Optional.

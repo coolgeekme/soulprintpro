@@ -123,15 +123,22 @@ export default function SocialPage() {
   const [topicsOpen, setTopicsOpen] = useState(false);
   const [topicsLoading, setTopicsLoading] = useState(false);
   const [topicAngle, setTopicAngle] = useState("");  // "" = mix
+  // Per-platform connection state (Composio). Drives the "Publish via
+  // Foundry" button — only shown when at least one platform is connected.
+  const [publishablePlatforms, setPublishablePlatforms] = useState({
+    supported: [], connected: {},
+  });
 
   const reload = async () => {
     try {
-      const [orgRes, postsRes] = await Promise.all([
+      const [orgRes, postsRes, pubRes] = await Promise.all([
         api.get(`/orgs/${orgId}`),
         api.get(`/orgs/${orgId}/social/posts`),
+        api.get(`/orgs/${orgId}/social/publishable-platforms`).catch(() => ({ data: { supported: [], connected: {} } })),
       ]);
       setOrg(orgRes.data);
       setPosts(postsRes.data);
+      setPublishablePlatforms(pubRes.data || { supported: [], connected: {} });
     } catch (err) {
       toast.error(err?.response?.data?.detail || "Failed to load social queue");
     } finally { setLoading(false); }
@@ -407,7 +414,7 @@ export default function SocialPage() {
         ) : (
           <div className="space-y-3">
             {visible.map((p) => (
-              <PostCard key={p.id} post={p} orgId={orgId} onUpdate={updatePost} onReplace={replacePost} onDelete={deletePost} />
+              <PostCard key={p.id} post={p} orgId={orgId} onUpdate={updatePost} onReplace={replacePost} onDelete={deletePost} publishable={publishablePlatforms} onAfterPublish={reload} />
             ))}
           </div>
         )}
@@ -417,13 +424,14 @@ export default function SocialPage() {
 }
 
 // ── Post card ─────────────────────────────────────────────────────────────
-function PostCard({ post, orgId, onUpdate, onReplace, onDelete }) {
+function PostCard({ post, orgId, onUpdate, onReplace, onDelete, publishable, onAfterPublish }) {
   const [editing, setEditing] = useState(false);
   const [text, setText] = useState(post.text);
   const [hashtags, setHashtags] = useState((post.hashtags || []).join(" "));
   const [scheduledLocal, setScheduledLocal] = useState(isoToLocalInput(post.scheduled_for));
   const [platforms, setPlatforms] = useState(post.platforms || []);
   const [saving, setSaving] = useState(false);
+  const [publishing, setPublishing] = useState(post.status === "publishing");
 
   // Autopost state — lets the user ask a Mission to actually publish the
   // post on the scheduled time instead of just reminding them.
@@ -529,6 +537,54 @@ function PostCard({ post, orgId, onUpdate, onReplace, onDelete }) {
   const unpublish     = () => onUpdate(post.id, { status: "draft" });
   const moveToDraft   = () => onUpdate(post.id, { status: "draft", scheduled_for: "" });
 
+  // Composio-backed "Publish via Foundry" — fires a background task on
+  // the backend and polls until the post status flips to published /
+  // partial / failed. Hidden when no platforms on this post are
+  // connected.
+  const canPublishViaFoundry = useMemo(() => {
+    const connected = publishable?.connected || {};
+    return (post.platforms || []).some((p) => connected[p]);
+  }, [publishable, post.platforms]);
+
+  const publishViaFoundry = async () => {
+    if (publishing) return;
+    setPublishing(true);
+    try {
+      await api.post(`/social/posts/${post.id}/publish`);
+      toast.message("Publishing via Foundry…");
+      // Poll the post until status leaves "publishing".
+      let attempts = 0;
+      const tick = async () => {
+        attempts += 1;
+        try {
+          const { data: fresh } = await api.get(`/orgs/${orgId}/social/posts`);
+          const updated = (fresh || []).find((x) => x.id === post.id);
+          if (updated && updated.status !== "publishing") {
+            onReplace?.(updated);
+            const ok = updated.published_count || 0;
+            const bad = updated.failed_count || 0;
+            if (updated.status === "published") {
+              toast.success(`Published to ${ok} platform${ok === 1 ? "" : "s"}.`);
+            } else if (updated.status === "partial") {
+              toast(`Posted to ${ok}, failed on ${bad}. See errors on the card.`, { icon: "⚠️" });
+            } else {
+              toast.error(`Publishing failed on ${bad} platform${bad === 1 ? "" : "s"}.`);
+            }
+            setPublishing(false);
+            onAfterPublish?.();
+            return;
+          }
+        } catch (_) {/* keep polling */}
+        if (attempts < 20) setTimeout(tick, 2000);
+        else setPublishing(false);
+      };
+      setTimeout(tick, 1500);
+    } catch (err) {
+      toast.error(err?.response?.data?.detail || "Failed to publish");
+      setPublishing(false);
+    }
+  };
+
   const copyText = (postLike) => {
     const blob = joinPostText(postLike);
     try {
@@ -564,8 +620,41 @@ function PostCard({ post, orgId, onUpdate, onReplace, onDelete }) {
             <CheckCircle2 className="w-3 h-3 text-emerald-400" /> Published {formatScheduleLocal(post.published_at)}
           </span>
         )}
+        {post.status === "publishing" && (
+          <span className="ml-auto text-[11px] flex items-center gap-1 text-orange-300">
+            <Loader2 className="w-3 h-3 animate-spin" /> Publishing…
+          </span>
+        )}
+        {(post.status === "partial" || post.status === "failed") && (
+          <span className={`ml-auto text-[11px] flex items-center gap-1 ${post.status === "partial" ? "text-amber-300" : "text-red-300"}`}>
+            <AlertTriangle className="w-3 h-3" />
+            {post.published_count || 0}/{(post.published_count || 0) + (post.failed_count || 0)} succeeded
+          </span>
+        )}
         <AutopostStatusPill post={post} />
       </div>
+
+      {/* Per-platform publish chips — surface results of the live publish
+          so users see exactly which platforms succeeded and which need
+          re-trying. Hidden until a publish has happened. */}
+      {post.publish_results && Object.keys(post.publish_results).length > 0 && (
+        <div className="flex flex-wrap gap-1.5 mt-2" data-testid={`publish-results-${post.id}`}>
+          {Object.entries(post.publish_results).map(([platform, r]) => (
+            <span
+              key={platform}
+              className={`inline-flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded-full border ${
+                r.ok
+                  ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-200"
+                  : "border-red-500/30 bg-red-500/10 text-red-200"
+              }`}
+              title={r.error || (r.ok ? "Posted" : "Failed")}
+            >
+              {r.ok ? <CheckCircle2 className="w-2.5 h-2.5" /> : <AlertTriangle className="w-2.5 h-2.5" />}
+              {platform}
+            </span>
+          ))}
+        </div>
+      )}
 
       {editing ? (
         <div className="space-y-2">
@@ -744,7 +833,26 @@ function PostCard({ post, orgId, onUpdate, onReplace, onDelete }) {
               </a>
             )}
             <div className="ml-auto flex items-center gap-2">
-              {post.status !== "published" && (
+              {/* Live publish via Composio — visible when at least one of
+                  this post's platforms is connected. Falls back to
+                  "Mark posted" for users who haven't connected anything yet. */}
+              {post.status !== "published" && canPublishViaFoundry && (
+                <button type="button" onClick={publishViaFoundry}
+                        disabled={publishing}
+                        className="sp-btn sp-btn-primary text-xs disabled:opacity-50"
+                        data-testid={`publish-via-foundry-${post.id}`}>
+                  {publishing ? (
+                    <>
+                      <Loader2 className="w-3 h-3 animate-spin" /> Publishing…
+                    </>
+                  ) : (
+                    <>
+                      <Send className="w-3 h-3" /> Publish via Foundry
+                    </>
+                  )}
+                </button>
+              )}
+              {post.status !== "published" && post.status !== "publishing" && (
                 <button type="button" onClick={markPublished} className="sp-btn sp-btn-ghost text-xs"
                         data-testid={`mark-published-${post.id}`}>
                   <CheckCircle2 className="w-3 h-3 text-emerald-400" /> Mark posted

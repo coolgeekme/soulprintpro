@@ -1,0 +1,36 @@
+{
+  "summary": "Validated Foundry Social Queue live-publishing via Composio. Backend: 19/19 pytest cases pass in /app/backend/tests/test_social_publishing.py covering publishable-platforms endpoint (shape + non-member 403), POST /publish (404 for unknown id, status flips to publishing, idempotency 'Already in flight' for in-flight posts, no-connections => failed with per-platform 'No connected account' errors, partial state writes), social_publishing.publish_post unit tests for Instagram-no-image and Reddit-no-subreddit error paths (verified with directly-inserted fake ACTIVE composio_connections), IG failure doesn't block LinkedIn fan-out, PATCH /social/posts accepts auto_publish bool roundtrip + new status Literal values (publishing|partial|failed), promote_due_drafts scheduler hook fires asyncio.create_task on auto_publish=true posts and only marks ready_at for auto_publish=false posts, idempotency via ready_at filter. composio_integration constants: FEATURED_TOOLKITS now has 23 entries including linkedin/facebook/instagram/reddit; DIVISION_TOOLKIT_DEFAULTS flat union covers all four new slugs. Frontend smoke: SocialPage at /app/org/{id}/social loads /publishable-platforms on mount (confirmed 2 network calls captured), 0 publish-via-foundry buttons render (Reggie has 0 ACTIVE social connections, expected per review brief), 14 'Mark posted' buttons still present (manual flow preserved). ConnectionsPanel data-testids (connect-{slug}-btn, nickname-modal, nickname-cancel, platform-note-{slug}) all confirmed via code grep on ConnectionsPanel.js line 407; could not interact with panel because it lives behind an org/account route the smoke didn't traverse — code-level verification accepted given iter_24 already exercised the panel.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_social_publishing.py",
+    "/app/test_reports/pytest/social_publishing_results.xml"
+  ],
+  "action_items": [
+    "Optional: enrich the SocialPage smoke run by seeding ONE direct db.composio_connections row (status=ACTIVE, toolkit=linkedin) then asserting the publish-via-foundry-{id} button appears for posts whose platforms include linkedin, the button flips to 'Publishing…', and a publish-results-{id} chips block appears after the bg task finishes (~2-3s).",
+    "Optional: verify NicknameModal warning banners (platform-note-instagram/facebook/tiktok) end-to-end in Playwright — the data-testids are wired but the smoke didn't traverse into the org connections page in this run (test_reports/iteration_24 already validated the panel itself works)."
+  ],
+  "critical_code_review_comments": [
+    "publish_post fan-out is sequential (good — avoids Composio per-user rate-limit thrash). Errors are captured per-platform and persisted incrementally via $set on publish_results.{platform}, so the polling UI sees progress mid-fan-out. Solid.",
+    "POST /publish idempotency check is a simple status=='publishing' guard at top-of-handler — good enough for the single-user case but if two clients click within the millisecond window before the $set lands, both can pass the guard and both trigger asyncio.create_task. In practice the second create_task will just re-run the publish on an already-publishing post (no harm: results are overwritten). Worth flagging only if scale grows.",
+    "promote_due_drafts uses a {'ready_at': {'$exists': False}} filter as the dedup key and update_many sets ready_at BEFORE spawning the publish task. That's the right ordering — a re-entrant tick can't double-fire.",
+    "social_publishing._has_active_connection re-queries Mongo per-platform inside publish_post; for a 5-platform post that's 5 round-trips before the actual fan-out starts. Negligible but a single $in query would be cleaner.",
+    "publish_post writes published_at only when ok>0 — partials get a published_at, failed (ok==0) don't. Matches the existing 'first publish wins the timestamp' semantics.",
+    "PATCH endpoint relaxes the Literal correctly; nothing else regressed.",
+    "ConnectionsPanel platform-note warnings render only for instagram/facebook/tiktok/twitter (confirmed at line 407 of ConnectionsPanel.js). gmail/linear/notion etc get no warning — clean differentiation."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_social_publishing.py (new — 19 tests)"
+  ],
+  "success_rate": {"backend": "100% (19/19)", "frontend": "~90% (SocialPage /publishable-platforms wiring + Mark-posted preservation verified end-to-end; ConnectionsPanel warning chips verified via code-grep, not Playwright)"},
+  "test_credentials": "reggie@coolgeek.me / superadminpass123 (org 69f6a9f568b5974dfcc2fcf8). autopost-test-1777661963@example.com / testtest123 (non-member, used for 403 isolation check).",
+  "seed_data_creation": "Tests insert temporary social_posts (cleaned via cleanup_post_ids fixture) and temporary composio_connections with status=ACTIVE+connection_id TEST_conn_<uuid> (cleaned in test bodies' finally blocks). No persistent state left behind. Verified via direct mongo check post-run.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "test_social_publishing.py is the regression suite for live-publishing. It uses a _run(async_fn_taking_db) helper that opens a fresh AsyncIOMotorClient per call to avoid 'Event loop is closed' when chaining asyncio.run() invocations in pytest (motor's executor is bound to the loop that created it). To exercise the 'Publish via Foundry' visible UI path, insert {composio_user_id: composio_integration.composio_user_id(org_id, user_id), toolkit: 'linkedin', status: 'ACTIVE', connection_id: 'TEST_...'} into db.composio_connections then reload /app/org/{id}/social — publish-via-foundry-{post_id} will render for posts whose platforms include linkedin. Background task takes ~2-3s; polling fires every 2s for up to 40s. Don't sleep>30s in tests for the auto-publish scheduler; call promote_due_drafts(db=db) directly with a post whose scheduled_for is in the past (already covered).",
+  "rca of the issue": "No bugs found. Initial test run hit 'Event loop is closed' errors because a module-scoped motor client outlived multiple asyncio.run() calls — fixed locally by switching to a fresh client per _run invocation. All 19 tests then passed cleanly."
+}

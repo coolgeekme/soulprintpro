@@ -69,9 +69,10 @@ class SocialPostUpdateBody(BaseModel):
     text: Optional[str] = None
     platforms: Optional[List[str]] = None
     scheduled_for: Optional[str] = None  # ISO 8601, or "" to unschedule
-    status: Optional[Literal["draft", "queued", "published", "skipped"]] = None
+    status: Optional[Literal["draft", "queued", "publishing", "published", "partial", "failed", "skipped"]] = None
     hashtags: Optional[List[str]] = None
     link_url: Optional[str] = None
+    auto_publish: Optional[bool] = None  # when True, scheduled posts fire Composio publish automatically
 
 
 class GenerateImageBody(BaseModel):
@@ -130,6 +131,15 @@ def serialize_social_post(p: dict) -> dict:
         "logo_position": p.get("logo_position") or "bottom-right",
         "scheduled_for": _iso(p.get("scheduled_for")),
         "published_at": _iso(p.get("published_at")),
+        # Live-publishing telemetry (set by social_publishing.publish_post).
+        # `publish_results` is {platform: {ok, tool, response, error}} so the
+        # UI can render per-platform success/failure chips on each card.
+        "publish_results": p.get("publish_results") or {},
+        "published_count": int(p.get("published_count") or 0),
+        "failed_count": int(p.get("failed_count") or 0),
+        "publish_started_at": _iso(p.get("publish_started_at")),
+        "publish_finished_at": _iso(p.get("publish_finished_at")),
+        "auto_publish": bool(p.get("auto_publish", True)),  # default: live-publish when ready
         "created_at": _iso(p.get("created_at")),
         "created_by": p.get("created_by", ""),
         # Autonomous Mission-driven posting — see social_autopost.py
@@ -850,6 +860,67 @@ def make_social_router(*, db, AGENTS, EMERGENT_LLM_KEY, LlmChat, UserMessage,
         out = [serialize_social_post(p) async for p in cur]
         return out
 
+    @r.get("/orgs/{org_id}/social/publishable-platforms")
+    async def publishable_platforms(
+        org_id: str, u: dict = Depends(get_current_user),
+    ):
+        """For every platform Foundry can publish to directly, return
+        whether the caller has an active connection. Drives the
+        "Publish via Foundry" button visibility on SocialPage."""
+        await require_org_member(org_id, u["id"])
+        try:
+            from social_publishing import (
+                connectable_platforms_for_user, supported_platforms,
+            )
+            connected = await connectable_platforms_for_user(db, org_id, u["id"])
+        except Exception:
+            logger.exception("publishable-platforms lookup failed")
+            return {"supported": [], "connected": {}}
+        return {"supported": supported_platforms(), "connected": connected}
+
+    @r.post("/social/posts/{post_id}/publish")
+    async def publish_social_post(
+        post_id: str, u: dict = Depends(get_current_user),
+    ):
+        """Kick off a live publish via Composio. Runs as a background
+        task so the request returns immediately and the UI flips to
+        'Publishing…' — final per-platform results land on the post
+        document over the next few seconds.
+        """
+        try:
+            post = await db.social_posts.find_one({"_id": _OID(post_id)})
+        except Exception:
+            raise HTTPException(404, "Post not found")
+        if not post:
+            raise HTTPException(404, "Post not found")
+        await require_org_member(post["org_id"], u["id"])
+        if post.get("status") == "publishing":
+            return {"status": "publishing", "message": "Already in flight"}
+        # Mark immediately so the UI doesn't show stale state in the
+        # gap between this return and the background task starting.
+        await db.social_posts.update_one(
+            {"_id": post["_id"]},
+            {"$set": {
+                "status": "publishing",
+                "publish_started_at": datetime.now(timezone.utc),
+                "publish_results": {},
+                "published_count": 0,
+                "failed_count": 0,
+            }},
+        )
+        from social_publishing import publish_post
+
+        async def _run():
+            # Re-fetch so we have the freshest copy (in case the user
+            # tweaked the text between click and task pick-up).
+            fresh = await db.social_posts.find_one({"_id": post["_id"]})
+            if not fresh:
+                return
+            await publish_post(db, post=fresh, actor_user_id=u["id"])
+
+        asyncio.create_task(_run())
+        return {"status": "publishing", "post_id": post_id}
+
     @r.patch("/social/posts/{post_id}")
     async def update_social_post(
         post_id: str, body: SocialPostUpdateBody,
@@ -896,6 +967,8 @@ def make_social_router(*, db, AGENTS, EMERGENT_LLM_KEY, LlmChat, UserMessage,
             update["status"] = body.status
             if body.status == "published":
                 update["published_at"] = datetime.now(timezone.utc)
+        if body.auto_publish is not None:
+            update["auto_publish"] = bool(body.auto_publish)
         if not update:
             return serialize_social_post(post)
         await db.social_posts.update_one({"_id": ObjectId(post_id)}, {"$set": update})
@@ -1313,23 +1386,54 @@ def make_social_router(*, db, AGENTS, EMERGENT_LLM_KEY, LlmChat, UserMessage,
     return r
 
 
-# ── APScheduler hook: promote queued posts whose time has come ──────────────
+# ── APScheduler hook: auto-publish queued posts whose time has come ─────────
 async def promote_due_drafts(*, db) -> int:
-    """Promote any `queued` posts past their scheduled_for to status="ready".
+    """Find any `queued` posts past their scheduled_for and act on them.
 
-    NOTE: in MVP we don't auto-publish — we just mark them as "ready" so the
-    queue UI surfaces them at the top of the Scheduled tab. Returns the count
-    of promoted posts.
+    For posts with `auto_publish=true` (default): fire the live publish
+    via Composio in the background. For posts opted out of auto-publish:
+    just mark them `ready_at` so the UI surfaces them at the top of the
+    queue for the user to click "Publish via Foundry" manually.
+
+    Returns the count of posts processed in this tick.
     """
     now = datetime.now(timezone.utc)
-    res = await db.social_posts.update_many(
+    due = await db.social_posts.find(
         {
             "status": "queued",
             "scheduled_for": {"$lte": now},
             "ready_at": {"$exists": False},
         },
+    ).to_list(200)
+    if not due:
+        return 0
+    # Mark them ready first so duplicates can't fire if this task overlaps.
+    ids = [p["_id"] for p in due]
+    await db.social_posts.update_many(
+        {"_id": {"$in": ids}},
         {"$set": {"ready_at": now}},
     )
-    if res.modified_count:
-        logger.info("Marked %d social posts ready to publish", res.modified_count)
-    return res.modified_count
+    # Decide per-post: auto-publish or wait for manual.
+    auto_count = 0
+    try:
+        from social_publishing import publish_post  # local import to avoid cycles
+    except Exception as exc:
+        logger.warning("Auto-publish skipped (publishing module unavailable): %s", exc)
+        publish_post = None  # type: ignore[assignment]
+    for p in due:
+        if publish_post is None or not p.get("auto_publish", True):
+            continue
+        # Fire-and-forget — `publish_post` writes its own results back
+        # to the post document; the UI's polling picks them up.
+        try:
+            asyncio.create_task(publish_post(db, post=p))
+            auto_count += 1
+        except Exception as exc:
+            logger.warning("Auto-publish kick-off failed for post %s: %s", p.get("_id"), exc)
+    if auto_count:
+        logger.info(
+            "Marked %d social posts ready, auto-publishing %d", len(due), auto_count,
+        )
+    else:
+        logger.info("Marked %d social posts ready to publish", len(due))
+    return len(due)

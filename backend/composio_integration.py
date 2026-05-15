@@ -41,6 +41,10 @@ FEATURED_TOOLKITS: List[Dict[str, str]] = [
     {"slug": "slack", "name": "Slack", "description": "Post messages, search channels"},
     {"slug": "notion", "name": "Notion", "description": "Read and write docs, databases"},
     {"slug": "hubspot", "name": "HubSpot", "description": "Manage contacts, deals, companies"},
+    {"slug": "linkedin", "name": "LinkedIn", "description": "Publish posts, manage profile"},
+    {"slug": "facebook", "name": "Facebook", "description": "Post to Pages, manage content"},
+    {"slug": "instagram", "name": "Instagram", "description": "Publish posts (Business/Creator + FB Page required)"},
+    {"slug": "reddit", "name": "Reddit", "description": "Post to subreddits, manage account"},
     {"slug": "linear", "name": "Linear", "description": "Track issues and sprints"},
     {"slug": "jira", "name": "Jira", "description": "Manage tickets across projects"},
     {"slug": "asana", "name": "Asana", "description": "Project & task management"},
@@ -53,7 +57,6 @@ FEATURED_TOOLKITS: List[Dict[str, str]] = [
     {"slug": "calendly", "name": "Calendly", "description": "Schedule meetings"},
     {"slug": "zoom", "name": "Zoom", "description": "Schedule and join meetings"},
     {"slug": "twitter", "name": "Twitter / X", "description": "Post and search tweets"},
-    {"slug": "linkedin", "name": "LinkedIn", "description": "Post and manage profile"},
     {"slug": "airtable", "name": "Airtable", "description": "Database tables and views"},
     {"slug": "gitlab", "name": "GitLab", "description": "Repos, MRs, pipelines"},
 ]
@@ -615,17 +618,20 @@ def list_supported_toolkits() -> List[Dict[str, str]]:
 # listed here falls back to no recommendations.
 DIVISION_TOOLKIT_DEFAULTS: Dict[str, List[str]] = {
     "engineering": ["github", "linear", "jira", "gitlab", "slack"],
-    "marketing":   ["mailchimp", "twitter", "linkedin", "hubspot", "googledrive"],
-    "sales":       ["hubspot", "salesforce", "gmail", "googlecalendar", "calendly"],
+    "marketing":   ["mailchimp", "twitter", "linkedin", "facebook", "instagram", "reddit", "hubspot", "googledrive"],
+    "sales":       ["hubspot", "salesforce", "gmail", "googlecalendar", "calendly", "linkedin"],
     "operations":  ["googlecalendar", "slack", "notion", "googledrive", "asana"],
-    "creative":    ["notion", "googledrive", "dropbox", "twitter"],
-    "content":     ["notion", "googledrive", "twitter", "linkedin"],
+    "creative":    ["notion", "googledrive", "dropbox", "twitter", "instagram"],
+    "content":     ["notion", "googledrive", "twitter", "linkedin", "facebook", "instagram", "reddit"],
     "product":     ["linear", "notion", "jira", "asana"],
-    "design":      ["notion", "googledrive", "dropbox"],
+    "design":      ["notion", "googledrive", "dropbox", "instagram"],
     "support":     ["slack", "gmail", "notion", "hubspot"],
     "finance":     ["stripe", "googledrive", "notion"],
-    "hr":          ["gmail", "googlecalendar", "notion", "slack"],
+    "hr":          ["gmail", "googlecalendar", "notion", "slack", "linkedin"],
     "legal":       ["googledrive", "notion", "gmail"],
+    # Social-first division aliases — some agent catalogs use these.
+    "social":      ["linkedin", "facebook", "instagram", "reddit", "twitter", "mailchimp"],
+    "social_media": ["linkedin", "facebook", "instagram", "reddit", "twitter", "mailchimp"],
 }
 
 
