@@ -17,7 +17,31 @@ export default function AppHome() {
   const [creating, setCreating] = useState(false);
   const [code, setCode] = useState("");
   const [joining, setJoining] = useState(false);
+  // Tracks which org's "Chief of Staff" shortcut is currently
+  // resolving its private CoS thread via /my-cos so we can render a
+  // spinner without re-rendering every card.
+  const [cosLoadingOrg, setCosLoadingOrg] = useState(null);
   const nav = useNavigate();
+
+  const openChiefOfStaff = async (e, orgId) => {
+    e.preventDefault();
+    e.stopPropagation();
+    if (cosLoadingOrg) return;
+    setCosLoadingOrg(orgId);
+    try {
+      const { data } = await api.get(`/orgs/${orgId}/my-cos`);
+      const deeplink = data?.deeplink
+        || (data?.team_id && data?.conversation_id
+              ? `/app/team/${data.team_id}/c/${data.conversation_id}`
+              : null);
+      if (!deeplink) throw new Error("No deeplink returned");
+      nav(deeplink);
+    } catch (err) {
+      toast.error(err?.response?.data?.detail || "Could not open your Chief of Staff");
+    } finally {
+      setCosLoadingOrg(null);
+    }
+  };
 
   const load = async ({ silent = false } = {}) => {
     if (!silent) setLoading(true);
@@ -158,11 +182,10 @@ export default function AppHome() {
           {!loading && orgs.map((o) => {
             // Whole card is one tap target (UX audit #3) — clicking
             // anywhere lands on the org dashboard. Inside, the small
-            // "Chief of Staff" shortcut is a nested-but-stop-prop link.
+            // "Chief of Staff" shortcut is a nested-but-stop-prop link
+            // that resolves the caller's PRIVATE CoS thread via the
+            // idempotent /my-cos endpoint and jumps straight into it.
             const primaryHref = `/app/org/${o.id}`;
-            const chatHref = (o.general_team_id && o.general_conversation_id)
-              ? `/app/team/${o.general_team_id}/c/${o.general_conversation_id}`
-              : null;
             const mission = o?.soul?.mission || "";
             const subtitle = mission
               ? mission.length > 110 ? `${mission.slice(0, 107)}…` : mission
@@ -219,16 +242,19 @@ export default function AppHome() {
                   <span className="inline-flex items-center gap-1.5 text-[11px] sp-subtle group-hover:text-white">
                     Open organization <ArrowRight className="w-3 h-3" />
                   </span>
-                  {chatHref && (
-                    <Link
-                      to={chatHref}
-                      onClick={(e) => e.stopPropagation()}
-                      className="inline-flex items-center gap-1 text-[11px] sp-subtle hover:text-orange-300 transition"
-                      data-testid={`org-card-chat-${o.id}`}
-                    >
-                      <MessageCircle className="w-3 h-3" /> Chief of Staff
-                    </Link>
-                  )}
+                  <button
+                    type="button"
+                    onClick={(e) => openChiefOfStaff(e, o.id)}
+                    disabled={cosLoadingOrg === o.id}
+                    className="inline-flex items-center gap-1 text-[11px] sp-subtle hover:text-orange-300 transition disabled:opacity-60"
+                    data-testid={`org-card-chat-${o.id}`}
+                    title="Open your private Chief of Staff conversation"
+                  >
+                    {cosLoadingOrg === o.id
+                      ? <Loader2 className="w-3 h-3 animate-spin" />
+                      : <MessageCircle className="w-3 h-3" />}
+                    Chief of Staff
+                  </button>
                 </div>
               </Link>
             );
