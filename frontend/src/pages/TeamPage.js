@@ -3,7 +3,7 @@ import { useParams, Link, useNavigate } from "react-router-dom";
 import api from "../lib/api";
 import TopBar from "../components/TopBar";
 import { toast } from "sonner";
-import { MessageCircle, Users, Plus, Radio, Search, X, Wand2, ArrowRight, Pencil, Save, Trash2, X as XIcon } from "lucide-react";
+import { MessageCircle, Users, Plus, Radio, Search, X, Wand2, ArrowRight, Pencil, Save, Trash2, X as XIcon, Loader2 } from "lucide-react";
 import Logo from "../components/Logo";
 import SchedulesPanel from "../components/SchedulesPanel";
 
@@ -113,6 +113,26 @@ export default function TeamPage() {
       nav(`/app/org/${team.org_id}`);
     } catch (err) {
       toast.error(err?.response?.data?.detail || "Delete failed");
+    }
+  };
+
+  // Per-conversation delete (creator or org owner — backend enforces).
+  // Spinner state is keyed by conv id so multi-clicks don't race.
+  const [deletingConvId, setDeletingConvId] = useState("");
+  const deleteConversation = async (e, c) => {
+    e.preventDefault();
+    e.stopPropagation();
+    if (!c?.can_delete || deletingConvId) return;
+    if (!window.confirm(`Delete "${c.title || "this conversation"}"? This permanently removes the conversation and all its messages.`)) return;
+    setDeletingConvId(c.id);
+    try {
+      await api.delete(`/conversations/${c.id}`);
+      setConversations((prev) => prev.filter((x) => x.id !== c.id));
+      toast.success("Conversation deleted");
+    } catch (err) {
+      toast.error(err?.response?.data?.detail || "Could not delete this conversation");
+    } finally {
+      setDeletingConvId("");
     }
   };
 
@@ -365,28 +385,45 @@ export default function TeamPage() {
                 {conversations.map((c) => {
                   const ag = c.agent_ids.map(id => agentMap[id]?.name).filter(Boolean).join(", ");
                   return (
-                    <Link
-                      key={c.id}
-                      to={`/app/team/${teamId}/c/${c.id}`}
-                      className="sp-glass rounded-xl p-4 hover:border-white/20 transition"
-                      data-testid={`conv-card-${c.id}`}
-                    >
-                      <div className="flex items-center justify-between mb-1">
-                        <div className="text-white text-sm font-medium truncate">{c.title || "Untitled"}</div>
-                        {(c.member_ids?.length || 0) > 1 ? (
-                          <span className="sp-chip !bg-white/5">Shared · {c.member_ids.length}</span>
-                        ) : (
-                          <span className="sp-chip !bg-emerald-400/10 !text-emerald-200/90">Private</span>
-                        )}
-                      </div>
-                      <div className="text-xs sp-subtle truncate">{ag || "—"}</div>
-                      {c.type === "group" && (
-                        <div className="text-[10px] sp-subtle mt-1 uppercase tracking-widest">
-                          {c.auto_respond ? "auto-respond" : "@mention to trigger"}
-                          {c.smart_expand ? " · smart-expand" : ""}
+                    <div key={c.id} className="relative group/conv">
+                      <Link
+                        to={`/app/team/${teamId}/c/${c.id}`}
+                        className="sp-glass rounded-xl p-4 hover:border-white/20 transition block"
+                        data-testid={`conv-card-${c.id}`}
+                      >
+                        <div className="flex items-center justify-between mb-1 gap-2">
+                          <div className="text-white text-sm font-medium truncate pr-6">{c.title || "Untitled"}</div>
+                          {(c.member_ids?.length || 0) > 1 ? (
+                            <span className="sp-chip !bg-white/5">Shared · {c.member_ids.length}</span>
+                          ) : (
+                            <span className="sp-chip !bg-emerald-400/10 !text-emerald-200/90">Private</span>
+                          )}
                         </div>
+                        <div className="text-xs sp-subtle truncate">{ag || "—"}</div>
+                        {c.type === "group" && (
+                          <div className="text-[10px] sp-subtle mt-1 uppercase tracking-widest">
+                            {c.auto_respond ? "auto-respond" : "@mention to trigger"}
+                            {c.smart_expand ? " · smart-expand" : ""}
+                          </div>
+                        )}
+                      </Link>
+                      {c.can_delete && (
+                        <button
+                          type="button"
+                          onClick={(e) => deleteConversation(e, c)}
+                          disabled={deletingConvId === c.id}
+                          className="absolute top-2 right-2 rounded-md p-1.5 opacity-0 group-hover/conv:opacity-100 focus:opacity-100 transition hover:bg-red-500/15 disabled:opacity-60"
+                          style={{ color: "rgb(239 68 68)" }}
+                          title={c.is_creator ? "Delete this conversation" : "Delete this conversation (as org owner)"}
+                          aria-label={`Delete conversation ${c.title}`}
+                          data-testid={`conv-card-delete-${c.id}`}
+                        >
+                          {deletingConvId === c.id
+                            ? <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                            : <Trash2 className="w-3.5 h-3.5" />}
+                        </button>
                       )}
-                    </Link>
+                    </div>
                   );
                 })}
                 {conversations.length === 0 && (

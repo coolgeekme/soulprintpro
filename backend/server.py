@@ -2544,7 +2544,7 @@ async def list_conversations(team_id: str, u: dict = Depends(get_current_user)):
     appear in the team list view to avoid drowning the list with
     teammates' private CoS rooms.
     """
-    await require_team_member(team_id, u["id"])
+    ctx = await require_team_member(team_id, u["id"])
     convs = await db.conversations.find({
         "team_id": team_id,
         "$or": [
@@ -2555,7 +2555,30 @@ async def list_conversations(team_id: str, u: dict = Depends(get_current_user)):
             {"kind": PRIVATE_COS_KIND, "member_ids": u["id"]},
         ],
     }).sort("created_at", -1).to_list(500)
-    return [serialize_conv(c) for c in convs]
+    # Resolve org-ownership ONCE (the team has a single parent org) so
+    # we can stamp `can_delete` on every conversation without N round-trips.
+    is_org_owner = False
+    protected_conv_id = ""
+    try:
+        team = ctx.get("team") or await db.teams.find_one({"_id": ObjectId(team_id)})
+        if team:
+            org = await db.organizations.find_one({"_id": ObjectId(team["org_id"])})
+            if org:
+                if str(org.get("owner_id")) == str(u["id"]):
+                    is_org_owner = True
+                protected_conv_id = str(org.get("general_conversation_id") or "")
+    except Exception:
+        pass
+    out: List[Dict[str, object]] = []
+    for c in convs:
+        ser = serialize_conv(c)
+        is_creator = c.get("created_by") == u["id"]
+        is_protected = str(c.get("_id")) == protected_conv_id
+        ser["can_delete"] = (is_creator or is_org_owner) and not is_protected
+        ser["is_org_owner"] = is_org_owner
+        ser["is_creator"] = is_creator
+        out.append(ser)
+    return out
 
 async def load_conv_or_403(conv_id: str, user_id: str) -> dict:
     """Authorize a single-conversation read.
@@ -2614,7 +2637,30 @@ async def load_conv_or_403(conv_id: str, user_id: str) -> dict:
 @conv_r.get("/conversations/{conv_id}")
 async def get_conv(conv_id: str, u: dict = Depends(get_current_user)):
     c = await load_conv_or_403(conv_id, u["id"])
-    return serialize_conv(c)
+    out = serialize_conv(c)
+    # Decide whether the caller can delete this thread so the UI can
+    # show or hide the Trash button without an extra round-trip. Same
+    # rule the DELETE endpoint enforces:
+    #   creator OR org-owner — and never on the always-on Chief of Staff
+    #   thread (auto-created with the org).
+    is_creator = c.get("created_by") == u["id"]
+    is_org_owner = False
+    is_protected = False
+    try:
+        team = await db.teams.find_one({"_id": ObjectId(c["team_id"])})
+        if team:
+            org = await db.organizations.find_one({"_id": ObjectId(team["org_id"])})
+            if org:
+                if str(org.get("owner_id")) == str(u["id"]):
+                    is_org_owner = True
+                if str(org.get("general_conversation_id") or "") == str(c["_id"]):
+                    is_protected = True
+    except Exception:
+        pass
+    out["can_delete"] = (is_creator or is_org_owner) and not is_protected
+    out["is_org_owner"] = is_org_owner
+    out["is_creator"] = is_creator
+    return out
 
 @conv_r.delete("/conversations/{conv_id}")
 async def delete_conv(conv_id: str, u: dict = Depends(get_current_user)):

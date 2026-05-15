@@ -1092,8 +1092,17 @@ export default function ConversationPage() {
     <div className="h-dvh flex flex-col overflow-hidden" style={{ background: "var(--bg)", color: "var(--fg)" }}>
       <TopBar
         right={
-          conv.created_by === user.id && (
-            <button onClick={clearConv} className="sp-btn sp-btn-ghost text-xs" data-testid="delete-conv-btn">
+          conv.can_delete && (
+            <button
+              onClick={clearConv}
+              className="sp-btn sp-btn-ghost text-xs"
+              data-testid="delete-conv-btn"
+              title={
+                conv.is_creator
+                  ? "Delete this conversation"
+                  : "Delete this conversation (as org owner)"
+              }
+            >
               <Trash2 className="w-3.5 h-3.5" /> <span className="hidden md:inline">Delete</span>
             </button>
           )
