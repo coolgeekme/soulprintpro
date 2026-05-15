@@ -98,6 +98,10 @@ export default function ConversationPage() {
   // can hit "Stop" to cancel an agent reply mid-generation. Cleared on
   // success, abort, or error.
   const sendAbortRef = useRef(null);
+  // Set while an outbound message is being POSTed so the 3s live-poll
+  // pauses and we don't race the canonical response with cursor-driven
+  // inserts (would otherwise show duplicates).
+  const sendingRef = useRef(false);
   const [uploading, setUploading] = useState(false);
   // Multi-file staging tray. Files picked via the paperclip button accumulate
   // here as { file: File, previewUrl: string, kind: 'image'|'video'|'file', id }
@@ -345,6 +349,7 @@ export default function ConversationPage() {
     const tick = async () => {
       if (cancelled || inflight) return;
       if (typeof document !== "undefined" && document.hidden) return;
+      if (sendingRef.current) return; // a POST is in flight — let it own the merge
       const cursor = latestCursorRef.current;
       if (!cursor) return; // initial load hasn't completed yet
       inflight = true;
@@ -732,13 +737,20 @@ export default function ConversationPage() {
       const wasStaged = staged;
       setText("");
       setStaged([]);
+      sendingRef.current = true;
       try {
         const { data } = await api.post(`/conversations/${convId}/upload`, fd, {
           headers: { "Content-Type": "multipart/form-data" },
         });
         setMessages((prev) => {
-          const without = prev.filter((m) => m.id !== optimistic.id);
-          return [...without, data.user_message, ...(data.agent_messages || [])];
+          const incomingIds = new Set(
+            [data.user_message?.id, ...(data.agent_messages || []).map((m) => m.id)]
+              .filter(Boolean),
+          );
+          const cleaned = prev.filter(
+            (m) => m.id !== optimistic.id && !incomingIds.has(m.id),
+          );
+          return [...cleaned, data.user_message, ...(data.agent_messages || [])];
         });
         if (data.conversation) setConv(data.conversation);
         // Free local blob URLs now that the server-served URLs are in play
@@ -748,7 +760,7 @@ export default function ConversationPage() {
         setMessages((prev) => prev.filter((m) => m.id !== optimistic.id));
         setText(wasText);
         setStaged(wasStaged);
-      } finally { setUploading(false); }
+      } finally { setUploading(false); sendingRef.current = false; }
       return;
     }
 
@@ -768,6 +780,12 @@ export default function ConversationPage() {
     setText("");
     const controller = new AbortController();
     sendAbortRef.current = controller;
+    // Pause the 3s live-poll while this send is in flight: the POST will
+    // hand us the canonical user+agent messages, and we want to avoid a
+    // race where the poll inserts copies of those by `timestamp > cursor`
+    // before the POST resolves and tries to append them again. The poll
+    // resumes automatically on the next tick once `sending` flips back.
+    sendingRef.current = true;
     try {
       const { data } = await api.post(
         `/conversations/${convId}/messages`,
@@ -775,8 +793,18 @@ export default function ConversationPage() {
         { signal: controller.signal },
       );
       setMessages((prev) => {
-        const withoutOptim = prev.filter(m => m.id !== optimistic.id);
-        return [...withoutOptim, data.user_message, ...data.agent_messages];
+        // Drop the optimistic AND any rows the live-poll may have
+        // already inserted with the same server-side ids. Then append
+        // the canonical set. Dedup by id keeps us safe against any
+        // future timing variations.
+        const incomingIds = new Set(
+          [data.user_message?.id, ...(data.agent_messages || []).map((m) => m.id)]
+            .filter(Boolean),
+        );
+        const cleaned = prev.filter(
+          (m) => m.id !== optimistic.id && !incomingIds.has(m.id),
+        );
+        return [...cleaned, data.user_message, ...data.agent_messages];
       });
       if (data.cancelled) {
         toast("Stopped — no agent reply was saved.", { icon: "🛑" });
@@ -851,6 +879,7 @@ export default function ConversationPage() {
       ));
     } finally {
       sendAbortRef.current = null;
+      sendingRef.current = false;
       // If the recovery poll is still in flight (set by the ERR_NETWORK
       // branch), DON'T blank the indicator — the agent's reply may
       // still arrive within the next ~90s and the user expects a clear
