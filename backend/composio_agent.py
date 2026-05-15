@@ -88,16 +88,23 @@ async def _record_llm_call(db, *, latency_ms: int, prompt_tokens: int,
 
 
 async def is_agent_tools_enabled(db, org_id: str, agent_id: str) -> bool:
-    """True iff the org admin has flipped the per-agent tools toggle ON.
+    """True iff this agent should be allowed to call connected tools.
 
-    Default is OFF — agents must be explicitly opted-in per workspace to
-    prevent surprise tool usage.
+    DEFAULT IS ON — every agent can use any toolkit the user has
+    actively connected for the org. Users get a single "off" switch
+    per agent in AgentToolPrefsPanel if they want to opt-out for
+    surprise-action reasons (e.g. "don't let this agent touch
+    Stripe"). Practically, we treat a missing row OR a row where
+    `tools_enabled` is anything other than literal `False` as ON.
     """
     row = await db.agent_tool_prefs.find_one(
         {"org_id": org_id, "agent_id": agent_id},
         {"_id": 0, "tools_enabled": 1},
     )
-    return bool((row or {}).get("tools_enabled"))
+    if row is None:
+        return True
+    val = row.get("tools_enabled")
+    return val is not False
 
 
 async def _persist_tool_message(

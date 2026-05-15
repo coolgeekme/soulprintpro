@@ -7122,25 +7122,38 @@ async def list_agent_tool_prefs(
     u: dict = Depends(get_current_user),
 ):
     """List which agents (built-in + custom) have Composio tools enabled
-    for this org. Every member can see the list; only admins can flip."""
+    for this org. Every member can see the list; only admins can flip.
+
+    Default for any agent without an explicit row is ON — every agent
+    can use the org's connected toolkits unless someone has explicitly
+    toggled it OFF. Matches the gating logic in
+    `composio_agent.is_agent_tools_enabled`.
+    """
     ctx = await require_org_member(org_id, u["id"])
     rows = await db.agent_tool_prefs.find(
         {"org_id": org_id},
         {"_id": 0, "agent_id": 1, "tools_enabled": 1, "updated_at": 1},
     ).to_list(500)
-    enabled = {r["agent_id"]: bool(r.get("tools_enabled")) for r in rows}
+    # Map by agent_id, preserving the raw value so we can distinguish
+    # "no row → default ON" from "row with tools_enabled=False → OFF".
+    prefs = {r["agent_id"]: r for r in rows}
     # Surface the full agent catalogue so the UI can render every agent
     # (built-in + this org's custom agents) with a toggle in one shot.
     agents_out: List[Dict[str, object]] = []
     for aid, meta in AGENTS.items():
         if meta.get("org_id") and meta.get("org_id") != org_id:
             continue  # custom agent from another org — invisible
+        row = prefs.get(aid)
+        if row is None:
+            enabled_val = True  # default ON
+        else:
+            enabled_val = row.get("tools_enabled") is not False
         agents_out.append({
             "agent_id": aid,
             "name": meta.get("name"),
             "role": meta.get("role"),
             "division_key": meta.get("division_key"),
-            "tools_enabled": enabled.get(aid, False),
+            "tools_enabled": enabled_val,
             "is_custom": bool(meta.get("org_id")),
         })
     agents_out.sort(key=lambda a: (a["is_custom"], a["name"] or ""))
@@ -7187,9 +7200,10 @@ async def agent_tool_recommendations(
     """Suggest tool-enabled agents based on each agent's division +
     which toolkits the caller has actually connected.
 
-    Returns a list of agent_ids the caller should consider enabling,
-    with the matched toolkit slugs. UI uses this for the "Apply
-    recommended" bulk-action banner.
+    Since every agent is now ON by default, this only returns
+    suggestions for agents the user has EXPLICITLY toggled OFF that
+    match a connected toolkit — useful as a "want to re-enable these?"
+    nudge after a fresh connection lands.
     """
     from composio_integration import (
         recommended_toolkits_for_division, list_connections,
@@ -7200,16 +7214,16 @@ async def agent_tool_recommendations(
     if not connected_slugs:
         return {"recommendations": [], "connected_toolkits": []}
     out: List[Dict[str, object]] = []
-    enabled_rows = await db.agent_tool_prefs.find(
-        {"org_id": org_id, "tools_enabled": True},
+    explicit_off_rows = await db.agent_tool_prefs.find(
+        {"org_id": org_id, "tools_enabled": False},
         {"_id": 0, "agent_id": 1},
     ).to_list(500)
-    already_on = {r["agent_id"] for r in enabled_rows}
+    explicitly_off = {r["agent_id"] for r in explicit_off_rows}
     for aid, meta in AGENTS.items():
         if meta.get("org_id") and meta.get("org_id") != org_id:
             continue
-        if aid in already_on:
-            continue
+        if aid not in explicitly_off:
+            continue  # already implicitly ON
         recs = recommended_toolkits_for_division(meta.get("division_key", ""))
         matched = [s for s in recs if s in connected_slugs]
         if matched:

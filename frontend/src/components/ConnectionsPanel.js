@@ -233,9 +233,10 @@ export default function ConnectionsPanel({ orgId }) {
     <div className="space-y-4" data-testid="connections-panel">
       <div className="flex flex-wrap items-baseline justify-between gap-3">
         <p className="text-sm opacity-70 max-w-xl">
-          Connect your own SaaS accounts so agents can read & write on your behalf.
-          We automatically enable matching agents — connect Gmail, your Sales,
-          Support and HR agents can send mail. Each connection is scoped to{" "}
+          Connect your own SaaS accounts so agents can read &amp; write on your behalf.
+          Every agent in this org can use your connected tools by default — connect
+          Gmail and any agent can send mail, connect HubSpot and any agent can update
+          deals. Each connection is scoped to{" "}
           <span className="opacity-100 font-medium">your user</span>.
         </p>
         <div className="flex gap-2">
@@ -255,6 +256,8 @@ export default function ConnectionsPanel({ orgId }) {
           </button>
         </div>
       </div>
+
+      <ConnectionsHowToGuide />
 
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
         {visibleToolkits.map((t) => {
@@ -543,6 +546,110 @@ function BrowseAllModal({ orgId, existingSlugs, onClose, onConnect }) {
           )}
         </div>
       </div>
+    </div>
+  );
+}
+
+
+// ── How-to guide ─────────────────────────────────────────────────────────
+// Collapsible "How to use your connections" card. Opens by default the
+// first time the user lands on the Connections page (per-browser pref).
+// Solves the #1 user complaint: "I connected HubSpot and IG but the
+// agents didn't seem to know about them."
+function ConnectionsHowToGuide() {
+  const STORAGE_KEY = "connections.howto.collapsed";
+  const [open, setOpen] = useState(() => {
+    try { return localStorage.getItem(STORAGE_KEY) !== "1"; } catch { return true; }
+  });
+  const toggle = () => {
+    setOpen((v) => {
+      const next = !v;
+      try { localStorage.setItem(STORAGE_KEY, next ? "0" : "1"); } catch {}
+      return next;
+    });
+  };
+  return (
+    <div
+      className="rounded-xl border border-orange-500/30 bg-orange-500/5"
+      data-testid="connections-howto"
+    >
+      <button
+        type="button"
+        onClick={toggle}
+        className="w-full flex items-center justify-between px-4 py-3 text-left"
+        data-testid="connections-howto-toggle"
+      >
+        <div className="flex items-center gap-2">
+          <span className="text-orange-300 text-sm">💡</span>
+          <span className="text-sm font-medium">How to actually use your connections</span>
+        </div>
+        <span className="text-xs opacity-60">{open ? "Hide" : "Show"}</span>
+      </button>
+      {open && (
+        <div className="px-4 pb-4 space-y-3 text-sm opacity-90">
+          <div>
+            <div className="font-medium mb-1">1. Connect the account</div>
+            <p className="opacity-80">
+              Click <span className="font-mono text-xs px-1 py-0.5 rounded bg-white/10">Connect</span>{" "}
+              on a tile below. A new tab opens — sign in to that service
+              (Google, HubSpot, Slack, etc.) and approve the permissions.
+              When you come back, the tile turns green with a checkmark.
+              That&apos;s it — every agent in this org can now use it.
+            </p>
+          </div>
+          <div>
+            <div className="font-medium mb-1">2. Just ask in chat</div>
+            <p className="opacity-80">
+              Go to any chat (General, your Chief of Staff, a Mission)
+              and ask the agent to do the thing. Examples:
+            </p>
+            <ul className="list-disc pl-5 mt-1 space-y-1 text-[13px] opacity-80">
+              <li><span className="opacity-100">HubSpot:</span> &quot;Pull my top 10 deals by stage and summarise them.&quot;</li>
+              <li><span className="opacity-100">Gmail:</span> &quot;Send Reggie an email confirming the meeting tomorrow at 3pm.&quot;</li>
+              <li><span className="opacity-100">Instagram:</span> &quot;Post the new launch image to my IG with the caption I drafted.&quot;</li>
+              <li><span className="opacity-100">Slack:</span> &quot;Drop the weekly digest into #general.&quot;</li>
+            </ul>
+            <p className="opacity-80 mt-1">
+              The agent will say which account it&apos;s using (e.g.{" "}
+              <em>&quot;sending from your Work Gmail&quot;</em>) and either confirm
+              or ask before destructive actions.
+            </p>
+          </div>
+          <div>
+            <div className="font-medium mb-1">3. If an agent says it can&apos;t</div>
+            <p className="opacity-80">
+              First check that the tile here shows{" "}
+              <span className="text-emerald-300">Connected</span>. If it
+              does, re-state the request more concretely (&quot;use HubSpot to
+              find…&quot;). If the agent still refuses, an org owner can
+              re-check the per-agent toggle in{" "}
+              <span className="font-mono text-xs px-1 py-0.5 rounded bg-white/10">Agent tool prefs</span>{" "}
+              — every agent is ON by default but can be individually
+              turned OFF.
+            </p>
+          </div>
+          <div>
+            <div className="font-medium mb-1">4. Multiple accounts? No problem</div>
+            <p className="opacity-80">
+              Click <span className="font-mono text-xs px-1 py-0.5 rounded bg-white/10">Add account</span>{" "}
+              on any connected tile to add a second (e.g. Personal Gmail
+              + Work Gmail). Give each a nickname so agents can pick the
+              right one — or ask before sending.
+            </p>
+          </div>
+          <div>
+            <div className="font-medium mb-1">5. Instagram &amp; Facebook — extra step</div>
+            <p className="opacity-80">
+              IG and FB require a connected Facebook Page + an Instagram
+              Business / Creator account linked to it. If posts fail, open
+              your Meta Business Suite and confirm the IG account is
+              linked to a Page you own. The Connections tile shows which
+              page/handle we resolved — if the wrong one shows, disconnect
+              and reconnect.
+            </p>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

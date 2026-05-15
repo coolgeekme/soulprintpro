@@ -110,14 +110,16 @@ async def build_composio_mission_tools(
     if not composio.is_available():
         return []
     # Gate on the lead agent's tools_enabled toggle so users keep the
-    # per-agent control they already see in AgentToolPrefsPanel. If
-    # the toggle is OFF, missions get no Composio tools.
+    # per-agent control they already see in AgentToolPrefsPanel. Default
+    # is ON (missing row or any non-False value); only an explicit
+    # `tools_enabled=False` disables Composio tools for missions led by
+    # this agent.
     if lead_agent_id:
         row = await db.agent_tool_prefs.find_one(
             {"org_id": org_id, "agent_id": lead_agent_id},
             {"_id": 0, "tools_enabled": 1},
         )
-        if not (row or {}).get("tools_enabled"):
+        if row is not None and row.get("tools_enabled") is False:
             return []
     # Pull the OpenAI-formatted tools list from Composio (they include the
     # input schema we need for our args_hint). Limit to 30 — beyond that

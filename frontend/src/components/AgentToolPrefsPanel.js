@@ -7,11 +7,12 @@ import { Search, Plug, Loader2, Wrench } from "lucide-react";
  * AgentToolPrefsPanel
  * -------------------
  * Lists every agent visible to this org (built-in + this org's custom
- * agents) with a switch that opts each one in to Composio tool calling.
+ * agents) with a switch that opts each one in/out of Composio tool calling.
  *
- * Default is OFF. When ON, the agent can invoke any of the user's
- * connected tools (Gmail, Slack, etc.) up to 3 times per turn. Owners
- * and admins can flip the switch; members get a read-only view.
+ * Default is ON — every agent can use any toolkit the org has actively
+ * connected. Owners/admins flip the switch OFF to opt a specific agent
+ * out (e.g. "I don't want my Finance Auditor agent touching Stripe").
+ * Members get a read-only view.
  */
 export default function AgentToolPrefsPanel({ orgId }) {
   const [agents, setAgents] = useState([]);
@@ -140,7 +141,9 @@ export default function AgentToolPrefsPanel({ orgId }) {
       )}
       <div className="flex flex-wrap items-center gap-3">
         <p className="text-sm opacity-70 flex-1 min-w-[240px]">
-          Pick which agents are allowed to use your team's connected tools.
+          Every agent can use your org&apos;s connected tools by default.
+          Flip the switch OFF here only if you want a specific agent to
+          stay tools-free.
           {" "}
           <span className="opacity-100 font-medium">{enabledCount}</span>
           {" "}of <span className="font-medium">{agents.length}</span> agents enabled.
