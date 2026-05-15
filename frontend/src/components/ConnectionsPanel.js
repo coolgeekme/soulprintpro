@@ -512,32 +512,47 @@ function BrowseAllModal({ orgId, existingSlugs, onClose, onConnect }) {
             <ul className="divide-y" style={{ borderColor: "var(--border-soft, rgba(127,127,127,0.12))" }}>
               {items.map((t) => {
                 const connected = existingSlugs.has(t.slug);
+                const byoa = Boolean(t.byoa_only);
                 return (
                   <li key={t.slug} className="flex items-center gap-3 px-3 py-2.5 hover:bg-black/5 dark:hover:bg-white/5 rounded-md" data-testid={`catalog-row-${t.slug}`}>
                     {t.logo ? (
-                      <img src={t.logo} alt="" className="h-7 w-7 rounded-md object-contain p-1" style={{ background: "var(--surface, rgba(127,127,127,0.10))" }} />
+                      <img src={t.logo} alt="" className={`h-7 w-7 rounded-md object-contain p-1 ${byoa ? "opacity-50" : ""}`} style={{ background: "var(--surface, rgba(127,127,127,0.10))" }} />
                     ) : (
-                      <div className="h-7 w-7 rounded-md flex items-center justify-center text-xs" style={{ background: "var(--surface, rgba(127,127,127,0.10))" }}>
+                      <div className={`h-7 w-7 rounded-md flex items-center justify-center text-xs ${byoa ? "opacity-50" : ""}`} style={{ background: "var(--surface, rgba(127,127,127,0.10))" }}>
                         {initialFor(t.slug)}
                       </div>
                     )}
                     <div className="flex-1 min-w-0">
-                      <div className="text-sm flex items-center gap-2">
-                        {t.name}
+                      <div className="text-sm flex items-center gap-2 flex-wrap">
+                        <span className={byoa ? "opacity-60" : ""}>{t.name}</span>
                         {t.featured && (
                           <span className="text-[9px] uppercase tracking-wider px-1 rounded bg-orange-500/20 text-orange-500 dark:text-orange-300">Featured</span>
                         )}
+                        {byoa && (
+                          <span
+                            className="text-[9px] uppercase tracking-wider px-1 rounded border border-amber-500/40 text-amber-600 dark:text-amber-300 bg-amber-500/10"
+                            title={t.byoa_reason || "Requires you to bring your own OAuth credentials"}
+                          >
+                            Bring your own auth
+                          </span>
+                        )}
                       </div>
-                      {t.description && (
+                      {byoa ? (
+                        <p className="text-[11px] opacity-60 truncate">
+                          One-click Connect not supported. {t.name} needs its own OAuth app created on their developer dashboard. Tell us if you need this and we&apos;ll prioritise the BYOA setup flow.
+                        </p>
+                      ) : t.description ? (
                         <p className="text-[11px] opacity-50 truncate">{t.description}</p>
-                      )}
+                      ) : null}
                     </div>
                     <button
-                      onClick={() => onConnect(t.slug)}
-                      className="text-xs px-2.5 py-1 rounded-md bg-orange-500/90 hover:bg-orange-500 text-white"
+                      onClick={() => !byoa && onConnect(t.slug)}
+                      disabled={byoa}
+                      title={byoa ? "Requires bring-your-own OAuth credentials" : ""}
+                      className={`text-xs px-2.5 py-1 rounded-md text-white ${byoa ? "bg-white/15 cursor-not-allowed" : "bg-orange-500/90 hover:bg-orange-500"}`}
                       data-testid={`catalog-connect-${t.slug}`}
                     >
-                      {connected ? "Add account" : "Connect"}
+                      {byoa ? "Not available" : (connected ? "Add account" : "Connect")}
                     </button>
                   </li>
                 );

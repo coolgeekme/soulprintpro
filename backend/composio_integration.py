@@ -136,7 +136,15 @@ async def ensure_auth_configs(db) -> Dict[str, str]:
 
 
 async def _create_one_auth_config(db, slug: str, display_name: str) -> Optional[str]:
-    """Create exactly one composio-managed auth config and persist it."""
+    """Create exactly one composio-managed auth config and persist it.
+
+    When Composio reports the toolkit has no managed credentials (BYOA-only —
+    e.g. Shopify, where the user must register a custom OAuth app on their
+    Shopify Partner dashboard), we persist a `byoa_only: true` sentinel so
+    we never hit Composio with the same doomed request again, and so the
+    catalog/connection layer can surface a meaningful message to the user
+    instead of a confusing "Toolkit is not available".
+    """
     client = _get_client()
     try:
         ac = client.auth_configs.create(
@@ -147,7 +155,33 @@ async def _create_one_auth_config(db, slug: str, display_name: str) -> Optional[
             },
         )
     except Exception as exc:
-        logger.warning("Composio: auth_config create failed for %s: %s", slug, exc)
+        msg = str(exc)
+        is_byoa = (
+            "Default auth config not found" in msg
+            or "Auth_Config_DefaultAuthConfigNotFound" in msg
+            or "does not have managed credentials" in msg
+            or "use_custom_auth" in msg
+        )
+        if is_byoa:
+            await db.composio_auth_configs.update_one(
+                {"toolkit": slug},
+                {"$set": {
+                    "toolkit": slug,
+                    "byoa_only": True,
+                    "name": display_name,
+                    "byoa_reason": (
+                        "Composio doesn't have managed credentials for this "
+                        "toolkit. You'll need to create your own OAuth app in "
+                        "the toolkit's developer dashboard and bring those "
+                        "credentials here."
+                    ),
+                    "updated_at": datetime.now(timezone.utc),
+                }},
+                upsert=True,
+            )
+            logger.info("Composio: %s is BYOA-only — cached sentinel.", slug)
+        else:
+            logger.warning("Composio: auth_config create failed for %s: %s", slug, exc)
         return None
     await db.composio_auth_configs.update_one(
         {"toolkit": slug},
@@ -167,10 +201,15 @@ async def ensure_auth_config_for(db, toolkit: str) -> Optional[str]:
     """Lazy bootstrap: return existing auth_config_id for `toolkit`, or
     create one (composio-managed) if absent. Used when a user clicks
     Connect on a non-featured toolkit from the "Browse all" dialog.
+
+    Respects the `byoa_only` sentinel so we don't keep hammering Composio
+    for toolkits we already know require custom credentials.
     """
     row = await db.composio_auth_configs.find_one({"toolkit": toolkit}, {"_id": 0})
     if row and row.get("auth_config_id"):
         return row["auth_config_id"]
+    if row and row.get("byoa_only"):
+        return None
     # Look up the human name from Composio's catalogue so the auth_config
     # gets a readable label in their dashboard.
     display = toolkit
@@ -181,6 +220,18 @@ async def ensure_auth_config_for(db, toolkit: str) -> Optional[str]:
     except Exception:
         pass
     return await _create_one_auth_config(db, toolkit, display)
+
+
+async def is_byoa_only(db, toolkit: str) -> bool:
+    """True if we've previously detected this toolkit requires the user to
+    bring their own OAuth credentials. Cached in `composio_auth_configs`.
+    """
+    row = await db.composio_auth_configs.find_one(
+        {"toolkit": toolkit}, {"_id": 0, "byoa_only": 1, "auth_config_id": 1},
+    )
+    if not row:
+        return False
+    return bool(row.get("byoa_only")) and not row.get("auth_config_id")
 
 
 # Cache of {slug: {slug,name,description,logo}} for the full Composio
@@ -268,6 +319,25 @@ async def initiate_connection(
     if not ac_id:
         ac_id = await ensure_auth_config_for(db, toolkit)
     if not ac_id:
+        # Distinguish BYOA-only toolkits (Shopify, custom enterprise apps)
+        # from genuinely-unavailable ones so the UI can surface a useful
+        # next step instead of a confusing "not available".
+        if await is_byoa_only(db, toolkit):
+            display = toolkit
+            try:
+                info = await _resolve_toolkit_metadata(toolkit)
+                if info:
+                    display = info.get("name") or toolkit
+            except Exception:
+                pass
+            raise ValueError(
+                f"{display} requires you to bring your own OAuth credentials. "
+                "Composio doesn't have managed auth for this toolkit. To enable "
+                f"it, you'd need to create a custom app inside {display}'s "
+                "developer dashboard and configure those credentials. We're "
+                "working on adding a BYOA setup flow — for now this toolkit "
+                "can't be connected through the one-click Connect button."
+            )
         raise ValueError(f"Toolkit '{toolkit}' is not available")
     client = _get_client()
     cu = composio_user_id(org_id, user_id)

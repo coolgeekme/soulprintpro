@@ -7179,8 +7179,11 @@ async def composio_catalog(
     u: dict = Depends(get_current_user),
 ):
     """Full Composio toolkit catalog (~250 entries) for the Browse-all
-    picker. Featured slugs are flagged so the UI can pin them. Optional
-    `q` query filters by slug or name (case-insensitive)."""
+    picker. Featured slugs are flagged so the UI can pin them. Toolkits
+    we've previously discovered to require user-provided OAuth credentials
+    (BYOA — e.g. Shopify) are flagged `byoa_only=true` so the UI can
+    render them as not-yet-supported instead of letting the user click
+    Connect and hit a 400. Optional `q` query filters by slug or name."""
     from composio_integration import (
         list_all_toolkits, list_featured_toolkits, is_available,
     )
@@ -7196,10 +7199,26 @@ async def composio_catalog(
             if lc in (t.get("slug") or "").lower()
             or lc in (t.get("name") or "").lower()
         ]
+    # Fetch BYOA-only sentinels once and stamp them onto matching toolkits.
+    byoa_rows = await db.composio_auth_configs.find(
+        {"byoa_only": True}, {"_id": 0, "toolkit": 1, "byoa_reason": 1},
+    ).to_list(500)
+    byoa_lookup = {
+        r["toolkit"]: r.get("byoa_reason") or "" for r in byoa_rows
+    }
     for t in all_tk:
-        t["featured"] = t["slug"] in featured
-    # Featured first, then alphabetical by name.
-    all_tk.sort(key=lambda t: (not t["featured"], (t.get("name") or "").lower()))
+        slug = t.get("slug") or ""
+        t["featured"] = slug in featured
+        if slug in byoa_lookup:
+            t["byoa_only"] = True
+            t["byoa_reason"] = byoa_lookup[slug]
+    # Featured first, then non-BYOA, then alphabetical by name. BYOA
+    # toolkits sink to the bottom so they don't crowd out workable ones.
+    all_tk.sort(key=lambda t: (
+        not t.get("featured"),
+        bool(t.get("byoa_only")),
+        (t.get("name") or "").lower(),
+    ))
     return {"available": True, "toolkits": all_tk[:300]}
 
 
