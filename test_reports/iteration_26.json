@@ -1,0 +1,56 @@
+{
+  "summary": "Phase 4 Composio→Missions wiring tested via /app/backend/tests/test_composio_phase4_missions.py (17/17 pytest cases pass). Covers: build_composio_mission_tools short-circuits (Tool=None / is_available()=False / 0 ACTIVE connections / lead-agent tools_enabled=False), happy-path Tool() shape (monkeypatched composio.get_tools_for_user → returns 2 Tool instances with name='gmail.send_email'/'slack.post_message', description prefixed with [toolkit], handler callable, side_effect=True), budget arithmetic (per-platform cap trips at 5, total cap trips at 20, reset_budget clears counters), mission regression (POST /api/orgs/{org}/missions w/ no connections returns 200 + mission persists + status 'running'), Phase 1+2+3 routes untouched (toolkits/agent-tool-prefs/connect-bad-toolkit all return expected codes), slug helpers (_short_name and _slug_for round-trip correctly). FOUND ONE CRITICAL BUG: composio_mission_tools.py line ~165 calls db.llm_calls.update_one(..., sort=[('created_at', -1)]) but pymongo 4.5.0 (installed) does NOT accept the sort kwarg on update_one — sort=... was only added in pymongo 4.7+. Every successful Composio tool call inside a mission will raise TypeError at telemetry write-time. Verified by direct repro in test_update_one_sort_kwarg_incompatible_with_pymongo_4_5; same code path without sort= works fine (test_update_one_works_without_sort_kwarg).",
+  "backend_issues": {
+    "critical": [
+      {
+        "endpoint": "composio_mission_tools.build_composio_mission_tools._make_handler",
+        "issue": "db.llm_calls.update_one(..., sort=[('created_at', -1)]) raises TypeError on pymongo 4.5.0 — sort kwarg was only added in pymongo 4.7+. Every successful Composio mission tool call will throw after execute_tool succeeds, breaking telemetry and surfacing a noisy error in mission logs (the surrounding try/except in _augment is at build-time, not handler-time, so the exception bubbles up into run_mission_loop's tool dispatch).",
+        "priority": "CRITICAL"
+      }
+    ],
+    "minor": [
+      {
+        "endpoint": "composio_mission_tools._make_handler",
+        "issue": "_bump_budget is only called on res.get('success') — failed Composio calls don't count toward the cap. A perpetually-failing toolkit (e.g. expired auth) could be retried indefinitely by the LLM with no budget pressure to back off."
+      },
+      {
+        "endpoint": "composio_mission_tools.build_composio_mission_tools",
+        "issue": "reset_budget(mission_id) is called on every invocation, including resume/rehydrate paths — accumulated counters from the first half of the mission are wiped when the loop re-enters. Probably intentional (fresh budget per loop entry), but worth a comment."
+      },
+      {
+        "endpoint": "composio_mission_tools._make_handler (telemetry write)",
+        "issue": "The update filter is {org_id, kind_label='composio:<tk>:<slug>'} with no user_id and (broken) sort. Two users in the same org running missions with the same toolkit can race; the broken sort was supposed to pick the latest, but without it the filter would update an arbitrary historical row. Recommend filtering on user_id as well (or just write a NEW telemetry row instead of mutating chat rows)."
+      }
+    ]
+  },
+  "frontend_issues": {"ui_bugs": [], "integration_issues": [], "design_issues": []},
+  "test_report_links": [
+    "/app/backend/tests/test_composio_phase4_missions.py",
+    "/app/test_reports/pytest/iter26_composio_phase4.xml"
+  ],
+  "action_items": [
+    "FIX (CRITICAL): /app/backend/composio_mission_tools.py line ~165–172. Either (a) switch to db.llm_calls.find_one_and_update(filter, update, sort=[...]) which accepts sort on pymongo 4.5+, OR (b) drop the sort=... kwarg and accept that multi-call races may update an older row, OR (c) bump pymongo to >=4.7 in /app/backend/requirements.txt. Option (a) is the cleanest match for the original intent.",
+    "Consider: bump _bump_budget on every execute regardless of success, so failed-auth toolkits get back-pressure (currently only successful calls count toward the 20/5 caps).",
+    "Consider: filter telemetry update on user_id in addition to org_id+kind_label to avoid cross-user row mutations under concurrent mission load."
+  ],
+  "critical_code_review_comments": [
+    "Gating chain (Tool=None / is_available() / 0 ACTIVE / tools_enabled=False) is correctly ordered cheapest-first — DB hit only after the in-memory checks pass.",
+    "_short_name('LINEAR') → 'linear' (single-token fallback) handles non-canonical slugs without crashing; matches the _slug_for inverse on the round-trip.",
+    "_summarise() correctly clips at 5 properties and prioritises required fields when packing the args_hint sample — keeps the catalog block under control even for tools with 30+ params.",
+    "description gets truncated at 240 chars w/ an ellipsis BEFORE the [toolkit] prefix is added, so the prefix never gets clipped — good ordering.",
+    "_BUDGETS as a process-global dict is fine for a single backend worker, but if the deployment ever scales to multiple uvicorn workers (>1), the per-mission counter splits — different workers will each track their own copy and the 20/5 caps become per-worker not per-mission. The doc comment acknowledges 'partial count is moot anyway on crash' but multi-worker is a different failure mode. Worth a note.",
+    "_augment_with_composio_tools (missions.py L2070) takes a `tools` arg but the inner build_composio_mission_tools ignores it — only the returned `extra` list is concatenated. The arg is purely for the convenience of `list(tools) + list(extra)`. Slightly redundant; build_composio_mission_tools could just return the new list.",
+    "Mission start flow at missions.py:515 wraps the augment in try/except — good defensive posture given Composio API can be flaky.",
+    "CRITICAL bug already noted in backend_issues.critical: update_one(sort=...) breaks on pymongo 4.5.0."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_composio_phase4_missions.py (new — 17 tests, 100% pass)"
+  ],
+  "success_rate": {"backend": "100% (17/17 tests pass; 1 production bug found, demonstrated by regression-guard test)", "frontend": "n/a"},
+  "test_credentials": "reggie@coolgeek.me / superadminpass123 (org 69f6a9f568b5974dfcc2fcf8). Reggie has 0 ACTIVE composio_connections in preview — used as the null-path regression.",
+  "seed_data_creation": "All tests seed and clean up their own rows: TEST_agent_<uuid> agent_tool_prefs and TEST_conn_<uuid> composio_connections deleted in try/finally. Verified zero stale TEST_ rows post-run.",
+  "retest_needed": true,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "test_composio_phase4_missions.py uses _run(async_fn) with a fresh AsyncIOMotorClient per call (same pattern as test_social_publishing.py — motor binds executors to creating loop, can't reuse across asyncio.run()). The telemetry regression guard auto-skips on pymongo>=4.7 (i.e. if main agent fixes the bug by bumping the lib, the test becomes a no-op rather than a false-negative). Live-Composio integration is NOT exercised end-to-end — the FUNCTION shape is verified via monkeypatched composio.get_tools_for_user. To exercise the real path you'd need a real OAuth-completed connection (the fixture user has none).",
+  "rca of the issue": "RCA for the pymongo update_one(sort=...) bug: pymongo's update_one signature is (filter, update, upsert=False, bypass_document_validation=False, collation=None, array_filters=None, hint=None, session=None, let=None, comment=None) in 4.5.0; the sort kwarg only landed in 4.7 (Apr 2024). The intent of the code is correct — when a user invokes a Composio tool from inside chat, an llm_calls row is recorded with kind_label='composio:gmail:GMAIL_SEND_EMAIL' (chat shape), and when the same call is then invoked from a mission's tool catalog, the handler should re-tag the most recent matching row with the mission_tool: prefix. The sort=[('created_at', -1)] is to grab the most recent. The fix is to use find_one_and_update which DOES accept sort in all pymongo versions: result = await db.llm_calls.find_one_and_update({org_id, kind_label}, {'$set': {...}}, sort=[('created_at', -1)]). Reproduction: insert one llm_calls doc with kind_label='composio:gmail:GMAIL_SEND_EMAIL' then call db.llm_calls.update_one(..., sort=[('created_at', -1)]) → TypeError: Collection.update_one() got an unexpected keyword argument 'sort'."
+}

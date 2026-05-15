@@ -506,6 +506,28 @@ async def run_mission_loop(
     )
 
     tool_map = {t.name: t for t in tools}
+    # Inject any Composio tools the user has actively connected, gated by
+    # the lead agent's tools_enabled toggle. Lives here (not at the call
+    # sites) so all five mission entry points — start, resume, force-finish,
+    # continue, rehydrate — get the same treatment with no duplication.
+    if ctx.get("org_id") and ctx.get("created_by"):
+        try:
+            extra = await _augment_with_composio_tools(
+                db, [],
+                org_id=ctx["org_id"],
+                user_id=ctx["created_by"],
+                mission_id=mission_id,
+                lead_agent_id=ctx.get("lead_agent_id"),
+            )
+            if extra:
+                tools = list(tools) + extra
+                tool_map = {t.name: t for t in tools}
+                logger.info(
+                    "mission %s: +%d Composio tools (lead=%s)",
+                    mission_id, len(extra), ctx.get("lead_agent_id"),
+                )
+        except Exception as exc:
+            logger.warning("mission %s: Composio injection skipped: %s", mission_id, exc)
     catalog = build_tool_catalog(tools)
     sys_prompt = build_lead_system_prompt(catalog)
 
@@ -2043,6 +2065,33 @@ def _maybe_github_tools(db) -> List[Tool]:
         return out
     except Exception:
         return []
+
+
+async def _augment_with_composio_tools(
+    db, tools: List[Tool], *, org_id: str, user_id: str,
+    mission_id: str, lead_agent_id: Optional[str],
+) -> List[Tool]:
+    """Append the user's connected Composio tools to the mission catalog.
+
+    Silently no-op when COMPOSIO_API_KEY isn't set, the user has no
+    ACTIVE connections, or the lead agent's tools_enabled toggle is OFF.
+    See `composio_mission_tools.build_composio_mission_tools` for the
+    full gating rules.
+    """
+    try:
+        from composio_mission_tools import build_composio_mission_tools
+        extra = await build_composio_mission_tools(
+            db,
+            org_id=org_id,
+            user_id=user_id,
+            mission_id=mission_id,
+            lead_agent_id=lead_agent_id,
+            Tool=Tool,
+        )
+        return list(tools) + list(extra)
+    except Exception as exc:
+        logger.warning("Composio mission-tool injection failed: %s", exc)
+        return tools
 
 
 # ── HTTP router ────────────────────────────────────────────────────────────
