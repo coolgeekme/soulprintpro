@@ -3,6 +3,20 @@
 Plain-English feature inventory of **Foundry by SoulPrint Engine** for non-technical teammates. Each section is a category of capabilities and what they do for users.
 
 ---
+## 📣 May 15, 2026 — Social Queue → Live Publishing via Foundry
+- **New capability**: posts in the Social Queue can now actually be **published**, not just drafted. Two new paths plus the existing manual one:
+  - 🟢 **Manual "Mark posted"** — unchanged, still the fallback when no platforms are connected.
+  - 🟢 **"Publish via Foundry" button** — visible whenever the post's platforms intersect the user's active Composio connections. Background task fans out to each platform sequentially; UI flips to "Publishing…" and polls until done.
+  - 🟢 **Auto-publish at scheduled_for** — APScheduler's `promote_due_drafts` now fires the publish task for posts with `auto_publish=true` (default) the moment their scheduled time arrives. Posts with `auto_publish=false` just get marked ready_at for manual review.
+- **Platforms wired (v1)**: LinkedIn, Facebook, Instagram, Reddit, TikTok. Twitter and TikTok require user-supplied OAuth credentials (Composio doesn't have managed creds) — handled with clean error surfaces, not crashes.
+- **Per-platform result chips**: each post card now shows green/red chips post-publish (`publish-results-{post_id}`) with the per-platform error in a tooltip — partial successes are visible at a glance.
+- **Instagram caveat surfaced**: NicknameModal now shows an amber warning at the moment-of-connect for instagram/facebook/tiktok/twitter explaining the Business-account-must-link-FB-Page Meta requirement (and the BYO-creds gotchas for the other two). Generic toolkits get no warning.
+- **5 new featured toolkits** (linkedin/facebook/instagram/reddit added above-the-fold). Marketing/Sales/Content/Social agent divisions auto-enable when these toolkits connect.
+- New module `/app/backend/social_publishing.py` keeps Composio glue out of the queue router. Builders raise `ValueError` for unsatisfiable cases (IG no image, Reddit no subreddit) — those surface as per-platform errors without breaking the fan-out.
+- 19/19 pytest pass at `/app/backend/tests/test_social_publishing.py` covering the full surface — auth gates, idempotency, per-platform error paths, scheduler hook, auto_publish opt-out, idempotent ready_at filter.
+
+---
+
 ## ⚡ May 15, 2026 — Smart Default-ON for Connected Toolkits
 - **New UX**: when a user connects a toolkit (e.g. Gmail) and it transitions to ACTIVE, agents in matching divisions get `tools_enabled=true` automatically — no manual toggling.
 - **Division → toolkit reverse index**: Gmail enables Sales/Support/HR/Legal agents (12 in the default catalog), Linear enables Engineering/Product (~30), Stripe enables Finance, etc.
