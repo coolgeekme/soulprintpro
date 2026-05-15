@@ -151,6 +151,11 @@ async def build_composio_mission_tools(
                 gate = _is_over_budget(mid, _toolkit)
                 if gate:
                     return {"error": gate}
+                # Bump the budget BEFORE executing — even a failed call
+                # costs Composio quota AND should backpressure runaway
+                # loops (e.g. expired auth that would otherwise be
+                # retried forever).
+                _bump_budget(mid, _toolkit)
                 res = await composio.execute_tool(
                     db,
                     ctx.get("org_id") or org_id,
@@ -158,18 +163,27 @@ async def build_composio_mission_tools(
                     _slug,
                     args or {},
                 )
-                if res.get("success"):
-                    _bump_budget(mid, _toolkit)
-                # Telemetry: tag with mission_tool so SpendDashboard
-                # separates mission-driven Composio cost from chat cost.
-                await db.llm_calls.update_one(
-                    {
-                        "org_id": ctx.get("org_id") or org_id,
-                        "kind_label": f"composio:{_toolkit}:{_slug}",
-                    },
-                    {"$set": {"mission_id": mid, "kind_label": f"mission_tool:composio:{_toolkit}:{_slug}"}},
-                    sort=[("created_at", -1)],
-                )
+                # Re-tag the most recent telemetry row from this user
+                # for this tool as mission-sourced. Use find_one_and_update
+                # because update_one(sort=...) is pymongo 4.7+ and we're
+                # on 4.5 — the sort= kwarg silently disappears there.
+                try:
+                    await db.llm_calls.find_one_and_update(
+                        {
+                            "org_id": ctx.get("org_id") or org_id,
+                            "user_id": ctx.get("user_id") or user_id,
+                            "kind_label": f"composio:{_toolkit}:{_slug}",
+                        },
+                        {"$set": {
+                            "mission_id": mid,
+                            "kind_label": f"mission_tool:composio:{_toolkit}:{_slug}",
+                        }},
+                        sort=[("created_at", -1)],
+                    )
+                except Exception as exc:
+                    # Telemetry is nice-to-have; never let it break the
+                    # mission step.
+                    logger.warning("mission telemetry tag failed: %s", exc)
                 return {
                     "ok": bool(res.get("success")),
                     "response": res.get("response"),

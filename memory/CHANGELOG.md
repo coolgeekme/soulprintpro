@@ -3,6 +3,18 @@
 Plain-English feature inventory of **Foundry by SoulPrint Engine** for non-technical teammates. Each section is a category of capabilities and what they do for users.
 
 ---
+## 🚀 May 15, 2026 — Composio Phase 4: Tools In Missions
+- **New capability**: Missions (Crucible/Playwright long-running agent runs) can now invoke the user's connected Composio tools — Gmail send, Slack post, IG publish, HubSpot create, etc. — alongside the existing web-search / browser / artifact tools. Closes the SaaS-write-boundary gap missions previously hit (they could research but couldn't *act*).
+- **Same gating model as chat**: lead agent's `tools_enabled` must be ON AND user must have ACTIVE connection(s). Tools auto-enabled per division when the user connects new toolkits.
+- **Budget rails**: hard cap of **20 tool calls per mission**, soft per-platform cap of **5** (prevents a runaway loop from blowing through Composio quota). Bumps the budget on every execute regardless of success so expired-auth toolkits get back-pressure.
+- **Tool naming**: short LLM-friendly form (`gmail.send_email`) that maps back to Composio slugs (`GMAIL_SEND_EMAIL`) at handler time. Description prefixed with `[toolkit]` so the catalog reads cleanly.
+- **Telemetry split**: tool calls from missions tag the most recent `llm_calls` row as `kind_label="mission_tool:composio:<toolkit>:<slug>"` so SpendDashboard can break out mission tool cost from chat tool cost.
+- **Integration site**: new `composio_mission_tools.py` module + `_augment_with_composio_tools` helper in `missions.py`. Wired inside `run_mission_loop` so all five mission entry points (start / resume / force-finish / continue / rehydrate) automatically pick up the tools — zero call-site changes.
+- **One critical bug fixed in same pass**: testing agent flagged `db.llm_calls.update_one(..., sort=[...])` was using a kwarg only added in pymongo 4.7 (we're on 4.5). Swapped to `find_one_and_update` which accepts `sort` everywhere. Test coverage now includes a regression guard that becomes a no-op if pymongo gets bumped.
+- 17/17 pytest pass at `/app/backend/tests/test_composio_phase4_missions.py` — gating chain (Tool=None / not available / no ACTIVE / lead off), happy-path Tool shape, budget arithmetic, mission start regression with no connections, Phase 1+2+3 routes untouched.
+
+---
+
 ## 🐛 May 15, 2026 — Instagram Publish Bug + Connection Visibility
 - **Bug fixed**: Instagram "Publish via Foundry" reported success but nothing appeared on the user's feed. Root cause: we were calling the deprecated `INSTAGRAM_CREATE_POST` which only creates a draft media container — never actually publishes. Composio's documentation called this out but the tool *still* returns success on the container creation, masking the bug.
 - **Fix**: Instagram now uses Meta's modern two-step Graph API flow:
