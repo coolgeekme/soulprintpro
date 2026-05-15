@@ -340,7 +340,10 @@ async def refresh_connection_status(db, connection_id: str) -> Dict[str, Any]:
         {"$set": updated},
     )
     result = {"connection_id": connection_id, **updated}
-    # First-time activation: auto-enable matching agents.
+    # First-time activation: auto-enable matching agents + discover
+    # human-readable metadata for FB Pages / IG handles so the UI can
+    # show "Connected to AZ Pain Doctors (Page)" instead of just
+    # "Connected".
     if status == "ACTIVE" and not was_active and existing:
         try:
             applied = await _auto_enable_agents_for_toolkit(
@@ -352,6 +355,23 @@ async def refresh_connection_status(db, connection_id: str) -> Dict[str, Any]:
             result["auto_enabled_agents"] = applied
         except Exception as exc:
             logger.warning("Composio: auto-enable on activation failed: %s", exc)
+        # Best-effort metadata probe for the platforms that need it. We
+        # avoid letting probe errors surface — the connection is still
+        # usable for chat/agent flows even if we can't pretty-print the
+        # account label.
+        if existing["toolkit"] in ("facebook", "instagram"):
+            try:
+                from social_publishing import discover_connection_metadata
+                meta = await discover_connection_metadata(
+                    db,
+                    org_id=existing["org_id"],
+                    user_id=existing["user_id"],
+                    toolkit=existing["toolkit"],
+                )
+                if meta:
+                    result["account_metadata"] = meta
+            except Exception as exc:
+                logger.warning("Composio: connection metadata discovery failed: %s", exc)
     return result
 
 
@@ -436,6 +456,13 @@ async def list_connections(db, org_id: str, user_id: str) -> List[Dict[str, Any]
             cat = _CATALOG_CACHE.get(slug)
             r["toolkit_name"] = (cat or {}).get("name") or slug
             r["toolkit_description"] = (cat or {}).get("description") or ""
+        # Platform-specific display label so the Connections UI can show
+        # "@azpaindoctors" for IG or "AZ Pain Doctors (Page)" for FB
+        # instead of the generic "Connected" pill.
+        if slug == "facebook" and r.get("facebook_page_name"):
+            r["display_label"] = r["facebook_page_name"]
+        elif slug == "instagram" and r.get("instagram_username"):
+            r["display_label"] = f"@{r['instagram_username']}"
         # Normalise dates to ISO so JSON serialisation is clean.
         for k in ("initiated_at", "activated_at", "last_synced_at"):
             v = r.get(k)

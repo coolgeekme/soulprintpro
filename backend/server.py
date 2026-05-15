@@ -7032,20 +7032,38 @@ async def composio_refresh(
     connection_id: str,
     u: dict = Depends(get_current_user),
 ):
-    """Pull latest status from Composio (called after the OAuth redirect lands)."""
+    """Pull latest status from Composio (called after the OAuth redirect lands).
+
+    Also re-runs metadata discovery for Facebook / Instagram so existing
+    ACTIVE connections that pre-date the discovery code can pick up their
+    Page name / @handle without forcing the user to reconnect.
+    """
     from composio_integration import refresh_connection_status, composio_user_id
     await require_org_member(org_id, u["id"])
-    # Auth gate: connection must belong to this (org, user).
     row = await db.composio_connections.find_one(
         {"connection_id": connection_id, "composio_user_id": composio_user_id(org_id, u["id"])},
     )
     if not row:
         raise HTTPException(404, "Connection not found")
     try:
-        return await refresh_connection_status(db, connection_id)
+        result = await refresh_connection_status(db, connection_id)
     except Exception as exc:
         logger.exception("Composio refresh failed")
         raise HTTPException(500, f"Failed to refresh status: {exc}")
+    # Already-ACTIVE FB/IG connections won't enter the first-activation
+    # branch in refresh_connection_status, so explicitly run discovery
+    # here for back-fill. Idempotent — early-returns if already cached.
+    if row.get("toolkit") in ("facebook", "instagram") and row.get("status") == "ACTIVE":
+        try:
+            from social_publishing import discover_connection_metadata
+            meta = await discover_connection_metadata(
+                db, org_id=org_id, user_id=u["id"], toolkit=row["toolkit"],
+            )
+            if meta:
+                result["account_metadata"] = meta
+        except Exception as exc:
+            logger.warning("connection metadata back-fill failed: %s", exc)
+    return result
 
 
 @composio_r.delete("/{org_id}/composio/connections/{connection_id}")

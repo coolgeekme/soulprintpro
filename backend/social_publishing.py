@@ -1,28 +1,24 @@
 """Social Queue → live publishing via Composio.
 
 Glue layer between `social_posts.py` (queue + scheduling) and
-`composio_integration.py` (the user's connected SaaS accounts). The
-public surface is intentionally tiny:
+`composio_integration.py` (the user's connected SaaS accounts).
 
-    publish_post(db, *, post, actor_user_id) -> dict
+Per-platform publishing is owned by `_publish_<platform>` functions.
+Most platforms are a single Composio tool call; Instagram requires
+Meta's two-step container/publish flow which we model as two
+sequential `execute_tool` invocations sharing a single audit
+``publish_results.instagram`` row.
 
-The function fans out the post to every requested platform sequentially,
-calls the platform's "create post" tool through Composio, and writes a
-per-platform result back to the document. Status transitions:
-
+Status transitions on the post document:
     queued/ready/draft  →  publishing  →  published        (all platforms OK)
                                        ↘  partial          (some failed)
                                        ↘  failed           (none worked)
 
-We do NOT spawn one task per platform — Composio rate-limits per user
-and the failure modes are easier to debug serially. ~3-8s total for 5
-platforms is fine for a background task.
-
-Platforms wired in v1:
-    linkedin, facebook, instagram, reddit, tiktok
+Platforms wired in v2:
+    linkedin, facebook (Page-aware), instagram (two-step), reddit, tiktok
 
 Twitter intentionally omitted because Composio doesn't have managed
-OAuth credentials for it (would need user-supplied client_id/secret).
+OAuth credentials for it.
 """
 from __future__ import annotations
 
@@ -34,54 +30,50 @@ import composio_integration as composio
 
 logger = logging.getLogger(__name__)
 
-# Platform → (toolkit slug, default tool slug, builder fn name).
-# Each builder receives the post dict + active connection row and returns
-# the kwargs Composio expects. Keeps the dispatch table compact.
-PLATFORM_PUBLISHERS: Dict[str, Dict[str, Any]] = {
-    "linkedin":  {"toolkit": "linkedin",  "tool": "LINKEDIN_CREATE_LINKED_IN_POST", "builder": "_build_linkedin"},
-    "facebook":  {"toolkit": "facebook",  "tool": "FACEBOOK_CREATE_POST",           "builder": "_build_facebook"},
-    "instagram": {"toolkit": "instagram", "tool": "INSTAGRAM_CREATE_POST",          "builder": "_build_instagram"},
-    "reddit":    {"toolkit": "reddit",    "tool": "REDDIT_CREATE_REDDIT_POST",      "builder": "_build_reddit"},
-    "tiktok":    {"toolkit": "tiktok",    "tool": "TIKTOK_POST_PHOTO",              "builder": "_build_tiktok"},
+
+# ── Connection lookup ───────────────────────────────────────────────────────
+async def _active_connection(
+    db, org_id: str, user_id: str, toolkit: str,
+) -> Optional[Dict[str, Any]]:
+    cu = composio.composio_user_id(org_id, user_id)
+    return await db.composio_connections.find_one(
+        {"composio_user_id": cu, "toolkit": toolkit, "status": "ACTIVE"},
+        {"_id": 0},
+    )
+
+
+async def _has_active_connection(db, org_id: str, user_id: str, toolkit: str) -> bool:
+    return bool(await _active_connection(db, org_id, user_id, toolkit))
+
+
+PLATFORM_TOOLKITS = {
+    "linkedin":  "linkedin",
+    "facebook":  "facebook",
+    "instagram": "instagram",
+    "reddit":    "reddit",
+    "tiktok":    "tiktok",
 }
 
 
 def is_platform_supported(platform: str) -> bool:
-    return platform in PLATFORM_PUBLISHERS
+    return platform in PLATFORM_TOOLKITS
 
 
 def supported_platforms() -> List[str]:
-    return list(PLATFORM_PUBLISHERS.keys())
-
-
-async def _has_active_connection(db, org_id: str, user_id: str, toolkit: str) -> bool:
-    cu = composio.composio_user_id(org_id, user_id)
-    return bool(await db.composio_connections.find_one(
-        {"composio_user_id": cu, "toolkit": toolkit, "status": "ACTIVE"},
-        {"_id": 1},
-    ))
+    return list(PLATFORM_TOOLKITS.keys())
 
 
 async def connectable_platforms_for_user(
     db, org_id: str, user_id: str,
 ) -> Dict[str, bool]:
-    """For each supported platform, return whether the user has an active
-    connection. Drives the SocialPage's "Publish via Foundry" button —
-    hidden when no platforms are reachable."""
     out: Dict[str, bool] = {}
-    for p, cfg in PLATFORM_PUBLISHERS.items():
-        out[p] = await _has_active_connection(db, org_id, user_id, cfg["toolkit"])
+    for p, toolkit in PLATFORM_TOOLKITS.items():
+        out[p] = await _has_active_connection(db, org_id, user_id, toolkit)
     return out
 
 
-# ── Per-platform argument builders ──────────────────────────────────────────
+# ── Helpers ─────────────────────────────────────────────────────────────────
 def _text_for(post: Dict[str, Any], platform: str) -> str:
-    """Pull the platform-specific copy, falling back to the universal `text`.
-
-    `social_posts.py` stores variants under `posts[i].variants[platform]`
-    when the agent generated platform-tuned copy; otherwise the top-level
-    `text` is used for everything.
-    """
     variants = post.get("variants") or {}
     pv = variants.get(platform)
     if pv:
@@ -94,71 +86,242 @@ def _image_url(post: Dict[str, Any]) -> Optional[str]:
     return img.get("url") or img.get("public_url") or None
 
 
-def _build_linkedin(post, _conn) -> Dict[str, Any]:
-    """LINKEDIN_CREATE_LINKED_IN_POST takes commentary text. Media is a
-    second-class citizen — for v1 we publish text only. Adding image
-    support means an extra UPLOAD_LINKED_IN_IMAGE call; left for v2.
+async def _exec(
+    db, org_id: str, user_id: str, tool_slug: str, args: Dict[str, Any],
+) -> Dict[str, Any]:
+    return await composio.execute_tool(db, org_id, user_id, tool_slug, args)
+
+
+def _result_payload(success: bool, *, tool: str, response: Any = None, error: Optional[str] = None) -> Dict[str, Any]:
+    return {"ok": success, "tool": tool, "response": response, "error": error if not success else None}
+
+
+def _result_envelope(exec_result: Dict[str, Any], *, tool: str, extra: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """Translate `execute_tool` envelope → publish_results envelope."""
+    ok = bool(exec_result.get("success"))
+    out = {
+        "ok": ok,
+        "tool": tool,
+        "response": exec_result.get("response"),
+        "error": exec_result.get("error") if not ok else None,
+    }
+    if extra:
+        out.update(extra)
+    return out
+
+
+def _extract_id(resp: Any) -> Optional[str]:
+    """Pull an `id` out of a Composio tool response. Composio wraps the
+    third-party response — we defensively check a couple of shapes.
     """
-    return {"commentary": _text_for(post, "linkedin") or post.get("text", "")}
+    if not isinstance(resp, dict):
+        return None
+    for shape in (resp.get("data"), resp.get("response"), resp):
+        if isinstance(shape, dict) and shape.get("id"):
+            return str(shape["id"])
+    return None
 
 
-def _build_facebook(post, conn) -> Dict[str, Any]:
-    """FACEBOOK_CREATE_POST: needs the Page ID + message. The Page is
-    resolved from the user's connected Facebook account by Composio if
-    `page_id` isn't provided; we let Composio do the work."""
-    return {"message": _text_for(post, "facebook") or post.get("text", "")}
+def _flatten_pages(resp: Any) -> List[Dict[str, Any]]:
+    """Pull the list of {id,name,...} pages out of a Composio response."""
+    if not isinstance(resp, dict):
+        return []
+    for shape in (resp.get("data"), resp.get("response"), resp):
+        if isinstance(shape, dict):
+            data = shape.get("data")
+            if isinstance(data, list):
+                return [p for p in data if isinstance(p, dict)]
+            if isinstance(shape.get("pages"), list):
+                return [p for p in shape["pages"] if isinstance(p, dict)]
+    return []
 
 
-def _build_instagram(post, conn) -> Dict[str, Any]:
-    """INSTAGRAM_CREATE_POST: requires image_url + caption (IG doesn't
-    support text-only posts). We fail fast if the post has no image."""
+# ── Per-platform publish flows ──────────────────────────────────────────────
+async def _publish_linkedin(db, org_id, user_id, post, conn) -> Dict[str, Any]:
+    return _result_envelope(await _exec(
+        db, org_id, user_id, "LINKEDIN_CREATE_LINKED_IN_POST",
+        {"commentary": _text_for(post, "linkedin") or post.get("text", "")},
+    ), tool="LINKEDIN_CREATE_LINKED_IN_POST")
+
+
+async def _publish_facebook(db, org_id, user_id, post, conn) -> Dict[str, Any]:
+    """Facebook posts go to a specific Page, not the user's profile.
+    Page ID is captured at activation time (or just-in-time below).
+    """
+    page_id = conn.get("facebook_page_id")
+    if not page_id:
+        page_id = await _resolve_facebook_page_id(db, org_id, user_id, conn)
+        if not page_id:
+            return _result_payload(False, tool="FACEBOOK_CREATE_POST",
+                                   error="No Facebook Page found. You must connect a Page you admin.")
+    img = _image_url(post)
+    if img:
+        # FB has dedicated photo+video endpoints. CREATE_PHOTO_POST
+        # accepts page_id + url + caption.
+        return _result_envelope(await _exec(
+            db, org_id, user_id, "FACEBOOK_CREATE_PHOTO_POST",
+            {
+                "page_id": str(page_id),
+                "url": img,
+                "message": _text_for(post, "facebook") or post.get("text", ""),
+                "published": True,
+            },
+        ), tool="FACEBOOK_CREATE_PHOTO_POST")
+    return _result_envelope(await _exec(
+        db, org_id, user_id, "FACEBOOK_CREATE_POST",
+        {
+            "page_id": str(page_id),
+            "message": _text_for(post, "facebook") or post.get("text", ""),
+            "published": True,
+        },
+    ), tool="FACEBOOK_CREATE_POST")
+
+
+async def _publish_instagram(db, org_id, user_id, post, conn) -> Dict[str, Any]:
+    """Instagram's modern flow is two Meta Graph API calls:
+        1. POST_IG_USER_MEDIA       → returns container_id
+        2. POST_IG_USER_MEDIA_PUBLISH → publishes the container
+
+    The deprecated single-call INSTAGRAM_CREATE_POST only created an
+    unpublished draft — that was the v1 bug.
+    """
     img = _image_url(post)
     if not img:
-        raise ValueError("Instagram requires an image — generate or attach one first.")
-    return {
-        "image_url": img,
-        "caption": _text_for(post, "instagram") or post.get("text", ""),
-    }
+        return _result_payload(False, tool="INSTAGRAM_POST_IG_USER_MEDIA",
+                               error="Instagram requires an image — generate or attach one first.")
+    caption = _text_for(post, "instagram") or post.get("text", "")
+    ig_user_id = conn.get("instagram_user_id") or "me"
+    step1 = await _exec(
+        db, org_id, user_id, "INSTAGRAM_POST_IG_USER_MEDIA",
+        {"ig_user_id": ig_user_id, "image_url": img, "caption": caption},
+    )
+    if not step1.get("success"):
+        return _result_payload(False, tool="INSTAGRAM_POST_IG_USER_MEDIA",
+                               error=step1.get("error") or "Container creation failed",
+                               response=step1.get("response"))
+    container_id = _extract_id(step1.get("response") or {})
+    if not container_id:
+        return _result_payload(False, tool="INSTAGRAM_POST_IG_USER_MEDIA",
+                               error="No container ID returned from Instagram",
+                               response=step1.get("response"))
+    step2 = await _exec(
+        db, org_id, user_id, "INSTAGRAM_POST_IG_USER_MEDIA_PUBLISH",
+        {"ig_user_id": ig_user_id, "creation_id": str(container_id)},
+    )
+    return _result_envelope(step2, tool="INSTAGRAM_POST_IG_USER_MEDIA_PUBLISH",
+                             extra={"container_id": container_id})
 
 
-def _build_reddit(post, _conn) -> Dict[str, Any]:
-    """REDDIT_CREATE_REDDIT_POST: subreddit + title + content.
-
-    The user must specify the subreddit; we read it from per-platform
-    variants (`variants.reddit.subreddit`) or post-level metadata
-    (`post.reddit_subreddit`). Title falls back to first line of text.
-    """
+async def _publish_reddit(db, org_id, user_id, post, conn) -> Dict[str, Any]:
     variants = post.get("variants") or {}
     rv = variants.get("reddit") or {}
     sub = rv.get("subreddit") or post.get("reddit_subreddit")
     if not sub:
-        raise ValueError("Reddit post needs a `subreddit` — set it in the post variants.")
+        return _result_payload(False, tool="REDDIT_CREATE_REDDIT_POST",
+                               error="Reddit post needs a `subreddit` — set it in the post variants.")
     text = _text_for(post, "reddit") or post.get("text", "")
-    title = rv.get("title") or text.splitlines()[0][:300] if text else "Untitled"
+    title = rv.get("title") or (text.splitlines()[0][:300] if text else "Untitled")
     body = rv.get("body") or text
-    return {"subreddit": sub.lstrip("r/").strip(), "title": title, "content": body}
+    return _result_envelope(await _exec(
+        db, org_id, user_id, "REDDIT_CREATE_REDDIT_POST",
+        {"subreddit": sub.lstrip("r/").strip(), "title": title, "content": body},
+    ), tool="REDDIT_CREATE_REDDIT_POST")
 
 
-def _build_tiktok(post, _conn) -> Dict[str, Any]:
-    """TIKTOK_POST_PHOTO: photo URL + caption. TikTok has no text-only
-    post type. Video posts use a different tool (PUBLISH_VIDEO); we'll
-    add that branch once posts carry a video asset."""
+async def _publish_tiktok(db, org_id, user_id, post, conn) -> Dict[str, Any]:
     img = _image_url(post)
     if not img:
-        raise ValueError("TikTok requires a photo or video — generate one first.")
-    return {
-        "media_url": img,
-        "title": _text_for(post, "tiktok") or post.get("text", "")[:150],
-    }
+        return _result_payload(False, tool="TIKTOK_POST_PHOTO",
+                               error="TikTok requires a photo or video.")
+    return _result_envelope(await _exec(
+        db, org_id, user_id, "TIKTOK_POST_PHOTO",
+        {"media_url": img, "title": _text_for(post, "tiktok") or post.get("text", "")[:150]},
+    ), tool="TIKTOK_POST_PHOTO")
 
 
-_BUILDERS = {
-    "_build_linkedin": _build_linkedin,
-    "_build_facebook": _build_facebook,
-    "_build_instagram": _build_instagram,
-    "_build_reddit": _build_reddit,
-    "_build_tiktok": _build_tiktok,
+_PUBLISHERS = {
+    "linkedin":  _publish_linkedin,
+    "facebook":  _publish_facebook,
+    "instagram": _publish_instagram,
+    "reddit":    _publish_reddit,
+    "tiktok":    _publish_tiktok,
 }
+
+
+# ── Facebook Page resolution ────────────────────────────────────────────────
+async def _resolve_facebook_page_id(
+    db, org_id: str, user_id: str, conn: Dict[str, Any],
+) -> Optional[str]:
+    """Find the FB Page this connection manages and cache it on the row."""
+    try:
+        res = await _exec(db, org_id, user_id, "FACEBOOK_LIST_MANAGED_PAGES", {})
+    except Exception as exc:
+        logger.warning("FB page lookup failed: %s", exc)
+        return None
+    if not res.get("success"):
+        return None
+    pages = _flatten_pages(res.get("response"))
+    if not pages:
+        return None
+    pick = pages[0]
+    page_id = str(pick.get("id") or "")
+    page_name = pick.get("name") or ""
+    if page_id:
+        await db.composio_connections.update_one(
+            {"connection_id": conn["connection_id"]},
+            {"$set": {
+                "facebook_page_id": page_id,
+                "facebook_page_name": page_name,
+                "facebook_pages": pages[:10],
+            }},
+        )
+    return page_id or None
+
+
+async def discover_connection_metadata(
+    db, *, org_id: str, user_id: str, toolkit: str,
+) -> Dict[str, Any]:
+    """Probe Composio for human-readable connection details (FB Page name,
+    IG @handle) and persist them so the UI can show "Connected to AZ Pain
+    Doctors (Page)" instead of just "Connected".
+    """
+    conn = await _active_connection(db, org_id, user_id, toolkit)
+    if not conn:
+        return {}
+    out: Dict[str, Any] = {}
+    if toolkit == "facebook":
+        page_id = conn.get("facebook_page_id")
+        if not page_id:
+            page_id = await _resolve_facebook_page_id(db, org_id, user_id, conn)
+        if page_id:
+            conn = await _active_connection(db, org_id, user_id, toolkit) or conn
+            out["facebook_page_id"] = page_id
+            out["facebook_page_name"] = conn.get("facebook_page_name")
+            out["display_label"] = conn.get("facebook_page_name") or f"Page {page_id}"
+            out["pages"] = conn.get("facebook_pages") or []
+    elif toolkit == "instagram":
+        try:
+            res = await _exec(db, org_id, user_id, "INSTAGRAM_GET_USER_INFO", {})
+        except Exception:
+            res = {"success": False}
+        if res.get("success"):
+            info = res.get("response") or {}
+            data = info.get("data") if isinstance(info, dict) and isinstance(info.get("data"), dict) else info
+            if isinstance(data, dict):
+                handle = data.get("username") or data.get("name")
+                ig_id = data.get("id")
+                if ig_id:
+                    await db.composio_connections.update_one(
+                        {"connection_id": conn["connection_id"]},
+                        {"$set": {
+                            "instagram_user_id": str(ig_id),
+                            "instagram_username": handle,
+                        }},
+                    )
+                    out["instagram_user_id"] = str(ig_id)
+                    out["instagram_username"] = handle
+                    out["display_label"] = f"@{handle}" if handle else f"IG {ig_id}"
+    return out
 
 
 # ── Public entry point ─────────────────────────────────────────────────────
@@ -168,41 +331,19 @@ async def publish_post(
     post: Dict[str, Any],
     actor_user_id: Optional[str] = None,
 ) -> Dict[str, Any]:
-    """Publish one social_posts document to all of its requested platforms.
-
-    Returns a result envelope of the shape::
-
-        {
-          "status": "published"|"partial"|"failed"|"skipped",
-          "results": {<platform>: {"ok": bool, "tool": str,
-                                   "response": Any, "error": str}},
-          "published_count": int,
-          "failed_count": int,
-        }
-
-    The caller (background task) is responsible for writing the final
-    status back to the post document. We update the per-platform
-    `publish_results` field as we go so the UI can render progress live.
-    """
+    """Fan a post out to all of its requested platforms."""
     pid = post.get("id") or post.get("_id")
     org_id = post.get("org_id")
-    # The connection's user is whoever created the post (preferred) or the
-    # actor who clicked Publish. Composio routes by composio_user_id so
-    # the credentials match.
     user_id = post.get("created_by") or post.get("user_id") or actor_user_id
     if not (org_id and user_id):
         return {
-            "status": "failed",
-            "results": {},
-            "published_count": 0,
-            "failed_count": 0,
-            "error": "Post is missing org_id or user_id",
+            "status": "failed", "results": {}, "published_count": 0,
+            "failed_count": 0, "error": "Post is missing org_id or user_id",
         }
     platforms = list(post.get("platforms") or [])
     if not platforms:
         return {"status": "skipped", "results": {}, "published_count": 0, "failed_count": 0}
 
-    # Mark the post as actively publishing so the UI can flip the chip.
     await db.social_posts.update_one(
         {"_id": post["_id"]} if "_id" in post else {"id": pid},
         {"$set": {"status": "publishing", "publish_started_at": datetime.now(timezone.utc)}},
@@ -212,45 +353,26 @@ async def publish_post(
     ok = 0
     bad = 0
     for platform in platforms:
-        cfg = PLATFORM_PUBLISHERS.get(platform)
-        if not cfg:
+        toolkit = PLATFORM_TOOLKITS.get(platform)
+        if not toolkit:
             results[platform] = {"ok": False, "error": "Platform not supported for direct publishing yet"}
             bad += 1
-            continue
-        toolkit = cfg["toolkit"]
-        # No active connection → skip this platform but don't fail the
-        # whole post; the user will see "needs connection" on this row.
-        if not await _has_active_connection(db, org_id, user_id, toolkit):
-            results[platform] = {"ok": False, "error": "No connected account for " + toolkit}
-            bad += 1
-            continue
-        builder = _BUILDERS[cfg["builder"]]
-        try:
-            args = builder(post, None)
-        except ValueError as exc:
-            results[platform] = {"ok": False, "error": str(exc)}
-            bad += 1
-            continue
-        try:
-            res = await composio.execute_tool(
-                db, org_id, user_id, cfg["tool"], args,
-            )
-            success = bool(res.get("success"))
-            results[platform] = {
-                "ok": success,
-                "tool": cfg["tool"],
-                "response": res.get("response"),
-                "error": res.get("error") if not success else None,
-            }
-            if success:
-                ok += 1
-            else:
+        else:
+            conn = await _active_connection(db, org_id, user_id, toolkit)
+            if not conn:
+                results[platform] = {"ok": False, "error": f"No connected account for {toolkit}"}
                 bad += 1
-        except Exception as exc:
-            logger.exception("Publish %s failed for post %s", platform, pid)
-            results[platform] = {"ok": False, "tool": cfg["tool"], "error": str(exc)[:300]}
-            bad += 1
-        # Persist progress so the UI doesn't wait for the whole fan-out.
+            else:
+                fn = _PUBLISHERS[platform]
+                try:
+                    results[platform] = await fn(db, org_id, user_id, post, conn)
+                except Exception as exc:
+                    logger.exception("Publish %s failed for post %s", platform, pid)
+                    results[platform] = {"ok": False, "tool": "", "error": str(exc)[:300]}
+                if results[platform].get("ok"):
+                    ok += 1
+                else:
+                    bad += 1
         await db.social_posts.update_one(
             {"_id": post["_id"]} if "_id" in post else {"id": pid},
             {"$set": {f"publish_results.{platform}": results[platform]}},
@@ -275,12 +397,8 @@ async def publish_post(
             **({"published_at": datetime.now(timezone.utc)} if ok else {}),
         }},
     )
-    logger.info(
-        "social-publish: post=%s status=%s ok=%d bad=%d", pid, final, ok, bad,
-    )
+    logger.info("social-publish: post=%s status=%s ok=%d bad=%d", pid, final, ok, bad)
     return {
-        "status": final,
-        "results": results,
-        "published_count": ok,
-        "failed_count": bad,
+        "status": final, "results": results,
+        "published_count": ok, "failed_count": bad,
     }

@@ -312,8 +312,15 @@ export default function ConnectionsPanel({ orgId }) {
                             data-testid={`rename-input-${c.connection_id}`}
                           />
                         ) : (
-                          <span className="flex-1 truncate">
-                            {c.nickname || c.account_label || (c.status === "INITIATED" ? "Connecting…" : "Connected")}
+                          <span className="flex-1 truncate flex flex-col leading-tight">
+                            <span className="truncate">
+                              {c.nickname || c.display_label || c.account_label || (c.status === "INITIATED" ? "Connecting…" : "Connected")}
+                            </span>
+                            {c.display_label && c.nickname && c.nickname !== c.display_label && (
+                              <span className="text-[10px] opacity-50 truncate">
+                                {c.display_label}
+                              </span>
+                            )}
                           </span>
                         )}
                         {!isRenaming && c.status === "ACTIVE" && (

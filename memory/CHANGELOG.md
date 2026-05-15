@@ -3,6 +3,19 @@
 Plain-English feature inventory of **Foundry by SoulPrint Engine** for non-technical teammates. Each section is a category of capabilities and what they do for users.
 
 ---
+## 🐛 May 15, 2026 — Instagram Publish Bug + Connection Visibility
+- **Bug fixed**: Instagram "Publish via Foundry" reported success but nothing appeared on the user's feed. Root cause: we were calling the deprecated `INSTAGRAM_CREATE_POST` which only creates a draft media container — never actually publishes. Composio's documentation called this out but the tool *still* returns success on the container creation, masking the bug.
+- **Fix**: Instagram now uses Meta's modern two-step Graph API flow:
+  1. `INSTAGRAM_POST_IG_USER_MEDIA` — creates media container, returns `container_id`
+  2. `INSTAGRAM_POST_IG_USER_MEDIA_PUBLISH` — publishes the container (waits for processing internally)
+- **Facebook bug fixed too**: `FACEBOOK_CREATE_POST` requires a `page_id` which we never captured. New flow: on first activation of a Facebook connection we call `FACEBOOK_LIST_MANAGED_PAGES`, pick the first Page the user admins, and cache its id+name on the connection row. Existing connections back-fill on the next `/refresh` click.
+- **Image posts** for Facebook now use `FACEBOOK_CREATE_PHOTO_POST` (correct tool for image+caption), not the text-only `FACEBOOK_CREATE_POST`.
+- **Per-platform publish flows refactored**: `social_publishing.py` now uses `_publish_<platform>` async functions so each platform owns its own logic (single-call for LinkedIn/Reddit/TikTok, two-call for Instagram, page-aware for Facebook).
+- **Connection visibility (the user's other ask)**: Connections panel now shows the actual Facebook Page name and Instagram @handle next to each connection, not just "Connected". E.g. cards now read **"AZ Pain Doctors (Page)"** for Facebook or **"@azpaindoctors"** for Instagram. Discovered via Composio's `FACEBOOK_LIST_MANAGED_PAGES` / `INSTAGRAM_GET_USER_INFO` and cached on the connection row.
+- **Back-fill**: existing FB/IG connections that pre-date this fix can pick up their Page/handle by clicking "Check status" once.
+
+---
+
 ## 📣 May 15, 2026 — Social Queue → Live Publishing via Foundry
 - **New capability**: posts in the Social Queue can now actually be **published**, not just drafted. Two new paths plus the existing manual one:
   - 🟢 **Manual "Mark posted"** — unchanged, still the fallback when no platforms are connected.
