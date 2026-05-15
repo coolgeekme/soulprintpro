@@ -378,7 +378,7 @@ export default function ConnectionsPanel({ orgId }) {
 function NicknameModal({ slug, value, onChange, onCancel, onConfirm, existingCount }) {
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm" data-testid="nickname-modal">
-      <div className="bg-zinc-900 border border-white/15 rounded-2xl p-6 w-full max-w-md mx-4 space-y-3">
+      <div className="sp-glass-strong rounded-2xl p-6 w-full max-w-md mx-4 space-y-3" style={{ color: "var(--fg)" }}>
         <h3 className="font-medium">
           {existingCount > 0 ? `Add another ${slug}` : `Connect ${slug}`}
         </h3>
@@ -393,12 +393,17 @@ function NicknameModal({ slug, value, onChange, onCancel, onConfirm, existingCou
           autoFocus
           maxLength={60}
           placeholder={existingCount > 0 ? "e.g. Personal" : "e.g. Work"}
-          className="w-full px-3 py-2 bg-black/30 border border-white/15 rounded-md text-sm outline-none focus:border-white/40"
+          className="w-full px-3 py-2 rounded-md text-sm outline-none focus:border-orange-500/60"
+          style={{
+            background: "var(--surface, rgba(127,127,127,0.10))",
+            border: "1px solid var(--border-soft, rgba(127,127,127,0.25))",
+            color: "var(--fg)",
+          }}
           data-testid="nickname-input"
           onKeyDown={(e) => { if (e.key === "Enter") onConfirm(); if (e.key === "Escape") onCancel(); }}
         />
         <div className="flex justify-end gap-2 pt-1">
-          <button onClick={onCancel} className="text-xs px-3 py-1.5 rounded-md hover:bg-white/5" data-testid="nickname-cancel">Cancel</button>
+          <button onClick={onCancel} className="text-xs px-3 py-1.5 rounded-md hover:bg-black/5 dark:hover:bg-white/5" data-testid="nickname-cancel">Cancel</button>
           <button onClick={onConfirm} className="text-xs px-3 py-1.5 rounded-md bg-orange-500/90 hover:bg-orange-500 text-white inline-flex items-center gap-1" data-testid="nickname-confirm">
             <ExternalLink className="h-3 w-3" /> Open authorisation
           </button>
@@ -433,14 +438,14 @@ function BrowseAllModal({ orgId, existingSlugs, onClose, onConnect }) {
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm" data-testid="browse-all-modal">
-      <div className="bg-zinc-900 border border-white/15 rounded-2xl w-full max-w-2xl mx-4 max-h-[80vh] flex flex-col">
-        <div className="p-5 border-b border-white/10 flex items-center gap-3">
+      <div className="sp-glass-strong rounded-2xl w-full max-w-2xl mx-4 max-h-[80vh] flex flex-col" style={{ color: "var(--fg)" }}>
+        <div className="p-5 border-b flex items-center gap-3" style={{ borderColor: "var(--border-soft, rgba(127,127,127,0.18))" }}>
           <h3 className="font-medium flex-1">Browse all integrations</h3>
           <button onClick={onClose} className="opacity-50 hover:opacity-100" data-testid="browse-close">
             <X className="h-4 w-4" />
           </button>
         </div>
-        <div className="p-4 border-b border-white/10">
+        <div className="p-4 border-b" style={{ borderColor: "var(--border-soft, rgba(127,127,127,0.18))" }}>
           <div className="relative">
             <Search className="absolute left-3 top-2.5 h-3.5 w-3.5 opacity-50" />
             <input
@@ -449,7 +454,12 @@ function BrowseAllModal({ orgId, existingSlugs, onClose, onConnect }) {
               onChange={(e) => setQ(e.target.value)}
               autoFocus
               placeholder="Search 250+ tools (try 'asana', 'twilio', 'figma')…"
-              className="w-full pl-9 pr-3 py-2 bg-black/30 border border-white/15 rounded-md text-sm outline-none focus:border-white/40"
+              className="w-full pl-9 pr-3 py-2 rounded-md text-sm outline-none focus:border-orange-500/60"
+              style={{
+                background: "var(--surface, rgba(127,127,127,0.10))",
+                border: "1px solid var(--border-soft, rgba(127,127,127,0.25))",
+                color: "var(--fg)",
+              }}
               data-testid="browse-search"
             />
           </div>
@@ -462,15 +472,15 @@ function BrowseAllModal({ orgId, existingSlugs, onClose, onConnect }) {
           ) : items.length === 0 ? (
             <p className="text-sm opacity-50 text-center py-12">No tools match "{q}".</p>
           ) : (
-            <ul className="divide-y divide-white/5">
+            <ul className="divide-y" style={{ borderColor: "var(--border-soft, rgba(127,127,127,0.12))" }}>
               {items.map((t) => {
                 const connected = existingSlugs.has(t.slug);
                 return (
-                  <li key={t.slug} className="flex items-center gap-3 px-3 py-2.5 hover:bg-white/5 rounded-md" data-testid={`catalog-row-${t.slug}`}>
+                  <li key={t.slug} className="flex items-center gap-3 px-3 py-2.5 hover:bg-black/5 dark:hover:bg-white/5 rounded-md" data-testid={`catalog-row-${t.slug}`}>
                     {t.logo ? (
-                      <img src={t.logo} alt="" className="h-7 w-7 rounded-md bg-white/10 object-contain p-1" />
+                      <img src={t.logo} alt="" className="h-7 w-7 rounded-md object-contain p-1" style={{ background: "var(--surface, rgba(127,127,127,0.10))" }} />
                     ) : (
-                      <div className="h-7 w-7 rounded-md bg-white/10 flex items-center justify-center text-xs">
+                      <div className="h-7 w-7 rounded-md flex items-center justify-center text-xs" style={{ background: "var(--surface, rgba(127,127,127,0.10))" }}>
                         {initialFor(t.slug)}
                       </div>
                     )}
@@ -478,7 +488,7 @@ function BrowseAllModal({ orgId, existingSlugs, onClose, onConnect }) {
                       <div className="text-sm flex items-center gap-2">
                         {t.name}
                         {t.featured && (
-                          <span className="text-[9px] uppercase tracking-wider px-1 rounded bg-orange-500/20 text-orange-300">Featured</span>
+                          <span className="text-[9px] uppercase tracking-wider px-1 rounded bg-orange-500/20 text-orange-500 dark:text-orange-300">Featured</span>
                         )}
                       </div>
                       {t.description && (
