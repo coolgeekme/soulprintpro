@@ -19,13 +19,20 @@ export default function AgentToolPrefsPanel({ orgId }) {
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(null);
   const [q, setQ] = useState("");
+  const [recs, setRecs] = useState([]);
+  const [recsDismissed, setRecsDismissed] = useState(false);
+  const [applying, setApplying] = useState(false);
 
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      const { data } = await api.get(`/orgs/${orgId}/agent-tool-prefs`);
-      setAgents(data.agents || []);
-      setCanEdit(Boolean(data.can_edit));
+      const [{ data: prefs }, { data: rec }] = await Promise.all([
+        api.get(`/orgs/${orgId}/agent-tool-prefs`),
+        api.get(`/orgs/${orgId}/agent-tool-recommendations`).catch(() => ({ data: { recommendations: [] } })),
+      ]);
+      setAgents(prefs.agents || []);
+      setCanEdit(Boolean(prefs.can_edit));
+      setRecs(rec?.recommendations || []);
     } catch (e) {
       toast.error("Couldn't load agent tool settings");
     } finally {
@@ -34,6 +41,23 @@ export default function AgentToolPrefsPanel({ orgId }) {
   }, [orgId]);
 
   useEffect(() => { load(); }, [load]);
+
+  const applyRecommendations = async () => {
+    if (!recs.length) return;
+    setApplying(true);
+    try {
+      const ids = recs.map((r) => r.agent_id);
+      await api.post(`/orgs/${orgId}/agent-tool-prefs/apply-recommendations`, {
+        agent_ids: ids,
+      });
+      toast.success(`Tools enabled for ${ids.length} recommended agent${ids.length === 1 ? "" : "s"}.`);
+      await load();
+    } catch (e) {
+      toast.error(e?.response?.data?.detail || "Couldn't apply recommendations");
+    } finally {
+      setApplying(false);
+    }
+  };
 
   const toggle = async (agentId, nextValue) => {
     setBusy(agentId);
@@ -74,6 +98,46 @@ export default function AgentToolPrefsPanel({ orgId }) {
 
   return (
     <div className="space-y-3" data-testid="agent-tool-prefs-panel">
+      {recs.length > 0 && !recsDismissed && canEdit && (
+        <div
+          className="rounded-xl border border-orange-500/30 bg-gradient-to-r from-orange-500/10 to-amber-500/5 p-4 flex flex-wrap items-start gap-3"
+          data-testid="recommendations-banner"
+        >
+          <Wrench className="h-4 w-4 text-orange-400 mt-0.5 flex-shrink-0" />
+          <div className="flex-1 min-w-[240px]">
+            <p className="text-sm font-medium">
+              Smart defaults available
+            </p>
+            <p className="text-xs opacity-70 mt-0.5">
+              Based on what you've connected, we suggest enabling tools for{" "}
+              <span className="font-medium text-orange-200">
+                {recs.length} agent{recs.length === 1 ? "" : "s"}
+              </span>
+              {" "}whose role matches your toolkit
+              {" "}({recs.slice(0, 3).map((r) => r.name).join(", ")}
+              {recs.length > 3 ? `, +${recs.length - 3} more` : ""}).
+            </p>
+          </div>
+          <div className="flex gap-2">
+            <button
+              onClick={() => setRecsDismissed(true)}
+              className="text-xs px-2.5 py-1.5 rounded-md hover:bg-white/5 opacity-70 hover:opacity-100"
+              data-testid="recs-dismiss"
+            >
+              Dismiss
+            </button>
+            <button
+              onClick={applyRecommendations}
+              disabled={applying}
+              className="text-xs px-3 py-1.5 rounded-md bg-orange-500/90 hover:bg-orange-500 text-white disabled:opacity-50 inline-flex items-center gap-1"
+              data-testid="recs-apply"
+            >
+              {applying ? <Loader2 className="h-3 w-3 animate-spin" /> : <Plug className="h-3 w-3" />}
+              Apply recommended
+            </button>
+          </div>
+        </div>
+      )}
       <div className="flex flex-wrap items-center gap-3">
         <p className="text-sm opacity-70 flex-1 min-w-[240px]">
           Pick which agents are allowed to use your team's connected tools.

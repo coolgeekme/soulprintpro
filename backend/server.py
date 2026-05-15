@@ -6910,23 +6910,25 @@ composio_r = APIRouter(prefix="/api/orgs")
 
 @composio_r.get("/{org_id}/composio/toolkits")
 async def composio_list_toolkits(org_id: str, u: dict = Depends(get_current_user)):
-    """Catalogue of toolkits Foundry supports + which the caller has
-    already connected. Drives the Connections page UI."""
+    """Featured toolkits + this user's existing connections. Drives the
+    above-the-fold Connections panel. Use `/composio/catalog` for the
+    full searchable list."""
     from composio_integration import (
-        list_supported_toolkits, list_connections, is_available,
+        list_featured_toolkits, list_connections, is_available,
     )
     await require_org_member(org_id, u["id"])
     if not is_available():
         return {"available": False, "toolkits": [], "connections": []}
     return {
         "available": True,
-        "toolkits": list_supported_toolkits(),
+        "toolkits": list_featured_toolkits(),
         "connections": await list_connections(db, org_id, u["id"]),
     }
 
 
 class _ComposioConnectBody(BaseModel):
     toolkit: str
+    nickname: Optional[str] = None
 
 
 @composio_r.post("/{org_id}/composio/connect")
@@ -6962,12 +6964,66 @@ async def composio_connect(
     try:
         return await initiate_connection(
             db, org_id, u["id"], body.toolkit, callback_url,
+            nickname=body.nickname,
         )
     except ValueError as exc:
         raise HTTPException(400, str(exc))
     except Exception as exc:
         logger.exception("Composio connect failed")
         raise HTTPException(500, f"Failed to start OAuth: {exc}")
+
+
+@composio_r.get("/{org_id}/composio/catalog")
+async def composio_catalog(
+    org_id: str,
+    q: str = "",
+    u: dict = Depends(get_current_user),
+):
+    """Full Composio toolkit catalog (~250 entries) for the Browse-all
+    picker. Featured slugs are flagged so the UI can pin them. Optional
+    `q` query filters by slug or name (case-insensitive)."""
+    from composio_integration import (
+        list_all_toolkits, list_featured_toolkits, is_available,
+    )
+    await require_org_member(org_id, u["id"])
+    if not is_available():
+        return {"available": False, "toolkits": []}
+    featured = {t["slug"] for t in list_featured_toolkits()}
+    all_tk = await list_all_toolkits()
+    if q:
+        lc = q.lower()
+        all_tk = [
+            t for t in all_tk
+            if lc in (t.get("slug") or "").lower()
+            or lc in (t.get("name") or "").lower()
+        ]
+    for t in all_tk:
+        t["featured"] = t["slug"] in featured
+    # Featured first, then alphabetical by name.
+    all_tk.sort(key=lambda t: (not t["featured"], (t.get("name") or "").lower()))
+    return {"available": True, "toolkits": all_tk[:300]}
+
+
+class _ComposioNicknameBody(BaseModel):
+    nickname: str
+
+
+@composio_r.put("/{org_id}/composio/connections/{connection_id}/nickname")
+async def composio_set_nickname(
+    org_id: str,
+    connection_id: str,
+    body: _ComposioNicknameBody,
+    u: dict = Depends(get_current_user),
+):
+    """Rename a connected account (e.g. 'Work Gmail', 'Personal Gmail')."""
+    from composio_integration import set_connection_nickname
+    await require_org_member(org_id, u["id"])
+    try:
+        return await set_connection_nickname(
+            db, org_id, u["id"], connection_id, body.nickname,
+        )
+    except ValueError as exc:
+        raise HTTPException(404, str(exc))
 
 
 @composio_r.post("/{org_id}/composio/connections/{connection_id}/refresh")
@@ -7103,6 +7159,92 @@ async def set_agent_tool_pref(
         upsert=True,
     )
     return {"agent_id": agent_id, "tools_enabled": bool(body.tools_enabled)}
+
+
+@composio_r.get("/{org_id}/agent-tool-recommendations")
+async def agent_tool_recommendations(
+    org_id: str,
+    u: dict = Depends(get_current_user),
+):
+    """Suggest tool-enabled agents based on each agent's division +
+    which toolkits the caller has actually connected.
+
+    Returns a list of agent_ids the caller should consider enabling,
+    with the matched toolkit slugs. UI uses this for the "Apply
+    recommended" bulk-action banner.
+    """
+    from composio_integration import (
+        recommended_toolkits_for_division, list_connections,
+    )
+    await require_org_member(org_id, u["id"])
+    conns = await list_connections(db, org_id, u["id"])
+    connected_slugs = {c["toolkit"] for c in conns if c.get("status") == "ACTIVE"}
+    if not connected_slugs:
+        return {"recommendations": [], "connected_toolkits": []}
+    out: List[Dict[str, object]] = []
+    enabled_rows = await db.agent_tool_prefs.find(
+        {"org_id": org_id, "tools_enabled": True},
+        {"_id": 0, "agent_id": 1},
+    ).to_list(500)
+    already_on = {r["agent_id"] for r in enabled_rows}
+    for aid, meta in AGENTS.items():
+        if meta.get("org_id") and meta.get("org_id") != org_id:
+            continue
+        if aid in already_on:
+            continue
+        recs = recommended_toolkits_for_division(meta.get("division_key", ""))
+        matched = [s for s in recs if s in connected_slugs]
+        if matched:
+            out.append({
+                "agent_id": aid,
+                "name": meta.get("name"),
+                "division_key": meta.get("division_key"),
+                "matched_toolkits": matched,
+            })
+    out.sort(key=lambda r: (-len(r["matched_toolkits"]), r["name"] or ""))
+    return {
+        "recommendations": out,
+        "connected_toolkits": sorted(connected_slugs),
+    }
+
+
+class _ApplyRecsBody(BaseModel):
+    agent_ids: List[str]
+
+
+@composio_r.post("/{org_id}/agent-tool-prefs/apply-recommendations")
+async def apply_recommendations(
+    org_id: str,
+    body: _ApplyRecsBody,
+    u: dict = Depends(get_current_user),
+):
+    """Bulk-enable tools for a list of agents. Admin-gated."""
+    ctx = await require_org_member(org_id, u["id"])
+    if ctx["member"].get("role") not in ("owner", "admin"):
+        raise HTTPException(403, "Only org owners/admins can change agent tool prefs")
+    valid = [aid for aid in body.agent_ids if aid in AGENTS]
+    if not valid:
+        return {"updated": 0}
+    now = datetime.now(timezone.utc)
+    ops = [
+        {
+            "filter": {"org_id": org_id, "agent_id": aid},
+            "update": {"$set": {
+                "org_id": org_id,
+                "agent_id": aid,
+                "tools_enabled": True,
+                "updated_at": now,
+                "updated_by": u["id"],
+            }},
+            "upsert": True,
+        }
+        for aid in valid
+    ]
+    for op in ops:
+        await db.agent_tool_prefs.update_one(
+            op["filter"], op["update"], upsert=op["upsert"],
+        )
+    return {"updated": len(valid), "agent_ids": valid}
 
 
 app.include_router(composio_r)

@@ -110,7 +110,9 @@ class TestListToolkits:
         data = r.json()
         assert data["available"] is True
         slugs = {t["slug"] for t in data["toolkits"]}
-        assert slugs == TOOLKIT_SLUGS, f"toolkits mismatch: {slugs}"
+        # Phase 3: featured list grew from 5 -> 20. The original 5 must
+        # still be in the set (back-compat); the rest are the new entries.
+        assert TOOLKIT_SLUGS.issubset(slugs), f"missing original 5: {TOOLKIT_SLUGS - slugs}"
         assert isinstance(data["connections"], list)
 
 

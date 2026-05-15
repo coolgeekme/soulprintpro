@@ -193,6 +193,35 @@ async def run_with_tools(
     if not tools:
         return None, []
 
+    # Tell the agent what accounts it has so it can name them in replies
+    # ("I'll send this from your Work Gmail"). With allow_multiple=True
+    # the same toolkit can have several connections, so we surface the
+    # nicknames Composio uses to disambiguate.
+    try:
+        all_conns = await composio.list_connections(db, org_id, user_id)
+        active = [c for c in all_conns if c.get("status") == "ACTIVE"]
+        if active:
+            by_kit: Dict[str, List[str]] = {}
+            for c in active:
+                label = c.get("nickname") or c.get("account_label") or "default"
+                by_kit.setdefault(c.get("toolkit_name") or c.get("toolkit"), []).append(label)
+            lines = []
+            for kit, labels in by_kit.items():
+                if len(labels) == 1:
+                    lines.append(f"- {kit}: {labels[0]}")
+                else:
+                    lines.append(f"- {kit}: {len(labels)} accounts ({', '.join(labels)})")
+            system_prompt = (
+                f"{system_prompt}\n\nCONNECTED ACCOUNTS available to you for tool calls:\n"
+                + "\n".join(lines)
+                + "\n\nWhen you take an action, briefly tell the user which account "
+                "you're using (e.g. 'sending from your Work Gmail'). If the user has "
+                "multiple accounts for the same tool and the right one is ambiguous, "
+                "ASK before acting — don't guess on destructive actions like sending email."
+            )
+    except Exception as exc:
+        logger.warning("Composio: account-context inject failed: %s", exc)
+
     client = _openai_client()
     messages: List[Dict[str, Any]] = [
         {"role": "system", "content": system_prompt},

@@ -2,25 +2,16 @@ import React, { useCallback, useEffect, useMemo, useState } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 import api from "../lib/api";
 import { toast } from "sonner";
-import { Link2, Check, Loader2, Trash2, ExternalLink, Plug, RefreshCw } from "lucide-react";
+import { Check, Loader2, Trash2, ExternalLink, RefreshCw, Plus, Search, X, Pencil } from "lucide-react";
 
 /**
- * ConnectionsPanel
- * ----------------
+ * ConnectionsPanel — Phase 3
+ * --------------------------
  * Lets a workspace member connect their own SaaS accounts (Gmail, Slack,
- * Notion, HubSpot, Google Calendar) through Composio's managed OAuth.
- *
- * Mental model:
- *   1. Click "Connect Gmail" → backend returns Composio's hosted-OAuth URL
- *   2. User opens that URL in a new tab → authorises on Google
- *   3. Composio redirects them back to /app/org/:orgId#connections with
- *      ?composio_callback=1 in the query string
- *   4. We detect the callback, poll `/refresh` for ~20s, and flip the card
- *      from "Connecting…" to "Connected"
- *
- * Per-user scope: each org member has their own connections. Owners do
- * NOT see other members' connections (mirrors how we treat individual
- * GitHub access in the existing AccountPage flow).
+ * etc.) through Composio's managed OAuth. New since Phase 2:
+ *   • Multi-account per toolkit (Work Gmail + Personal Gmail).
+ *   • Nickname per account, set at Connect time + editable later.
+ *   • "Browse all" modal pulls the full ~250-toolkit Composio catalog.
  */
 const TOOLKIT_LOGO_BG = {
   gmail: "from-red-500/20 to-orange-500/20",
@@ -28,15 +19,24 @@ const TOOLKIT_LOGO_BG = {
   slack: "from-purple-500/20 to-fuchsia-500/20",
   notion: "from-zinc-300/20 to-zinc-500/20",
   hubspot: "from-orange-500/20 to-amber-500/20",
+  linear: "from-violet-500/20 to-indigo-500/20",
+  jira: "from-blue-600/20 to-indigo-500/20",
+  asana: "from-pink-500/20 to-rose-500/20",
+  googledrive: "from-yellow-500/20 to-emerald-500/20",
+  dropbox: "from-sky-500/20 to-blue-500/20",
+  discord: "from-indigo-500/20 to-violet-500/20",
+  salesforce: "from-sky-500/20 to-blue-600/20",
+  mailchimp: "from-amber-500/20 to-yellow-400/20",
+  stripe: "from-violet-500/20 to-purple-500/20",
+  calendly: "from-blue-500/20 to-cyan-500/20",
+  zoom: "from-blue-500/20 to-sky-500/20",
+  twitter: "from-zinc-200/20 to-zinc-400/20",
+  linkedin: "from-blue-700/20 to-sky-500/20",
+  airtable: "from-amber-500/20 to-rose-500/20",
+  gitlab: "from-orange-600/20 to-red-500/20",
 };
 
-const TOOLKIT_INITIAL = {
-  gmail: "G",
-  googlecalendar: "C",
-  slack: "S",
-  notion: "N",
-  hubspot: "H",
-};
+const initialFor = (slug) => (slug || "?").charAt(0).toUpperCase();
 
 export default function ConnectionsPanel({ orgId }) {
   const [toolkits, setToolkits] = useState([]);
@@ -44,7 +44,9 @@ export default function ConnectionsPanel({ orgId }) {
   const [available, setAvailable] = useState(true);
   const [loading, setLoading] = useState(true);
   const [busySlug, setBusySlug] = useState(null);
-  const [pendingId, setPendingId] = useState(null);
+  const [nicknameDraft, setNicknameDraft] = useState({ slug: null, value: "" });
+  const [renameDraft, setRenameDraft] = useState({ id: null, value: "" });
+  const [browseOpen, setBrowseOpen] = useState(false);
   const location = useLocation();
   const nav = useNavigate();
 
@@ -63,10 +65,7 @@ export default function ConnectionsPanel({ orgId }) {
 
   useEffect(() => { load(); }, [load]);
 
-  // When the user returns from Composio's OAuth flow we land on
-  // /app/org/:orgId?composio_callback=1. Poll `/refresh` on every pending
-  // connection for up to ~30s so the card flips to "Connected" without
-  // a manual refresh. We strip the query param once polling completes.
+  // Detect return-from-OAuth and poll for ACTIVE status. See Phase 1 doc.
   useEffect(() => {
     const params = new URLSearchParams(location.search);
     if (params.get("composio_callback") !== "1") return undefined;
@@ -82,8 +81,6 @@ export default function ConnectionsPanel({ orgId }) {
         const stillPending = (data.connections || []).some(
           (c) => c.status === "INITIATED",
         );
-        // Force-refresh each pending connection — Composio doesn't push us,
-        // so we explicitly ask it to re-sync status from the upstream.
         for (const c of data.connections || []) {
           if (c.status === "INITIATED") {
             try {
@@ -94,7 +91,6 @@ export default function ConnectionsPanel({ orgId }) {
         if (!stillPending) {
           toast.success("Account connected.");
           cancelled = true;
-          // Strip the query param so subsequent reloads don't re-poll.
           nav(`/app/org/${orgId}#connections`, { replace: true });
           load();
           return;
@@ -111,25 +107,60 @@ export default function ConnectionsPanel({ orgId }) {
     return () => { cancelled = true; };
   }, [location.search, orgId, load, nav]);
 
-  const connectionByToolkit = useMemo(() => {
+  // Group connections by toolkit so the UI renders one card per toolkit
+  // with N accounts listed underneath.
+  const connectionsByToolkit = useMemo(() => {
     const m = {};
     for (const c of connections) {
-      // If a user has both INITIATED and ACTIVE rows, ACTIVE wins.
-      const prev = m[c.toolkit];
-      if (!prev || c.status === "ACTIVE") m[c.toolkit] = c;
+      if (!m[c.toolkit]) m[c.toolkit] = [];
+      m[c.toolkit].push(c);
+    }
+    // Sort each toolkit's connections: ACTIVE first, then by initiated_at desc.
+    for (const slug of Object.keys(m)) {
+      m[slug].sort((a, b) => {
+        const aa = a.status === "ACTIVE" ? 0 : 1;
+        const bb = b.status === "ACTIVE" ? 0 : 1;
+        if (aa !== bb) return aa - bb;
+        return (b.initiated_at || "").localeCompare(a.initiated_at || "");
+      });
     }
     return m;
   }, [connections]);
 
-  const handleConnect = async (slug) => {
+  // Compose the union of featured toolkits + any non-featured toolkits
+  // the user has already connected (so they still see them on the page).
+  const visibleToolkits = useMemo(() => {
+    const featuredSlugs = new Set(toolkits.map((t) => t.slug));
+    const extras = [];
+    for (const c of connections) {
+      if (!featuredSlugs.has(c.toolkit)) {
+        extras.push({
+          slug: c.toolkit,
+          name: c.toolkit_name || c.toolkit,
+          description: c.toolkit_description || "",
+        });
+        featuredSlugs.add(c.toolkit);
+      }
+    }
+    return [...toolkits, ...extras];
+  }, [toolkits, connections]);
+
+  const startConnect = (slug) => {
+    setNicknameDraft({ slug, value: "" });
+  };
+
+  const handleConnectConfirm = async () => {
+    const slug = nicknameDraft.slug;
+    if (!slug) return;
     setBusySlug(slug);
     try {
-      const { data } = await api.post(`/orgs/${orgId}/composio/connect`, { toolkit: slug });
-      setPendingId(data.connection_id);
-      // Open Composio's hosted OAuth in a new tab so we don't lose React state.
+      const { data } = await api.post(`/orgs/${orgId}/composio/connect`, {
+        toolkit: slug,
+        nickname: nicknameDraft.value.trim() || null,
+      });
+      setNicknameDraft({ slug: null, value: "" });
       window.open(data.redirect_url, "_blank", "noopener,noreferrer");
       toast.message("Finish authorisation in the new tab — we'll auto-detect when done.");
-      // Pre-populate so the UI shows "Connecting…" immediately.
       load();
     } catch (err) {
       toast.error(err?.response?.data?.detail || "Couldn't start authorisation");
@@ -158,6 +189,19 @@ export default function ConnectionsPanel({ orgId }) {
     }
   };
 
+  const handleSaveRename = async () => {
+    if (!renameDraft.id) return;
+    try {
+      await api.put(`/orgs/${orgId}/composio/connections/${renameDraft.id}/nickname`, {
+        nickname: renameDraft.value.trim(),
+      });
+      setRenameDraft({ id: null, value: "" });
+      load();
+    } catch (err) {
+      toast.error("Rename failed");
+    }
+  };
+
   if (loading) {
     return (
       <div className="flex items-center gap-2 text-sm opacity-70" data-testid="connections-loading">
@@ -177,85 +221,124 @@ export default function ConnectionsPanel({ orgId }) {
 
   return (
     <div className="space-y-4" data-testid="connections-panel">
-      <div className="flex items-baseline justify-between gap-3">
+      <div className="flex flex-wrap items-baseline justify-between gap-3">
         <p className="text-sm opacity-70 max-w-xl">
-          Connect your own SaaS accounts so agents can read & write on your behalf —
-          send Gmail, post Slack, update HubSpot, etc. Each connection is scoped
-          to <span className="opacity-100 font-medium">your user</span>, not shared with the rest of the org.
+          Connect your own SaaS accounts so agents can read & write on your behalf.
+          Each connection is scoped to <span className="opacity-100 font-medium">your user</span>, not shared.
+          Connect <span className="opacity-100">multiple accounts per tool</span> with nicknames like "Work" / "Personal".
         </p>
-        <button
-          onClick={load}
-          className="text-xs opacity-60 hover:opacity-100 inline-flex items-center gap-1"
-          data-testid="connections-refresh-btn"
-        >
-          <RefreshCw className="h-3 w-3" /> Refresh
-        </button>
+        <div className="flex gap-2">
+          <button
+            onClick={() => setBrowseOpen(true)}
+            className="text-xs px-3 py-1.5 rounded-md border border-white/15 hover:border-white/30 hover:bg-white/5 inline-flex items-center gap-1"
+            data-testid="browse-all-btn"
+          >
+            <Search className="h-3 w-3" /> Browse 250+ tools
+          </button>
+          <button
+            onClick={load}
+            className="text-xs opacity-60 hover:opacity-100 inline-flex items-center gap-1"
+            data-testid="connections-refresh-btn"
+          >
+            <RefreshCw className="h-3 w-3" /> Refresh
+          </button>
+        </div>
       </div>
 
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-        {toolkits.map((t) => {
-          const conn = connectionByToolkit[t.slug];
-          const status = conn?.status;
-          const isBusy = busySlug === t.slug;
+        {visibleToolkits.map((t) => {
+          const accounts = connectionsByToolkit[t.slug] || [];
           const bg = TOOLKIT_LOGO_BG[t.slug] || "from-zinc-500/20 to-zinc-700/20";
+          const hasActive = accounts.some((c) => c.status === "ACTIVE");
           return (
             <div
               key={t.slug}
-              className="group flex items-center gap-3 rounded-xl border border-white/10 bg-black/20 p-4 hover:border-white/20 transition"
+              className="rounded-xl border border-white/10 bg-black/20 p-4 hover:border-white/20 transition"
               data-testid={`connection-card-${t.slug}`}
             >
-              <div className={`h-10 w-10 rounded-lg bg-gradient-to-br ${bg} flex items-center justify-center text-base font-semibold tracking-tight border border-white/10`}>
-                {TOOLKIT_INITIAL[t.slug] || t.slug[0].toUpperCase()}
-              </div>
-              <div className="flex-1 min-w-0">
-                <div className="flex items-center gap-2">
-                  <span className="font-medium">{t.name}</span>
-                  {status === "ACTIVE" && (
-                    <span className="inline-flex items-center gap-1 text-[11px] uppercase tracking-wide px-1.5 py-0.5 rounded-full bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">
-                      <Check className="h-3 w-3" /> Connected
-                    </span>
-                  )}
-                  {status === "INITIATED" && (
-                    <span className="inline-flex items-center gap-1 text-[11px] uppercase tracking-wide px-1.5 py-0.5 rounded-full bg-amber-500/20 text-amber-300 border border-amber-500/30">
-                      <Loader2 className="h-3 w-3 animate-spin" /> Connecting
-                    </span>
-                  )}
+              <div className="flex items-center gap-3 mb-2">
+                <div className={`h-10 w-10 rounded-lg bg-gradient-to-br ${bg} flex items-center justify-center text-base font-semibold tracking-tight border border-white/10`}>
+                  {initialFor(t.slug)}
                 </div>
-                <p className="text-xs opacity-60 truncate">
-                  {conn?.account_label || t.description}
-                </p>
-              </div>
-              {status === "ACTIVE" ? (
+                <div className="flex-1 min-w-0">
+                  <div className="font-medium text-sm">{t.name}</div>
+                  <p className="text-[11px] opacity-60 truncate">{t.description}</p>
+                </div>
                 <button
-                  onClick={() => handleDisconnect(conn.connection_id)}
-                  className="text-xs opacity-60 hover:opacity-100 hover:text-red-400 transition inline-flex items-center gap-1 px-2 py-1.5 rounded-md hover:bg-red-500/10"
-                  data-testid={`disconnect-${t.slug}-btn`}
-                  title="Disconnect"
-                >
-                  <Trash2 className="h-3.5 w-3.5" /> <span className="hidden sm:inline">Disconnect</span>
-                </button>
-              ) : status === "INITIATED" ? (
-                <button
-                  onClick={() => handleRefresh(conn.connection_id)}
-                  className="text-xs opacity-60 hover:opacity-100 inline-flex items-center gap-1 px-2 py-1.5 rounded-md hover:bg-white/5"
-                  data-testid={`check-${t.slug}-btn`}
-                >
-                  Check status
-                </button>
-              ) : (
-                <button
-                  onClick={() => handleConnect(t.slug)}
-                  disabled={isBusy}
-                  className="text-xs px-3 py-1.5 rounded-md bg-orange-500/90 hover:bg-orange-500 text-white inline-flex items-center gap-1 disabled:opacity-50"
+                  onClick={() => startConnect(t.slug)}
+                  disabled={busySlug === t.slug}
+                  className="text-xs px-2.5 py-1.5 rounded-md bg-orange-500/90 hover:bg-orange-500 text-white inline-flex items-center gap-1 disabled:opacity-50"
                   data-testid={`connect-${t.slug}-btn`}
+                  title={accounts.length > 0 ? "Add another account" : "Connect"}
                 >
-                  {isBusy ? (
-                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                  ) : (
-                    <ExternalLink className="h-3.5 w-3.5" />
-                  )}
-                  Connect
+                  {busySlug === t.slug ? <Loader2 className="h-3 w-3 animate-spin" /> : <Plus className="h-3 w-3" />}
+                  {accounts.length > 0 ? "Add" : "Connect"}
                 </button>
+              </div>
+              {accounts.length > 0 && (
+                <ul className="mt-2 space-y-1.5">
+                  {accounts.map((c) => {
+                    const isRenaming = renameDraft.id === c.connection_id;
+                    return (
+                      <li key={c.connection_id} className="flex items-center gap-2 text-xs pl-1" data-testid={`account-row-${c.connection_id}`}>
+                        {c.status === "ACTIVE" ? (
+                          <Check className="h-3 w-3 text-emerald-400 flex-shrink-0" />
+                        ) : (
+                          <Loader2 className="h-3 w-3 animate-spin text-amber-400 flex-shrink-0" />
+                        )}
+                        {isRenaming ? (
+                          <input
+                            type="text"
+                            value={renameDraft.value}
+                            onChange={(e) => setRenameDraft((p) => ({ ...p, value: e.target.value }))}
+                            onKeyDown={(e) => {
+                              if (e.key === "Enter") handleSaveRename();
+                              if (e.key === "Escape") setRenameDraft({ id: null, value: "" });
+                            }}
+                            onBlur={handleSaveRename}
+                            autoFocus
+                            className="flex-1 px-2 py-0.5 bg-black/30 border border-white/20 rounded text-xs outline-none"
+                            data-testid={`rename-input-${c.connection_id}`}
+                          />
+                        ) : (
+                          <span className="flex-1 truncate">
+                            {c.nickname || c.account_label || (c.status === "INITIATED" ? "Connecting…" : "Connected")}
+                          </span>
+                        )}
+                        {!isRenaming && c.status === "ACTIVE" && (
+                          <button
+                            onClick={() => setRenameDraft({ id: c.connection_id, value: c.nickname || "" })}
+                            className="opacity-40 hover:opacity-100 transition"
+                            title="Rename"
+                            data-testid={`rename-${c.connection_id}-btn`}
+                          >
+                            <Pencil className="h-3 w-3" />
+                          </button>
+                        )}
+                        {c.status === "INITIATED" && (
+                          <button
+                            onClick={() => handleRefresh(c.connection_id)}
+                            className="opacity-60 hover:opacity-100 text-[10px]"
+                            data-testid={`check-${c.connection_id}-btn`}
+                          >
+                            Check
+                          </button>
+                        )}
+                        <button
+                          onClick={() => handleDisconnect(c.connection_id)}
+                          className="opacity-40 hover:opacity-100 hover:text-red-400 transition"
+                          title="Disconnect"
+                          data-testid={`disconnect-${c.connection_id}-btn`}
+                        >
+                          <Trash2 className="h-3 w-3" />
+                        </button>
+                      </li>
+                    );
+                  })}
+                </ul>
+              )}
+              {!hasActive && accounts.length === 0 && (
+                <p className="text-[11px] opacity-40 pl-1">No account connected yet.</p>
               )}
             </div>
           );
@@ -264,8 +347,158 @@ export default function ConnectionsPanel({ orgId }) {
 
       <p className="text-[11px] opacity-50">
         Authentication is handled by Composio's hosted OAuth — Foundry never sees your password.
-        Disconnecting revokes the token and stops agent access immediately.
+        Disconnecting revokes the token immediately.
       </p>
+
+      {/* Nickname prompt */}
+      {nicknameDraft.slug && (
+        <NicknameModal
+          slug={nicknameDraft.slug}
+          value={nicknameDraft.value}
+          onChange={(v) => setNicknameDraft((p) => ({ ...p, value: v }))}
+          onCancel={() => setNicknameDraft({ slug: null, value: "" })}
+          onConfirm={handleConnectConfirm}
+          existingCount={(connectionsByToolkit[nicknameDraft.slug] || []).length}
+        />
+      )}
+
+      {browseOpen && (
+        <BrowseAllModal
+          orgId={orgId}
+          existingSlugs={new Set(connections.map((c) => c.toolkit))}
+          onClose={() => { setBrowseOpen(false); load(); }}
+          onConnect={(slug) => { setBrowseOpen(false); startConnect(slug); }}
+        />
+      )}
+    </div>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+function NicknameModal({ slug, value, onChange, onCancel, onConfirm, existingCount }) {
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm" data-testid="nickname-modal">
+      <div className="bg-zinc-900 border border-white/15 rounded-2xl p-6 w-full max-w-md mx-4 space-y-3">
+        <h3 className="font-medium">
+          {existingCount > 0 ? `Add another ${slug}` : `Connect ${slug}`}
+        </h3>
+        <p className="text-xs opacity-60">
+          Give this account a nickname so you can tell it apart from others
+          (e.g. "Work", "Personal", "Client X"). Optional.
+        </p>
+        <input
+          type="text"
+          value={value}
+          onChange={(e) => onChange(e.target.value)}
+          autoFocus
+          maxLength={60}
+          placeholder={existingCount > 0 ? "e.g. Personal" : "e.g. Work"}
+          className="w-full px-3 py-2 bg-black/30 border border-white/15 rounded-md text-sm outline-none focus:border-white/40"
+          data-testid="nickname-input"
+          onKeyDown={(e) => { if (e.key === "Enter") onConfirm(); if (e.key === "Escape") onCancel(); }}
+        />
+        <div className="flex justify-end gap-2 pt-1">
+          <button onClick={onCancel} className="text-xs px-3 py-1.5 rounded-md hover:bg-white/5" data-testid="nickname-cancel">Cancel</button>
+          <button onClick={onConfirm} className="text-xs px-3 py-1.5 rounded-md bg-orange-500/90 hover:bg-orange-500 text-white inline-flex items-center gap-1" data-testid="nickname-confirm">
+            <ExternalLink className="h-3 w-3" /> Open authorisation
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+function BrowseAllModal({ orgId, existingSlugs, onClose, onConnect }) {
+  const [q, setQ] = useState("");
+  const [items, setItems] = useState([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    let cancelled = false;
+    const t = setTimeout(async () => {
+      setLoading(true);
+      try {
+        const { data } = await api.get(`/orgs/${orgId}/composio/catalog`, {
+          params: q ? { q } : undefined,
+        });
+        if (cancelled) return;
+        setItems(data.toolkits || []);
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    }, q ? 200 : 0);
+    return () => { cancelled = true; clearTimeout(t); };
+  }, [q, orgId]);
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm" data-testid="browse-all-modal">
+      <div className="bg-zinc-900 border border-white/15 rounded-2xl w-full max-w-2xl mx-4 max-h-[80vh] flex flex-col">
+        <div className="p-5 border-b border-white/10 flex items-center gap-3">
+          <h3 className="font-medium flex-1">Browse all integrations</h3>
+          <button onClick={onClose} className="opacity-50 hover:opacity-100" data-testid="browse-close">
+            <X className="h-4 w-4" />
+          </button>
+        </div>
+        <div className="p-4 border-b border-white/10">
+          <div className="relative">
+            <Search className="absolute left-3 top-2.5 h-3.5 w-3.5 opacity-50" />
+            <input
+              type="text"
+              value={q}
+              onChange={(e) => setQ(e.target.value)}
+              autoFocus
+              placeholder="Search 250+ tools (try 'asana', 'twilio', 'figma')…"
+              className="w-full pl-9 pr-3 py-2 bg-black/30 border border-white/15 rounded-md text-sm outline-none focus:border-white/40"
+              data-testid="browse-search"
+            />
+          </div>
+        </div>
+        <div className="flex-1 overflow-y-auto p-2">
+          {loading ? (
+            <div className="flex items-center justify-center py-12 opacity-60">
+              <Loader2 className="h-5 w-5 animate-spin" />
+            </div>
+          ) : items.length === 0 ? (
+            <p className="text-sm opacity-50 text-center py-12">No tools match "{q}".</p>
+          ) : (
+            <ul className="divide-y divide-white/5">
+              {items.map((t) => {
+                const connected = existingSlugs.has(t.slug);
+                return (
+                  <li key={t.slug} className="flex items-center gap-3 px-3 py-2.5 hover:bg-white/5 rounded-md" data-testid={`catalog-row-${t.slug}`}>
+                    {t.logo ? (
+                      <img src={t.logo} alt="" className="h-7 w-7 rounded-md bg-white/10 object-contain p-1" />
+                    ) : (
+                      <div className="h-7 w-7 rounded-md bg-white/10 flex items-center justify-center text-xs">
+                        {initialFor(t.slug)}
+                      </div>
+                    )}
+                    <div className="flex-1 min-w-0">
+                      <div className="text-sm flex items-center gap-2">
+                        {t.name}
+                        {t.featured && (
+                          <span className="text-[9px] uppercase tracking-wider px-1 rounded bg-orange-500/20 text-orange-300">Featured</span>
+                        )}
+                      </div>
+                      {t.description && (
+                        <p className="text-[11px] opacity-50 truncate">{t.description}</p>
+                      )}
+                    </div>
+                    <button
+                      onClick={() => onConnect(t.slug)}
+                      className="text-xs px-2.5 py-1 rounded-md bg-orange-500/90 hover:bg-orange-500 text-white"
+                      data-testid={`catalog-connect-${t.slug}`}
+                    >
+                      {connected ? "Add account" : "Connect"}
+                    </button>
+                  </li>
+                );
+              })}
+            </ul>
+          )}
+        </div>
+      </div>
     </div>
   );
 }

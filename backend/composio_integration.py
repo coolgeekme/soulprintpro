@@ -30,16 +30,37 @@ from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
-# Toolkits Foundry exposes in v1. Extend this list to onboard more apps.
-# Order matters — surfaced top-to-bottom in the Connections UI.
-SUPPORTED_TOOLKITS: List[Dict[str, str]] = [
+# Toolkits Foundry exposes "above the fold" in the Connections UI. Order
+# matters — these render first as cards. Picked to cover the 80%
+# productivity/CRM/eng/marketing use cases for an agency-style B2B tool.
+# Anything else lives in the Composio catalog and the user opens it via
+# "Browse all".
+FEATURED_TOOLKITS: List[Dict[str, str]] = [
     {"slug": "gmail", "name": "Gmail", "description": "Send and read email"},
     {"slug": "googlecalendar", "name": "Google Calendar", "description": "Manage events and invites"},
     {"slug": "slack", "name": "Slack", "description": "Post messages, search channels"},
     {"slug": "notion", "name": "Notion", "description": "Read and write docs, databases"},
     {"slug": "hubspot", "name": "HubSpot", "description": "Manage contacts, deals, companies"},
+    {"slug": "linear", "name": "Linear", "description": "Track issues and sprints"},
+    {"slug": "jira", "name": "Jira", "description": "Manage tickets across projects"},
+    {"slug": "asana", "name": "Asana", "description": "Project & task management"},
+    {"slug": "googledrive", "name": "Google Drive", "description": "Store and share files"},
+    {"slug": "dropbox", "name": "Dropbox", "description": "Cloud file storage"},
+    {"slug": "discord", "name": "Discord", "description": "Post to servers and channels"},
+    {"slug": "salesforce", "name": "Salesforce", "description": "CRM for enterprise sales"},
+    {"slug": "mailchimp", "name": "Mailchimp", "description": "Email marketing campaigns"},
+    {"slug": "stripe", "name": "Stripe", "description": "Read payments and customers"},
+    {"slug": "calendly", "name": "Calendly", "description": "Schedule meetings"},
+    {"slug": "zoom", "name": "Zoom", "description": "Schedule and join meetings"},
+    {"slug": "twitter", "name": "Twitter / X", "description": "Post and search tweets"},
+    {"slug": "linkedin", "name": "LinkedIn", "description": "Post and manage profile"},
+    {"slug": "airtable", "name": "Airtable", "description": "Database tables and views"},
+    {"slug": "gitlab", "name": "GitLab", "description": "Repos, MRs, pipelines"},
 ]
-_TOOLKIT_META = {t["slug"]: t for t in SUPPORTED_TOOLKITS}
+# Back-compat: the old name is still referenced by routes. Keep it as an
+# alias that mirrors the featured list.
+SUPPORTED_TOOLKITS = FEATURED_TOOLKITS
+_TOOLKIT_META = {t["slug"]: t for t in FEATURED_TOOLKITS}
 
 _COMPOSIO_API_KEY = os.environ.get("COMPOSIO_API_KEY", "").strip()
 
@@ -79,11 +100,13 @@ def composio_user_id(org_id: str, user_id: str) -> str:
 
 # ── Auth-config bootstrap ───────────────────────────────────────────────────
 async def ensure_auth_configs(db) -> Dict[str, str]:
-    """Create one composio-managed auth config per supported toolkit,
-    keyed by toolkit slug. Idempotent: skips toolkits we've already seen.
+    """Create one composio-managed auth config per FEATURED toolkit, keyed
+    by toolkit slug. Idempotent: skips toolkits we've already seen.
 
     Returns the slug → auth_config_id map. Stored in the `composio_meta`
-    collection so we don't re-create on every boot.
+    collection so we don't re-create on every boot. Non-featured toolkits
+    are bootstrapped lazily on first user Connect click via
+    `ensure_auth_config_for`.
     """
     if not is_available():
         return {}
@@ -91,39 +114,129 @@ async def ensure_auth_configs(db) -> Dict[str, str]:
         row["toolkit"]: row["auth_config_id"]
         async for row in db.composio_auth_configs.find({}, {"_id": 0})
     }
-    if all(t["slug"] in existing for t in SUPPORTED_TOOLKITS):
+    if all(t["slug"] in existing for t in FEATURED_TOOLKITS):
         return existing
-    client = _get_client()
     out = dict(existing)
-    for tk in SUPPORTED_TOOLKITS:
+    for tk in FEATURED_TOOLKITS:
         slug = tk["slug"]
         if slug in out:
             continue
         try:
-            ac = client.auth_configs.create(
-                toolkit=slug,
-                options={
-                    "name": f"Foundry {tk['name']}",
-                    "type": "use_composio_managed_auth",
-                },
-            )
-            out[slug] = ac.id
-            await db.composio_auth_configs.update_one(
-                {"toolkit": slug},
-                {"$set": {
-                    "toolkit": slug,
-                    "auth_config_id": ac.id,
-                    "name": tk["name"],
-                    "created_at": datetime.now(timezone.utc),
-                }},
-                upsert=True,
-            )
-            logger.info("Composio: bootstrapped auth_config for %s → %s", slug, ac.id)
+            ac_id = await _create_one_auth_config(db, slug, tk["name"])
+            if ac_id:
+                out[slug] = ac_id
         except Exception as exc:
             # One toolkit failing shouldn't prevent the rest. We'll
             # retry on next boot.
             logger.warning("Composio: auth_config create failed for %s: %s", slug, exc)
     return out
+
+
+async def _create_one_auth_config(db, slug: str, display_name: str) -> Optional[str]:
+    """Create exactly one composio-managed auth config and persist it."""
+    client = _get_client()
+    try:
+        ac = client.auth_configs.create(
+            toolkit=slug,
+            options={
+                "name": f"Foundry {display_name}",
+                "type": "use_composio_managed_auth",
+            },
+        )
+    except Exception as exc:
+        logger.warning("Composio: auth_config create failed for %s: %s", slug, exc)
+        return None
+    await db.composio_auth_configs.update_one(
+        {"toolkit": slug},
+        {"$set": {
+            "toolkit": slug,
+            "auth_config_id": ac.id,
+            "name": display_name,
+            "created_at": datetime.now(timezone.utc),
+        }},
+        upsert=True,
+    )
+    logger.info("Composio: bootstrapped auth_config for %s → %s", slug, ac.id)
+    return ac.id
+
+
+async def ensure_auth_config_for(db, toolkit: str) -> Optional[str]:
+    """Lazy bootstrap: return existing auth_config_id for `toolkit`, or
+    create one (composio-managed) if absent. Used when a user clicks
+    Connect on a non-featured toolkit from the "Browse all" dialog.
+    """
+    row = await db.composio_auth_configs.find_one({"toolkit": toolkit}, {"_id": 0})
+    if row and row.get("auth_config_id"):
+        return row["auth_config_id"]
+    # Look up the human name from Composio's catalogue so the auth_config
+    # gets a readable label in their dashboard.
+    display = toolkit
+    try:
+        info = await _resolve_toolkit_metadata(toolkit)
+        if info:
+            display = info.get("name") or toolkit
+    except Exception:
+        pass
+    return await _create_one_auth_config(db, toolkit, display)
+
+
+# Cache of {slug: {slug,name,description,logo}} for the full Composio
+# catalog. Refreshed lazily; the catalog rarely changes so we just
+# fetch once per process boot.
+_CATALOG_CACHE: Dict[str, Dict[str, str]] = {}
+
+
+async def list_all_toolkits() -> List[Dict[str, str]]:
+    """Return the full Composio toolkit catalog (~250 entries) for the
+    "Browse all" picker. Cached in-process after the first call.
+    """
+    if _CATALOG_CACHE:
+        return list(_CATALOG_CACHE.values())
+    if not is_available():
+        return []
+    client = _get_client()
+    out: List[Dict[str, str]] = []
+    cursor: Optional[str] = None
+    try:
+        while True:
+            kwargs: Dict[str, Any] = {"limit": 100}
+            if cursor:
+                kwargs["cursor"] = cursor
+            page = client.toolkits.list(**kwargs)
+            items = getattr(page, "items", None) or []
+            for t in items:
+                slug = getattr(t, "slug", None)
+                if not slug:
+                    continue
+                out.append({
+                    "slug": slug,
+                    "name": getattr(t, "name", slug) or slug,
+                    "description": (
+                        getattr(t, "meta", None)
+                        and getattr(t.meta, "description", "")
+                    ) or "",
+                    "logo": (
+                        getattr(t, "meta", None)
+                        and getattr(t.meta, "logo", "")
+                    ) or "",
+                })
+            cursor = getattr(page, "next_cursor", None)
+            if not cursor or len(out) > 500:  # hard cap
+                break
+    except Exception as exc:
+        logger.warning("Composio: toolkit catalog fetch failed: %s", exc)
+        return []
+    for t in out:
+        _CATALOG_CACHE[t["slug"]] = t
+    return out
+
+
+async def _resolve_toolkit_metadata(slug: str) -> Optional[Dict[str, str]]:
+    """Lookup one toolkit's display info from the cached catalog (or fetch)."""
+    if slug in _CATALOG_CACHE:
+        return _CATALOG_CACHE[slug]
+    await list_all_toolkits()
+    return _CATALOG_CACHE.get(slug)
 
 
 async def get_auth_config_id(db, toolkit: str) -> Optional[str]:
@@ -138,26 +251,29 @@ async def initiate_connection(
     user_id: str,
     toolkit: str,
     callback_url: str,
+    nickname: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Kick off OAuth for a toolkit. Returns the Composio-hosted redirect URL.
 
-    The user clicks through, authorises on the third-party site, and lands
-    back at `callback_url`. We don't need to do anything special on the
-    callback page — Composio persists the connection server-side. The
-    frontend just re-fetches `list_connections` to refresh the UI.
+    Multi-account: `allow_multiple=True` so the same user can connect
+    Gmail #1 (Work) and Gmail #2 (Personal) under the same Foundry user.
+    `nickname` is shown in the UI to distinguish accounts at a glance.
+    Non-featured toolkits are auto-bootstrapped on first use.
     """
-    if toolkit not in _TOOLKIT_META:
-        raise ValueError(f"Toolkit '{toolkit}' is not supported by Foundry")
+    # Lazy auth-config bootstrap for non-featured toolkits.
     ac_id = await get_auth_config_id(db, toolkit)
     if not ac_id:
-        raise RuntimeError(f"No auth_config bootstrapped for {toolkit} yet.")
+        ac_id = await ensure_auth_config_for(db, toolkit)
+    if not ac_id:
+        raise ValueError(f"Toolkit '{toolkit}' is not available")
     client = _get_client()
     cu = composio_user_id(org_id, user_id)
     req = client.connected_accounts.link(
         user_id=cu,
         auth_config_id=ac_id,
         callback_url=callback_url,
-        allow_multiple=False,
+        allow_multiple=True,
+        alias=(nickname or None),
     )
     # Snapshot the pending connection so the UI can show "Connecting…"
     # immediately and detect orphans later.
@@ -169,6 +285,7 @@ async def initiate_connection(
             "user_id": user_id,
             "composio_user_id": cu,
             "toolkit": toolkit,
+            "nickname": (nickname or "").strip() or None,
             "auth_config_id": ac_id,
             "status": getattr(req, "status", "INITIATED"),
             "initiated_at": datetime.now(timezone.utc),
@@ -213,25 +330,47 @@ async def refresh_connection_status(db, connection_id: str) -> Dict[str, Any]:
 
 
 async def list_connections(db, org_id: str, user_id: str) -> List[Dict[str, Any]]:
-    """List every connection for (org_id, user_id) — one row per toolkit."""
+    """List every connection for (org_id, user_id). With multi-account
+    enabled there can be many rows per toolkit."""
     cu = composio_user_id(org_id, user_id)
     rows = await db.composio_connections.find(
         {"composio_user_id": cu},
         {"_id": 0},
-    ).sort("initiated_at", -1).to_list(200)
-    # Hydrate with the human-readable name from SUPPORTED_TOOLKITS so the
-    # UI doesn't need a second lookup.
+    ).sort("initiated_at", -1).to_list(500)
+    # Hydrate with the human-readable name. Featured toolkits come from
+    # our static list; non-featured fall back to the cached catalog,
+    # finally to the slug itself if Composio's catalog isn't available.
     for r in rows:
-        meta = _TOOLKIT_META.get(r.get("toolkit"))
+        slug = r.get("toolkit") or ""
+        meta = _TOOLKIT_META.get(slug)
         if meta:
             r["toolkit_name"] = meta["name"]
             r["toolkit_description"] = meta["description"]
+        else:
+            cat = _CATALOG_CACHE.get(slug)
+            r["toolkit_name"] = (cat or {}).get("name") or slug
+            r["toolkit_description"] = (cat or {}).get("description") or ""
         # Normalise dates to ISO so JSON serialisation is clean.
         for k in ("initiated_at", "activated_at", "last_synced_at"):
             v = r.get(k)
             if isinstance(v, datetime):
                 r[k] = v.isoformat()
     return rows
+
+
+async def set_connection_nickname(
+    db, org_id: str, user_id: str, connection_id: str, nickname: str,
+) -> Dict[str, Any]:
+    """Rename a connection's local nickname. Auth-gated to (org, user)."""
+    cu = composio_user_id(org_id, user_id)
+    nickname = (nickname or "").strip()[:60]
+    res = await db.composio_connections.update_one(
+        {"connection_id": connection_id, "composio_user_id": cu},
+        {"$set": {"nickname": nickname or None}},
+    )
+    if res.matched_count == 0:
+        raise ValueError("Connection not found for this user")
+    return {"connection_id": connection_id, "nickname": nickname or None}
 
 
 async def disconnect_connection(db, org_id: str, user_id: str, connection_id: str) -> None:
@@ -377,6 +516,38 @@ async def execute_tool(
 
 
 # ── Public catalogue ────────────────────────────────────────────────────────
+def list_featured_toolkits() -> List[Dict[str, str]]:
+    """Return the static featured toolkit list for the Connections panel."""
+    return list(FEATURED_TOOLKITS)
+
+
+# Back-compat alias used by older route code.
 def list_supported_toolkits() -> List[Dict[str, str]]:
-    """Return the static v1 toolkit list for the UI's catalogue panel."""
-    return list(SUPPORTED_TOOLKITS)
+    return list_featured_toolkits()
+
+
+# Division → recommended toolkit slugs. Drives the "smart defaults" UX
+# in AgentToolPrefsPanel: each agent's `division_key` resolves to a
+# short list of toolkits that make sense for that role. Anything not
+# listed here falls back to no recommendations.
+DIVISION_TOOLKIT_DEFAULTS: Dict[str, List[str]] = {
+    "engineering": ["github", "linear", "jira", "gitlab", "slack"],
+    "marketing":   ["mailchimp", "twitter", "linkedin", "hubspot", "googledrive"],
+    "sales":       ["hubspot", "salesforce", "gmail", "googlecalendar", "calendly"],
+    "operations":  ["googlecalendar", "slack", "notion", "googledrive", "asana"],
+    "creative":    ["notion", "googledrive", "dropbox", "twitter"],
+    "content":     ["notion", "googledrive", "twitter", "linkedin"],
+    "product":     ["linear", "notion", "jira", "asana"],
+    "design":      ["notion", "googledrive", "dropbox"],
+    "support":     ["slack", "gmail", "notion", "hubspot"],
+    "finance":     ["stripe", "googledrive", "notion"],
+    "hr":          ["gmail", "googlecalendar", "notion", "slack"],
+    "legal":       ["googledrive", "notion", "gmail"],
+}
+
+
+def recommended_toolkits_for_division(division_key: str) -> List[str]:
+    """Return the slug list for a division, or [] if unknown."""
+    if not division_key:
+        return []
+    return list(DIVISION_TOOLKIT_DEFAULTS.get(division_key.lower(), []))
