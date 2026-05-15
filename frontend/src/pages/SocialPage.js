@@ -645,15 +645,48 @@ function PostCard({ post, orgId, onUpdate, onReplace, onDelete, publishable, onA
               className={`inline-flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded-full border ${
                 r.ok
                   ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-200"
-                  : "border-red-500/30 bg-red-500/10 text-red-200"
+                  : "border-red-500/30 bg-red-500/10 text-red-200 cursor-help"
               }`}
               title={r.error || (r.ok ? "Posted" : "Failed")}
+              onClick={() => {
+                if (!r.ok) {
+                  alert(`${platform.toUpperCase()} failed:\n\n${r.error || "Unknown error"}\n\nTool: ${r.tool || "—"}\n\nRaw response:\n${JSON.stringify(r.response, null, 2)?.slice(0, 1500) || "(no response captured)"}`);
+                }
+              }}
             >
               {r.ok ? <CheckCircle2 className="w-2.5 h-2.5" /> : <AlertTriangle className="w-2.5 h-2.5" />}
               {platform}
             </span>
           ))}
         </div>
+      )}
+      {/* Fallback details button when status is failed/partial but
+          publish_results is somehow empty (e.g. early-return path or
+          stale serialization). Forces the user to see *something*
+          actionable instead of a silent "1 platform failed". */}
+      {(post.status === "failed" || post.status === "partial")
+       && (!post.publish_results || Object.keys(post.publish_results).length === 0) && (
+        <button
+          type="button"
+          onClick={async () => {
+            try {
+              const { data } = await api.get(`/orgs/${orgId}/social/posts?status=failed,partial,publishing,published`);
+              const fresh = (data || []).find((x) => x.id === post.id);
+              const r = fresh?.publish_results || {};
+              if (Object.keys(r).length === 0) {
+                alert(`No per-platform details captured for this post.\n\nstatus: ${fresh?.status}\nfailed_count: ${fresh?.failed_count}\nplatforms: ${(fresh?.platforms || []).join(", ")}\n\nCheck backend logs for "social-publish FAIL post=${post.id}".`);
+              } else {
+                alert(Object.entries(r).map(([p, x]) => `${p.toUpperCase()}: ${x.ok ? "OK" : `FAIL — ${x.error || "Unknown"}`}`).join("\n\n"));
+              }
+            } catch (e) {
+              alert("Couldn't fetch details: " + (e?.response?.data?.detail || e.message));
+            }
+          }}
+          className="text-[11px] underline opacity-70 hover:opacity-100 mt-1 self-start"
+          data-testid={`publish-details-${post.id}`}
+        >
+          Why did this fail?
+        </button>
       )}
 
       {editing ? (

@@ -391,12 +391,10 @@ async def publish_post(
         toolkit = PLATFORM_TOOLKITS.get(platform)
         if not toolkit:
             results[platform] = {"ok": False, "error": "Platform not supported for direct publishing yet"}
-            bad += 1
         else:
             conn = await _active_connection(db, org_id, user_id, toolkit)
             if not conn:
                 results[platform] = {"ok": False, "error": f"No connected account for {toolkit}"}
-                bad += 1
             else:
                 fn = _PUBLISHERS[platform]
                 try:
@@ -404,10 +402,20 @@ async def publish_post(
                 except Exception as exc:
                     logger.exception("Publish %s failed for post %s", platform, pid)
                     results[platform] = {"ok": False, "tool": "", "error": str(exc)[:300]}
-                if results[platform].get("ok"):
-                    ok += 1
-                else:
-                    bad += 1
+        if results[platform].get("ok"):
+            ok += 1
+        else:
+            bad += 1
+            # Log Meta's actual rejection so production logs carry the
+            # signal we need to diagnose silent failures. The frontend's
+            # publish_results chip should already surface this, but logs
+            # are the ground truth when the chip is missing for any reason.
+            logger.warning(
+                "social-publish FAIL: post=%s platform=%s tool=%s error=%s response=%s",
+                pid, platform, results[platform].get("tool"),
+                results[platform].get("error"),
+                str(results[platform].get("response"))[:400],
+            )
         await db.social_posts.update_one(
             {"_id": post["_id"]} if "_id" in post else {"id": pid},
             {"$set": {f"publish_results.{platform}": results[platform]}},
