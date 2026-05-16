@@ -217,6 +217,54 @@ async def safe_send(chat_id: int | str, text: str, **kwargs) -> bool:
         return False
 
 
+async def send_voice(
+    chat_id: int | str,
+    audio_bytes: bytes,
+    *,
+    caption: Optional[str] = None,
+    timeout: float = 30.0,
+) -> Dict[str, Any]:
+    """Upload `audio_bytes` (OGG/Opus) as a Telegram voice note.
+
+    Telegram's ``sendVoice`` endpoint requires multipart/form-data,
+    not JSON — so we bypass ``_request`` and POST manually. The audio
+    MUST be encoded as OGG with the Opus codec for the recipient to
+    see a native voice-note bubble (waveform + play button); anything
+    else falls back to a generic audio file attachment. The TTS
+    helper in `forge_tts.py` already returns opus bytes, so callers
+    just pass them through.
+    """
+    url = f"{_API_BASE}/bot{_token()}/sendVoice"
+    data = {"chat_id": str(chat_id)}
+    if caption:
+        data["caption"] = caption[:1024]
+        data["parse_mode"] = "HTML"
+    files = {"voice": ("voice.ogg", audio_bytes, "audio/ogg")}
+    async with httpx.AsyncClient(timeout=timeout) as cli:
+        resp = await cli.post(url, data=data, files=files)
+    try:
+        body = resp.json()
+    except ValueError:
+        resp.raise_for_status()
+        raise RuntimeError(f"Telegram sendVoice returned non-JSON: {resp.text[:200]}")
+    if not body.get("ok"):
+        raise RuntimeError(f"Telegram sendVoice failed: {body.get('description') or body}")
+    return body.get("result") or {}
+
+
+async def safe_send_voice(
+    chat_id: int | str, audio_bytes: bytes, **kwargs,
+) -> bool:
+    """Same fire-and-forget semantics as ``safe_send`` but for voice."""
+    try:
+        await send_voice(chat_id, audio_bytes, **kwargs)
+        return True
+    except Exception as exc:
+        logger.warning("Telegram sendVoice to %s failed: %s", chat_id, exc)
+        return False
+
+
+
 # Bounded send semaphore so a big sweep never trips Telegram's
 # 30-msg/sec global ceiling. We cap concurrency at 20 in-flight sends.
 _SEND_SEM = asyncio.Semaphore(20)

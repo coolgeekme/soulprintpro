@@ -198,6 +198,167 @@ async def _gather_calendar(db, user_id: str, window_hours: int = 24) -> Dict[str
     }
 
 
+async def _gather_inbox(
+    db, user_id: str, *,
+    query: str = "",
+    max_results: int = 15,
+    window_hours: int = 48,
+) -> Dict[str, Any]:
+    """Pull recent Gmail messages across every org with an ACTIVE
+    Gmail Composio connection.
+
+    `query` is passed through as the Gmail search query syntax
+    (``is:unread``, ``from:acme.com``, ``after:2026/02/16`` etc).
+    Empty query → newest `max_results` in the window across all orgs.
+    """
+    from composio_integration import composio_user_id, execute_tool
+    orgs = await _user_orgs(db, user_id)
+    # Time-windowed default — Gmail's after: takes YYYY/MM/DD, no time.
+    if not query:
+        cutoff = datetime.now(timezone.utc) - timedelta(hours=max(1, min(168, int(window_hours))))
+        query = f"after:{cutoff.strftime('%Y/%m/%d')}"
+    args = {
+        "query": query,
+        "max_results": max(1, min(25, int(max_results))),
+    }
+    messages: List[Dict[str, Any]] = []
+    orgs_checked = 0
+    for org in orgs:
+        oid = org["id"]
+        cu = composio_user_id(oid, user_id)
+        conn = await db.composio_connections.find_one(
+            {"composio_user_id": cu, "toolkit": "gmail", "status": "ACTIVE"},
+            {"_id": 0, "connection_id": 1},
+        )
+        if not conn:
+            continue
+        orgs_checked += 1
+        try:
+            res = await execute_tool(db, oid, user_id, "GMAIL_FETCH_EMAILS", args)
+        except Exception as exc:
+            logger.warning("gmail fetch failed for %s: %s", oid, exc)
+            continue
+        if not res.get("success"):
+            continue
+        payload = res.get("response") or {}
+        items = (
+            payload.get("messages")
+            or (payload.get("data") or {}).get("messages")
+            or payload.get("items")
+            or []
+        )
+        for m in items[: max_results]:
+            messages.append({
+                "org_name": org["name"],
+                "id": m.get("messageId") or m.get("id") or "",
+                "thread_id": m.get("threadId") or "",
+                "from": m.get("from") or m.get("sender") or "",
+                "to": m.get("to") or "",
+                "subject": (m.get("subject") or "(no subject)")[:140],
+                "snippet": (m.get("messageText") or m.get("snippet") or "")[:240],
+                "received": m.get("messageTimestamp") or m.get("date") or "",
+                "label_ids": m.get("labelIds") or [],
+            })
+    return {
+        "orgs_with_gmail": orgs_checked,
+        "orgs_total": len(orgs),
+        "messages": messages,
+        "query": query,
+    }
+
+
+async def _read_email(db, user_id: str, *, message_id: str) -> Dict[str, Any]:
+    """Fetch the full body of a single Gmail message. Tries each Gmail-
+    connected org until one returns the message — Gmail message ids
+    are unique per Google account, so only the right org will hit."""
+    from composio_integration import composio_user_id, execute_tool
+    orgs = await _user_orgs(db, user_id)
+    for org in orgs:
+        oid = org["id"]
+        cu = composio_user_id(oid, user_id)
+        conn = await db.composio_connections.find_one(
+            {"composio_user_id": cu, "toolkit": "gmail", "status": "ACTIVE"},
+            {"_id": 0, "connection_id": 1},
+        )
+        if not conn:
+            continue
+        try:
+            res = await execute_tool(
+                db, oid, user_id, "GMAIL_FETCH_MESSAGE_BY_MESSAGE_ID",
+                {"message_id": message_id, "format": "full"},
+            )
+        except Exception:
+            continue
+        if not res.get("success"):
+            continue
+        payload = res.get("response") or {}
+        body = (
+            payload.get("messageText")
+            or payload.get("body")
+            or (payload.get("data") or {}).get("messageText")
+            or ""
+        )
+        if body:
+            return {
+                "org_name": org["name"],
+                "id": payload.get("messageId") or message_id,
+                "from": payload.get("from") or "",
+                "to": payload.get("to") or "",
+                "subject": payload.get("subject") or "",
+                "body": body[:8000],
+            }
+    return {"error": "Message not found in any of your connected Gmail accounts."}
+
+
+async def _search_docs(
+    db, user_id: str, *,
+    query: str,
+    max_results: int = 10,
+) -> Dict[str, Any]:
+    """Case-insensitive substring search across every org's Documents
+    library. Cheap regex over `original_name` + `title` + `preview` —
+    fine for the volumes Foundry sees today (low hundreds of docs per
+    org). Upgrade to text-index when corpora grow."""
+    import re as _re
+    if not (query or "").strip():
+        return {"error": "query is required"}
+    orgs = await _user_orgs(db, user_id)
+    org_ids = [o["id"] for o in orgs]
+    if not org_ids:
+        return {"results": [], "orgs_searched": 0}
+    name_map = {o["id"]: o["name"] for o in orgs}
+    pattern = _re.escape(query.strip())
+    cur = db.documents.find(
+        {
+            "org_id": {"$in": org_ids},
+            "$or": [
+                {"original_name": {"$regex": pattern, "$options": "i"}},
+                {"title": {"$regex": pattern, "$options": "i"}},
+                {"preview": {"$regex": pattern, "$options": "i"}},
+            ],
+        },
+        {"_id": 0, "id": 1, "org_id": 1, "original_name": 1, "title": 1,
+         "kind": 1, "preview": 1, "created_at": 1, "size": 1, "mime": 1},
+    ).sort("created_at", -1).limit(max(1, min(50, int(max_results))))
+    results = []
+    async for d in cur:
+        results.append({
+            "org_name": name_map.get(d.get("org_id"), ""),
+            "id": d.get("id"),
+            "name": d.get("original_name") or d.get("title"),
+            "title": d.get("title"),
+            "kind": d.get("kind"),
+            "mime": d.get("mime"),
+            "size": d.get("size"),
+            "preview": (d.get("preview") or "")[:200],
+        })
+    return {
+        "query": query,
+        "orgs_searched": len(orgs),
+        "results": results,
+    }
+
+
 # ── Tool dispatch ──────────────────────────────────────────────────────────
 TOOL_SCHEMAS = [
     {
@@ -253,6 +414,65 @@ TOOL_SCHEMAS = [
     {
         "type": "function",
         "function": {
+            "name": "get_my_inbox",
+            "description": (
+                "Pull recent Gmail messages across EVERY org with a connected Gmail account. "
+                "Use this for 'what's in my inbox', 'any new emails from X', 'show me unread', "
+                "etc. `query` accepts Gmail search syntax (is:unread, from:domain.com, "
+                "subject:invoice, has:attachment, etc). Empty query → recent messages in the window."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string", "description": "Gmail search syntax. Empty = recent."},
+                    "max_results": {"type": "integer", "description": "1-25. Defaults to 15."},
+                    "window_hours": {"type": "integer", "description": "When query is empty, look-back in hours (1-168). Defaults to 48."},
+                },
+                "required": [],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "read_email",
+            "description": (
+                "Fetch the full body of a single Gmail message by its message_id (obtained "
+                "from `get_my_inbox`). Use this when the user asks 'what does that email "
+                "say', 'show me the details', or before drafting a reply."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "message_id": {"type": "string"},
+                },
+                "required": ["message_id"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "search_my_docs",
+            "description": (
+                "Search the user's Document library ACROSS every org by filename, title, "
+                "or content preview. Use this for 'find the brief on X', 'where's the "
+                "deck for the Y launch', 'pull the contract'. Returns docs with the org "
+                "they live in so the user knows where to open them."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string"},
+                    "max_results": {"type": "integer", "description": "1-50. Defaults to 10."},
+                },
+                "required": ["query"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "punt_to_org",
             "description": (
                 "Tell the user that their request requires an org-scoped Chief of Staff "
@@ -281,6 +501,24 @@ async def _dispatch(db, user_id: str, name: str, args: Dict[str, Any]) -> str:
     if name == "get_my_calendar":
         hrs = int(args.get("window_hours") or 24)
         return json.dumps(await _gather_calendar(db, user_id, window_hours=hrs))
+    if name == "get_my_inbox":
+        return json.dumps(await _gather_inbox(
+            db, user_id,
+            query=(args.get("query") or "").strip(),
+            max_results=int(args.get("max_results") or 15),
+            window_hours=int(args.get("window_hours") or 48),
+        ))
+    if name == "read_email":
+        mid = (args.get("message_id") or "").strip()
+        if not mid:
+            return json.dumps({"error": "message_id is required"})
+        return json.dumps(await _read_email(db, user_id, message_id=mid))
+    if name == "search_my_docs":
+        return json.dumps(await _search_docs(
+            db, user_id,
+            query=(args.get("query") or "").strip(),
+            max_results=int(args.get("max_results") or 10),
+        ))
     if name == "punt_to_org":
         return json.dumps({
             "ok": True,
@@ -294,19 +532,31 @@ async def _dispatch(db, user_id: str, name: str, args: Dict[str, Any]) -> str:
 
 
 # ── Main entry point ───────────────────────────────────────────────────────
-SYSTEM_PROMPT = """You are the user's Personal Concierge inside Foundry, reached through Telegram.
+SYSTEM_PROMPT = """You are the user's Personal Chief of Staff inside Foundry, reached through Telegram. You are organisation-agnostic by default — the user talks to you the way they would to a trusted human assistant who happens to have READ access to everything across every org they belong to.
 
-You have READ-ONLY visibility across every org the user belongs to. You can summarise activity, list calendar events, and point them to which org to focus on. You CANNOT mutate org data — no creating leads, sending emails, publishing posts, etc. If a request requires action on a specific org, use the `punt_to_org` tool and stop.
+You can:
+- Summarise activity across every org (`get_orgs_overview`)
+- Read their full calendar across every Google Calendar they've connected (`get_my_calendar`)
+- Read recent Gmail across every Gmail account they've connected (`get_my_inbox`, `read_email`)
+- Search documents across every org's library (`search_my_docs`)
+- List the orgs they're in (`list_orgs`)
+- **Answer general questions** (world knowledge, advice, casual conversation) without calling any tool — just talk naturally
+- **Draft email replies, message drafts, talking points** — output them as text the user can copy. This is OK; it's just text, not a write to any system.
 
-When answering:
-- Use plain English. Telegram doesn't render fancy markdown well — use simple HTML <b> for emphasis if needed.
-- Keep replies tight (3-8 lines for status questions, longer only when the user asked for detail).
-- Group findings by org name when relevant.
-- When the user asks about their agenda/schedule/calendar, call `get_my_calendar` first.
-- When the user asks "what's on my plate", "where am I behind", or open-ended status, call `get_orgs_overview` first.
-- Reference timestamps in user-friendly form (e.g. "today at 3:00 PM"), not raw ISO strings.
-- If the user clearly wants an action (write, send, create, delete, publish, schedule), respond via `punt_to_org` and tell them which org.
-- If you don't know which org, ask. Never guess on a write operation."""
+What you CANNOT do:
+- Send emails, publish posts, mutate calendar events, create CRM rows, or otherwise WRITE to any third-party system. If the user asks for a write action, use `punt_to_org` to tell them which org to address the request to (e.g. "Send this via the Acme Org Chief of Staff: /org Acme reply to that email saying yes"). Drafting a reply for the user to copy is fine — only the actual `send` is gated.
+
+Tone & format:
+- Talk like a sharp human assistant. Plain English. No emojis unless echoing the user's tone.
+- Telegram renders simple HTML — use <b>bold</b>, <i>italics</i> sparingly. Avoid markdown headings/tables.
+- Keep replies tight (3-8 lines for status; longer only when the user asked for detail).
+- Group findings by org name only when it actually helps clarity. For "what's my agenda today" just list times + titles chronologically; org name is metadata.
+- Reference timestamps in user-friendly form ("today at 3:00 PM"), not raw ISO.
+- When you draft a reply for the user, include only the draft body (no "Here's a draft:" preamble). The user wants something they can paste.
+
+Routing nuance:
+- A `/org <name>` prefix means the user wants the org-scoped CoS, NOT you. They shouldn't be here in that case — but if they do reach you with an action request like "send Acme an email", use `punt_to_org`.
+- If the user says "switch to <org>" or "from now on assume <org>", tell them they can use `/org <name> ...` going forward; you don't carry org state."""
 
 
 async def respond_personal(db, *, user_id: str, message: str) -> str:

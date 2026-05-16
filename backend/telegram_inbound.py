@@ -44,10 +44,6 @@ import telegram_bot
 
 logger = logging.getLogger("foundry.telegram_inbound")
 
-# Stickiness — within this window, a reply with no org mention routes to
-# the same org that last received a routing decision.
-STICKY_WINDOW = timedelta(minutes=30)
-
 # How confidently inline match has to score before we accept it. Pure
 # substring hit always counts; fuzzy only if >= this ratio.
 FUZZY_CUTOFF = 0.86
@@ -97,16 +93,51 @@ async def transcribe_voice(audio_bytes: bytes, ext: str) -> str:
 
 
 # ── Org routing cascade ────────────────────────────────────────────────────
-_SLASH_ORG_RE = re.compile(r"^/org(?:@\w+)?\s+(?P<name>[^\s]+(?:\s+[^\s]+)*?)\s*(?:[:\-—]\s*|\n|$)\s*(?P<body>.*)", re.DOTALL)
+_SLASH_ORG_RE = re.compile(r"^/org(?:@\w+)?\s+(?P<rest>.+)", re.DOTALL | re.IGNORECASE)
 
 
-def _slash_org_parse(text: str) -> Optional[Tuple[str, str]]:
+def _slash_org_parse(text: str, orgs: Optional[List[Dict[str, Any]]] = None) -> Optional[Tuple[str, str]]:
     """Match `/org Reggie Lab add Reggie to HubSpot`. Returns
-    (org_name, body) on hit, None otherwise."""
-    m = _SLASH_ORG_RE.match(text.strip())
+    (org_name, body) on hit, None otherwise.
+
+    Strategy: pull everything after the leading `/org` token, then —
+    if `orgs` is supplied — try matching the LONGEST org name prefix
+    against the user's actual org list. This lets users type natural
+    multi-word org names like "/org Acme Corp draft a reply" without
+    needing a `:` or `-` delimiter.
+
+    Falls back to single-token name when no `orgs` list is provided
+    (preserves backwards-compatible behaviour for callers that don't
+    care about disambiguation).
+    """
+    m = _SLASH_ORG_RE.match((text or "").strip())
     if not m:
         return None
-    return m.group("name").strip(), (m.group("body") or "").strip()
+    rest = (m.group("rest") or "").strip()
+    if not rest:
+        return None
+    if orgs:
+        # Longest-org-name-prefix match. We sort the user's org names
+        # by word count descending so multi-word names always beat
+        # single-word ones when both prefix the message.
+        cand_names = sorted(
+            ((o.get("name") or "").strip() for o in orgs if o.get("name")),
+            key=lambda n: -len(n.split()),
+        )
+        lc_rest = rest.lower()
+        for name in cand_names:
+            ln = name.lower()
+            if lc_rest == ln:
+                return name, ""
+            # Match name followed by whitespace OR punctuation.
+            if lc_rest.startswith(ln) and len(lc_rest) > len(ln) and not lc_rest[len(ln)].isalnum():
+                body = rest[len(name):].lstrip(" :,-—\t\n").strip()
+                return name, body
+    # Fallback: single-word org name (legacy behaviour).
+    parts = rest.split(None, 1)
+    name = parts[0]
+    body = parts[1] if len(parts) > 1 else ""
+    return name, body
 
 
 def _fuzzy_score(needle: str, hay: str) -> float:
@@ -176,27 +207,6 @@ def _aware(dt: Optional[datetime]) -> Optional[datetime]:
     return dt
 
 
-async def _read_sticky(db, chat_id: int) -> Optional[Dict[str, Any]]:
-    row = await db.telegram_sticky_org.find_one({"chat_id": chat_id})
-    if not row:
-        return None
-    at = _aware(row.get("at"))
-    if at is None or datetime.now(timezone.utc) - at > STICKY_WINDOW:
-        return None
-    return {"id": row.get("org_id"), "name": row.get("org_name") or ""}
-
-
-async def _write_sticky(db, chat_id: int, org_id: str, org_name: str) -> None:
-    await db.telegram_sticky_org.update_one(
-        {"chat_id": chat_id},
-        {"$set": {
-            "chat_id": chat_id, "org_id": org_id, "org_name": org_name,
-            "at": datetime.now(timezone.utc),
-        }},
-        upsert=True,
-    )
-
-
 async def _read_pending_disambig(db, chat_id: int) -> Optional[Dict[str, Any]]:
     row = await db.telegram_disambig_state.find_one({"chat_id": chat_id})
     if not row:
@@ -235,14 +245,27 @@ async def detect_org(
     """Run the routing cascade. Returns:
         (org | None, body, reason)
     Where:
-        - org is the resolved {"id", "name"} or None if we asked the
-          user to disambiguate (caller should not run the CoS turn).
+        - org is the resolved {"id", "name"} or None if we should route
+          to the Personal Concierge (org-agnostic default).
         - body is the message text minus any /org prefix (so the CoS
           doesn't see "/org Archeforge" as part of the prompt).
         - reason is a short string for the audit log.
+
+    Routing philosophy (Feb 2026 redesign):
+      The Telegram bot is **org-agnostic by default** — every message
+      goes to the Personal Concierge unless the user EXPLICITLY routes
+      it to a specific org via:
+        a. ``/org <name> ...`` slash command
+        b. naming an org inline in the message ("draft a reply for the
+           Acme thread", "in Archeforge, …")
+        c. answering a pending disambiguation numbered prompt
+      We no longer auto-stick to the last-used org, and we no longer
+      auto-route single-org users — both led to "wait, why did asking
+      about my agenda end up logged under <random org>?" surprise.
     """
     orgs = await _user_orgs(db, user_id)
     if not orgs:
+        # Personal Concierge still works without orgs (general chitchat).
         return None, text, "no_orgs"
 
     # ── Resolve a numbered reply against a pending disambiguation ─────
@@ -253,17 +276,15 @@ async def detect_org(
         if 0 <= idx < len(cands):
             picked = cands[idx]
             await _clear_pending_disambig(db, chat_id)
-            await _write_sticky(db, chat_id, picked["id"], picked["name"])
             return picked, pending.get("message_text") or "", "disambig_picked"
-        # Out-of-range number — treat as no match.
+        # Out-of-range number — fall through to Personal Concierge.
 
     # ── Layer 1: slash command ────────────────────────────────────────
-    parsed = _slash_org_parse(text or "")
+    parsed = _slash_org_parse(text or "", orgs=orgs)
     if parsed:
         name_q, body = parsed
         match = _find_inline_org(name_q, orgs)
         if match:
-            await _write_sticky(db, chat_id, match["id"], match["name"])
             return match, body, "slash"
         # Slash with unknown name — let user know but don't disambig.
         return None, text, "slash_unknown"
@@ -271,19 +292,14 @@ async def detect_org(
     # ── Layer 2: inline mention ───────────────────────────────────────
     inline = _find_inline_org(text or "", orgs)
     if inline:
-        await _write_sticky(db, chat_id, inline["id"], inline["name"])
         return inline, text, "inline_match"
 
-    # ── Layer 3: sticky context ───────────────────────────────────────
-    sticky = await _read_sticky(db, chat_id)
-    if sticky:
-        return sticky, text, "sticky"
-
-    # ── Layer 4: disambig (only if user actually has > 1 org) ─────────
-    if len(orgs) == 1:
-        await _write_sticky(db, chat_id, orgs[0]["id"], orgs[0]["name"])
-        return orgs[0], text, "single_org"
-    return None, text, "needs_disambig"
+    # ── DEFAULT: Personal Concierge ───────────────────────────────────
+    # No explicit org marker → cross-org read-only assistant. The CoS
+    # handles calendar, inbox, doc search, status summaries, drafts,
+    # and general chitchat. If the user wants to mutate org data, the
+    # Concierge punts back with a `/org <name>` instruction.
+    return None, text, "personal_default"
 
 
 # ── CoS turn execution ─────────────────────────────────────────────────────
@@ -386,23 +402,17 @@ async def handle_inbound(
     # ── 2. Routing cascade ────────────────────────────────────────────
     org, body, reason = await detect_org(db, user_id=user_id, chat_id=chat_id, text=text)
     if org is None:
-        if reason == "no_orgs":
-            await telegram_bot.safe_send(
-                chat_id,
-                "You're not in any orgs yet. Create one in Foundry first.",
-            )
-            return
         if reason == "slash_unknown":
             await telegram_bot.safe_send(
                 chat_id,
                 "I couldn't find an org by that name. Try `/org <exact name> <message>` or just say the org name in your sentence.",
             )
             return
-        # No org context — fall through to the **Personal Concierge**.
-        # This is the cross-org read-only assistant that can answer
-        # "what's on my agenda", "where am I behind", etc. It punts back
-        # to a specific org's CoS when the request requires actual
-        # writes. See `personal_concierge.respond_personal`.
+        # Default path: Personal Concierge. Handles cross-org calendar /
+        # inbox / doc search / status summaries / general chitchat.
+        # Punts back to a specific org's CoS only when a write action
+        # is requested. See `personal_concierge.respond_personal`.
+        org_label = "Foundry"  # branding for nudge wrapper
         try:
             from personal_concierge import respond_personal
             reply_text = await respond_personal(db, user_id=user_id, message=text)
@@ -419,13 +429,14 @@ async def handle_inbound(
             "org_id": None,
             "text": (text or "")[:2000],
             "voice": transcript_used,
-            "routed_via": "personal_concierge",
+            "routed_via": reason if reason in {"no_orgs"} else "personal_concierge",
             "reply_preview": (reply_text or "")[:400],
             "at": datetime.now(timezone.utc),
         })
-        await telegram_bot.safe_send(
-            chat_id,
-            telegram_bot.format_nudge(org_label="Foundry", body=reply_text or "Done."),
+        await _deliver_reply(
+            chat_id=chat_id, org_label=org_label,
+            reply_text=reply_text or "Done.",
+            speak=transcript_used,
         )
         return
 
@@ -446,7 +457,32 @@ async def handle_inbound(
         "at": datetime.now(timezone.utc),
     })
 
-    await telegram_bot.safe_send(
-        chat_id,
-        telegram_bot.format_nudge(org_label=org["name"], body=reply_text or "Done."),
+    await _deliver_reply(
+        chat_id=chat_id, org_label=org["name"],
+        reply_text=reply_text or "Done.",
+        speak=transcript_used,
     )
+
+
+async def _deliver_reply(
+    *, chat_id: int, org_label: str, reply_text: str, speak: bool,
+) -> None:
+    """Send the agent's reply back to the Telegram chat. Always sends
+    the text version (so the user can scroll back and re-read); when
+    `speak=True` (the user sent voice input) we ALSO synthesise a TTS
+    voice note and send it right after, so they get an "auditory"
+    reply that matches the input modality.
+    """
+    formatted = telegram_bot.format_nudge(org_label=org_label, body=reply_text)
+    await telegram_bot.safe_send(chat_id, formatted)
+    if not speak:
+        return
+    try:
+        from forge_tts import tts_to_opus
+        audio = await tts_to_opus(reply_text)
+    except Exception as exc:
+        logger.warning("TTS reply generation failed: %s", exc)
+        return
+    if not audio:
+        return
+    await telegram_bot.safe_send_voice(chat_id, audio)

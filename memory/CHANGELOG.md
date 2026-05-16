@@ -3,6 +3,19 @@
 Plain-English feature inventory of **Foundry by SoulPrint Engine** for non-technical teammates. Each section is a category of capabilities and what they do for users.
 
 ---
+## 🤖 Feb 17, 2026 — Super CoS: Org-Agnostic Telegram Chief of Staff
+- **Routing redesign**: the Telegram bot now defaults to the **Personal Concierge** for EVERY message. Org-scoped CoS only fires when the user explicitly routes via `/org <name> ...` slash command or names an org inline ("In Acme Corp, …"). Sticky 30-min carry-over and single-org auto-routing are gone — they caused "why did asking about my agenda end up logged under Random Org?" confusion.
+- **Slash parser upgraded**: `/org Acme Corp send the agenda` now works (multi-word org names without needing a `:`/`-` delimiter). Falls back to single-token name when no orgs list is supplied.
+- **Personal Concierge tools expanded** (`personal_concierge.py`):
+  - `get_my_inbox(query?, max_results?, window_hours?)` — Gmail across every connected account; accepts full Gmail search syntax (`is:unread`, `from:`, `subject:`, …)
+  - `read_email(message_id)` — full body of a single message
+  - `search_my_docs(query, max_results?)` — cross-org Documents library search (name + title + preview substring match)
+- **System prompt rewritten** so the bot can answer general chitchat / world knowledge / drafts without forcing a tool call. Drafting an email reply for the user to copy is now explicitly allowed; only the actual *send* (write to Gmail) is gated behind `punt_to_org`.
+- **Voice replies (Phase 2)**: when the user sends voice input, the bot now responds with BOTH the text reply (so they can scroll/re-read) AND a TTS voice note via OpenAI `tts-1` (voice=`nova`, format=`opus`). Renders as a native Telegram voice bubble. `forge_tts.py` is the new shared helper; `telegram_bot.send_voice` is the multipart upload primitive.
+- **Tests**: 7 new pytest cases (`tests/test_telegram_cos.py`) covering default→Concierge routing, explicit `/org` routing, inline mention routing, no-sticky regression, and the new tool schemas + `search_my_docs` cross-org behavior. Live-mode probes confirmed Concierge answers math (`Q: what's 12*8 → 96`), lists orgs, and finds the audit PDF across org boundaries.
+
+---
+
 ## 🕷️ Feb 17, 2026 — Forge Crawl Phase A + Audit Pipeline Upgrade
 - **New module `/app/backend/forge_crawl.py`**: in-house alternative to Firecrawl. Three callable functions: `scrape(url, render=…)`, `crawl(url, max_pages=…)`, `extract(url, schema, instructions=…)`. Pure-Python, AGPL-free, zero third-party API cost.
 - **Fetch strategy**: `httpx` first (cheap, ~100 ms), auto-escalate to Playwright when the cleaned text comes back under a JS-shell threshold or matches `<div id="root">` etc. Override knobs: `render="force"` (always Playwright) or `render="never"` (httpx only). `trafilatura` turns the rendered HTML into clean markdown — main content only, chrome/nav/ads stripped.
