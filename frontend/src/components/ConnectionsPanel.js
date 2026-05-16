@@ -2,7 +2,7 @@ import React, { useCallback, useEffect, useMemo, useState } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 import api from "../lib/api";
 import { toast } from "sonner";
-import { Check, Loader2, Trash2, ExternalLink, RefreshCw, Plus, Search, X, Pencil } from "lucide-react";
+import { Check, Loader2, Trash2, ExternalLink, RefreshCw, Plus, Search, X, Pencil, Settings2, AlertTriangle, Instagram as InstagramIcon, Facebook as FacebookIcon } from "lucide-react";
 
 /**
  * ConnectionsPanel — Phase 3
@@ -294,7 +294,8 @@ export default function ConnectionsPanel({ orgId }) {
                   {accounts.map((c) => {
                     const isRenaming = renameDraft.id === c.connection_id;
                     return (
-                      <li key={c.connection_id} className="flex items-center gap-2 text-xs pl-1" data-testid={`account-row-${c.connection_id}`}>
+                    <React.Fragment key={c.connection_id}>
+                      <li className="flex items-center gap-2 text-xs pl-1" data-testid={`account-row-${c.connection_id}`}>
                         {c.status === "ACTIVE" ? (
                           <Check className="h-3 w-3 text-emerald-400 flex-shrink-0" />
                         ) : (
@@ -354,6 +355,17 @@ export default function ConnectionsPanel({ orgId }) {
                           <Trash2 className="h-3 w-3" />
                         </button>
                       </li>
+                      {/* Meta-target picker — surfaced inline under each
+                          FB/IG row so the user can see (and change) which
+                          Page + IG account this org publishes to. */}
+                      {(slug === "facebook" || slug === "instagram") && c.status === "ACTIVE" && (
+                        <MetaTargetRow
+                          connection={c}
+                          orgId={orgId}
+                          onUpdated={load}
+                        />
+                      )}
+                    </React.Fragment>
                     );
                   })}
                 </ul>
@@ -665,6 +677,262 @@ function ConnectionsHowToGuide() {
           </div>
         </div>
       )}
+    </div>
+  );
+}
+
+
+// ── Meta target picker ─────────────────────────────────────────────────
+// Inline row under each Facebook / Instagram connection in the
+// Connections panel. Shows the currently-pinned Page + linked IG,
+// with a "Change target" button that opens a modal listing every
+// Page the user manages plus the IG account linked to each one.
+//
+// Composio's Meta integration returns one access token that can post
+// to multiple Pages — without explicit selection we'd silently pick
+// pages[0], which is the root cause of "I connected IG/FB and nothing
+// works". This UI surfaces and locks in the user's choice.
+export function MetaTargetRow({ connection, orgId, onUpdated }) {
+  const [open, setOpen] = useState(false);
+  const summary = connection.target_summary || null;
+  const hasTarget = Boolean(summary && (summary.page_name || summary.ig_username));
+  const isInstagram = connection.toolkit === "instagram";
+
+  // Friendly status copy under each FB/IG tile so the user instantly
+  // knows where their posts will land — or what's blocking publishing.
+  let body;
+  if (hasTarget) {
+    body = (
+      <span className="opacity-90">
+        Posting to{" "}
+        {summary.page_name && (
+          <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-md bg-blue-500/15 text-blue-300">
+            <FacebookIcon className="h-3 w-3" /> {summary.page_name}
+          </span>
+        )}
+        {summary.page_name && summary.ig_username && <span className="opacity-50"> · </span>}
+        {summary.ig_username ? (
+          <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-md bg-pink-500/15 text-pink-300">
+            <InstagramIcon className="h-3 w-3" /> @{summary.ig_username}
+          </span>
+        ) : (
+          <span className="inline-flex items-center gap-1 text-[10px] text-amber-300">
+            <AlertTriangle className="h-3 w-3" /> No linked IG on this Page
+          </span>
+        )}
+      </span>
+    );
+  } else if (isInstagram) {
+    body = (
+      <span className="text-amber-300 inline-flex items-center gap-1">
+        <AlertTriangle className="h-3 w-3" /> No IG target selected. Pick a Facebook Page first.
+      </span>
+    );
+  } else {
+    body = (
+      <span className="text-amber-300 inline-flex items-center gap-1">
+        <AlertTriangle className="h-3 w-3" /> No Page selected — publishing is blocked.
+      </span>
+    );
+  }
+
+  return (
+    <li
+      className="flex items-center gap-2 pl-6 text-[11px] opacity-80 pb-1"
+      data-testid={`meta-target-row-${connection.connection_id}`}
+    >
+      <span className="flex-1 truncate">{body}</span>
+      <button
+        type="button"
+        onClick={() => setOpen(true)}
+        className="inline-flex items-center gap-1 text-[11px] px-2 py-0.5 rounded-md border border-white/15 hover:border-white/30 hover:bg-white/5 transition"
+        data-testid={`meta-target-change-${connection.connection_id}`}
+      >
+        <Settings2 className="h-3 w-3" /> {hasTarget ? "Change target" : "Select target"}
+      </button>
+      {open && (
+        <MetaTargetModal
+          orgId={orgId}
+          connection={connection}
+          onClose={() => setOpen(false)}
+          onSaved={() => {
+            setOpen(false);
+            onUpdated && onUpdated();
+          }}
+        />
+      )}
+    </li>
+  );
+}
+
+
+export function MetaTargetModal({ orgId, connection, onClose, onSaved }) {
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
+  const [targets, setTargets] = useState({ pages: [], selected_page_id: "" });
+  const [saving, setSaving] = useState(false);
+  const [picked, setPicked] = useState("");
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      setLoading(true);
+      setError("");
+      try {
+        const { data } = await api.get(
+          `/orgs/${orgId}/composio/connections/${connection.connection_id}/available-targets`,
+        );
+        if (cancelled) return;
+        setTargets(data || { pages: [], selected_page_id: "" });
+        setPicked(data?.selected_page_id || "");
+      } catch (err) {
+        if (cancelled) return;
+        setError(err?.response?.data?.detail || "Couldn't load your Facebook Pages.");
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [orgId, connection.connection_id]);
+
+  const save = async () => {
+    if (!picked) {
+      toast.error("Pick a Page first.");
+      return;
+    }
+    setSaving(true);
+    try {
+      const { data } = await api.post(
+        `/orgs/${orgId}/composio/connections/${connection.connection_id}/select-target`,
+        { page_id: picked },
+      );
+      const pageName = data?.selected_page?.page_name || "this Page";
+      const ig = data?.instagram?.username;
+      toast.success(
+        ig
+          ? `Pinned ${pageName} + @${ig} for this org`
+          : `Pinned ${pageName} for this org (no IG linked)`,
+      );
+      onSaved && onSaved();
+    } catch (err) {
+      toast.error(err?.response?.data?.detail || "Failed to pin target.");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm" data-testid="meta-target-modal">
+      <div className="bg-zinc-900 border border-white/10 rounded-xl w-full max-w-lg max-h-[80vh] overflow-hidden flex flex-col text-white">
+        <div className="flex items-center justify-between px-4 py-3 border-b border-white/10">
+          <div>
+            <div className="text-sm font-medium">Select your Meta target</div>
+            <div className="text-[11px] opacity-60">
+              One Facebook Page (and its linked Instagram account) per org. Pick the one this org should publish to.
+            </div>
+          </div>
+          <button
+            onClick={onClose}
+            className="opacity-60 hover:opacity-100"
+            data-testid="meta-target-close"
+          >
+            <X className="h-4 w-4" />
+          </button>
+        </div>
+        <div className="overflow-auto px-2 py-2 flex-1">
+          {loading && (
+            <div className="flex items-center gap-2 px-3 py-6 text-sm opacity-70">
+              <Loader2 className="h-4 w-4 animate-spin" /> Loading your Facebook Pages…
+            </div>
+          )}
+          {error && !loading && (
+            <div className="px-3 py-3 text-sm text-amber-300 flex items-start gap-2">
+              <AlertTriangle className="h-4 w-4 mt-0.5 flex-shrink-0" />
+              <span>{error}</span>
+            </div>
+          )}
+          {!loading && !error && targets.pages.length === 0 && (
+            <div className="px-3 py-6 text-sm opacity-70 space-y-2">
+              <div>No Facebook Pages found for this account.</div>
+              <div className="text-[12px] opacity-70">
+                You need to be the admin (or editor) of at least one Facebook Page.
+                Open <a href="https://business.facebook.com" target="_blank" rel="noreferrer" className="underline">business.facebook.com</a>, create or claim a Page, then come back and reconnect.
+              </div>
+            </div>
+          )}
+          {!loading && !error && targets.pages.length > 0 && (
+            <ul className="space-y-1">
+              {targets.pages.map((p) => {
+                const checked = picked === p.page_id;
+                const ig = p.linked_instagram;
+                return (
+                  <li
+                    key={p.page_id}
+                    onClick={() => setPicked(p.page_id)}
+                    className={`px-3 py-2.5 rounded-md cursor-pointer border transition ${
+                      checked
+                        ? "border-orange-500/60 bg-orange-500/10"
+                        : "border-transparent hover:bg-white/5"
+                    }`}
+                    data-testid={`meta-target-page-${p.page_id}`}
+                  >
+                    <div className="flex items-start gap-3">
+                      <input
+                        type="radio"
+                        name="meta-target-pick"
+                        checked={checked}
+                        onChange={() => setPicked(p.page_id)}
+                        className="mt-1 accent-orange-500"
+                        data-testid={`meta-target-page-radio-${p.page_id}`}
+                      />
+                      <div className="flex-1 min-w-0">
+                        <div className="text-sm font-medium flex items-center gap-2">
+                          <FacebookIcon className="h-3.5 w-3.5 text-blue-400" />
+                          <span className="truncate">{p.page_name}</span>
+                          {p.category && (
+                            <span className="text-[10px] opacity-50 uppercase tracking-wider truncate">{p.category}</span>
+                          )}
+                        </div>
+                        <div className="mt-1 text-[12px]">
+                          {ig ? (
+                            <span className="inline-flex items-center gap-1 text-pink-300">
+                              <InstagramIcon className="h-3 w-3" />
+                              @{ig.username || ig.ig_user_id} linked
+                            </span>
+                          ) : (
+                            <span className="inline-flex items-center gap-1 text-amber-300/80">
+                              <AlertTriangle className="h-3 w-3" />
+                              No Instagram Business account linked to this Page
+                            </span>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                  </li>
+                );
+              })}
+            </ul>
+          )}
+        </div>
+        <div className="px-4 py-3 border-t border-white/10 flex items-center justify-end gap-2">
+          <button
+            onClick={onClose}
+            className="text-xs px-3 py-1.5 rounded-md hover:bg-white/5"
+            data-testid="meta-target-cancel"
+          >
+            Cancel
+          </button>
+          <button
+            onClick={save}
+            disabled={saving || !picked}
+            className="text-xs px-3 py-1.5 rounded-md bg-orange-500/90 hover:bg-orange-500 text-white inline-flex items-center gap-1 disabled:opacity-50"
+            data-testid="meta-target-save"
+          >
+            {saving ? <Loader2 className="h-3 w-3 animate-spin" /> : <Check className="h-3 w-3" />}
+            Pin as target
+          </button>
+        </div>
+      </div>
     </div>
   );
 }

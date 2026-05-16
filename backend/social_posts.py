@@ -865,18 +865,26 @@ def make_social_router(*, db, AGENTS, EMERGENT_LLM_KEY, LlmChat, UserMessage,
         org_id: str, u: dict = Depends(get_current_user),
     ):
         """For every platform Foundry can publish to directly, return
-        whether the caller has an active connection. Drives the
-        "Publish via Foundry" button visibility on SocialPage."""
+        whether the caller has an active connection, plus FB/IG
+        target-pin state so the SocialPage UI can surface "Posting to: X"
+        chips with a Change link. Drives the "Publish via Foundry"
+        button visibility on SocialPage."""
         await require_org_member(org_id, u["id"])
         try:
             from social_publishing import (
                 connectable_platforms_for_user, supported_platforms,
+                meta_target_status_for_user,
             )
             connected = await connectable_platforms_for_user(db, org_id, u["id"])
+            meta_targets = await meta_target_status_for_user(db, org_id, u["id"])
         except Exception:
             logger.exception("publishable-platforms lookup failed")
-            return {"supported": [], "connected": {}}
-        return {"supported": supported_platforms(), "connected": connected}
+            return {"supported": [], "connected": {}, "meta": {}}
+        return {
+            "supported": supported_platforms(),
+            "connected": connected,
+            "meta": meta_targets,
+        }
 
     @r.post("/social/posts/{post_id}/publish")
     async def publish_social_post(

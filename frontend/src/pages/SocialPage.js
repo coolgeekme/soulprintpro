@@ -9,6 +9,7 @@ import {
 } from "lucide-react";
 import AssetPickerModal from "../components/AssetPickerModal";
 import WorkingIndicator from "../components/WorkingIndicator";
+import { MetaTargetModal } from "../components/ConnectionsPanel";
 import { parseServerDate, formatLocalDateTime } from "../lib/datetime";
 
 // ── Platform metadata ─────────────────────────────────────────────────────
@@ -125,20 +126,27 @@ export default function SocialPage() {
   const [topicAngle, setTopicAngle] = useState("");  // "" = mix
   // Per-platform connection state (Composio). Drives the "Publish via
   // Foundry" button — only shown when at least one platform is connected.
+  // `meta` carries FB/IG target-pin state so we can render a "Posting to
+  // <Page>" chip + Change-target picker inline on each post.
   const [publishablePlatforms, setPublishablePlatforms] = useState({
-    supported: [], connected: {},
+    supported: [], connected: {}, meta: {},
   });
+  // When the user clicks "Change target" on any FB/IG post or the
+  // publishable summary card, we open the same MetaTargetModal used
+  // inside the Connections panel — keyed by connection_id so it works
+  // for either FB or IG.
+  const [metaTargetEdit, setMetaTargetEdit] = useState(null);
 
   const reload = async () => {
     try {
       const [orgRes, postsRes, pubRes] = await Promise.all([
         api.get(`/orgs/${orgId}`),
         api.get(`/orgs/${orgId}/social/posts`),
-        api.get(`/orgs/${orgId}/social/publishable-platforms`).catch(() => ({ data: { supported: [], connected: {} } })),
+        api.get(`/orgs/${orgId}/social/publishable-platforms`).catch(() => ({ data: { supported: [], connected: {}, meta: {} } })),
       ]);
       setOrg(orgRes.data);
       setPosts(postsRes.data);
-      setPublishablePlatforms(pubRes.data || { supported: [], connected: {} });
+      setPublishablePlatforms(pubRes.data || { supported: [], connected: {}, meta: {} });
     } catch (err) {
       toast.error(err?.response?.data?.detail || "Failed to load social queue");
     } finally { setLoading(false); }
@@ -414,17 +422,88 @@ export default function SocialPage() {
         ) : (
           <div className="space-y-3">
             {visible.map((p) => (
-              <PostCard key={p.id} post={p} orgId={orgId} onUpdate={updatePost} onReplace={replacePost} onDelete={deletePost} publishable={publishablePlatforms} onAfterPublish={reload} />
+              <PostCard key={p.id} post={p} orgId={orgId} onUpdate={updatePost} onReplace={replacePost} onDelete={deletePost} publishable={publishablePlatforms} onAfterPublish={reload} onOpenMetaTarget={(connId) => setMetaTargetEdit(connId)} />
             ))}
           </div>
         )}
       </main>
+      {metaTargetEdit && publishable_meta_connection_lookup(publishablePlatforms, metaTargetEdit) && (
+        <MetaTargetModal
+          orgId={orgId}
+          connection={publishable_meta_connection_lookup(publishablePlatforms, metaTargetEdit)}
+          onClose={() => setMetaTargetEdit(null)}
+          onSaved={() => { setMetaTargetEdit(null); reload(); }}
+        />
+      )}
     </div>
   );
 }
 
+// Resolve a synthetic "connection" object compatible with the
+// MetaTargetModal shape (just needs connection_id) from the publishable
+// summary returned by the backend. We pass connection_id either as the
+// FB or the IG connection id so the modal can read targets.
+function publishable_meta_connection_lookup(publishable, connection_id) {
+  if (!connection_id || !publishable?.meta) return null;
+  const fb = publishable.meta.facebook || {};
+  const ig = publishable.meta.instagram || {};
+  if (fb.connection_id === connection_id) return { connection_id, toolkit: "facebook" };
+  if (ig.connection_id === connection_id) return { connection_id, toolkit: "instagram" };
+  return null;
+}
+
+// ── Meta target hint (FB / IG only) ───────────────────────────────────────
+// Renders directly below the platform pills on a post card whenever the
+// post targets Facebook or Instagram. Shows the currently-pinned Page +
+// linked IG so the user instantly sees where the post will land, and
+// includes a Change link that opens the same picker modal used in the
+// Connections panel.
+function MetaTargetHint({ platforms, publishable, orgId, onChange, postId }) {
+  const wantsFb = (platforms || []).includes("facebook");
+  const wantsIg = (platforms || []).includes("instagram");
+  if (!wantsFb && !wantsIg) return null;
+  const meta = publishable?.meta || {};
+  const fb = meta.facebook || {};
+  const ig = meta.instagram || {};
+  // We only render the chip when there is at least one ACTIVE FB or IG
+  // connection — if not, the user already sees the amber "connect first"
+  // chip from the existing connect-hint above and we don't want to duplicate.
+  if (!(fb.connected || ig.connected)) return null;
+  const ref_conn = fb.connection_id || ig.connection_id;
+  if (!ref_conn) return null;
+  const pageName = fb.page_name || "";
+  const igHandle = ig.ig_username || "";
+  const targetMissing = (wantsFb && !pageName) || (wantsIg && !igHandle);
+  return (
+    <button
+      type="button"
+      onClick={() => onChange && onChange(ref_conn)}
+      className={`text-[11px] inline-flex items-center gap-1 px-2 py-0.5 rounded-full border transition ${
+        targetMissing
+          ? "border-amber-500/40 bg-amber-500/10 hover:bg-amber-500/15 text-amber-300"
+          : "border-white/15 hover:bg-white/5 sp-subtle"
+      }`}
+      title={targetMissing
+        ? "Pick which Page / IG account this post should go to before publishing."
+        : "Click to change which Page / IG account this org posts to."}
+      data-testid={`meta-target-hint-${postId}`}
+    >
+      {targetMissing ? (
+        <>⚠️ Select Meta target</>
+      ) : (
+        <>
+          {pageName && <>Posting to <strong className="font-medium">{pageName}</strong></>}
+          {pageName && igHandle && <span className="opacity-50"> · </span>}
+          {igHandle && <>@<strong className="font-medium">{igHandle}</strong></>}
+          <span className="opacity-50">· Change</span>
+        </>
+      )}
+    </button>
+  );
+}
+
 // ── Post card ─────────────────────────────────────────────────────────────
-function PostCard({ post, orgId, onUpdate, onReplace, onDelete, publishable, onAfterPublish }) {
+function PostCard({ post, orgId, onUpdate, onReplace, onDelete, publishable, onAfterPublish, onOpenMetaTarget }) {
   const [editing, setEditing] = useState(false);
   const [text, setText] = useState(post.text);
   const [hashtags, setHashtags] = useState((post.hashtags || []).join(" "));
@@ -672,6 +751,13 @@ function PostCard({ post, orgId, onUpdate, onReplace, onDelete, publishable, onA
             Connect {platformsMissing.map((p) => PLATFORMS[p]?.label || p).join(" + ")} to publish from here
           </Link>
         )}
+        <MetaTargetHint
+          platforms={post.platforms}
+          publishable={publishable}
+          orgId={orgId}
+          onChange={onOpenMetaTarget}
+          postId={post.id}
+        />
         {post.status === "queued" && post.scheduled_for && (
           <span className="ml-auto text-[11px] sp-subtle flex items-center gap-1">
             <Calendar className="w-3 h-3" /> {formatScheduleLocal(post.scheduled_for)}

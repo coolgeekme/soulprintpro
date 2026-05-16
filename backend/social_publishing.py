@@ -72,6 +72,35 @@ async def connectable_platforms_for_user(
     return out
 
 
+async def meta_target_status_for_user(
+    db, org_id: str, user_id: str,
+) -> Dict[str, Any]:
+    """Return the FB / IG target-pin state for this user+org. Used by
+    SocialPage to render the "Posting to: <Page>" hint + a Change link
+    inline on each FB/IG post. Returns {} when no connection exists.
+    """
+    out: Dict[str, Any] = {}
+    for toolkit in ("facebook", "instagram"):
+        conn = await _active_connection(db, org_id, user_id, toolkit)
+        if not conn:
+            out[toolkit] = {"connected": False}
+            continue
+        out[toolkit] = {
+            "connected": True,
+            "connection_id": conn.get("connection_id"),
+            "page_id": conn.get("facebook_page_id") or "",
+            "page_name": conn.get("facebook_page_name") or "",
+            "ig_user_id": conn.get("instagram_user_id") or "",
+            "ig_username": conn.get("instagram_username") or "",
+            "has_target": bool(
+                conn.get("facebook_page_id")
+                if toolkit == "facebook"
+                else conn.get("instagram_user_id")
+            ),
+        }
+    return out
+
+
 # ── Helpers ─────────────────────────────────────────────────────────────────
 def _text_for(post: Dict[str, Any], platform: str) -> str:
     variants = post.get("variants") or {}
@@ -145,15 +174,24 @@ async def _publish_linkedin(db, org_id, user_id, post, conn) -> Dict[str, Any]:
 
 
 async def _publish_facebook(db, org_id, user_id, post, conn) -> Dict[str, Any]:
-    """Facebook posts go to a specific Page, not the user's profile.
-    Page ID is captured at activation time (or just-in-time below).
+    """Publish to a Facebook Page. Requires a user-pinned Page target.
+    `_resolve_facebook_page_id` now returns None if no target was
+    selected — we surface that as an actionable error instead of
+    silently posting to whatever Page Composio listed first.
     """
-    page_id = conn.get("facebook_page_id")
+    page_id = await _resolve_facebook_page_id(db, org_id, user_id, conn)
     if not page_id:
-        page_id = await _resolve_facebook_page_id(db, org_id, user_id, conn)
-        if not page_id:
-            return _result_payload(False, tool="FACEBOOK_CREATE_POST",
-                                   error="No Facebook Page found. You must connect a Page you admin.")
+        return _result_payload(
+            False, tool="FACEBOOK_CREATE_POST",
+            error=(
+                "No Facebook Page selected for this org yet. Open the "
+                "Connections panel → Facebook → Change target, and pick "
+                "which Page this org should post to."
+            ),
+        )
+    """Facebook posts go to a specific Page, not the user's profile.
+    Page ID is the user-pinned target resolved above.
+    """
     img = _image_url(post)
     if img:
         # FB has dedicated photo+video endpoints. CREATE_PHOTO_POST
@@ -228,14 +266,23 @@ async def _publish_instagram(db, org_id, user_id, post, conn) -> Dict[str, Any]:
         return _result_payload(False, tool="INSTAGRAM_POST_IG_USER_MEDIA",
                                error="Instagram requires an image — generate or attach one first.")
     caption = _text_for(post, "instagram") or post.get("text", "")
+    # Prefer the user-pinned IG Business Account (set via the Page picker
+    # — see select_meta_target). Fall back to the legacy auto-resolve
+    # ONLY if no pin exists, and tell the user how to fix it if even
+    # that fails.
     ig_user_id = conn.get("instagram_user_id")
     if not ig_user_id:
         ig_user_id = await _resolve_instagram_user_id(db, org_id, user_id, conn)
     if not ig_user_id:
         return _result_payload(
             False, tool="INSTAGRAM_GET_USER_INFO",
-            error="Couldn't resolve Instagram Business Account ID. Confirm your IG account is "
-                  "Business/Creator and linked to a Facebook Page you admin.",
+            error=(
+                "No Instagram Business Account selected for this org. "
+                "Open the Connections panel → Facebook → Change target, "
+                "and pick a Page that has a linked IG Business/Creator "
+                "account. Composio publishes IG through the linked "
+                "Page's access token — there's no IG-without-Page path."
+            ),
         )
     step1 = await _exec(
         db, org_id, user_id, "INSTAGRAM_POST_IG_USER_MEDIA",
@@ -295,33 +342,179 @@ _PUBLISHERS = {
 
 
 # ── Facebook Page resolution ────────────────────────────────────────────────
-async def _resolve_facebook_page_id(
+async def list_available_meta_targets(
     db, org_id: str, user_id: str, conn: Dict[str, Any],
-) -> Optional[str]:
-    """Find the FB Page this connection manages and cache it on the row."""
+) -> Dict[str, Any]:
+    """Return every FB Page this connection can manage, plus the linked
+    Instagram Business account attached to each Page (when one exists).
+
+    Shape:
+        {
+          "pages": [
+            {
+              "page_id": "1234",
+              "page_name": "AZ Pain Doctors",
+              "category": "Medical Clinic",
+              "linked_instagram": {
+                "ig_user_id": "1789…",
+                "username": "azpaindocs",
+              } | None,
+            }, …
+          ],
+          "selected_page_id": "<currently pinned page or '' >",
+        }
+
+    This is the canonical source the picker UI uses. Composio's
+    `FACEBOOK_LIST_MANAGED_PAGES` returns the bare Page list; to discover
+    each Page's linked IG account we issue a follow-up
+    `FACEBOOK_GET_PAGE_DETAILS` per page (light call). Results are NOT
+    persisted here — they're freshly fetched each time the user opens the
+    picker so they always see the live state.
+    """
+    out: Dict[str, Any] = {"pages": [], "selected_page_id": conn.get("facebook_page_id") or ""}
     try:
         res = await _exec(db, org_id, user_id, "FACEBOOK_LIST_MANAGED_PAGES", {})
     except Exception as exc:
-        logger.warning("FB page lookup failed: %s", exc)
-        return None
+        logger.warning("FB list pages failed: %s", exc)
+        return out
     if not res.get("success"):
-        return None
-    pages = _flatten_pages(res.get("response"))
-    if not pages:
-        return None
-    pick = pages[0]
-    page_id = str(pick.get("id") or "")
-    page_name = pick.get("name") or ""
-    if page_id:
+        out["error"] = res.get("error") or "Couldn't list your Facebook Pages."
+        return out
+    pages = _flatten_pages(res.get("response")) or []
+    enriched: List[Dict[str, Any]] = []
+    for p in pages[:25]:  # 25 ceiling is generous; most users have <5
+        pid = str(p.get("id") or p.get("page_id") or "")
+        if not pid:
+            continue
+        item: Dict[str, Any] = {
+            "page_id": pid,
+            "page_name": p.get("name") or p.get("page_name") or "Unnamed Page",
+            "category": p.get("category") or "",
+            "linked_instagram": None,
+        }
+        # Per-page IG lookup. Composio's typical surface is one of:
+        # FACEBOOK_GET_PAGE_DETAILS, FACEBOOK_GET_PAGE_INFORMATION,
+        # INSTAGRAM_GET_BUSINESS_ACCOUNT. We try each in order and
+        # accept the first that returns an IG-linked payload. Failures
+        # are silent — picker still renders, just without IG info.
+        ig_info = await _try_ig_for_page(db, org_id, user_id, pid)
+        if ig_info:
+            item["linked_instagram"] = ig_info
+        enriched.append(item)
+    out["pages"] = enriched
+    return out
+
+
+async def _try_ig_for_page(
+    db, org_id: str, user_id: str, page_id: str,
+) -> Optional[Dict[str, Any]]:
+    """Best-effort lookup of the IG Business account linked to one FB Page.
+
+    Composio Meta surface exposes a few variants; we attempt them in
+    priority order and return as soon as one yields an instagram id.
+    """
+    candidates = [
+        ("FACEBOOK_GET_PAGE_DETAILS", {"page_id": page_id}),
+        ("FACEBOOK_GET_PAGE_INFORMATION", {"page_id": page_id}),
+        ("FACEBOOK_GET_PAGE", {"page_id": page_id}),
+    ]
+    for tool, args in candidates:
+        try:
+            res = await _exec(db, org_id, user_id, tool, args)
+        except Exception:
+            continue
+        if not res.get("success"):
+            continue
+        payload = res.get("response") or {}
+        data = payload.get("data") if isinstance(payload, dict) and isinstance(payload.get("data"), dict) else payload
+        if not isinstance(data, dict):
+            continue
+        ig = (
+            data.get("instagram_business_account")
+            or data.get("connected_instagram_account")
+        )
+        if isinstance(ig, dict):
+            ig_id = str(ig.get("id") or ig.get("ig_user_id") or "")
+            username = ig.get("username") or ig.get("name") or ""
+            if ig_id:
+                return {"ig_user_id": ig_id, "username": username}
+    return None
+
+
+async def select_meta_target(
+    db, org_id: str, user_id: str, conn: Dict[str, Any], page_id: str,
+) -> Dict[str, Any]:
+    """Pin a single Page (and its linked IG account) as the active
+    publishing target for this connection. Used by the picker UI.
+
+    We refresh the Page list at selection time to validate the choice
+    and to capture the live page_name + linked IG (which may have
+    changed since the user last connected).
+    """
+    targets = await list_available_meta_targets(db, org_id, user_id, conn)
+    pages = targets.get("pages") or []
+    match = next((p for p in pages if str(p.get("page_id")) == str(page_id)), None)
+    if not match:
+        raise ValueError("That Page is not in your Facebook account or you don't manage it.")
+    update: Dict[str, Any] = {
+        "facebook_page_id": str(match["page_id"]),
+        "facebook_page_name": match.get("page_name") or "",
+        "facebook_pages": pages[:25],
+        "target_selected_at": datetime.now(timezone.utc),
+        "target_selected_by": user_id,
+    }
+    ig = match.get("linked_instagram") or {}
+    if ig.get("ig_user_id"):
+        update["instagram_user_id"] = str(ig["ig_user_id"])
+        update["instagram_username"] = ig.get("username") or ""
+        update["instagram_linked_page_id"] = str(match["page_id"])
+    else:
+        # User picked a Page with no linked IG — clear any stale IG cache
+        # so we don't accidentally publish to an old IG account.
+        update["instagram_user_id"] = ""
+        update["instagram_username"] = ""
+        update["instagram_linked_page_id"] = ""
+    await db.composio_connections.update_one(
+        {"connection_id": conn["connection_id"]},
+        {"$set": update},
+    )
+    # Mirror the IG selection onto the user's instagram connection
+    # row (if one exists separately) so the IG publisher picks up the
+    # same target without a second click.
+    if ig.get("ig_user_id"):
         await db.composio_connections.update_one(
-            {"connection_id": conn["connection_id"]},
+            {
+                "composio_user_id": conn.get("composio_user_id"),
+                "toolkit": "instagram",
+                "status": "ACTIVE",
+            },
             {"$set": {
-                "facebook_page_id": page_id,
-                "facebook_page_name": page_name,
-                "facebook_pages": pages[:10],
+                "instagram_user_id": str(ig["ig_user_id"]),
+                "instagram_username": ig.get("username") or "",
+                "instagram_linked_page_id": str(match["page_id"]),
+                "target_selected_at": datetime.now(timezone.utc),
+                "target_selected_by": user_id,
             }},
         )
-    return page_id or None
+    return {
+        "selected_page": match,
+        "instagram": ig if ig.get("ig_user_id") else None,
+    }
+
+
+async def _resolve_facebook_page_id(
+    db, org_id: str, user_id: str, conn: Dict[str, Any],
+) -> Optional[str]:
+    """Resolve the FB Page for a publish call.
+
+    Strict policy (Feb 2026): a user-selected `facebook_page_id` is
+    REQUIRED. No more silent `pages[0]` fallback — that produced posts
+    landing on the wrong Page with no way for the user to diagnose.
+    Returns None when no target has been selected; the publisher uses
+    that to surface a clear "select a Page first" error.
+    """
+    pinned = conn.get("facebook_page_id")
+    return str(pinned) if pinned else None
 
 
 async def discover_connection_metadata(

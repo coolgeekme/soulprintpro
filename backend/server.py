@@ -13,7 +13,7 @@ Architecture
 - Conversations: direct (1 user + 1 agent) OR group (many users + >=1 agent).
   In group mode agent responds only when @mentioned unless auto_respond is ON.
 """
-from fastapi import FastAPI, APIRouter, HTTPException, Request, Response, Depends, UploadFile, File, Form
+from fastapi import FastAPI, APIRouter, HTTPException, Request, Response, Depends, UploadFile, File, Form, Body
 from fastapi.responses import FileResponse
 from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
@@ -7282,6 +7282,102 @@ async def composio_refresh(
         except Exception as exc:
             logger.warning("connection metadata back-fill failed: %s", exc)
     return result
+
+
+@composio_r.get("/{org_id}/composio/connections/{connection_id}/available-targets")
+async def composio_available_targets(
+    org_id: str,
+    connection_id: str,
+    u: dict = Depends(get_current_user),
+):
+    """List every Facebook Page this connection can manage, plus the
+    linked Instagram Business account for each Page. Used by the
+    Meta-target picker UI so the user can pin a specific Page (and
+    its IG) as the active publishing target for this org.
+
+    Only valid for `toolkit` in {facebook, instagram}. For Instagram
+    connections we walk the connection's parent FB connection (Composio
+    issues IG through the linked Page's token), so the list shows the
+    same Pages either way — picking a Page implicitly selects the IG
+    account linked to it.
+    """
+    from composio_integration import composio_user_id
+    from social_publishing import list_available_meta_targets
+    await require_org_member(org_id, u["id"])
+    cu = composio_user_id(org_id, u["id"])
+    row = await db.composio_connections.find_one(
+        {"connection_id": connection_id, "composio_user_id": cu},
+    )
+    if not row:
+        raise HTTPException(404, "Connection not found")
+    if row.get("toolkit") not in ("facebook", "instagram"):
+        raise HTTPException(400, "Page targeting is only supported for Facebook / Instagram connections.")
+    # IG-only connections still need a FB connection in this org to
+    # query managed pages. If there's no FB row, prompt the user.
+    fb_row = row
+    if row.get("toolkit") == "instagram":
+        fb_row = await db.composio_connections.find_one(
+            {"composio_user_id": cu, "toolkit": "facebook", "status": "ACTIVE"},
+        )
+        if not fb_row:
+            raise HTTPException(
+                400,
+                "Connect Facebook for this org first. Instagram Business publishing requires "
+                "a Facebook Page connection — Meta wires IG through the linked Page's token.",
+            )
+    try:
+        targets = await list_available_meta_targets(db, org_id, u["id"], fb_row)
+    except Exception as exc:
+        logger.exception("Meta targets lookup failed")
+        raise HTTPException(500, f"Failed to list Meta targets: {exc}")
+    return targets
+
+
+@composio_r.post("/{org_id}/composio/connections/{connection_id}/select-target")
+async def composio_select_target(
+    org_id: str,
+    connection_id: str,
+    body: Dict[str, Any] = Body(...),
+    u: dict = Depends(get_current_user),
+):
+    """Pin a Facebook Page (and its linked IG account) as the active
+    publishing target for this org's Meta connections.
+
+    Body: `{"page_id": "<fb_page_id>"}`. Selecting a Page implicitly
+    selects whatever IG Business account that Page links to. Picking
+    a Page with no linked IG clears the IG cache so we don't publish
+    to a stale IG account.
+    """
+    from composio_integration import composio_user_id
+    from social_publishing import select_meta_target
+    await require_org_member(org_id, u["id"])
+    cu = composio_user_id(org_id, u["id"])
+    row = await db.composio_connections.find_one(
+        {"connection_id": connection_id, "composio_user_id": cu},
+    )
+    if not row:
+        raise HTTPException(404, "Connection not found")
+    if row.get("toolkit") not in ("facebook", "instagram"):
+        raise HTTPException(400, "Page targeting is only supported for Facebook / Instagram connections.")
+    page_id = str((body or {}).get("page_id") or "").strip()
+    if not page_id:
+        raise HTTPException(400, "Provide a page_id to pin as the active target.")
+    fb_row = row
+    if row.get("toolkit") == "instagram":
+        fb_row = await db.composio_connections.find_one(
+            {"composio_user_id": cu, "toolkit": "facebook", "status": "ACTIVE"},
+        )
+        if not fb_row:
+            raise HTTPException(400, "Connect Facebook for this org first.")
+    try:
+        result = await select_meta_target(db, org_id, u["id"], fb_row, page_id)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+    except Exception as exc:
+        logger.exception("Select Meta target failed")
+        raise HTTPException(500, f"Failed to pin target: {exc}")
+    return result
+
 
 
 @composio_r.delete("/{org_id}/composio/connections/{connection_id}")

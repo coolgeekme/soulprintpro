@@ -533,12 +533,29 @@ async def list_connections(db, org_id: str, user_id: str) -> List[Dict[str, Any]
             r["display_label"] = r["facebook_page_name"]
         elif slug == "instagram" and r.get("instagram_username"):
             r["display_label"] = f"@{r['instagram_username']}"
+        # Surface target-selection state for the Meta picker UI.
+        if slug in ("facebook", "instagram"):
+            r["has_target"] = bool(r.get("facebook_page_id") or r.get("instagram_user_id"))
+            r["target_summary"] = _meta_target_summary(r)
         # Normalise dates to ISO so JSON serialisation is clean.
         for k in ("initiated_at", "activated_at", "last_synced_at"):
             v = r.get(k)
             if isinstance(v, datetime):
                 r[k] = v.isoformat()
     return rows
+
+
+def _meta_target_summary(r: Dict[str, Any]) -> Optional[Dict[str, Optional[str]]]:
+    """Format a one-glance summary of the pinned FB Page + linked IG for
+    Connections-panel display: { page_name, ig_username }. Returns None
+    if nothing has been pinned yet.
+    """
+    if not (r.get("facebook_page_id") or r.get("instagram_user_id")):
+        return None
+    return {
+        "page_name": r.get("facebook_page_name") or "",
+        "ig_username": r.get("instagram_username") or "",
+    }
 
 
 async def set_connection_nickname(
