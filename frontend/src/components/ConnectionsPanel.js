@@ -358,7 +358,7 @@ export default function ConnectionsPanel({ orgId }) {
                       {/* Meta-target picker — surfaced inline under each
                           FB/IG row so the user can see (and change) which
                           Page + IG account this org publishes to. */}
-                      {(slug === "facebook" || slug === "instagram") && c.status === "ACTIVE" && (
+                      {(t.slug === "facebook" || t.slug === "instagram") && c.status === "ACTIVE" && (
                         <MetaTargetRow
                           connection={c}
                           orgId={orgId}
