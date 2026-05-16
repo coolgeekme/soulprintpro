@@ -165,6 +165,55 @@ def register_telegram_routes(
             raise HTTPException(502, f"Telegram rejected the send: {exc}")
         return {"ok": True}
 
+    @r.get("/telegram/pulse-history")
+    async def telegram_pulse_history(
+        limit: int = 10, u: dict = Depends(get_current_user),
+    ):
+        """Return this user's most recent Pulse nudges (delivered or not)
+        so the Account UI can show a "what Foundry flagged today" panel.
+        Useful when the user missed the Telegram ping or wants to review
+        / tune their preferences.
+
+        Each row carries the org label, the nudge kind (mission_succeeded,
+        post_failed, draft_stalled, …), a short text preview, and the
+        delivery outcome — so the UI can render an icon per state and
+        link back to the underlying entity later if we want.
+        """
+        limit = max(1, min(50, int(limit)))
+        cur = db.pulse_nudges.find(
+            {"user_id": u["id"]},
+            {
+                "_id": 0,
+                "org_id": 1, "kind": 1, "ref_id": 1,
+                "text_preview": 1, "delivered": 1, "error": 1, "at": 1,
+            },
+        ).sort("at", -1).limit(limit)
+        rows = await cur.to_list(limit)
+        # Resolve org names in one batch so the response is self-contained.
+        from bson import ObjectId
+        org_ids = list({r["org_id"] for r in rows if r.get("org_id")})
+        org_name: Dict[str, str] = {}
+        for oid in org_ids:
+            try:
+                org = await db.organizations.find_one({"_id": ObjectId(oid)}, {"_id": 1, "name": 1})
+            except Exception:
+                continue
+            if org:
+                org_name[oid] = org.get("name", "")
+        out = []
+        for r in rows:
+            out.append({
+                "kind": r.get("kind"),
+                "ref_id": r.get("ref_id"),
+                "text_preview": r.get("text_preview"),
+                "delivered": bool(r.get("delivered")),
+                "error": r.get("error") or "",
+                "at": r["at"].isoformat() if isinstance(r.get("at"), datetime) else r.get("at"),
+                "org_id": r.get("org_id"),
+                "org_name": org_name.get(r.get("org_id"), ""),
+            })
+        return {"items": out}
+
     # ── Inbound webhook ───────────────────────────────────────────────
     @r.post("/telegram/webhook")
     async def telegram_webhook(req: Request):

@@ -238,6 +238,11 @@ export default function AccountPage() {
             spans all orgs). See TelegramConnectCard for the connect flow. */}
         <TelegramConnectCard />
 
+        {/* Pulse history — last 10 nudges the CoS tried to send via
+            Telegram. Lets the user audit what's been flagged even if
+            they missed the Telegram pings. */}
+        <PulseHistoryPanel />
+
         {/* Memory — user-scoped long-term context Foundry remembers
             across all conversations. Editable + auditable. */}
         <MemoryPanel />
@@ -253,6 +258,7 @@ export default function AccountPage() {
 import GitHubConnectCard from "../components/GitHubConnectCard";
 import MemoryPanel from "../components/MemoryPanel";
 import TelegramConnectCard from "../components/TelegramConnectCard";
+import PulseHistoryPanel from "../components/PulseHistoryPanel";
 
 function Integrations({ user }) {
   // Fetch the caller's orgs directly — useAuth().user doesn't include
