@@ -2307,6 +2307,115 @@ async def my_chief_of_staff_new(org_id: str, u: dict = Depends(get_current_user)
         "deeplink": f"/app/team/{conv['team_id']}/c/{str(conv['_id'])}",
     }
 
+
+# ── Telegram inbound bridge ────────────────────────────────────────────────
+# Helper used by `telegram_inbound.run_cos_turn` to execute one full
+# Chief-of-Staff turn from the Telegram channel: locate the user's
+# private CoS conversation for the given org, persist the inbound user
+# message, run the agent, persist the reply, and return its text.
+#
+# Lives here (not in a separate module) because `generate_agent_reply`,
+# `AGENTS`, and the conv/team loaders are all defined in this file
+# above and importing them out of order would be a circularity hazard.
+async def telegram_cos_turn(
+    *, user_id: str, org_id: str, agent_id: str, message_text: str,
+) -> str:
+    """Run one CoS turn triggered by a Telegram inbound message.
+
+    Returns the agent's reply text (string). Raises on the kind of
+    fatal misconfiguration that the user should be told about
+    (missing org membership, broken auto-create). For routine "the
+    agent had nothing to say" cases we return a friendly placeholder
+    rather than raising.
+    """
+    user_doc = await db.users.find_one({"_id": ObjectId(user_id)})
+    if not user_doc:
+        raise RuntimeError("Telegram chat is bound to a user that no longer exists.")
+    org = await db.organizations.find_one({"_id": ObjectId(org_id)})
+    if not org:
+        raise RuntimeError("Org not found")
+    # Membership gate — matches the rule everywhere else in the app.
+    member = await db.org_members.find_one({"org_id": org_id, "user_id": user_id})
+    if not member:
+        raise RuntimeError("You're no longer a member of that org.")
+
+    # Resolve the user's private Chief-of-Staff conversation (auto-
+    # provisions on first call, identical to /api/orgs/{id}/my-cos).
+    conv = await get_or_create_private_cos(
+        db, org=org, user_id=user_id, user_name=user_doc.get("name", ""),
+    )
+    if not conv:
+        raise RuntimeError("Couldn't provision your Chief of Staff conversation.")
+    team = await db.teams.find_one({"_id": ObjectId(conv["team_id"])})
+    if not team:
+        raise RuntimeError("CoS team not found")
+
+    # Tag this request's LLM telemetry so spend lands under the right
+    # org/conv/user in the dashboards (same pattern as /messages).
+    from llm_logging import with_call_context  # noqa: E402
+    with_call_context(
+        org_id=org_id,
+        conversation_id=str(conv["_id"]),
+        user_id=user_id,
+        kind_label="telegram_cos",
+    )
+
+    now = datetime.now(timezone.utc)
+    # Persist the inbound message so the web UI shows the Telegram
+    # thread interleaved with normal chat — voice transcripts included.
+    user_message = {
+        "id": str(uuid.uuid4()),
+        "conversation_id": str(conv["_id"]),
+        "sender_type": "user",
+        "sender_id": user_id,
+        "sender_name": user_doc.get("name") or "You",
+        "agent_id": None,
+        "text": message_text,
+        "timestamp": now,
+        "source": "telegram",
+    }
+    await db.messages.insert_one({**user_message})
+    await db.conversations.update_one(
+        {"_id": conv["_id"]},
+        {"$set": {"last_message_at": now}},
+    )
+
+    # Run the agent. `generate_agent_reply` returns (reply_text, web_sources).
+    try:
+        reply_text, _sources = await generate_agent_reply(
+            conv, team, agent_id, message_text,
+            user_doc.get("name") or "You",
+            latest_user_id=user_id,
+        )
+    except Exception as exc:
+        logger.exception("Telegram CoS turn LLM call failed")
+        return f"⚠️ Agent error: {exc}"
+
+    reply_text = (reply_text or "").strip()
+    if not reply_text:
+        reply_text = "Done."
+
+    # Persist the agent reply so the web UI shows it too.
+    agent_message = {
+        "id": str(uuid.uuid4()),
+        "conversation_id": str(conv["_id"]),
+        "sender_type": "agent",
+        "sender_id": None,
+        "sender_name": (AGENTS.get(agent_id) or {}).get("name") or "Chief of Staff",
+        "agent_id": agent_id,
+        "text": reply_text,
+        "timestamp": datetime.now(timezone.utc),
+        "source": "telegram",
+    }
+    await db.messages.insert_one({**agent_message})
+    await db.conversations.update_one(
+        {"_id": conv["_id"]},
+        {"$set": {"last_message_at": datetime.now(timezone.utc)}},
+    )
+    return reply_text
+
+
+@team_r.delete("/teams/{team_id}")
 @team_r.delete("/teams/{team_id}")
 async def delete_team(team_id: str, u: dict = Depends(get_current_user)):
     ctx = await require_team_member(team_id, u["id"], mode="admin")

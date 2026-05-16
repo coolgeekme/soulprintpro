@@ -300,40 +300,25 @@ async def pulse_tick(db) -> Dict[str, int]:
     return {"scanned": scanned, "delivered": delivered}
 
 
-# ── Phase 3 inbound stub (full implementation in Phase 3) ───────────────────
+# ── Phase 3 inbound — delegates to telegram_inbound for the real work ──────
 async def handle_inbound_message(
     db, *, chat_id: int, text: str, update: Dict[str, Any],
 ) -> None:
-    """Phase 1 stub. Records the inbound message so we can review what
-    users tried to say before Phase 3 lands, and sends a short ack so
-    the chat doesn't feel dead.
-
-    Phase 3 will replace this with: parse org-context → route message
-    into the right Chief-of-Staff conversation → run the agent → send
-    the response back via send_message.
-    """
-    user_doc = await db.users.find_one(
-        {"telegram.chat_id": chat_id},
-        {"_id": 1, "name": 1, "email": 1},
-    )
-    await db.telegram_inbound_log.insert_one({
-        "chat_id": chat_id,
-        "user_id": str(user_doc["_id"]) if user_doc else None,
-        "text": text[:2000],
-        "at": datetime.now(timezone.utc),
-    })
-    await telegram_bot.safe_send(
-        chat_id,
-        telegram_bot.format_nudge(
-            org_label="Foundry",
-            body=(
-                "Got it — I've logged your message. Two-way Telegram chat with your "
-                "Chief of Staff is coming in the next phase; for now you'll still "
-                "get my proactive nudges in this chat.\n\n"
-                "Tip: open Foundry in your browser to chat with your CoS today."
-            ),
-        ),
-    )
+    """Phase 3 entry point. Delegates the full pipeline (voice
+    transcription → org routing → CoS turn → reply) to
+    `telegram_inbound.handle_inbound`. Kept here as a thin shim so the
+    webhook in telegram_routes.py doesn't need to know about the
+    Phase-3 module name."""
+    try:
+        from telegram_inbound import handle_inbound
+    except Exception:
+        logger.exception("telegram_inbound import failed")
+        await telegram_bot.safe_send(
+            chat_id,
+            "I hit a wiring error processing your message — try again in a moment.",
+        )
+        return
+    await handle_inbound(db, chat_id=chat_id, text=text, update=update)
 
 
 # Ensure the audit indexes exist at first import. Idempotent — Motor's
@@ -343,5 +328,8 @@ async def ensure_indexes(db) -> None:
         await db.pulse_nudges.create_index([("user_id", 1), ("kind", 1), ("ref_id", 1)])
         await db.pulse_nudges.create_index([("at", -1)])
         await db.telegram_inbound_log.create_index([("at", -1)])
+        # Phase-3 ephemeral routing state — keyed by chat_id, short TTLs.
+        await db.telegram_sticky_org.create_index([("chat_id", 1)], unique=True)
+        await db.telegram_disambig_state.create_index([("chat_id", 1)], unique=True)
     except Exception:
         logger.exception("cos_pulse: failed to create indexes")
