@@ -829,6 +829,24 @@ async def me(u: dict = Depends(get_current_user)):
         or u.get("access_granted_at")
         or u.get("trial_started_at")
     )
+    # Telegram-connection state for the Phase-1 proactive Chief-of-Staff
+    # surface (Feb 2026). `telegram_chat_id` becomes truthy after the
+    # user clicks the bot deep-link and our webhook captures their chat.
+    # The username + connected_at fields are purely for UI display.
+    tg = (full or {}).get("telegram") or {}
+    u["telegram"] = {
+        "connected": bool(tg.get("chat_id")),
+        "username": tg.get("username") or "",
+        "connected_at": (
+            tg["connected_at"].isoformat()
+            if isinstance(tg.get("connected_at"), datetime) else tg.get("connected_at")
+        ),
+        "preferences": tg.get("preferences") or {
+            "outbound_enabled": True,        # Phase 1 nudges on by default
+            "digest_enabled": True,          # Phase 2 weekly digest
+            "min_severity": "actionable",    # "actionable" | "all" | "weekly_only"
+        },
+    }
     return u
 
 
@@ -7596,6 +7614,18 @@ async def apply_recommendations(
 app.include_router(composio_r)
 
 
+# Phase-1 Telegram integration (direct Bot API — bypasses Composio so
+# we don't burn tool-call credits on proactive nudges).
+from telegram_routes import register_telegram_routes  # noqa: E402
+_telegram_router = APIRouter(prefix="/api")
+register_telegram_routes(
+    _telegram_router,
+    db,
+    get_current_user=get_current_user,
+)
+app.include_router(_telegram_router)
+
+
 # Self-serve 24-hour trial — request a code, redeem it as registration,
 # clock starts at redeem time. See trial.py.
 from trial import make_trial_router  # noqa: E402
@@ -8780,6 +8810,28 @@ async def startup():
         hour=4, minute=15,   # 04:15 UTC daily
         id="conv_auto_archive",
         replace_existing=True,
+    )
+
+    # ── Chief-of-Staff proactive Telegram pulse ──────────────────────
+    # Phase 1: hourly sweep that scans new mission outcomes, social-post
+    # failures/successes, and stalled drafts. Sends actionable nudges
+    # to users with a connected Telegram chat. See cos_pulse.pulse_tick
+    # for the full event matrix.
+    async def _cos_pulse_tick():
+        try:
+            from cos_pulse import pulse_tick, ensure_indexes
+            await ensure_indexes(db)
+            await pulse_tick(db)
+        except Exception as exc:
+            logger.warning("cos_pulse tick failed: %s", exc)
+
+    scheduler.add_job(
+        _cos_pulse_tick,
+        trigger="interval",
+        minutes=60,
+        id="cos_pulse",
+        replace_existing=True,
+        next_run_time=datetime.now(timezone.utc) + timedelta(seconds=120),
     )
     # ── Brand-logo GridFS backfill ───────────────────────────────────────
     # Older logos were saved to disk only and vanish on pod redeploys

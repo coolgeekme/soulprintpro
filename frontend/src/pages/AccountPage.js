@@ -234,6 +234,10 @@ export default function AccountPage() {
             user.orgs as a default, since this page is org-agnostic. */}
         <Integrations user={user} />
 
+        {/* Telegram — proactive Chief-of-Staff notifications (user-level,
+            spans all orgs). See TelegramConnectCard for the connect flow. */}
+        <TelegramConnectCard />
+
         {/* Memory — user-scoped long-term context Foundry remembers
             across all conversations. Editable + auditable. */}
         <MemoryPanel />
@@ -248,6 +252,7 @@ export default function AccountPage() {
 // scope to keep the export profile clean.
 import GitHubConnectCard from "../components/GitHubConnectCard";
 import MemoryPanel from "../components/MemoryPanel";
+import TelegramConnectCard from "../components/TelegramConnectCard";
 
 function Integrations({ user }) {
   // Fetch the caller's orgs directly — useAuth().user doesn't include
