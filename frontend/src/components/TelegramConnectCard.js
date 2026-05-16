@@ -112,6 +112,31 @@ export default function TelegramConnectCard() {
     }
   };
 
+  // Manual chat-id claim — escape hatch when the deep-link flow fails
+  // (fresh prod deploy, aggressive caching, stale nonces). Users send
+  // `/whoami` to the bot, copy the chat_id it returns, paste it here.
+  const [manualOpen, setManualOpen] = useState(false);
+  const [manualChatId, setManualChatId] = useState("");
+  const manualClaim = async () => {
+    const id = parseInt(manualChatId.trim(), 10);
+    if (!id || Number.isNaN(id)) {
+      toast.error("Paste the number the bot gave you for /whoami");
+      return;
+    }
+    setBusy(true);
+    try {
+      await api.post("/telegram/manual-claim", { chat_id: id });
+      toast.success("Linked. Check Telegram for the confirmation.");
+      setManualOpen(false);
+      setManualChatId("");
+      await load();
+    } catch (err) {
+      toast.error(err?.response?.data?.detail || "Manual link failed");
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const togglePref = async (key) => {
     if (!status?.preferences) return;
     const next = !status.preferences[key];
@@ -179,16 +204,58 @@ export default function TelegramConnectCard() {
       </div>
 
       {!connected && !waitingForTap && (
-        <button
-          type="button"
-          onClick={startConnect}
-          disabled={busy}
-          className="sp-btn sp-btn-primary text-sm"
-          data-testid="telegram-connect-btn"
-        >
-          {busy ? <Loader2 className="w-3 h-3 animate-spin" /> : <LinkIcon className="w-3 h-3" />}
-          Connect to @{status.bot_username}
-        </button>
+        <div className="space-y-2">
+          <button
+            type="button"
+            onClick={startConnect}
+            disabled={busy}
+            className="sp-btn sp-btn-primary text-sm"
+            data-testid="telegram-connect-btn"
+          >
+            {busy ? <Loader2 className="w-3 h-3 animate-spin" /> : <LinkIcon className="w-3 h-3" />}
+            Connect to @{status.bot_username}
+          </button>
+          <div>
+            <button
+              type="button"
+              onClick={() => setManualOpen((v) => !v)}
+              className="text-[11px] sp-subtle underline hover:opacity-100"
+              data-testid="telegram-manual-toggle"
+            >
+              Trouble connecting? Use manual link
+            </button>
+          </div>
+          {manualOpen && (
+            <div className="rounded-lg border border-amber-500/30 bg-amber-500/[0.05] p-3 mt-2 text-xs space-y-2" data-testid="telegram-manual-panel">
+              <ol className="list-decimal pl-5 space-y-1 opacity-90">
+                <li>Open Telegram and find <strong>@{status.bot_username}</strong>.</li>
+                <li>Send the bot <code className="px-1 rounded bg-white/10">/whoami</code>.</li>
+                <li>It replies with a chat ID — paste that number below.</li>
+              </ol>
+              <div className="flex gap-2 mt-1">
+                <input
+                  type="text"
+                  inputMode="numeric"
+                  value={manualChatId}
+                  onChange={(e) => setManualChatId(e.target.value)}
+                  placeholder="e.g. 123456789"
+                  className="sp-input flex-1 text-xs"
+                  data-testid="telegram-manual-input"
+                />
+                <button
+                  type="button"
+                  onClick={manualClaim}
+                  disabled={busy || !manualChatId.trim()}
+                  className="sp-btn sp-btn-ghost text-xs"
+                  data-testid="telegram-manual-submit"
+                >
+                  {busy ? <Loader2 className="w-3 h-3 animate-spin" /> : <Check className="w-3 h-3" />}
+                  Link
+                </button>
+              </div>
+            </div>
+          )}
+        </div>
       )}
 
       {!connected && waitingForTap && (

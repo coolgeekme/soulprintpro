@@ -141,6 +141,91 @@ def register_telegram_routes(
         await db.users.update_one({"_id": ObjectId(u["id"])}, {"$set": update})
         return {"ok": True}
 
+    @r.get("/telegram/debug")
+    async def telegram_debug(u: dict = Depends(get_current_user)):
+        """Owner-only diagnostic. Returns this user's raw `telegram.*`
+        fields plus the bot's current webhook info — gives us a single
+        place to confirm: (a) the nonce was minted, (b) the webhook
+        points where we think, (c) any past chat_id was captured."""
+        doc = await _user_doc(u["id"])
+        tg = doc.get("telegram") or {}
+        snap: Dict[str, Any] = {
+            "user_id": u["id"],
+            "user_email": u.get("email"),
+            "bot_username": telegram_bot.bot_username(),
+            "bot_configured": telegram_bot.is_configured(),
+            "telegram_fields": {
+                "chat_id": tg.get("chat_id"),
+                "username": tg.get("username"),
+                "connected_at": (tg.get("connected_at").isoformat() if isinstance(tg.get("connected_at"), datetime) else tg.get("connected_at")),
+                "pending_nonce_present": bool(tg.get("pending_nonce")),
+                "pending_nonce_age_seconds": (
+                    int((datetime.now(timezone.utc) - tg["pending_nonce_at"]).total_seconds())
+                    if isinstance(tg.get("pending_nonce_at"), datetime) else None
+                ),
+                "last_pulse_at": (tg.get("last_pulse_at").isoformat() if isinstance(tg.get("last_pulse_at"), datetime) else tg.get("last_pulse_at")),
+            },
+        }
+        try:
+            snap["webhook_info"] = await telegram_bot.get_webhook_info()
+        except Exception as exc:
+            snap["webhook_info_error"] = str(exc)
+        return snap
+
+    class _ManualClaimBody(BaseModel):
+        chat_id: int
+
+    @r.post("/telegram/manual-claim")
+    async def telegram_manual_claim(
+        body: _ManualClaimBody, u: dict = Depends(get_current_user),
+    ):
+        """Bypass the nonce flow. Useful when deep-link delivery fails
+        on a fresh production deploy or behind aggressive caching.
+
+        Flow:
+          1. User opens Telegram and types `/whoami` to the bot.
+          2. Bot replies with their `chat_id`.
+          3. User pastes the chat_id here.
+          4. We bind it to their Foundry account (with a safety check:
+             refuse if some other user already owns that chat_id).
+        """
+        chat_id = int(body.chat_id)
+        existing = await db.users.find_one(
+            {"telegram.chat_id": chat_id, "_id": {"$ne": ObjectId(u["id"])}},
+            {"_id": 1, "email": 1},
+        )
+        if existing:
+            raise HTTPException(
+                409,
+                f"That Telegram chat is already linked to {existing.get('email') or 'another account'}.",
+            )
+        await db.users.update_one(
+            {"_id": ObjectId(u["id"])},
+            {"$set": {
+                "telegram.chat_id": chat_id,
+                "telegram.username": "",  # filled in next time the bot sees them
+                "telegram.connected_at": datetime.now(timezone.utc),
+            }, "$unset": {"telegram.pending_nonce": "", "telegram.pending_nonce_at": ""}},
+        )
+        # Send a greeting so the user sees the link took effect.
+        try:
+            await telegram_bot.send_message(
+                chat_id,
+                telegram_bot.format_nudge(
+                    org_label="Foundry",
+                    body=f"✅ Linked to {telegram_bot.escape_html(u.get('email') or 'your account')} via manual claim. You're set.",
+                ),
+            )
+        except Exception as exc:
+            # The chat_id might be wrong — surface the error so the
+            # user knows their paste was bad.
+            await db.users.update_one(
+                {"_id": ObjectId(u["id"])},
+                {"$set": {"telegram.chat_id": None}},
+            )
+            raise HTTPException(400, f"Couldn't reach that chat — double-check the number you pasted from /whoami. ({exc})")
+        return {"ok": True, "chat_id": chat_id}
+
     @r.post("/telegram/test-send")
     async def telegram_test_send(u: dict = Depends(get_current_user)):
         """Fire a sanity ping. Surfaces the failure inline if the user
@@ -311,7 +396,25 @@ def register_telegram_routes(
                     body=(
                         "👋 Hi — I'm the Foundry Chief of Staff.\n\n"
                         "I'm not connected to a Foundry account yet. Open <b>Foundry → Account → Telegram</b> "
-                        "in your browser and tap <b>Connect Telegram</b> to link this chat."
+                        "in your browser and tap <b>Connect Telegram</b> to link this chat.\n\n"
+                        "If the deep link keeps failing, send me <b>/whoami</b> and I'll give you a chat ID you can paste into the manual-connect form."
+                    ),
+                ),
+            )
+            return {"ok": True}
+
+        # `/whoami` — escape hatch for users whose deep-link flow keeps
+        # failing (fresh deploy, aggressive CDN cache, weird Telegram
+        # clients, etc.). Bot echoes the chat_id so the user can paste
+        # it into POST /api/telegram/manual-claim.
+        if text.strip().lower().startswith("/whoami"):
+            await telegram_bot.safe_send(
+                chat_id,
+                telegram_bot.format_nudge(
+                    org_label="Foundry",
+                    body=(
+                        f"Your Telegram chat ID is: <b>{chat_id}</b>\n\n"
+                        "Open <b>Foundry → Account → Telegram</b> on the web, click <b>Manual connect</b>, and paste this number to link your chat without the deep link."
                     ),
                 ),
             )
