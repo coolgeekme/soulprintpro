@@ -307,134 +307,162 @@ def register_telegram_routes(
         nonces to claim the chat, and hand everything else to the CoS
         router (`cos_pulse.handle_inbound_message`) for Phase 3 routing.
 
-        Returns 200 OK on success — Telegram retries on non-2xx.
+        ALWAYS returns 200. Any unhandled error is logged and reported
+        back to the user via a graceful chat message — never re-raised
+        — because Telegram retries 5xx responses aggressively, which
+        causes the same buggy code to fire over and over and the
+        inbound queue to back up indefinitely.
         """
-        # Optional secret-token header — set when we register the
-        # webhook so a stranger can't spoof updates by guessing our URL.
-        expected_secret = os.environ.get("TELEGRAM_WEBHOOK_SECRET") or ""
-        if expected_secret:
-            got = req.headers.get("X-Telegram-Bot-Api-Secret-Token", "")
-            if got != expected_secret:
-                logger.warning("Telegram webhook called with bad secret token")
-                raise HTTPException(403, "Forbidden")
+        chat_id_for_error: Optional[int] = None
         try:
-            update = await req.json()
-        except Exception:
-            raise HTTPException(400, "Invalid JSON")
-        chat_id = telegram_bot.chat_id_from_update(update)
-        text = telegram_bot.text_from_update(update) or ""
-        sender = telegram_bot.sender_from_update(update)
-        if not chat_id:
-            # Some update types (channel posts, etc.) we don't handle yet.
-            return {"ok": True}
+            # Optional secret-token header — set when we register the
+            # webhook so a stranger can't spoof updates by guessing our URL.
+            expected_secret = os.environ.get("TELEGRAM_WEBHOOK_SECRET") or ""
+            if expected_secret:
+                got = req.headers.get("X-Telegram-Bot-Api-Secret-Token", "")
+                if got != expected_secret:
+                    logger.warning("Telegram webhook called with bad secret token")
+                    return {"ok": True}  # silently accept and drop
+            try:
+                update = await req.json()
+            except Exception:
+                logger.warning("Telegram webhook got non-JSON body")
+                return {"ok": True}
+            chat_id = telegram_bot.chat_id_from_update(update)
+            chat_id_for_error = chat_id
+            text = telegram_bot.text_from_update(update) or ""
+            sender = telegram_bot.sender_from_update(update)
+            if not chat_id:
+                # Some update types (channel posts, etc.) we don't handle yet.
+                return {"ok": True}
 
-        # First-time onboarding: `/start <nonce>` payload binds the
-        # chat to a Foundry user. We accept the first matching nonce
-        # globally and clear it so it can't be replayed.
-        nonce = telegram_bot.parse_deep_link_payload(text)
-        if nonce:
-            user_doc = await db.users.find_one(
-                {"telegram.pending_nonce": nonce},
-                {"_id": 1, "name": 1, "email": 1, "telegram.pending_nonce_at": 1},
-            )
-            if user_doc:
-                # Optional: enforce 30-minute expiry. Soft expiry only —
-                # we still bind, but log loudly so abuse stands out.
-                started = (user_doc.get("telegram") or {}).get("pending_nonce_at")
-                if isinstance(started, datetime):
-                    elapsed = (datetime.now(timezone.utc) - started).total_seconds()
-                    if elapsed > 60 * 60:  # 1h hard cap
-                        logger.warning(
-                            "Telegram nonce older than 1h for user %s; rejecting",
-                            user_doc["_id"],
-                        )
-                        await telegram_bot.safe_send(
-                            chat_id,
-                            "That sign-in link expired. Open Foundry → Account → Telegram and tap Connect again.",
-                        )
-                        return {"ok": True}
-                await db.users.update_one(
-                    {"_id": user_doc["_id"]},
-                    {"$set": {
-                        "telegram.chat_id": chat_id,
-                        "telegram.username": sender.get("username") or "",
-                        "telegram.telegram_user_id": sender.get("id") or "",
-                        "telegram.connected_at": datetime.now(timezone.utc),
-                    }, "$unset": {
-                        "telegram.pending_nonce": "",
-                        "telegram.pending_nonce_at": "",
-                        "telegram.disconnected_at": "",
-                    }},
+            # First-time onboarding: `/start <nonce>` payload binds the
+            # chat to a Foundry user. We accept the first matching nonce
+            # globally and clear it so it can't be replayed.
+            nonce = telegram_bot.parse_deep_link_payload(text)
+            if nonce:
+                user_doc = await db.users.find_one(
+                    {"telegram.pending_nonce": nonce},
+                    {"_id": 1, "name": 1, "email": 1, "telegram.pending_nonce_at": 1},
                 )
+                if user_doc:
+                    started = (user_doc.get("telegram") or {}).get("pending_nonce_at")
+                    if isinstance(started, datetime):
+                        # Mongo round-trips datetimes as naive; restamp for
+                        # safe subtraction.
+                        if started.tzinfo is None:
+                            started = started.replace(tzinfo=timezone.utc)
+                        elapsed = (datetime.now(timezone.utc) - started).total_seconds()
+                        if elapsed > 60 * 60:
+                            logger.warning(
+                                "Telegram nonce older than 1h for user %s; rejecting",
+                                user_doc["_id"],
+                            )
+                            await telegram_bot.safe_send(
+                                chat_id,
+                                "That sign-in link expired. Open Foundry → Account → Telegram and tap Connect again.",
+                            )
+                            return {"ok": True}
+                    await db.users.update_one(
+                        {"_id": user_doc["_id"]},
+                        {"$set": {
+                            "telegram.chat_id": chat_id,
+                            "telegram.username": sender.get("username") or "",
+                            "telegram.telegram_user_id": sender.get("id") or "",
+                            "telegram.connected_at": datetime.now(timezone.utc),
+                        }, "$unset": {
+                            "telegram.pending_nonce": "",
+                            "telegram.pending_nonce_at": "",
+                            "telegram.disconnected_at": "",
+                        }},
+                    )
+                    await telegram_bot.safe_send(
+                        chat_id,
+                        telegram_bot.format_nudge(
+                            org_label="Foundry",
+                            body=(
+                                f"✅ Connected to {telegram_bot.escape_html(user_doc.get('name') or 'your Foundry account')}.\n\n"
+                                "From now on, this chat is your Chief of Staff inbox. "
+                                "You'll get nudges when missions finish, posts need attention, or leads need a follow-up.\n\n"
+                                "Reply at any time to chat back — your last-mentioned org gets the message."
+                            ),
+                        ),
+                    )
+                    return {"ok": True}
+                await telegram_bot.safe_send(
+                    chat_id,
+                    "That sign-in link doesn't match an open session. Open Foundry → Account → Telegram and tap Connect again, or send /whoami and use Manual link.",
+                )
+                return {"ok": True}
+
+            # Plain `/start` (no payload) — friendly intro for a stranger.
+            if text.strip().startswith("/start"):
                 await telegram_bot.safe_send(
                     chat_id,
                     telegram_bot.format_nudge(
                         org_label="Foundry",
                         body=(
-                            f"✅ Connected to {telegram_bot.escape_html(user_doc.get('name') or 'your Foundry account')}.\n\n"
-                            "From now on, this chat is your Chief of Staff inbox. "
-                            "You'll get nudges when missions finish, posts need attention, or leads need a follow-up.\n\n"
-                            "Reply at any time to chat back — your last-mentioned org gets the message."
+                            "👋 Hi — I'm the Foundry Chief of Staff.\n\n"
+                            "I'm not connected to a Foundry account yet. Open <b>Foundry → Account → Telegram</b> "
+                            "in your browser and tap <b>Connect Telegram</b> to link this chat.\n\n"
+                            "If the deep link keeps failing, send me <b>/whoami</b> and I'll give you a chat ID you can paste into the manual-connect form."
                         ),
                     ),
                 )
                 return {"ok": True}
-            # Nonce didn't match — usually a stale deep-link or someone
-            # poking at the bot. Send a friendly error.
-            await telegram_bot.safe_send(
-                chat_id,
-                "That sign-in link doesn't match an open session. Open Foundry → Account → Telegram and tap Connect again.",
-            )
-            return {"ok": True}
 
-        # Plain `/start` (no payload) — friendly intro for a stranger.
-        if text.strip().startswith("/start"):
-            await telegram_bot.safe_send(
-                chat_id,
-                telegram_bot.format_nudge(
-                    org_label="Foundry",
-                    body=(
-                        "👋 Hi — I'm the Foundry Chief of Staff.\n\n"
-                        "I'm not connected to a Foundry account yet. Open <b>Foundry → Account → Telegram</b> "
-                        "in your browser and tap <b>Connect Telegram</b> to link this chat.\n\n"
-                        "If the deep link keeps failing, send me <b>/whoami</b> and I'll give you a chat ID you can paste into the manual-connect form."
+            # `/whoami` — escape hatch for users whose deep-link flow keeps
+            # failing. Bot echoes the chat_id so the user can paste it
+            # into the manual-claim form.
+            if text.strip().lower().startswith("/whoami"):
+                await telegram_bot.safe_send(
+                    chat_id,
+                    telegram_bot.format_nudge(
+                        org_label="Foundry",
+                        body=(
+                            f"Your Telegram chat ID is: <b>{chat_id}</b>\n\n"
+                            "Open <b>Foundry → Account → Telegram</b> on the web, click <b>Manual connect</b>, and paste this number to link your chat without the deep link."
+                        ),
                     ),
-                ),
-            )
-            return {"ok": True}
+                )
+                return {"ok": True}
 
-        # `/whoami` — escape hatch for users whose deep-link flow keeps
-        # failing (fresh deploy, aggressive CDN cache, weird Telegram
-        # clients, etc.). Bot echoes the chat_id so the user can paste
-        # it into POST /api/telegram/manual-claim.
-        if text.strip().lower().startswith("/whoami"):
-            await telegram_bot.safe_send(
-                chat_id,
-                telegram_bot.format_nudge(
-                    org_label="Foundry",
-                    body=(
-                        f"Your Telegram chat ID is: <b>{chat_id}</b>\n\n"
-                        "Open <b>Foundry → Account → Telegram</b> on the web, click <b>Manual connect</b>, and paste this number to link your chat without the deep link."
-                    ),
-                ),
-            )
+            # Any other inbound — route to the Phase-3 CoS handler. We
+            # catch ALL exceptions and surface a friendly message back
+            # to the user so the chat never feels dead, and Telegram
+            # never receives a 5xx that would cause retries.
+            try:
+                from cos_pulse import handle_inbound_message
+            except Exception as exc:
+                logger.exception("cos_pulse import failed")
+                await telegram_bot.safe_send(
+                    chat_id,
+                    f"⚠️ Inbound handling isn't loaded on this deploy ({exc}). Pulses still work — your message is logged.",
+                )
+                return {"ok": True}
+            try:
+                await handle_inbound_message(db, chat_id=chat_id, text=text, update=update)
+            except Exception as exc:
+                logger.exception("handle_inbound_message failed")
+                await telegram_bot.safe_send(
+                    chat_id,
+                    f"⚠️ I hit an error processing that message: {exc}\n\nOur logs captured it.",
+                )
             return {"ok": True}
-
-        # Any other inbound text — route to Phase-3 CoS handler. The
-        # handler is loaded lazily so Phase 1 can ship without it; if
-        # the import fails we just acknowledge silently.
-        try:
-            from cos_pulse import handle_inbound_message
-            await handle_inbound_message(db, chat_id=chat_id, text=text, update=update)
-        except ImportError:
-            await telegram_bot.safe_send(
-                chat_id,
-                "Replies aren't enabled yet — I'll still ping you when something needs attention. "
-                "(Coming soon: full two-way chat from Telegram.)",
-            )
-        except Exception:
-            logger.exception("cos_pulse.handle_inbound_message failed")
-        return {"ok": True}
+        except Exception as outer_exc:
+            # Last-resort safety net. We MUST return 200 so Telegram
+            # doesn't retry-storm the broken state. Try to apologise
+            # to the user; swallow any send failure.
+            logger.exception("Telegram webhook crashed at outer level")
+            try:
+                if chat_id_for_error:
+                    await telegram_bot.safe_send(
+                        chat_id_for_error,
+                        f"⚠️ Foundry hit an unexpected error: {outer_exc}",
+                    )
+            except Exception:
+                pass
+            return {"ok": True}
 
     # ── Admin / one-time setup ────────────────────────────────────────
     @r.post("/telegram/admin/webhook-setup")
