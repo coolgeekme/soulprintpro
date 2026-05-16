@@ -398,21 +398,35 @@ async def handle_inbound(
                 "I couldn't find an org by that name. Try `/org <exact name> <message>` or just say the org name in your sentence.",
             )
             return
-        # Needs disambig — present the numbered list (user chose this UX).
-        orgs = await _user_orgs(db, user_id)
-        lines = [f"{i+1}. {o['name']}" for i, o in enumerate(orgs)]
+        # No org context — fall through to the **Personal Concierge**.
+        # This is the cross-org read-only assistant that can answer
+        # "what's on my agenda", "where am I behind", etc. It punts back
+        # to a specific org's CoS when the request requires actual
+        # writes. See `personal_concierge.respond_personal`.
+        try:
+            from personal_concierge import respond_personal
+            reply_text = await respond_personal(db, user_id=user_id, message=text)
+        except Exception as exc:
+            logger.exception("Personal Concierge failed")
+            await telegram_bot.safe_send(
+                chat_id,
+                f"⚠️ Personal Concierge hit an error: {exc}",
+            )
+            return
+        await db.telegram_inbound_log.insert_one({
+            "chat_id": chat_id,
+            "user_id": user_id,
+            "org_id": None,
+            "text": (text or "")[:2000],
+            "voice": transcript_used,
+            "routed_via": "personal_concierge",
+            "reply_preview": (reply_text or "")[:400],
+            "at": datetime.now(timezone.utc),
+        })
         await telegram_bot.safe_send(
             chat_id,
-            telegram_bot.format_nudge(
-                org_label="Foundry",
-                body=(
-                    "🤔 Which org should this go to?\n\n"
-                    + telegram_bot.escape_html("\n".join(lines))
-                    + "\n\nReply with the number."
-                ),
-            ),
+            telegram_bot.format_nudge(org_label="Foundry", body=reply_text or "Done."),
         )
-        await _write_pending_disambig(db, chat_id, text, orgs)
         return
 
     # ── 3. Run the CoS turn for the routed org ────────────────────────
