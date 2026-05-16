@@ -732,29 +732,61 @@ def make_audits_router(
                     return []
 
             async def _safe_browse():
-                """Fetch on-page text via Playwright. Returns
+                """Fetch on-page text via Forge Crawl. Returns
                 ``(text, blocked)`` — when the site is behind anti-bot
                 protection we surface that as a separate flag and
                 deliberately blank the text so the synthesizer prompt's
                 "fall back to Perplexity" branch fires instead of trying
                 to grade the audit from a 180-character interstitial.
+
+                Forge Crawl runs a shallow same-host crawl (homepage +
+                up to 4 priority pages — /about, /pricing, /contact,
+                /services, …) so the synthesizer gets multi-page brand
+                signal instead of just whatever the homepage renders.
+                Falls back to Playwright automatically for JS-heavy
+                sites; httpx-only path keeps the audit fast for the
+                majority of marketing sites that render server-side.
                 """
                 if not url:
                     return "", False
                 try:
-                    snap = await browse_url(url, take_screenshot=False)
+                    from forge_crawl import crawl as _forge_crawl
+                    result = await _forge_crawl(url, max_pages=5)
                 except Exception as exc:
-                    logger.warning("browse %s failed: %s", url, exc)
+                    logger.warning("forge crawl %s failed: %s", url, exc)
                     return "", False
-                text = (snap or {}).get("text", "") or ""
-                # `browse_url` flips `bot_challenge` when its own sniffer
-                # finds challenge markers. We also re-check with our
-                # local heuristic so audits get a unified "blocked"
-                # signal even if upstream missed a marker.
-                blocked = bool((snap or {}).get("bot_challenge")) or _looks_blocked(text)
+                pages = (result or {}).get("pages") or []
+                if not pages:
+                    return "", False
+                # Concatenate same-host pages into one signal payload
+                # with explicit URL/Title headers so the LLM can
+                # attribute claims to a section of the site rather
+                # than treating it as a blob.
+                chunks: list[str] = []
+                aggregated_text = ""
+                any_ok = False
+                for p in pages:
+                    if not p or not p.get("ok"):
+                        continue
+                    any_ok = True
+                    md = (p.get("markdown") or p.get("text") or "").strip()
+                    if not md:
+                        continue
+                    header = (
+                        f"## {p.get('title') or p.get('final_url') or 'Page'}\n"
+                        f"URL: {p.get('final_url')}\n"
+                    )
+                    chunks.append(header + md)
+                    aggregated_text += "\n" + (p.get("text") or "")
+                # If every page failed AND the seed page's text looks
+                # like a bot challenge, flag blocked so the synthesizer
+                # routes to the Perplexity fallback rather than trying
+                # to grade an interstitial.
+                seed_text = (pages[0].get("text") or "") if pages else ""
+                blocked = (not any_ok) or _looks_blocked(seed_text)
                 if blocked:
                     return "", True
-                return text, False
+                return "\n\n---\n\n".join(chunks), False
 
             async def _safe_perplexity():
                 """Always-on Perplexity Sonar summary. Independent of

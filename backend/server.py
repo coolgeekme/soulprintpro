@@ -7880,6 +7880,17 @@ app.include_router(_audit_admin_router)
 app.include_router(_audit_public_router)
 app.include_router(_audit_app_router)
 
+# ── Forge Crawl HTTP endpoints ─────────────────────────────────────────────
+# Thin wrappers over forge_crawl.py so the frontend can call our in-house
+# Firecrawl alternative directly (mission tools already expose the same
+# capability for the LLM).
+from forge_routes import make_forge_router  # noqa: E402
+app.include_router(make_forge_router(
+    get_current_user=get_current_user,
+    LlmChat=LlmChat, UserMessage=UserMessage,
+    EMERGENT_LLM_KEY=EMERGENT_LLM_KEY,
+))
+
 # ── GitHub OAuth integration (per-user + per-org) ──────────────────────────
 # Lets users connect GitHub once → mission agents can read repos, open
 # PRs, comment, push. Self-disables when GITHUB_CLIENT_ID isn't set, so

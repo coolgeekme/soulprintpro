@@ -3,6 +3,19 @@
 Plain-English feature inventory of **Foundry by SoulPrint Engine** for non-technical teammates. Each section is a category of capabilities and what they do for users.
 
 ---
+## 🕷️ Feb 17, 2026 — Forge Crawl Phase A + Audit Pipeline Upgrade
+- **New module `/app/backend/forge_crawl.py`**: in-house alternative to Firecrawl. Three callable functions: `scrape(url, render=…)`, `crawl(url, max_pages=…)`, `extract(url, schema, instructions=…)`. Pure-Python, AGPL-free, zero third-party API cost.
+- **Fetch strategy**: `httpx` first (cheap, ~100 ms), auto-escalate to Playwright when the cleaned text comes back under a JS-shell threshold or matches `<div id="root">` etc. Override knobs: `render="force"` (always Playwright) or `render="never"` (httpx only). `trafilatura` turns the rendered HTML into clean markdown — main content only, chrome/nav/ads stripped.
+- **Structured extraction**: `web_extract` ships the cleaned markdown + caller-supplied JSON schema to **gpt-4o-mini** via the Emergent LLM key and returns one JSON object. Cheap, deterministic, falls back gracefully when fields are absent (`null` / `[]`, never invents).
+- **Mission tools added** (`missions.py` `build_tools`): `web_scrape`, `web_crawl`, `web_extract`. Registered with the 150s browser-tool timeout so Playwright escalations don't get cut off. LLM tool descriptions explicitly route content-only goals away from `browse_url` so we don't pay for the heavier Chromium path when an httpx fetch would do.
+- **HTTP endpoints** (`/app/backend/forge_routes.py`): `POST /api/forge/scrape`, `POST /api/forge/crawl`, `POST /api/forge/extract`. Auth-gated by `get_current_user`. Same response shape as the mission tools so a future Crucible UI panel can wire to either.
+- **Audit pipeline upgraded** (`audits.py` `_safe_browse`): the homepage-only Playwright fetch is replaced by a 5-page shallow crawl (homepage + /about / /pricing / /services / /contact, ranked). Each page's markdown is concatenated with a `## Title / URL` header so the synthesizer LLM can attribute claims to specific sections. Verified against Stripe — pulled 7.4 KB homepage + 16.5 KB pricing + 4.0 KB customers + 6.6 KB sales page, all via httpx with zero Playwright escalation.
+- **Browser tools change**: `browse_url` now returns the rendered HTML in addition to text/screenshot/page-map. Forge Crawl's Playwright fallback uses this so trafilatura can re-clean the post-JS DOM (text-only would lose link structure).
+- **Tests**: 7 unit tests in `/app/backend/tests/test_forge_crawl.py` (network-touching but fast). Covers scrape happy path, scheme normalization, error path, crawl priority ranking, max_pages cap.
+- **What this unlocks**: better audits today (multi-page brand signal), cheaper mission research (httpx vs Playwright wherever possible), and a clean foundation for Phase B (full-site BFS) + Phase C (sitemap.xml priming, robots.txt politeness).
+
+---
+
 ## 🚀 May 15, 2026 — Composio Phase 4: Tools In Missions
 - **New capability**: Missions (Crucible/Playwright long-running agent runs) can now invoke the user's connected Composio tools — Gmail send, Slack post, IG publish, HubSpot create, etc. — alongside the existing web-search / browser / artifact tools. Closes the SaaS-write-boundary gap missions previously hit (they could research but couldn't *act*).
 - **Same gating model as chat**: lead agent's `tools_enabled` must be ON AND user must have ACTIVE connection(s). Tools auto-enabled per division when the user connects new toolkits.

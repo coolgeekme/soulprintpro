@@ -56,6 +56,7 @@ BROWSER_TOOL_TIMEOUT_S = 150
 _BROWSER_TOOL_NAMES = {
     "browse_url", "screenshot_url", "browse_click", "browse_fill",
     "browse_submit", "browse_text", "browse_keyboard",
+    "web_scrape", "web_crawl", "web_extract",
 }
 DUPLICATE_CALL_SOFT_LIMIT = 2  # 2nd identical call: warning injected
 DUPLICATE_CALL_HARD_LIMIT = 3  # 3rd identical call: auto-aborted with error
@@ -1941,6 +1942,103 @@ def build_tools(
             "artifact": artifact,
         }
 
+    async def web_scrape(ctx, args):
+        """Forge Crawl single-page scrape — cheap, returns markdown."""
+        url = (args.get("url") or "").strip()
+        if not url:
+            return {"error": "url is required"}
+        render = (args.get("render") or "auto").strip().lower()
+        if render not in {"auto", "force", "never"}:
+            render = "auto"
+        from forge_crawl import scrape as _forge_scrape
+        result = await _forge_scrape(url, render=render)
+        if not result.get("ok"):
+            return {"error": result.get("error") or "scrape failed",
+                    "final_url": result.get("final_url") or url,
+                    "status": result.get("status") or 0}
+        # Trim the LLM-facing payload — same ceiling we use for
+        # web_search results, so the tool response stays cheap.
+        md = (result.get("markdown") or "")[:12000]
+        text = (result.get("text") or "")[:12000]
+        return {
+            "final_url": result.get("final_url"),
+            "title": result.get("title"),
+            "status": result.get("status"),
+            "engine": result.get("engine"),
+            "markdown": md,
+            "text_preview": text[:2000],
+            "links": (result.get("links") or [])[:50],
+        }
+
+    async def web_crawl(ctx, args):
+        """Shallow same-host crawl — homepage + priority pages."""
+        url = (args.get("url") or "").strip()
+        if not url:
+            return {"error": "url is required"}
+        max_pages = int(args.get("max_pages") or 5)
+        render = (args.get("render") or "auto").strip().lower()
+        if render not in {"auto", "force", "never"}:
+            render = "auto"
+        from forge_crawl import crawl as _forge_crawl
+        result = await _forge_crawl(url, max_pages=max_pages, render=render)
+        if not result.get("ok"):
+            return {"error": result.get("error") or "crawl failed"}
+        # Compact per-page payload so we don't drown the LLM.
+        pages = []
+        for p in (result.get("pages") or []):
+            if not p:
+                continue
+            pages.append({
+                "url": p.get("final_url"),
+                "title": p.get("title"),
+                "ok": p.get("ok"),
+                "status": p.get("status"),
+                "engine": p.get("engine"),
+                "markdown": (p.get("markdown") or "")[:6000],
+            })
+        return {"seed": url, "pages": pages, "count": len(pages)}
+
+    async def web_extract(ctx, args):
+        """Scrape `url` then coerce content into a JSON schema via LLM."""
+        url = (args.get("url") or "").strip()
+        schema = args.get("schema")
+        if not url:
+            return {"error": "url is required"}
+        if not isinstance(schema, dict) or not schema:
+            return {"error": "schema must be a non-empty JSON object describing the fields you want"}
+        instructions = (args.get("instructions") or "").strip()
+        render = (args.get("render") or "auto").strip().lower()
+        if render not in {"auto", "force", "never"}:
+            render = "auto"
+        # Lazy import the LLM bindings off server.py to avoid forcing
+        # build_tools to take them as args (would ripple through every
+        # caller).
+        from emergentintegrations.llm.chat import LlmChat, UserMessage
+        import os as _os
+        emergent_key = _os.environ.get("EMERGENT_LLM_KEY", "")
+        # Honour the user-key-first policy used elsewhere in the
+        # backend: if they've connected their own OpenAI key, prefer it.
+        try:
+            from server import EMERGENT_LLM_KEY as _SERVER_KEY  # type: ignore
+            if _SERVER_KEY:
+                emergent_key = _SERVER_KEY
+        except Exception:
+            pass
+        from forge_crawl import extract as _forge_extract
+        result = await _forge_extract(
+            url, schema=schema, instructions=instructions, render=render,
+            llm_chat_cls=LlmChat, user_message_cls=UserMessage,
+            emergent_llm_key=emergent_key,
+        )
+        if not result.get("ok"):
+            return {"error": result.get("error") or "extract failed",
+                    "final_url": result.get("final_url") or url}
+        return {
+            "final_url": result.get("final_url"),
+            "data": result.get("data"),
+            "engine": result.get("engine"),
+        }
+
     async def read_attachment(ctx, args):
         """Read a user-uploaded mission attachment. Call with no args to
         list all attachments on this mission, or pass `name` (substring
@@ -2029,9 +2127,21 @@ def build_tools(
              '{"attachment_id": "att_xxx", "base_name": "hero", "sizes": [{"label": "Wide Skyscraper", "width": 160, "height": 600}, {"label": "Rectangle", "width": 300, "height": 250}, {"label": "Mobile Leaderboard", "width": 320, "height": 50}, {"label": "Leaderboard", "width": 728, "height": 90}, {"label": "Half-Page", "width": 300, "height": 600}, {"label": "Billboard", "width": 970, "height": 250}]}',
              resize_image, side_effect=True),
         Tool("browse_url",
-             "Load a real web page in a headless Chromium (handles JavaScript / SPA / cookie walls). Returns rendered text, a screenshot, AND a structured page-map: `forms` (with field labels & types), `buttons` and `links` (with their visible text). ALWAYS read the `affordances_summary` field first — it tells you what's clickable on this page. The first step in any form-fill or multi-hop navigation goal.",
+             "Load a real web page in a headless Chromium (handles JavaScript / SPA / cookie walls). Returns rendered text, a screenshot, AND a structured page-map: `forms` (with field labels & types), `buttons` and `links` (with their visible text). ALWAYS read the `affordances_summary` field first — it tells you what's clickable on this page. The first step in any form-fill or multi-hop navigation goal. Prefer `web_scrape` for read-only content extraction — it's faster.",
              '{"url": "https://..."}',
              browse_url, side_effect=True),
+        Tool("web_scrape",
+             "Fast single-page scrape via Forge Crawl. Returns CLEAN markdown of the main content (chrome/nav/ads stripped) plus same-host outbound links. Uses httpx for server-rendered sites and auto-falls-back to Playwright for JS-heavy SPAs. Use this — NOT browse_url — when you just need to READ a page (research, fact-grab, content audit). For form-fill / multi-step navigation, use browse_url. Pass render='force' to skip httpx (slower, more reliable) or 'never' (httpx only).",
+             '{"url": "https://...", "render": "auto"}',
+             web_scrape),
+        Tool("web_crawl",
+             "Shallow same-host crawl via Forge Crawl. Scrapes the seed page, then up to `max_pages-1` priority pages discovered on it (about, pricing, contact, services …). Returns markdown for every page. Use this for business audits / competitor reconnaissance / site-wide content sweeps — it's much cheaper than chaining web_scrape calls yourself. Max 20 pages.",
+             '{"url": "https://...", "max_pages": 5, "render": "auto"}',
+             web_crawl),
+        Tool("web_extract",
+             "Scrape a page then have an LLM coerce the content into the JSON `schema` you specify. Returns ONE structured object. Use this when you need specific fields off a page (e.g., product price + title + image, founder name + LinkedIn, pricing tiers) and don't want to parse markdown yourself. `schema` is a free-form JSON object describing field names + expected types; the LLM does best-effort coercion and uses null/[] when a field is genuinely missing.",
+             '{"url": "https://...", "schema": {"product_name": "string", "price_usd": "number", "features": ["string"]}, "instructions": "(optional extra guidance)"}',
+             web_extract),
         Tool("screenshot_url",
              "Visual-only snapshot of a page (no text extraction). Use when the user asks 'what does X look like' or for visual artifacts.",
              '{"url": "https://..."}',

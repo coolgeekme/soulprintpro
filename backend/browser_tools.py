@@ -514,7 +514,7 @@ async def _drive_navigate(page, url: str, *, take_screenshot: bool,
                           keep_page_open: bool) -> dict:
     """Navigate `page` to `url` and return the snapshot dict."""
     out: dict = {"final_url": url, "title": "", "text": "",
-                 "screenshot": None, "status": 0, "error": ""}
+                 "screenshot": None, "status": 0, "error": "", "html": ""}
     try:
         resp = await page.goto(url, wait_until="domcontentloaded",
                                timeout=NAV_TIMEOUT_MS)
@@ -622,6 +622,15 @@ async def _populate_snapshot(page, out: dict, take_screenshot: bool,
         body_text = ""
         logger.warning("innerText extraction failed/timeout: %s", exc)
     out["text"] = _clean_text(body_text)
+
+    # Forge Crawl needs the rendered HTML to run trafilatura over the
+    # post-JS DOM. Cheap to capture — same Playwright round-trip — and
+    # harmless for callers that ignore the field.
+    try:
+        out["html"] = await asyncio.wait_for(page.content(), timeout=8) or ""
+    except Exception as exc:
+        logger.warning("page.content() failed/timeout: %s", exc)
+        out["html"] = ""
 
     # Pull a structured page map so the LLM can see what's clickable / what
     # forms exist. Without this, the agent has to guess at button text from
