@@ -121,8 +121,10 @@ async def test_slash_org_routes_explicitly():
 
 
 @pytest.mark.asyncio
-async def test_inline_mention_routes_explicitly():
-    """Inline mention of an exact org name routes to it."""
+async def test_inline_mention_does_not_route():
+    """Inline mention of an org name in a meta-question must NOT route
+    to that org. Regression for the 'what calendar is connected with
+    DisciplinedOS?' hijack. Only /org <name> ... routes explicitly."""
     db = _FakeDB()
     with patch.object(ti, "_user_orgs", AsyncMock(return_value=[
         {"id": "abc123", "name": "Reggie Lab"},
@@ -130,11 +132,10 @@ async def test_inline_mention_routes_explicitly():
     ])):
         org, body, reason = await ti.detect_org(
             db, user_id="u1", chat_id=42,
-            text="In Acme Corp, draft a reply to that contract email",
+            text="what calendar is connected with Acme Corp",
         )
-    assert org is not None
-    assert org["name"] == "Acme Corp"
-    assert reason == "inline_match"
+    assert org is None
+    assert reason == "personal_default"
 
 
 @pytest.mark.asyncio

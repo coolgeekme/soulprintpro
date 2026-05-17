@@ -124,12 +124,41 @@ async def get_or_create_private_cos(db, *, org: dict, user_id: str,
     Each member of the org gets exactly one private CoS thread per org
     they belong to. It lives under the org's General team for routing
     consistency (so existing "team_id → org_id" lookups Just Work).
+
+    Self-healing: legacy orgs provisioned before the `general_team_id`
+    field existed get one back-filled here so the Telegram CoS / "My
+    Chief of Staff" page work without the user having to recreate the
+    org from scratch. Idempotent — a concurrent caller landing here
+    won't create a duplicate (we read-after-insert from the same row).
     """
     general_team_id = org.get("general_team_id") or ""
     if not general_team_id:
-        # Edge case: org provisioned without a general team (very old data)
-        # — bail out cleanly so callers can ignore.
-        return None
+        # Back-fill: create a "Chief of Staff" team for this org now.
+        # Same shape as the team `POST /api/orgs` creates on first
+        # org provision, minus the SoulPrint copy (we don't have a
+        # fresh one — the existing team may have a different name).
+        now = datetime.now(timezone.utc)
+        team_doc = {
+            "org_id": str(org["_id"]),
+            "name": "Chief of Staff",
+            "description": "Always-on chat with your Chief of Staff — the anchor agent for the whole company",
+            "soulprint": {
+                "mission": "", "tone": "", "audience": "",
+                "values": "", "north_star": "",
+            },
+            "created_by": str(user_id),
+            "created_at": now,
+            "is_general": True,
+        }
+        team_res = await db.teams.insert_one(team_doc)
+        general_team_id = str(team_res.inserted_id)
+        await db.organizations.update_one(
+            {"_id": org["_id"]},
+            {"$set": {"general_team_id": general_team_id}},
+        )
+        # Update in-memory copy so the rest of this function reads the
+        # back-filled id (caller passed `org` by value, not by ref).
+        org["general_team_id"] = general_team_id
 
     existing = await db.conversations.find_one({
         "team_id": general_team_id,

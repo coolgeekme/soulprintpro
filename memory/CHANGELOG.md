@@ -3,6 +3,14 @@
 Plain-English feature inventory of **Foundry by SoulPrint Engine** for non-technical teammates. Each section is a category of capabilities and what they do for users.
 
 ---
+## 🐛 Feb 17, 2026 — Telegram CoS hotfix: meta-question hijack + legacy org provisioning
+- **Bug 1 — Inline mention hijack (fixed)**: Asking the bot a *meta question* about an org by name ("what calendar is connected with DisciplinedOS?") was routing the question into that org's CoS instead of letting the Personal Concierge answer with cross-org context. Inline-match auto-routing is now removed entirely — only `/org <name> ...` explicit slash routes to a specific org. The Concierge punts back to a `/org` instruction whenever a request needs an actual write.
+- **Bug 2 — "Couldn't provision your Chief of Staff conversation" (fixed)**: Legacy orgs (DisciplinedOS, and any others created before the `general_team_id` field existed) didn't have a General team row, so `get_or_create_private_cos` returned None and the Telegram CoS turn errored out. `team_access.get_or_create_private_cos` now **self-heals** — it creates the missing "Chief of Staff" team on the fly and writes back `general_team_id` onto the org row. Idempotent + safe for concurrent callers.
+- DisciplinedOS verified: back-fill succeeded on first invocation; the private CoS conversation was created and is now ready for future `/org DisciplinedOS ...` routing.
+- Test suite: `test_inline_mention_routes_explicitly` → `test_inline_mention_does_not_route` (regression guard for the meta-question hijack). All 7 cases pass.
+
+---
+
 ## 🤖 Feb 17, 2026 — Super CoS: Org-Agnostic Telegram Chief of Staff
 - **Routing redesign**: the Telegram bot now defaults to the **Personal Concierge** for EVERY message. Org-scoped CoS only fires when the user explicitly routes via `/org <name> ...` slash command or names an org inline ("In Acme Corp, …"). Sticky 30-min carry-over and single-org auto-routing are gone — they caused "why did asking about my agenda end up logged under Random Org?" confusion.
 - **Slash parser upgraded**: `/org Acme Corp send the agenda` now works (multi-word org names without needing a `:`/`-` delimiter). Falls back to single-token name when no orgs list is supplied.

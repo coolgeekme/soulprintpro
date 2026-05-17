@@ -279,7 +279,16 @@ async def detect_org(
             return picked, pending.get("message_text") or "", "disambig_picked"
         # Out-of-range number — fall through to Personal Concierge.
 
-    # ── Layer 1: slash command ────────────────────────────────────────
+    # ── Layer 1: slash command (the ONLY explicit org route) ──────────
+    # We intentionally do NOT auto-route on inline mention of an org
+    # name — users frequently ASK ABOUT an org in a meta question
+    # ("what calendar is connected with DisciplinedOS?") and the
+    # earlier inline-match heuristic would hijack those questions
+    # into the org's CoS instead of letting the Personal Concierge
+    # answer with cross-org context. To address a specific org's
+    # CoS, users now must use `/org <name> ...` explicitly. The
+    # Personal Concierge punts back with that instruction whenever a
+    # request requires a write action on a specific org.
     parsed = _slash_org_parse(text or "", orgs=orgs)
     if parsed:
         name_q, body = parsed
@@ -289,13 +298,8 @@ async def detect_org(
         # Slash with unknown name — let user know but don't disambig.
         return None, text, "slash_unknown"
 
-    # ── Layer 2: inline mention ───────────────────────────────────────
-    inline = _find_inline_org(text or "", orgs)
-    if inline:
-        return inline, text, "inline_match"
-
     # ── DEFAULT: Personal Concierge ───────────────────────────────────
-    # No explicit org marker → cross-org read-only assistant. The CoS
+    # No `/org` prefix → cross-org read-only assistant. The Concierge
     # handles calendar, inbox, doc search, status summaries, drafts,
     # and general chitchat. If the user wants to mutate org data, the
     # Concierge punts back with a `/org <name>` instruction.
