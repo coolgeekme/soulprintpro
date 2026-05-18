@@ -3,6 +3,22 @@
 Plain-English feature inventory of **Foundry by SoulPrint Engine** for non-technical teammates. Each section is a category of capabilities and what they do for users.
 
 ---
+## 🛡️ Feb 17, 2026 — GDPR data export + right-to-erasure (Phase 1) + SOC 2 readiness doc
+- **GDPR Article 15 / 20 — Data export**: new `/app/backend/privacy.py` module. `POST /api/account/export` kicks off a background ZIP-builder job; `GET /api/account/export` polls; `GET /api/account/export/download/<token>` streams the ZIP with single-use token semantics. ZIPs auto-expire after 24h and get swept by a daily APScheduler housekeeping job.
+  - ZIP contents: `account.json` (no password hash), `memory/`, `connections.json` (OAuth tokens stripped), per-org folders with `role.json`, `conversations/direct/` (DMs + private CoS), `conversations/team-authored.json` (only messages the user wrote), `documents/_manifest.json`, `soulprints.json` (owners/admins only). README inside ZIP explains the data-rights scope and what is intentionally NOT included.
+- **GDPR Article 17 — Right to erasure**: `POST /api/account/delete` schedules a 30-day-grace hard delete; `POST /api/account/delete/cancel` aborts at any point in the window; daily APScheduler sweep runs the actual hard delete when grace expires.
+  - **Ownership-transfer wizard** — `GET /api/account/delete/status` returns blocking orgs (where user is sole Owner with other members) + candidate transfer targets (Admins first, then Members). `POST /api/account/delete/transfer-ownership` promotes the chosen user and demotes the requester to Admin. Deletion is blocked until every blocker is resolved.
+  - Hard-delete cascade: revoke Composio connections → cascade-delete solo-owned orgs → hard-delete private convs + their messages → anonymise the user's team-thread messages (`sender_name → "[deleted user]"`, `sender_id → null`) → delete `user_memory` / `org_members` / `invites` / `privacy_export_jobs` → trim auth_audit_log to 12-month retention → delete user row.
+  - Retention exceptions documented in the in-ZIP README + UI: Stripe billing (tax), auth audit logs (12 mo, legitimate-interest), aggregated analytics (no PII).
+- **Frontend** `/app/frontend/src/components/PrivacyPanel.js`: theme-aware Privacy card on the Account page with the export button, deletion-pending banner with cancel CTA, and a DeleteWizard modal that walks the user through ownership transfers before allowing the final "type DELETE" confirmation.
+- **SOC 2 readiness plan** at `/app/docs/SOC2_READINESS.md` — actionable 4-month roadmap with Vanta/Drata/Secureframe/Thoropass comparison, control gap analysis, 13-policy checklist, ~$22k year-1 cost projection, and explicit "when to start / when to wait" decision criteria. Standalone planning doc; no engineering needed to ship.
+- **7 new pytest cases** in `tests/test_privacy.py` covering blocking-orgs logic, slug edge cases, README content, end-to-end ZIP build, single-use token semantics. **43/43 backend tests pass.**
+- **Live-verified**: `POST /api/account/export` → ZIP built in ~80 ms (9.8 KB); download via signed URL succeeded; `GET /api/account/delete/status` correctly flagged Reggie Lab as a blocker with 6 transfer targets sorted Admins-first. Privacy panel renders cleanly in light mode at the bottom of the Account page.
+
+⚠️ **Production redeploy required** for any of this to be reachable on https://foundryagents.ai. Add "GDPR data export + right to erasure" to the security page once deployed.
+
+---
+
 ## 🎨 Feb 17, 2026 — MetaTargetModal: theme-aware, robust empty/error states
 - **Production bug**: user clicked "Select target" on the Facebook connection and got an effectively-empty modal — just the orange "Pin as target" pill floating at the bottom, no readable text. Root cause: the modal was hardcoded to a dark colour scheme (`bg-zinc-900` + `text-white` + `text-amber-300` errors + `opacity-70` empty-states) which against the busy beige light-mode page looked like a low-contrast island. The header / list / empty-state text was technically rendered but visually unreadable.
 - **Fix** (`ConnectionsPanel.js` `MetaTargetModal`):

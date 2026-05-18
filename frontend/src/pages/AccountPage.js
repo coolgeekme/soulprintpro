@@ -246,6 +246,12 @@ export default function AccountPage() {
         {/* Memory — user-scoped long-term context Foundry remembers
             across all conversations. Editable + auditable. */}
         <MemoryPanel />
+
+        {/* Privacy — GDPR data export + right-to-erasure flows. Lives
+            at the bottom because it's destructive and infrequently
+            used, but it's a first-class panel so privacy-conscious
+            users can find it without contacting support. */}
+        <PrivacyPanel />
       </main>
     </div>
   );
@@ -259,6 +265,7 @@ import GitHubConnectCard from "../components/GitHubConnectCard";
 import MemoryPanel from "../components/MemoryPanel";
 import TelegramConnectCard from "../components/TelegramConnectCard";
 import PulseHistoryPanel from "../components/PulseHistoryPanel";
+import PrivacyPanel from "../components/PrivacyPanel";
 
 function Integrations({ user }) {
   // Fetch the caller's orgs directly — useAuth().user doesn't include

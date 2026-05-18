@@ -8227,6 +8227,13 @@ app.include_router(_audit_admin_router)
 app.include_router(_audit_public_router)
 app.include_router(_audit_app_router)
 
+# ── Privacy / GDPR endpoints ───────────────────────────────────────────────
+# Data export (Article 15 / 20) + right-to-erasure (Article 17). The
+# module is self-contained; `schedule_privacy_jobs` registers the daily
+# housekeeping + deletion-sweep jobs into our APScheduler instance.
+from privacy import make_privacy_router, schedule_privacy_jobs  # noqa: E402
+app.include_router(make_privacy_router(get_current_user=get_current_user, db=db))
+
 # ── Forge Crawl HTTP endpoints ─────────────────────────────────────────────
 # Thin wrappers over forge_crawl.py so the frontend can call our in-house
 # Firecrawl alternative directly (mission tools already expose the same
@@ -9133,6 +9140,13 @@ async def startup():
     # Boot the in-process scheduler and rehydrate persisted jobs
     if not scheduler.running:
         scheduler.start()
+
+    # Register privacy housekeeping jobs (daily ZIP-sweep + hard-delete
+    # sweep). Idempotent — APScheduler de-dupes by job_id.
+    try:
+        schedule_privacy_jobs(scheduler, db)
+    except Exception:
+        logger.exception("Failed to register privacy scheduler jobs")
     async for s in db.schedules.find({"active": True}):
         try:
             _scheduler_register(s)
