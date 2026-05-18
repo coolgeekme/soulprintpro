@@ -38,6 +38,20 @@ const TOOLKIT_LOGO_BG = {
 
 const initialFor = (slug) => (slug || "?").charAt(0).toUpperCase();
 
+
+// "Connecting…" with the elapsed-time tail when we know how long the
+// row has been pending. Sourced from the `pending_age_seconds` stamp
+// that the backend's `list_connections` puts on every INITIATED row.
+// Falls back to plain "Connecting…" when the age isn't available
+// (legacy rows or fresh-mint pre-stamp window).
+function formatPendingLabel(c) {
+  const age = Number(c?.pending_age_seconds || 0);
+  if (!age || age < 30) return "Connecting…";
+  if (age < 60) return `Connecting… (${age}s)`;
+  if (age < 3600) return `Connecting… (${Math.round(age / 60)} min)`;
+  return `Connecting… (${Math.round(age / 3600)}h)`;
+}
+
 export default function ConnectionsPanel({ orgId }) {
   const [toolkits, setToolkits] = useState([]);
   const [connections, setConnections] = useState([]);
@@ -72,6 +86,12 @@ export default function ConnectionsPanel({ orgId }) {
     let cancelled = false;
     let attempts = 0;
     let autoEnabledTotal = 0;
+    // 20 attempts × 3s = 60s post-callback poll window. We used to give
+    // up at 30s (10 × 3s), but Composio's INITIATED → ACTIVE webhook
+    // can lag 30-45s when Meta is slow to dispatch the OAuth grant
+    // event — which left users staring at a "Connecting…" spinner that
+    // would never resolve unless they happened to reload the page.
+    const MAX_ATTEMPTS = 20;
     const poll = async () => {
       attempts += 1;
       try {
@@ -106,9 +126,17 @@ export default function ConnectionsPanel({ orgId }) {
           return;
         }
       } catch (_) {/* keep polling */}
-      if (attempts >= 10) {
+      if (attempts >= MAX_ATTEMPTS) {
         cancelled = true;
         nav(`/app/org/${orgId}#connections`, { replace: true });
+        // Tell the user the auto-verify gave up — without this they'd
+        // sit on a silent "Connecting…" spinner and have no idea what
+        // to do next. Two next-step actions are surfaced on the row
+        // itself (Check / Cancel) so the toast just points there.
+        toast.warning(
+          "Couldn't auto-verify the connection. Click 'Check' on the pending row to retry, or 'Cancel' to start over.",
+          { duration: 8000 },
+        );
       } else {
         setTimeout(poll, 3000);
       }
@@ -190,9 +218,36 @@ export default function ConnectionsPanel({ orgId }) {
     }
   };
 
+  // Distinct from handleDisconnect because the user-mental-model is
+  // different: a pending connection isn't "disconnecting an account",
+  // it's "cancel the in-flight OAuth attempt and start over". Worded
+  // accordingly so the confirm modal doesn't scare users into thinking
+  // they'll lose an already-active connection.
+  const handleCancelPending = async (connectionId) => {
+    if (!window.confirm("Cancel this pending connection and start over? Your existing connected accounts won't be affected.")) return;
+    try {
+      await api.delete(`/orgs/${orgId}/composio/connections/${connectionId}`);
+      toast.success("Pending connection cancelled. Click + Add to retry.");
+      load();
+    } catch (err) {
+      toast.error(err?.response?.data?.detail || "Couldn't cancel the pending connection");
+    }
+  };
+
   const handleRefresh = async (connectionId) => {
     try {
-      await api.post(`/orgs/${orgId}/composio/connections/${connectionId}/refresh`);
+      const { data } = await api.post(`/orgs/${orgId}/composio/connections/${connectionId}/refresh`);
+      // Tell the user what changed. Composio sometimes lags 30-60s
+      // after the OAuth grant, so "still pending" is a real outcome
+      // worth surfacing instead of silently leaving the spinner on.
+      const status = data?.status;
+      if (status === "ACTIVE") {
+        toast.success("Connection verified — you're good to go.");
+      } else if (status === "INITIATED") {
+        toast.message("Still pending on Composio's side. Wait 30s and try again, or click Cancel to reset.");
+      } else if (status) {
+        toast.error(`Connection state: ${status}. Click Cancel and reconnect.`);
+      }
       load();
     } catch (err) {
       toast.error("Refresh failed");
@@ -318,11 +373,16 @@ export default function ConnectionsPanel({ orgId }) {
                         ) : (
                           <span className="flex-1 truncate flex flex-col leading-tight">
                             <span className="truncate">
-                              {c.nickname || c.display_label || c.account_label || (c.status === "INITIATED" ? "Connecting…" : "Connected")}
+                              {c.nickname || c.display_label || c.account_label || (c.status === "INITIATED" ? formatPendingLabel(c) : "Connected")}
                             </span>
                             {c.display_label && c.nickname && c.nickname !== c.display_label && (
                               <span className="text-[10px] opacity-50 truncate">
                                 {c.display_label}
+                              </span>
+                            )}
+                            {c.status === "INITIATED" && (c.pending_age_seconds || 0) >= 90 && (
+                              <span className="text-[10px] text-amber-300 truncate">
+                                Taking longer than usual — click Cancel and reconnect if the OAuth window already closed.
                               </span>
                             )}
                           </span>
@@ -338,22 +398,35 @@ export default function ConnectionsPanel({ orgId }) {
                           </button>
                         )}
                         {c.status === "INITIATED" && (
+                          <>
+                            <button
+                              onClick={() => handleRefresh(c.connection_id)}
+                              className="opacity-60 hover:opacity-100 text-[10px]"
+                              title="Re-check this connection's status with Composio"
+                              data-testid={`check-${c.connection_id}-btn`}
+                            >
+                              Check
+                            </button>
+                            <button
+                              onClick={() => handleCancelPending(c.connection_id)}
+                              className="text-[10px] px-1.5 py-0.5 rounded border border-amber-400/40 text-amber-300 hover:bg-amber-500/10"
+                              title="Cancel this pending connection and start over"
+                              data-testid={`cancel-pending-${c.connection_id}-btn`}
+                            >
+                              Cancel
+                            </button>
+                          </>
+                        )}
+                        {c.status === "ACTIVE" && (
                           <button
-                            onClick={() => handleRefresh(c.connection_id)}
-                            className="opacity-60 hover:opacity-100 text-[10px]"
-                            data-testid={`check-${c.connection_id}-btn`}
+                            onClick={() => handleDisconnect(c.connection_id)}
+                            className="opacity-40 hover:opacity-100 hover:text-red-400 transition"
+                            title="Disconnect"
+                            data-testid={`disconnect-${c.connection_id}-btn`}
                           >
-                            Check
+                            <Trash2 className="h-3 w-3" />
                           </button>
                         )}
-                        <button
-                          onClick={() => handleDisconnect(c.connection_id)}
-                          className="opacity-40 hover:opacity-100 hover:text-red-400 transition"
-                          title="Disconnect"
-                          data-testid={`disconnect-${c.connection_id}-btn`}
-                        >
-                          <Trash2 className="h-3 w-3" />
-                        </button>
                       </li>
                       {/* Meta-target picker — surfaced inline under each
                           FB/IG row so the user can see (and change) which

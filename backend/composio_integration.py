@@ -23,10 +23,20 @@ Architecture
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
+
+
+# Seconds an INITIATED connection is allowed to sit before we try to
+# auto-refresh it on the next `list_connections` call. 60s is the sweet
+# spot — Composio's webhook typically marks links ACTIVE within 5-15s of
+# the OAuth grant, so 60s safely accommodates the slow path without
+# adding visible latency on the happy path (a freshly-INITIATED row
+# minted <60s ago is skipped to avoid pointless API churn).
+_STALE_INITIATED_SECONDS = 60
 
 logger = logging.getLogger(__name__)
 
@@ -507,12 +517,54 @@ async def _auto_enable_agents_for_toolkit(
 
 async def list_connections(db, org_id: str, user_id: str) -> List[Dict[str, Any]]:
     """List every connection for (org_id, user_id). With multi-account
-    enabled there can be many rows per toolkit."""
+    enabled there can be many rows per toolkit.
+
+    Side-effect: for any INITIATED row older than ``_STALE_INITIATED_SECONDS``
+    we fire a `refresh_connection_status` inline (capped at 5 per call) so
+    a user returning to the Connections page after an OAuth-popup loss
+    sees their connection flip to ACTIVE without having to click the
+    per-row Check button. Fixes the Feb 2026 production bug where a FB
+    OAuth grant succeeded server-side but the UI was stuck on
+    "Connecting…" because the post-callback poll window (30s) was too
+    short for Composio to mark the link ACTIVE.
+    """
     cu = composio_user_id(org_id, user_id)
     rows = await db.composio_connections.find(
         {"composio_user_id": cu},
         {"_id": 0},
     ).sort("initiated_at", -1).to_list(500)
+
+    # Inline-refresh stale INITIATED rows (best-effort, bounded fanout).
+    now = datetime.now(timezone.utc)
+    refresh_targets: List[str] = []
+    for r in rows:
+        if r.get("status") != "INITIATED":
+            continue
+        ini = r.get("initiated_at")
+        if not isinstance(ini, datetime):
+            continue
+        if (now - ini).total_seconds() < _STALE_INITIATED_SECONDS:
+            continue
+        refresh_targets.append(r["connection_id"])
+        if len(refresh_targets) >= 5:
+            break
+    if refresh_targets:
+        # Run refreshes concurrently but swallow per-call failures —
+        # Composio sometimes 5xxs and we'd rather show stale data than
+        # surface a 502 to the user.
+        async def _safe_refresh(cid: str):
+            try:
+                await refresh_connection_status(db, cid)
+            except Exception as exc:
+                logger.warning("inline refresh failed for %s: %s", cid, exc)
+        await asyncio.gather(*[_safe_refresh(c) for c in refresh_targets])
+        # Re-read the rows so the freshly-flipped statuses make it back
+        # in the response.
+        rows = await db.composio_connections.find(
+            {"composio_user_id": cu},
+            {"_id": 0},
+        ).sort("initiated_at", -1).to_list(500)
+
     # Hydrate with the human-readable name. Featured toolkits come from
     # our static list; non-featured fall back to the cached catalog,
     # finally to the slug itself if Composio's catalog isn't available.
@@ -537,6 +589,11 @@ async def list_connections(db, org_id: str, user_id: str) -> List[Dict[str, Any]
         if slug in ("facebook", "instagram"):
             r["has_target"] = bool(r.get("facebook_page_id") or r.get("instagram_user_id"))
             r["target_summary"] = _meta_target_summary(r)
+        # Stamp the pending age (in seconds) so the FE can show
+        # "Connecting… (3 min)" and surface a "taking too long" nudge
+        # without re-deriving timestamps client-side. ACTIVE rows skip.
+        if r.get("status") == "INITIATED" and isinstance(r.get("initiated_at"), datetime):
+            r["pending_age_seconds"] = int((now - r["initiated_at"]).total_seconds())
         # Normalise dates to ISO so JSON serialisation is clean.
         for k in ("initiated_at", "activated_at", "last_synced_at"):
             v = r.get(k)

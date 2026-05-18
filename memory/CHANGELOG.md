@@ -3,6 +3,23 @@
 Plain-English feature inventory of **Foundry by SoulPrint Engine** for non-technical teammates. Each section is a category of capabilities and what they do for users.
 
 ---
+## 🔌 Feb 18, 2026 — Composio Connections: stuck-INITIATED UX
+**Production bug (foundryagents.ai)**: Facebook "+ Add" → OAuth popup completed → UI stuck on "Connecting…" for 30+ minutes with no Page picker shown. Root cause: post-callback poll window was only 30s (10 attempts × 3s) and `list_connections` returned cached statuses — when Composio's INITIATED → ACTIVE webhook lagged >30s (common for Meta), the row was orphaned in the DB and the UI had no way out. Three-part fix:
+
+1. **Backend auto-refresh on `list_connections`** (`composio_integration.py`) — any INITIATED row older than `_STALE_INITIATED_SECONDS = 60` triggers an inline `refresh_connection_status` call against Composio. Capped at 5 per list call so a user with many stale rows can't fanout 20 outbound API hits. Refresh failures are swallowed (we'd rather return stale data than 502 the panel). Re-reads the rows after the refresh wave so the freshly-flipped statuses make the response.
+
+2. **`pending_age_seconds` stamp** — every INITIATED row in the API response now carries the age in seconds. The frontend uses it to render `Connecting… (3 min)` (graceful: seconds → minutes → hours) and, after 90s pending, shows an amber sub-label nudging the user to Cancel + reconnect.
+
+3. **Frontend UX hardening** (`ConnectionsPanel.js`):
+   - Post-callback poll window doubled: 30s → **60s** (20 × 3s). Most Meta OAuth round-trips resolve well inside that.
+   - On poll exhaust, a `toast.warning` fires telling the user exactly what to do: "Click 'Check' to retry, or 'Cancel' to start over." No more silent failure.
+   - New explicit **"Cancel"** text button next to "Check" on every INITIATED row, with a confirmation worded for the pending-OAuth mental model: "Cancel this pending connection and start over? Your existing connected accounts won't be affected." Distinct from the disconnect-active trash icon so users don't fear losing already-active connections.
+   - `handleRefresh` now surfaces the Composio response: ACTIVE → "Connection verified — you're good to go", still-INITIATED → "Still pending on Composio's side", anything else → "Click Cancel and reconnect". Stops the click-Check-and-nothing-happens dead end.
+
+**Tests** — 7 new pytest cases in `tests/test_composio_pending_refresh.py`: pending-age stamp on/off, stale row triggers refresh, fresh row skipped, 5-row cap, refresh failure non-crashing, constant sanity. All pass.
+
+---
+
 ## 📊 Feb 18, 2026 — Mission productivity: dataset / lead-hunt missions
 **Production bug**: a "harvest a verified business-lead dataset across 5 metros (Phoenix/Austin/Atlanta/Baltimore/Miami)" mission shipped a methodology PDF with ZERO rows. The lead agent treated the dataset goal like a "report" goal, did one round of web_search, and called `finish` with an outline PDF. Four-part fix lands in this session:
 
