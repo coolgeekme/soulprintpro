@@ -154,12 +154,35 @@ export default function SocialPage() {
   useEffect(() => { reload(); /* eslint-disable-next-line */ }, [orgId]);
 
   const counts = useMemo(() => {
-    const c = { draft: 0, queued: 0, published: 0 };
-    posts.forEach((p) => { if (c[p.status] !== undefined) c[p.status] += 1; });
+    const c = { draft: 0, queued: 0, published: 0, failed: 0 };
+    posts.forEach((p) => {
+      // "partial" rolls into the Published tab — at least some
+      // platforms made it through.
+      if (p.status === "partial") c.published += 1;
+      else if (c[p.status] !== undefined) c[p.status] += 1;
+    });
     return c;
   }, [posts]);
+  // Tabs include "failed" so that posts whose publish attempt blew up
+  // don't silently disappear from the queue. Previously, `status=failed`
+  // posts matched none of the three visible tabs (draft/queued/published)
+  // and users saw "Publishing failed on 1 platform." with no way to find
+  // the post afterwards — the error-chip + "Why did this fail?" UI on the
+  // card was unreachable. We also keep "partial" rolled into the
+  // Published tab (some platforms did succeed) so the user still sees
+  // those wins; the per-platform chip carries the per-platform error.
+  const TABS = [
+    ["draft", "Drafts"],
+    ["queued", "Scheduled"],
+    ["published", "Published"],
+    ["failed", "Failed"],
+  ];
   const visible = useMemo(
-    () => posts.filter((p) => p.status === tab),
+    () => posts.filter((p) => (
+      tab === "published"
+        ? (p.status === "published" || p.status === "partial")
+        : p.status === tab
+    )),
     [posts, tab],
   );
 
@@ -394,11 +417,7 @@ export default function SocialPage() {
 
         {/* Tabs */}
         <div className="flex items-center gap-1 mb-4" role="tablist">
-          {[
-            ["draft", "Drafts"],
-            ["queued", "Scheduled"],
-            ["published", "Published"],
-          ].map(([id, label]) => (
+          {TABS.map(([id, label]) => (
             <button
               key={id}
               role="tab"
@@ -418,11 +437,12 @@ export default function SocialPage() {
             {tab === "draft" && "No drafts yet. Use the form above to generate some."}
             {tab === "queued" && "Nothing scheduled. Open a draft and pick a date/time."}
             {tab === "published" && "Nothing published yet. Mark posts as published once you've posted them."}
+            {tab === "failed" && "No failed posts. Anything that hits an error from a platform will show up here so you can see the reason and retry."}
           </div>
         ) : (
           <div className="space-y-3">
             {visible.map((p) => (
-              <PostCard key={p.id} post={p} orgId={orgId} onUpdate={updatePost} onReplace={replacePost} onDelete={deletePost} publishable={publishablePlatforms} onAfterPublish={reload} onOpenMetaTarget={(connId) => setMetaTargetEdit(connId)} />
+              <PostCard key={p.id} post={p} orgId={orgId} onUpdate={updatePost} onReplace={replacePost} onDelete={deletePost} publishable={publishablePlatforms} onAfterPublish={reload} onOpenMetaTarget={(connId) => setMetaTargetEdit(connId)} onJumpToTab={setTab} />
             ))}
           </div>
         )}
@@ -503,7 +523,7 @@ function MetaTargetHint({ platforms, publishable, orgId, onChange, postId }) {
 }
 
 // ── Post card ─────────────────────────────────────────────────────────────
-function PostCard({ post, orgId, onUpdate, onReplace, onDelete, publishable, onAfterPublish, onOpenMetaTarget }) {
+function PostCard({ post, orgId, onUpdate, onReplace, onDelete, publishable, onAfterPublish, onOpenMetaTarget, onJumpToTab }) {
   const [editing, setEditing] = useState(false);
   const [text, setText] = useState(post.text);
   const [hashtags, setHashtags] = useState((post.hashtags || []).join(" "));
@@ -664,12 +684,35 @@ function PostCard({ post, orgId, onUpdate, onReplace, onDelete, publishable, onA
             onReplace?.(updated);
             const ok = updated.published_count || 0;
             const bad = updated.failed_count || 0;
+            // Pull the most useful per-platform error text so the
+            // toast itself carries actionable detail — not just
+            // "publishing failed on 1 platform". The error chip on
+            // the card always has the full message; the toast is
+            // a faster summary the user sees without scrolling.
+            const failedEntries = Object.entries(updated.publish_results || {})
+              .filter(([, r]) => !r.ok);
+            const firstError = failedEntries[0]?.[1]?.error || "";
+            const firstPlatform = failedEntries[0]?.[0] || "";
             if (updated.status === "published") {
               toast.success(`Published to ${ok} platform${ok === 1 ? "" : "s"}.`);
+              onJumpToTab?.("published");
             } else if (updated.status === "partial") {
-              toast(`Posted to ${ok}, failed on ${bad}. See errors on the card.`, { icon: "⚠️" });
+              toast(
+                `Posted to ${ok}, failed on ${bad}.` +
+                (firstError ? ` ${firstPlatform}: ${firstError.slice(0, 140)}` : " See errors on the card."),
+                { icon: "⚠️", duration: 8000 },
+              );
+              onJumpToTab?.("published");
             } else {
-              toast.error(`Publishing failed on ${bad} platform${bad === 1 ? "" : "s"}.`);
+              toast.error(
+                `Publishing failed on ${bad} platform${bad === 1 ? "" : "s"}.` +
+                (firstError ? ` ${firstPlatform}: ${firstError.slice(0, 200)}` : " Open the Failed tab for details."),
+                { duration: 10000 },
+              );
+              // Auto-jump to the Failed tab so the user can actually
+              // see the card with its error chip and "Why did this
+              // fail?" details — previously the post just vanished.
+              onJumpToTab?.("failed");
             }
             setPublishing(false);
             onAfterPublish?.();

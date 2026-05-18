@@ -23,6 +23,7 @@ OAuth credentials for it.
 from __future__ import annotations
 
 import logging
+import os
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
@@ -110,9 +111,67 @@ def _text_for(post: Dict[str, Any], platform: str) -> str:
     return (post.get("text") or "").strip()
 
 
+def _public_origin() -> str:
+    """Resolve the fully-qualified `https://host` to prefix relative
+    media URLs with before handing them to third-party publishing APIs.
+
+    Meta's Graph API (Instagram, Facebook) and TikTok's Content API
+    both REQUIRE a public ``https://…`` URL on a routable hostname —
+    they fetch the asset server-side; a relative ``/api/files/<file>``
+    is rejected (or worse, silently fails container creation with a
+    Graph API ``error.message="Invalid parameter"`` that's hard to
+    correlate).
+
+    Precedence:
+      1. ``PUBLIC_ORIGIN_OVERRIDE`` — same env knob the audit-email
+         flow uses; lets ops point publishing at a specific CDN host
+         without touching ``FRONTEND_URL``.
+      2. ``FRONTEND_URL`` — the canonical user-facing host. Already
+         set in every env (preview + production).
+    """
+    origin = (os.environ.get("PUBLIC_ORIGIN_OVERRIDE") or "").strip()
+    if not origin:
+        origin = (os.environ.get("FRONTEND_URL") or "").strip()
+    return origin.rstrip("/")
+
+
+def _absolutize(url: Optional[str]) -> Optional[str]:
+    """Promote a relative ``/api/files/...`` (or any other relative
+    path) to an absolute ``https://host/api/files/...`` URL using the
+    public origin. Pass-through for already-absolute URLs and ``None``.
+    """
+    if not url:
+        return url
+    if url.startswith(("http://", "https://")):
+        return url
+    origin = _public_origin()
+    if not origin:
+        # No origin configured — return as-is and let the publisher
+        # surface the inevitable Meta "Invalid parameter" error to the
+        # user. Better that than swallowing a mis-config silently.
+        logger.warning(
+            "No PUBLIC_ORIGIN_OVERRIDE / FRONTEND_URL set — relative "
+            "media URL %s will be sent to a third-party API as-is and "
+            "will almost certainly fail.", url,
+        )
+        return url
+    if url.startswith("/"):
+        return f"{origin}{url}"
+    return f"{origin}/{url}"
+
+
 def _image_url(post: Dict[str, Any]) -> Optional[str]:
+    """Return the absolute, https-prefixed image URL for `post`.
+
+    Stored URLs are relative paths like ``/api/files/<filename>`` —
+    Meta/TikTok publishers can't fetch those, so every publisher
+    pulls through this helper before passing it to the third-party
+    API. Prefer ``public_url`` (explicitly authoritative) over ``url``
+    when both are present.
+    """
     img = post.get("image") or {}
-    return img.get("url") or img.get("public_url") or None
+    raw = img.get("public_url") or img.get("url") or None
+    return _absolutize(raw)
 
 
 async def _exec(

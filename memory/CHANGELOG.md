@@ -3,6 +3,24 @@
 Plain-English feature inventory of **Foundry by SoulPrint Engine** for non-technical teammates. Each section is a category of capabilities and what they do for users.
 
 ---
+## 🐛 Feb 17, 2026 — IG publish silent-fail + invisible failed-post UX
+- **Production root cause**: User saw "Publishing failed on 1 platform" with no detail, and the failed post vanished from view. Two distinct bugs.
+- **Bug 1 — Meta Graph API was being handed relative URLs**: `_image_url(post)` returned the raw `/api/files/<filename>` path stored in `social_posts`. Meta requires fully-qualified `https://host/...` because they fetch the image server-side. The IG `POST_IG_USER_MEDIA` container-creation step silently failed because of this. Fixed `social_publishing.py`:
+  - New `_public_origin()` resolves `PUBLIC_ORIGIN_OVERRIDE` → `FRONTEND_URL` (same precedence the audit-email module uses).
+  - New `_absolutize(url)` promotes relative paths to `https://host/path`; passes absolutes through unchanged.
+  - `_image_url()` now always returns absolute URLs, prefers `public_url` over `url` when both present.
+  - Same fix automatically applies to Facebook, TikTok, and any other publisher that calls `_image_url`.
+- **Bug 2 — Failed posts vanished from the UI**: `SocialPage` had tabs for `draft` / `queued` / `published` only — `status="failed"` posts matched no tab and the user couldn't see the error chip or "Why did this fail?" button on the card. Fixed:
+  - Added a **Failed** tab (`SocialPage.js`).
+  - **Partial** posts (some platforms succeeded) roll into the Published tab so wins aren't hidden; the per-platform red chip shows which platform failed and why.
+  - After every publish attempt, the page auto-switches to the right tab — Failed if it failed, Published if it succeeded — so the user always sees the result card.
+  - Improved the failure toast to include the actual Meta error text from `publish_results.<platform>.error` (truncated to 200 chars) instead of just "Publishing failed on 1 platform". Duration bumped to 10s so the user can read it.
+- **Tests**: 8 new pytest cases in `tests/test_social_publish_urls.py` covering relative→absolute promotion, `public_url` precedence, origin override, edge cases (None, trailing/leading slashes). All 36 backend tests pass.
+
+⚠️ **Production redeploy required** to fix the live IG publishing flow.
+
+---
+
 ## 🤖 Feb 17, 2026 — Mandatory auto-image for social posts (no permission asked)
 - **Production complaint addressed**: bot was responding to "Draft an IG post for AZ Pain Doctors" with text + "Want me to generate a matching image?" — never delivering the image even when user said yes. Root cause was a contradictory `NO_FAKE_PROMISES_DIRECTIVE` that told the agent "image generation is handled AUTOMATICALLY by the platform — you do not trigger generation." That made the LLM refuse images.
 - **Fix 1 — Directive rewrite**: `NO_FAKE_PROMISES_DIRECTIVE` now says "Image generation is INSIDE YOUR CONTROL via the `[[IMAGE]]` block." Forbidden phrases explicitly include "I can't create or send images", "The platform will generate the image", "Want me to generate", etc.
