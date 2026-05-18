@@ -3,6 +3,25 @@
 Plain-English feature inventory of **Foundry by SoulPrint Engine** for non-technical teammates. Each section is a category of capabilities and what they do for users.
 
 ---
+## 📊 Feb 18, 2026 — Mission productivity: dataset / lead-hunt missions
+**Production bug**: a "harvest a verified business-lead dataset across 5 metros (Phoenix/Austin/Atlanta/Baltimore/Miami)" mission shipped a methodology PDF with ZERO rows. The lead agent treated the dataset goal like a "report" goal, did one round of web_search, and called `finish` with an outline PDF. Four-part fix lands in this session:
+
+1. **`csv_append_rows` mission tool** (`missions.py`) — incremental CSV builder. First call declares `columns`; subsequent calls only need `name` + `rows` (list of dicts or list of lists). State persisted in `missions.csv_workspace` as an array of `{name, columns, rows, updated_at}` slots (array — NOT dotted-key dict — because Mongo treats `.` in keys as path nesting; a filename like `phoenix_leads.csv` would otherwise be split). Each call regenerates the CSV bytes, `$pull`s any prior artifact entry for the same `original_name` from `mission.artifacts`, deletes the prior `documents` row, and saves a fresh one — so the library shows ONE growing file, not a parade of revisions. Caps: 25 rows/call, 500 rows total. Stamps `csv_row_count` on the returned artifact dict so the finish gate can read it.
+
+2. **Dataset-row finish gate** in `_run_mission_loop` — when `_is_dataset_goal(goal)` is true and the largest `.csv` artifact has fewer than `DATASET_MIN_ROWS=15` data rows, `finish` is blocked once with a "GO HARVEST MORE" nudge naming specific FREE public aggregator sources (Chamber of Commerce, BBB, Yelp, Google Maps, SEC EDGAR, OpenCorporates, USAspending.gov, state SoS, industry associations). Same one-shot pattern as the existing research-breadth gate (sets `dataset_gate_warned` so the agent gets a second chance after harvesting more).
+
+3. **DATA-HARVEST / LEAD-HUNT RECIPE** in `_build_lead_mission_system_prompt` (`server.py`) — when the goal matches dataset intent, the agent is told the deliverable IS A CSV (not a PDF), with the exact `web_search → web_scrape/web_extract → csv_append_rows → repeat` loop pattern, a curated list of 8 FREE public sources by category, default columns for B2B lead-hunts, and a "do NOT fabricate phone/email/revenue figures — truthful blank beats hallucinated number" guardrail.
+
+4. **Drafter upgrade** in `_DRAFTER_SYSTEM` (`missions.py`) — when rough input mentions harvest / list-of / lead-hunt / prospect / directory / scrape-companies, the drafter rewrites the goal as a `.csv`-targeted spec with explicit columns, row-count target, source hints, and `csv_append_rows` tool reference. Goal max raised from 1200 → 1800 chars to make room for column lists.
+
+**Tests** — 27 new pytest cases:
+- `tests/test_dataset_mission_gate.py` (16 cases) — `_is_dataset_goal` true/false matrix, `_count_csv_data_rows` edge cases, threshold sanity.
+- `tests/test_csv_append_rows.py` (4 async cases) — happy-path 3-call growth, first-call-requires-columns guard, per-call cap (60 → 25), `$pull` cleanup of stale artifact entries for the same filename.
+
+Backend reboots clean; existing pre-existing failures unrelated.
+
+---
+
 ## 🤖 Feb 18, 2026 — Telegram CoS: loop-stop + brand-logo injection
 - **Bug A — endless response loop**: when the agent emitted 3-5 `[[IMAGE]]` blocks in a single reply (e.g. "Here are three variants"), Telegram delivered them sequentially as Nano Banana finished each call (5-15s apart), which users perceived as the bot "spamming drafts unprompted". New helper `_cap_image_blocks_for_telegram` in `server.py` (just above `telegram_cos_turn`) keeps only the **first** `[[IMAGE]]` block and folds the rest into a single trailing nudge: `_(Held N additional draft visuals — reply 'another variation' for the next one.)_`. Idempotent — single-block replies pass through unchanged.
 - **Bug B — generated images ignored uploaded org logos**: `_generate_image_attachments` in `server.py` now reads `org.brand_assets.primary_logo.filename` (and `alt_logo.filename` when present), resolves them in `UPLOAD_DIR` with a GridFS rehydrate fallback via `recover_bytes_from_gridfs`, and passes the resolved `Path`s to `generate_image_via_nano_banana(..., input_image_paths=...)`. The system prompt is augmented with a "BRAND LOGO — REFERENCE IMAGE ATTACHED" directive instructing Nano Banana to overlay the logo at corner/header scale, preserve colors/proportions, and NOT redraw or stylize the mark itself. Works for both web-chat AND Telegram-source `[[IMAGE]]` blocks.

@@ -86,6 +86,65 @@ def _is_research_goal(goal: str) -> bool:
     return any(term in g for term in _RESEARCH_GOAL_TERMS)
 
 
+# ── Dataset / lead-hunt enforcement ────────────────────────────────────────
+# Goals that imply "harvest a list of N rows" (companies, leads, contacts,
+# nonprofits, prospects, …) must finish with a CSV artifact carrying at
+# least DATASET_MIN_ROWS data rows. Without this gate the agent happily
+# ships a methodology PDF with zero rows — the exact bug reported Feb 2026
+# on a "harvest businesses in 5 metros" mission.
+_DATASET_GOAL_TERMS = (
+    "harvest ", "lead hunt", "lead-hunt", "lead list", "leadgen",
+    "lead-gen", "lead gen ", "leads in ", "leads from ",
+    "list of compan", "list of business", "list of lead",
+    "list of contact", "list of organi", "list of nonprofit",
+    "list of prospect", "list of restaur", "list of agenc",
+    "list of firm", "list of vendor", "list of suppl",
+    "company list", "business list", "contact list", "prospect list",
+    "dataset of ", "directory of ", "roster of ",
+    "build a list", "build me a list", "build a database",
+    "generate a list", "generate leads",
+    "scrape compan", "scrape business", "scrape lead",
+    "harvest a dataset", "harvest dataset",
+)
+DATASET_MIN_ROWS = 15
+# Maximum rows we let the agent push into a single csv_append_rows call.
+# Above this we truncate + warn — keeps the LLM honest and prevents one
+# bogus call from polluting the dataset with hallucinated bulk.
+DATASET_MAX_ROWS_PER_CALL = 25
+# Hard ceiling on accumulated rows per CSV. Anything beyond this is almost
+# certainly the agent over-claiming. Real lead-hunt missions in the
+# wild produce 30-200 rows; 500 is a defensive cap.
+DATASET_MAX_ROWS_TOTAL = 500
+
+
+def _is_dataset_goal(goal: str) -> bool:
+    """Heuristic: does this mission goal ask for a row-oriented dataset
+    (list of companies / leads / contacts / etc.)? Same liberal-tendency
+    rationale as `_is_research_goal`."""
+    if not goal:
+        return False
+    g = " " + goal.lower() + " "
+    return any(term in g for term in _DATASET_GOAL_TERMS)
+
+
+def _count_csv_data_rows(artifacts: list) -> int:
+    """Look at the mission's accumulated artifacts and return the largest
+    `csv_row_count` field across .csv artifacts. We trust the field
+    stamped by `csv_append_rows`; if absent (legacy write_artifact CSV),
+    fall back to 0 so the gate trips and the agent goes back to the
+    incremental tool."""
+    best = 0
+    for a in (artifacts or []):
+        name = (a.get("original_name") or "").lower()
+        if not name.endswith(".csv"):
+            continue
+        n = int(a.get("csv_row_count") or 0)
+        if n > best:
+            best = n
+    return best
+
+
+
 def _extract_domain(url: str) -> Optional[str]:
     """Return the registrable hostname (minus www.) or None if not a URL."""
     if not url or not isinstance(url, str):
@@ -233,7 +292,7 @@ class DraftGoalBody(BaseModel):
 # chars is the sweet spot (≤200 too vague; ≥1200 starts contradicting
 # itself). The drafter prompt enforces this.
 GOAL_MIN_CHARS = 200
-GOAL_MAX_CHARS = 1200
+GOAL_MAX_CHARS = 1800
 
 _DRAFTER_SYSTEM = """You rewrite a rough user idea into a polished autonomous-mission goal for the Foundry lead-agent loop.
 
@@ -242,14 +301,15 @@ Foundry missions are run by an LLM that picks tools (web_search, browse_url, bro
 OUTPUT FORMAT — STRICT
 - Return JSON only. No prose, no markdown, no fences.
 - Shape: {"goal": "<the polished mission goal>"}
-- The `goal` value must be between 200 and 1200 characters.
+- The `goal` value must be between 200 and 1800 characters.
 
 BEST PRACTICES THE GOAL MUST FOLLOW
 1. Lead with the concrete deliverable, named with a real filename and extension. Examples:
    • "Produce `competitor_teardown.pdf` — a 1-page brief…"
    • "Produce `linkedin_posts.md` — 5 ready-to-publish posts…"
    • "Produce `top_pricing_changes.csv` — one row per competitor with columns name, plan, monthly price, source URL."
-2. Default file formats: `.pdf` for briefs/reports/audits/proposals; `.docx` only if the user mentioned Word; `.csv` for lists/tables; `.md` only when the user explicitly asked for raw markdown; `.ics` for calendars. NEVER `.txt`.
+2. Default file formats: `.pdf` for briefs/reports/audits/proposals; `.docx` only if the user mentioned Word; `.csv` for lists/tables/datasets/lead-hunts; `.md` only when the user explicitly asked for raw markdown; `.ics` for calendars. NEVER `.txt`.
+   • **DATASET / LEAD-HUNT RULE**: if the input mentions "harvest", "list of companies / businesses / leads / contacts / nonprofits", "lead hunt / list / gen", "prospect list", "directory", "roster", "build a list / database", or "scrape companies / businesses", the deliverable MUST be a `.csv`. Spell out the columns explicitly in the goal (e.g. "columns: Business Name, City, State, Years in Business, Annual Revenue (USD), Website URL, Contact Name, Contact Phone, Contact Email, Source URL"). Set a minimum-rows target ("≥ 25 verified rows"). Tell the agent to use the `csv_append_rows` tool and to cite the Source URL on every row. Name free public sources by category in one short line ("harvest from Chamber of Commerce directories, BBB, Yelp, SEC EDGAR, state Secretary of State registries, OpenCorporates, USAspending.gov, and industry association rosters").
 3. Spell out 3-5 measurable success criteria — concrete things the agent can verify it did (e.g. "cite at least 5 distinct sources with URLs", "include a comparison table with ≥4 rows", "include current pricing for each app").
 4. If the work involves research, demand **breadth**: "cite ≥5 distinct sources" or "browse the official site of each of the top 5 competitors". Foundry's research-breadth gate refuses to finish a research mission with <5 sources, so this aligns with the engine.
 5. If the work involves visiting a specific site, include the exact URL.
@@ -723,10 +783,13 @@ async def run_mission_loop(
                 # / network errors) or when finishing as an `ask_user`
                 # outcome rather than a real deliverable.
                 mission_row = await db.missions.find_one(
-                    {"id": mission_id}, {"goal": 1, "research_gate_warned": 1}
+                    {"id": mission_id},
+                    {"goal": 1, "research_gate_warned": 1,
+                     "dataset_gate_warned": 1, "artifacts": 1},
                 )
                 goal = (mission_row or {}).get("goal", "")
                 already_warned = bool((mission_row or {}).get("research_gate_warned"))
+                dataset_already_warned = bool((mission_row or {}).get("dataset_gate_warned"))
                 summary_is_failure = summary.upper().startswith("FAILED:")
                 if (
                     _is_research_goal(goal)
@@ -763,6 +826,53 @@ async def run_mission_loop(
                             {"$set": {"research_gate_warned": True}},
                         )
                         continue  # back into the loop, don't actually finish
+                # ── Dataset row-count gate ──────────────────────────────
+                # For list/harvest/lead-hunt missions, refuse to finish
+                # until the CSV artifact has at least DATASET_MIN_ROWS
+                # data rows. This is the fix for the Feb 2026 production
+                # bug where a "harvest businesses across 5 metros"
+                # mission shipped a methodology PDF with ZERO rows.
+                if (
+                    _is_dataset_goal(goal)
+                    and not summary_is_failure
+                    and not dataset_already_warned
+                ):
+                    row_count = _count_csv_data_rows(
+                        (mission_row or {}).get("artifacts") or [],
+                    )
+                    if row_count < DATASET_MIN_ROWS:
+                        needed = DATASET_MIN_ROWS - row_count
+                        nudge = (
+                            f"FINISH BLOCKED — dataset is too thin. "
+                            f"This goal asks for a row-oriented list / "
+                            f"dataset / lead hunt, but the CSV artifact "
+                            f"currently has {row_count} data row(s). "
+                            f"Minimum to finish: {DATASET_MIN_ROWS}. "
+                            f"Go harvest {needed} more — use a DIFFERENT "
+                            f"public source than what you've already tried "
+                            f"(Chamber of Commerce member rosters, BBB "
+                            f"business listings, Yelp / Google Maps, SEC "
+                            f"EDGAR full-text search, OpenCorporates, "
+                            f"state Secretary of State business registries, "
+                            f"USAspending.gov contractor lists, industry "
+                            f"association rosters, LinkedIn public company "
+                            f"pages). Pattern: `web_search` for a fresh "
+                            f"source → `web_scrape` or `web_extract` on "
+                            f"the aggregator page → `csv_append_rows` "
+                            f"with the harvested batch. Repeat until you "
+                            f"clear the {DATASET_MIN_ROWS}-row threshold. "
+                            f"DO NOT write a PDF / methodology document — "
+                            f"the deliverable is the CSV itself."
+                        )
+                        await _append_event(
+                            db, mission_id, kind="system",
+                            text=nudge, iteration=iteration,
+                        )
+                        await db.missions.update_one(
+                            {"id": mission_id},
+                            {"$set": {"dataset_gate_warned": True}},
+                        )
+                        continue
                 await _append_event(db, mission_id, kind="finish",
                                     text=summary, iteration=iteration)
                 # If the mission finishes WITHOUT producing any binary
@@ -2039,6 +2149,226 @@ def build_tools(
             "engine": result.get("engine"),
         }
 
+
+    async def csv_append_rows(ctx, args):
+        """Incrementally build a CSV deliverable across multiple turns.
+
+        Args:
+            name (str):         CSV filename, e.g. "phoenix_leads.csv".
+                                 Same name across calls = same growing CSV.
+            columns (list[str], required first call): ordered column headers.
+                                 Ignored on subsequent calls (locked at first call).
+            rows (list[list] | list[dict]): rows to append. dicts use the
+                                 declared columns as keys; lists are positional.
+            title (str, optional): human-friendly title for the Documents library.
+                                 Defaults to a slug from `name`.
+            replace (bool, optional): if true, REPLACE existing rows instead
+                                 of appending. Use for de-dupe corrections.
+
+        Behaviour:
+            - Validates row shape against locked columns; skips malformed
+              rows with a warning.
+            - Caps a single call at DATASET_MAX_ROWS_PER_CALL rows.
+            - Caps total accumulated rows at DATASET_MAX_ROWS_TOTAL.
+            - Persists state in `missions.csv_workspace.<name>` and
+              regenerates the CSV bytes on every call.
+            - Pulls the previous version of the artifact (same original_name)
+              off `mission.artifacts` so the user sees one growing file
+              rather than a parade of revisions.
+            - Stamps `csv_row_count` on the artifact dict so the dataset-
+              row gate in the finish handler can verify breadth.
+        """
+        import csv as _csv
+        import io as _io
+
+        mission_id = ctx.get("mission_id") or ""
+        if not mission_id:
+            return {"error": "No mission context — csv_append_rows is only available inside a running mission."}
+
+        name = (args.get("name") or "").strip()
+        if not name:
+            return {"error": "name is required (CSV filename like 'phoenix_leads.csv')"}
+        if not name.lower().endswith(".csv"):
+            name = name + ".csv"
+
+        columns_in = args.get("columns") or []
+        rows_in = args.get("rows") or []
+        replace = bool(args.get("replace"))
+        title = (args.get("title") or "").strip()
+
+        if not isinstance(rows_in, list):
+            return {"error": "rows must be a list of dicts or list of lists"}
+        if not rows_in and not replace:
+            return {"error": "rows is empty — pass at least one row (or replace=true to clear)"}
+
+        if len(rows_in) > DATASET_MAX_ROWS_PER_CALL:
+            rows_in = rows_in[:DATASET_MAX_ROWS_PER_CALL]
+            truncated_call = True
+        else:
+            truncated_call = False
+
+        # Load existing workspace state for this name (if any).
+        mission_row = await db.missions.find_one(
+            {"id": mission_id},
+            {"csv_workspace": 1, "artifacts": 1},
+        ) or {}
+        # `csv_workspace` is a LIST of {"name", "columns", "rows", "updated_at"}
+        # entries — we can't key it by filename because Mongo treats `.` in
+        # dotted-path keys as nesting (`x.csv` would become {x: {csv: ...}}).
+        workspace = list(mission_row.get("csv_workspace") or [])
+        slot_idx = next(
+            (i for i, w in enumerate(workspace) if (w or {}).get("name") == name),
+            -1,
+        )
+        slot = workspace[slot_idx] if slot_idx >= 0 else {}
+        columns = slot.get("columns") or []
+        existing_rows = slot.get("rows") or []
+
+        # First call must declare columns; later calls can omit them.
+        if not columns:
+            if not isinstance(columns_in, list) or not columns_in:
+                return {"error": (
+                    "First call to csv_append_rows for this file MUST include "
+                    "`columns` (a list of header strings). Example: "
+                    '{"name":"leads.csv","columns":["Company","City","Website","Source URL"],"rows":[...]}'
+                )}
+            columns = [str(c).strip() for c in columns_in if str(c).strip()]
+            if not columns:
+                return {"error": "columns is empty after trimming"}
+        # If caller passed columns on a later call, ignore them silently
+        # but tell the LLM so it doesn't think it changed the schema.
+
+        # Coerce rows into list-of-strings aligned with columns.
+        normalised: List[List[str]] = []
+        skipped: List[str] = []
+        for idx, row in enumerate(rows_in):
+            if isinstance(row, dict):
+                normalised.append([str(row.get(c, "") or "") for c in columns])
+            elif isinstance(row, list):
+                # Pad or trim to match column count.
+                rstr = [str(v or "") for v in row[:len(columns)]]
+                while len(rstr) < len(columns):
+                    rstr.append("")
+                normalised.append(rstr)
+            else:
+                skipped.append(f"row #{idx}: not a dict or list")
+
+        # Drop completely-empty rows (every cell blank) — those add no signal.
+        normalised = [r for r in normalised if any((c or "").strip() for c in r)]
+
+        if replace:
+            merged = normalised
+        else:
+            merged = list(existing_rows) + normalised
+
+        # Enforce total cap.
+        if len(merged) > DATASET_MAX_ROWS_TOTAL:
+            merged = merged[:DATASET_MAX_ROWS_TOTAL]
+            truncated_total = True
+        else:
+            truncated_total = False
+
+        # Render CSV bytes.
+        buf = _io.StringIO()
+        writer = _csv.writer(buf, quoting=_csv.QUOTE_MINIMAL)
+        writer.writerow(columns)
+        for r in merged:
+            writer.writerow(r)
+        csv_text = buf.getvalue()
+
+        # Pull any previous artifact entry for this file so the library
+        # doesn't accumulate revisions on every append.
+        try:
+            await db.missions.update_one(
+                {"id": mission_id},
+                {"$pull": {"artifacts": {"original_name": name}}},
+            )
+        except Exception:
+            pass
+        # Also delete the previous Documents row(s) for this CSV under
+        # this mission so the org library shows ONE current file.
+        try:
+            await db.documents.delete_many({
+                "org_id": ctx["org_id"],
+                "message_id": ctx.get("mission_id") or "",
+                "original_name": name,
+            })
+        except Exception:
+            pass
+
+        from artifacts import _safe_filename
+        clean, ext = _safe_filename(name)
+        attachments = await save_artifacts(
+            db, [{
+                "name": clean, "ext": ext, "mime": "text/csv",
+                "title": title or clean, "content": csv_text,
+            }],
+            docs_root=docs_root,
+            org_id=ctx["org_id"],
+            conversation_id=ctx.get("mission_id", ""),
+            message_id=ctx.get("mission_id", ""),
+            agent_id=ctx.get("lead_agent_id", ""),
+            agent_name=ctx.get("lead_agent_name", "Mission"),
+            created_by=ctx.get("created_by", ""),
+        )
+        if not attachments:
+            return {"error": "Persist failed"}
+
+        a = attachments[0]
+
+        # Stash the workspace state for the next call. We rebuild the
+        # whole array each time (it's bounded by the rows cap so this
+        # stays cheap) — keeps the Mongo write atomic per call.
+        new_slot = {
+            "name": name,
+            "columns": columns,
+            "rows": merged,
+            "updated_at": datetime.now(timezone.utc),
+        }
+        if slot_idx >= 0:
+            workspace[slot_idx] = new_slot
+        else:
+            workspace.append(new_slot)
+        try:
+            await db.missions.update_one(
+                {"id": mission_id},
+                {"$set": {"csv_workspace": workspace}},
+            )
+        except Exception as exc:
+            logger.warning("csv_workspace persist failed: %s", exc)
+
+        # Stamp `csv_row_count` on the artifact dict — the dataset-row
+        # gate in the finish handler reads this.
+        artifact_dict = {
+            "document_id": a.get("document_id"),
+            "original_name": a.get("original_name"),
+            "filename": a.get("filename"),
+            "mime": a.get("mime"),
+            "url": a.get("url"),
+            "size": a.get("size"),
+            "csv_row_count": len(merged),
+            "csv_columns": columns,
+        }
+
+        return {
+            "artifact": artifact_dict,
+            "ok": True,
+            "row_count": len(merged),
+            "rows_appended": len(normalised),
+            "rows_skipped": skipped[:5],
+            "columns": columns,
+            "truncated_call": truncated_call,
+            "truncated_total": truncated_total,
+            "hint": (
+                f"CSV now has {len(merged)} row(s). Keep going — "
+                f"target is {DATASET_MIN_ROWS}+ rows before finishing. "
+                "Next: harvest more from a DIFFERENT source (Chamber of "
+                "Commerce, BBB, Yelp, Google Maps, SEC EDGAR, OpenCorporates) "
+                "and call csv_append_rows again with the next batch."
+            ),
+        }
+
+
     async def read_attachment(ctx, args):
         """Read a user-uploaded mission attachment. Call with no args to
         list all attachments on this mission, or pass `name` (substring
@@ -2107,9 +2437,13 @@ def build_tools(
              "Read a file the user attached when starting this mission. Call with no args to list attachments; pass `name` (substring) or `attachment_id` to read the full text. Use this when the mission goal references 'the uploaded file' / 'the PDF I attached' / etc.",
              '{"name": "substring"}', read_attachment),
         Tool("write_artifact",
-             "Save a deliverable to the Documents library — users download these. PREFER **.pdf** for briefs / reports / plans / audits / memos / proposals (body is Markdown, the system renders a polished PDF). Use **.docx** when the goal mentions Word. Use .md only when the goal explicitly asks for raw markdown. Use .csv for tabular data. ALLOWED extensions: .pdf .docx .md .csv .tsv .json .html .ics .vcf .eml .sh .py .js .ts .sql .txt .xml .yaml. NEVER save a long-form brief as .txt — it strips formatting. NOT for images — use `generate_image` instead.",
+             "Save a deliverable to the Documents library — users download these. PREFER **.pdf** for briefs / reports / plans / audits / memos / proposals (body is Markdown, the system renders a polished PDF). Use **.docx** when the goal mentions Word. Use .md only when the goal explicitly asks for raw markdown. Use .csv for tabular data — BUT prefer `csv_append_rows` for any list / dataset / lead-hunt mission (it builds the CSV row-by-row across multiple turns so you can harvest 50-200 rows within the iteration budget). ALLOWED extensions: .pdf .docx .md .csv .tsv .json .html .ics .vcf .eml .sh .py .js .ts .sql .txt .xml .yaml. NEVER save a long-form brief as .txt — it strips formatting. NOT for images — use `generate_image` instead.",
              '{"name": "audit_report.pdf", "mime": "application/pdf", "title": "SEO Audit", "content": "# Heading\\n\\nMarkdown body — system renders to PDF."}',
              write_artifact, side_effect=True),
+        Tool("csv_append_rows",
+             "Incrementally build a CSV deliverable across multiple turns. Use this — NOT write_artifact — for ANY list / dataset / lead-hunt / directory / contacts / company list mission. First call MUST declare `columns` (ordered list of header strings); subsequent calls only need `name` + `rows` (list of dicts keyed by column, or list of lists in column order). The CSV grows on every call — the library shows ONE growing file, not a parade of revisions. Cap per call: 25 rows; total cap: 500 rows. After every call you'll receive an updated row count + a hint reminding you what's left. Target ≥ 15 rows before finishing (the dataset-row finish gate enforces this). Strategy: web_search → web_scrape / web_extract per result → csv_append_rows with the harvested batch → repeat with a DIFFERENT source.",
+             '{"name": "phoenix_leads.csv", "columns": ["Company","City","State","Website","Industry","Source URL"], "rows": [{"Company":"Acme Tech","City":"Phoenix","State":"AZ","Website":"https://acme.example","Industry":"SaaS","Source URL":"https://chamber.example/members"}]}',
+             csv_append_rows, side_effect=True),
         Tool("generate_image",
              "Render a new image (PNG) with Nano Banana (default) or GPT Image 1 and save it to the Documents library. Use this for ANY image deliverable — do NOT try to emit .png via write_artifact.",
              '{"prompt": "A flat-design infographic...", "model": "nano-banana"}',
