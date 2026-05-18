@@ -3,6 +3,21 @@
 Plain-English feature inventory of **Foundry by SoulPrint Engine** for non-technical teammates. Each section is a category of capabilities and what they do for users.
 
 ---
+## 🎨 Feb 17, 2026 — MetaTargetModal: theme-aware, robust empty/error states
+- **Production bug**: user clicked "Select target" on the Facebook connection and got an effectively-empty modal — just the orange "Pin as target" pill floating at the bottom, no readable text. Root cause: the modal was hardcoded to a dark colour scheme (`bg-zinc-900` + `text-white` + `text-amber-300` errors + `opacity-70` empty-states) which against the busy beige light-mode page looked like a low-contrast island. The header / list / empty-state text was technically rendered but visually unreadable.
+- **Fix** (`ConnectionsPanel.js` `MetaTargetModal`):
+  - Theme-aware backdrop & card: `bg-white text-zinc-900 dark:bg-zinc-900 dark:text-white` so the modal matches whichever theme the user is in. Same for borders, hover states, and the radio-button container.
+  - **Empty state** now renders inside a high-contrast amber-bordered box with clear action steps ("disconnect & reconnect Facebook with `Manage your Pages` permissions"). Hard to miss now.
+  - **Error state** restructured into the same amber-bordered box, includes a "Most common cause" tip pointing at the `pages_show_list` scope.
+  - Header upgraded to `text-base font-semibold` so the title doesn't disappear into the surrounding chrome.
+  - Min-height on the body (`min-h-[180px]`) so the modal never collapses to button-only when the API is slow.
+  - Selected-state borders darkened from `border-orange-500/60` to solid `border-orange-500` for clearer selection feedback.
+- Webpack compiles clean; lint passes.
+
+⚠️ **Production redeploy required** to pick up the modal fix on https://foundryagents.ai.
+
+---
+
 ## 🐛 Feb 17, 2026 — IG publish silent-fail + invisible failed-post UX
 - **Production root cause**: User saw "Publishing failed on 1 platform" with no detail, and the failed post vanished from view. Two distinct bugs.
 - **Bug 1 — Meta Graph API was being handed relative URLs**: `_image_url(post)` returned the raw `/api/files/<filename>` path stored in `social_posts`. Meta requires fully-qualified `https://host/...` because they fetch the image server-side. The IG `POST_IG_USER_MEDIA` container-creation step silently failed because of this. Fixed `social_publishing.py`:

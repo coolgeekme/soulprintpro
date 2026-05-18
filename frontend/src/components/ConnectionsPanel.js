@@ -822,46 +822,80 @@ export function MetaTargetModal({ orgId, connection, onClose, onSaved }) {
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm" data-testid="meta-target-modal">
-      <div className="bg-zinc-900 border border-white/10 rounded-xl w-full max-w-lg max-h-[80vh] overflow-hidden flex flex-col text-white">
-        <div className="flex items-center justify-between px-4 py-3 border-b border-white/10">
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm" data-testid="meta-target-modal">
+      <div
+        // Theme-aware modal: in light mode this renders as a white
+        // card with dark text; in dark mode it stays the original
+        // dark-zinc card. Previous version was hardcoded to
+        // `bg-zinc-900 text-white` and looked broken (faint, near-
+        // invisible) in light mode where the rest of the app is.
+        className="w-full max-w-lg max-h-[80vh] overflow-hidden flex flex-col rounded-xl shadow-2xl border border-black/10 dark:border-white/10 bg-white text-zinc-900 dark:bg-zinc-900 dark:text-white"
+      >
+        <div className="flex items-center justify-between px-5 py-4 border-b border-black/10 dark:border-white/10">
           <div>
-            <div className="text-sm font-medium">Select your Meta target</div>
-            <div className="text-[11px] opacity-60">
+            <div className="text-base font-semibold">Select your Meta target</div>
+            <div className="text-[12px] opacity-70 mt-0.5">
               One Facebook Page (and its linked Instagram account) per org. Pick the one this org should publish to.
             </div>
           </div>
           <button
             onClick={onClose}
-            className="opacity-60 hover:opacity-100"
+            className="opacity-60 hover:opacity-100 shrink-0 ml-3"
             data-testid="meta-target-close"
+            aria-label="Close"
           >
             <X className="h-4 w-4" />
           </button>
         </div>
-        <div className="overflow-auto px-2 py-2 flex-1">
+        <div className="overflow-auto px-3 py-3 flex-1 min-h-[180px]">
           {loading && (
-            <div className="flex items-center gap-2 px-3 py-6 text-sm opacity-70">
-              <Loader2 className="h-4 w-4 animate-spin" /> Loading your Facebook Pages…
+            <div className="flex flex-col items-center gap-2 px-3 py-10 text-sm opacity-80">
+              <Loader2 className="h-5 w-5 animate-spin" />
+              <span>Loading your Facebook Pages…</span>
             </div>
           )}
           {error && !loading && (
-            <div className="px-3 py-3 text-sm text-amber-300 flex items-start gap-2">
+            <div
+              className="mx-2 my-2 px-3 py-3 rounded-lg border border-amber-400/40 bg-amber-50/80 dark:bg-amber-500/10 text-amber-900 dark:text-amber-200 text-sm flex items-start gap-2"
+              data-testid="meta-target-error"
+            >
               <AlertTriangle className="h-4 w-4 mt-0.5 flex-shrink-0" />
-              <span>{error}</span>
+              <div className="flex-1 min-w-0">
+                <div className="font-medium mb-1">Couldn't load your Facebook Pages</div>
+                <div className="opacity-90 break-words">{error}</div>
+                <div className="opacity-70 mt-2 text-[12px]">
+                  Most common cause: the Facebook connection lacks the
+                  `pages_show_list` permission. Try disconnecting and
+                  reconnecting Facebook with full Page-management
+                  permissions.
+                </div>
+              </div>
             </div>
           )}
           {!loading && !error && targets.pages.length === 0 && (
-            <div className="px-3 py-6 text-sm opacity-70 space-y-2">
-              <div>No Facebook Pages found for this account.</div>
-              <div className="text-[12px] opacity-70">
-                You need to be the admin (or editor) of at least one Facebook Page.
-                Open <a href="https://business.facebook.com" target="_blank" rel="noreferrer" className="underline">business.facebook.com</a>, create or claim a Page, then come back and reconnect.
+            <div
+              className="mx-2 my-2 px-3 py-4 rounded-lg border border-amber-400/40 bg-amber-50/80 dark:bg-amber-500/10 text-amber-900 dark:text-amber-200 text-sm space-y-2"
+              data-testid="meta-target-empty"
+            >
+              <div className="font-medium flex items-center gap-2">
+                <AlertTriangle className="h-4 w-4 flex-shrink-0" />
+                No Facebook Pages found for this account
+              </div>
+              <div className="text-[12px] opacity-90 leading-relaxed">
+                You need to be the admin (or editor) of at least one
+                Facebook Page. Open{" "}
+                <a href="https://business.facebook.com" target="_blank" rel="noreferrer" className="underline font-medium">
+                  business.facebook.com
+                </a>
+                , create or claim a Page, then come back, disconnect
+                Facebook, and reconnect it — this time make sure to grant{" "}
+                <b>Manage your Pages</b> and{" "}
+                <b>Publish content</b> permissions when prompted.
               </div>
             </div>
           )}
           {!loading && !error && targets.pages.length > 0 && (
-            <ul className="space-y-1">
+            <ul className="space-y-1.5" data-testid="meta-target-list">
               {targets.pages.map((p) => {
                 const checked = picked === p.page_id;
                 const ig = p.linked_instagram;
@@ -871,8 +905,8 @@ export function MetaTargetModal({ orgId, connection, onClose, onSaved }) {
                     onClick={() => setPicked(p.page_id)}
                     className={`px-3 py-2.5 rounded-md cursor-pointer border transition ${
                       checked
-                        ? "border-orange-500/60 bg-orange-500/10"
-                        : "border-transparent hover:bg-white/5"
+                        ? "border-orange-500 bg-orange-500/10"
+                        : "border-black/10 hover:bg-black/5 dark:border-white/5 dark:hover:bg-white/5"
                     }`}
                     data-testid={`meta-target-page-${p.page_id}`}
                   >
@@ -887,7 +921,7 @@ export function MetaTargetModal({ orgId, connection, onClose, onSaved }) {
                       />
                       <div className="flex-1 min-w-0">
                         <div className="text-sm font-medium flex items-center gap-2">
-                          <FacebookIcon className="h-3.5 w-3.5 text-blue-400" />
+                          <FacebookIcon className="h-3.5 w-3.5 text-blue-500" />
                           <span className="truncate">{p.page_name}</span>
                           {p.category && (
                             <span className="text-[10px] opacity-50 uppercase tracking-wider truncate">{p.category}</span>
@@ -895,12 +929,12 @@ export function MetaTargetModal({ orgId, connection, onClose, onSaved }) {
                         </div>
                         <div className="mt-1 text-[12px]">
                           {ig ? (
-                            <span className="inline-flex items-center gap-1 text-pink-300">
+                            <span className="inline-flex items-center gap-1 text-pink-600 dark:text-pink-300">
                               <InstagramIcon className="h-3 w-3" />
                               @{ig.username || ig.ig_user_id} linked
                             </span>
                           ) : (
-                            <span className="inline-flex items-center gap-1 text-amber-300/80">
+                            <span className="inline-flex items-center gap-1 text-amber-700 dark:text-amber-300/80">
                               <AlertTriangle className="h-3 w-3" />
                               No Instagram Business account linked to this Page
                             </span>
@@ -914,10 +948,10 @@ export function MetaTargetModal({ orgId, connection, onClose, onSaved }) {
             </ul>
           )}
         </div>
-        <div className="px-4 py-3 border-t border-white/10 flex items-center justify-end gap-2">
+        <div className="px-5 py-3 border-t border-black/10 dark:border-white/10 flex items-center justify-end gap-2">
           <button
             onClick={onClose}
-            className="text-xs px-3 py-1.5 rounded-md hover:bg-white/5"
+            className="text-xs px-3 py-1.5 rounded-md hover:bg-black/5 dark:hover:bg-white/5"
             data-testid="meta-target-cancel"
           >
             Cancel
@@ -925,7 +959,7 @@ export function MetaTargetModal({ orgId, connection, onClose, onSaved }) {
           <button
             onClick={save}
             disabled={saving || !picked}
-            className="text-xs px-3 py-1.5 rounded-md bg-orange-500/90 hover:bg-orange-500 text-white inline-flex items-center gap-1 disabled:opacity-50"
+            className="text-xs px-3 py-1.5 rounded-md bg-orange-500 hover:bg-orange-600 text-white inline-flex items-center gap-1 disabled:opacity-50 disabled:cursor-not-allowed"
             data-testid="meta-target-save"
           >
             {saving ? <Loader2 className="h-3 w-3 animate-spin" /> : <Check className="h-3 w-3" />}
