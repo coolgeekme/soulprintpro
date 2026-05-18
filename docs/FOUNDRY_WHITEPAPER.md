@@ -8,7 +8,7 @@
 
 ## Executive Summary
 
-Foundry Agents is a **multi-tenant AI workforce platform** that lets a single human operator run an unlimited number of brands, clients, or product lines — each with its own dedicated team of specialised AI workers, its own brand voice, its own document library, its own social publishing accounts, its own billing, and its own audit trail.
+Foundry Agents is a **multi-tenant AI workforce platform** that lets a single human operator run multiple brands, clients, or product lines — each with its own dedicated team of specialised AI workers, its own brand voice, its own document library, its own social publishing accounts, its own billing, and its own audit trail. Org capacity scales with plan tier: solo operators start with one org; multi-brand agencies on the top tier get unlimited orgs and multi-workspace support.
 
 It is built for the operator who has outgrown ChatGPT but cannot justify hiring a marketing team. It replaces — credibly and conservatively — a stack of seven to ten point tools (ChatGPT Team, Jasper, Buffer, Lindy, Notion AI, Firecrawl, a junior marketer, a research VA, and a discovery-audit consultant) with one organisation, one login, one bill, and one source of truth.
 
@@ -444,19 +444,22 @@ A non-exhaustive list of how operators actually use Foundry day to day:
 
 ## 20. Pricing and Plans
 
-Foundry's pricing is published live on [foundryagents.ai/pricing](https://foundryagents.ai). The plan tiers are:
+Foundry's pricing is published live on [foundryagents.ai/pricing](https://foundryagents.ai/pricing). The plan ladder follows a metalwork metaphor — heat, shape, refine — and the org / seat / team allowances scale with each tier:
 
-- **Free** — try the platform. One org, one team, modest spend allowance. Card not required.
-- **Starter** — solo founder. One org, full agent catalogue, modest monthly spend allowance, no publishing connections.
-- **Growth** — small team. Multiple orgs, multiple seats, generous monthly spend, live social publishing on the major platforms.
-- **Agency** — multi-brand operator. Unlimited orgs, all Composio integrations, white-label audit PDFs (in progress), priority support.
-- **Enterprise** — bespoke. Volume pricing, SSO (roadmap), dedicated success manager, contract terms.
+- **Spark** — solo founder and small operator. 1 user, 1 organization, 3 teams, modest monthly usage allowance. The ideal starting point for "I just want to try the platform with my own brand." Add-ons are designed for Spark customers who outgrow the base allowance without needing the rest of Temper's features:
+  - **Extra organization** — $20/mo per additional org
+  - **Extra seat** — $30/mo per teammate
+  - **Usage packs** — 500 extra messages ($15), 200 browser-automation minutes ($20), or 10 Signal Audits ($10), purchased on-demand.
+- **Temper** — growing team or small agency managing a few brands. 5 seats, 3 organizations, unlimited teams, expanded usage allowance. Includes 15% off ArcheForge Studios services and priority queue.
+- **Refine** — multi-brand operator, agency, or enterprise. Unlimited seats, unlimited organizations, multi-workspace support, generous usage allowance. Includes $2,000/mo of ArcheForge Studios credits and 30% off everything beyond that.
 
-Plans renew monthly or annually. Annual carries a discount that's published on the pricing page.
+Org capacity is enforced per tier: a Spark account with no add-ons can hold one organization; the platform refuses to create a second without upgrading the plan or buying the extra-org add-on. Workspace-level rollups (where one billing entity owns multiple organizations) are a Refine-tier feature.
 
-The overage model is explicit: each plan carries a base monthly LLM allowance; spend above the allowance is metered at a per-1k-token rate published on the pricing page. The Spend Dashboard surfaces overage status in real time. Operators can set a hard cap; the platform refuses to spend past it.
+Plans renew monthly or annually. Annual carries roughly a 17% discount (two months free) and locks in the seat count at sign-up rate. Monthly is true month-to-month with cancel-anytime.
 
-There are no per-agent fees, no per-conversation fees, and no surprise add-ons.
+The overage model is explicit: each plan carries a base monthly usage allowance; usage above the allowance is metered at a per-1k-token rate published on the pricing page. The Spend Dashboard surfaces overage status in real time. Operators can set a hard cap; the platform refuses to spend past it.
+
+There are no per-agent fees, no per-conversation fees, and no surprise add-ons. The only optional spend beyond the plan is the explicit add-on menu above.
 
 ---
 

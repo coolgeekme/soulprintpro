@@ -28,7 +28,7 @@ If you've ever caught yourself paying for ChatGPT *and* Jasper *and* Lindy *and*
 
 ## 🏢 Multi-Org, Multi-Team, Multi-Brand
 
-- **Unlimited organisations per user.** One account, one bill, infinite client brands.
+- **Multi-org per user** — bring multiple brands or clients under one login. Org limits scale with your plan: **Spark** includes 1 org (with extra-org add-ons at $20/mo each), **Temper** includes 3 orgs, **Refine** is unlimited and multi-workspace.
 - **Per-org isolation.** Memory, documents, connections, billing, agents — every byte is scoped to the org. A leak between two of your clients is mechanically impossible.
 - **Per-team SoulPrint.** Mission, tone, audience, values, and north star are saved per team and automatically injected into every agent reply, so your luxury jewellery brand never gets the same copy voice as your dental clinic.
 - **Roles**: Owner, Admin, Member, Viewer. Invite via email link or shareable URL.
@@ -207,7 +207,7 @@ Each connection is **per-user**, **per-org**, and **scope-explicit**. Smart defa
 - **Spend Dashboard** — every conversation, every mission, every image generation, every tool call has a token cost and a dollar cost. Sliced by user, by org, by agent, by day.
 - **Hard caps + soft warnings** — set a monthly ceiling; the platform refuses to spend past it.
 - **Overage tracking** — see exactly which agent ran hot last Tuesday.
-- **Tiered plans** — Free (try it), Starter (solo founder), Growth (small team), Agency (multi-brand), Enterprise (white-label).
+- **Tiered plans** — Spark (solo founder, 1 org), Temper (growing team, 3 orgs, 5 seats), Refine (multi-brand operators, unlimited orgs + multi-workspace). Spark customers can add extra orgs as monthly add-ons ($20/mo each) without upgrading.
 - **Access codes** — boost a seat count or extend a trial with a code (great for partner programmes and friends-and-family rollouts).
 
 **Benefit:** You always know what you're spending. No surprise bills, no opaque "credits."
