@@ -2317,6 +2317,50 @@ async def my_chief_of_staff_new(org_id: str, u: dict = Depends(get_current_user)
 # Lives here (not in a separate module) because `generate_agent_reply`,
 # `AGENTS`, and the conv/team loaders are all defined in this file
 # above and importing them out of order would be a circularity hazard.
+_TELEGRAM_IMAGE_BLOCK_RE = re.compile(
+    r"\[\[IMAGE\s+[^\]]+?\]\]",
+    re.DOTALL | re.IGNORECASE,
+)
+
+
+def _cap_image_blocks_for_telegram(reply_text: str, *, max_blocks: int = 1) -> str:
+    """Telegram-specific safety net: keep at most ``max_blocks`` [[IMAGE]]
+    blocks in ``reply_text`` and drop the rest. Each block renders into a
+    Nano Banana call that costs 5–15s on the wire; emitting 3–5 in one
+    turn makes the bot look like it's spamming the user unprompted.
+
+    Idempotent — leaves reply_text untouched when it already has
+    ``<= max_blocks`` blocks. Replaces dropped blocks with a single
+    trailing nudge so the user knows variations are available on demand.
+    """
+    if not reply_text:
+        return reply_text or ""
+    matches = list(_TELEGRAM_IMAGE_BLOCK_RE.finditer(reply_text))
+    if len(matches) <= max_blocks:
+        return reply_text
+    # Walk the string keeping the first ``max_blocks`` blocks; drop later
+    # ones. We preserve text BETWEEN blocks as-is.
+    keep = matches[:max_blocks]
+    drop = matches[max_blocks:]
+    out_parts: list[str] = []
+    cursor = 0
+    keep_spans = {(m.start(), m.end()) for m in keep}
+    for m in matches:
+        out_parts.append(reply_text[cursor:m.start()])
+        if (m.start(), m.end()) in keep_spans:
+            out_parts.append(m.group(0))
+        cursor = m.end()
+    out_parts.append(reply_text[cursor:])
+    cleaned = "".join(out_parts)
+    cleaned = re.sub(r"\n{3,}", "\n\n", cleaned).rstrip()
+    if drop:
+        cleaned += (
+            f"\n\n_(Held {len(drop)} additional draft visual{'s' if len(drop) != 1 else ''} "
+            "to avoid spamming you — reply 'another variation' for the next one.)_"
+        )
+    return cleaned
+
+
 async def telegram_cos_turn(
     *, user_id: str, org_id: str, agent_id: str, message_text: str,
 ) -> str:
@@ -2394,6 +2438,15 @@ async def telegram_cos_turn(
     reply_text = (reply_text or "").strip()
     if not reply_text:
         reply_text = "Done."
+
+    # ── Cap [[IMAGE]] blocks at ONE per Telegram turn ────────────────────
+    # On the web UI a user can comfortably scroll through five generated
+    # variants. In Telegram the same five photos arrive 5–15 seconds
+    # apart (sequential Nano Banana calls), which users perceive as the
+    # bot "looping" and "spamming drafts unprompted". Keep only the first
+    # IMAGE block; if the agent emitted more, fold them into a single
+    # closing nudge so the user can ask for a variation explicitly.
+    reply_text = _cap_image_blocks_for_telegram(reply_text, max_blocks=1)
 
     # Persist the agent reply so the web UI shows it too.
     agent_message_id = str(uuid.uuid4())
@@ -4370,6 +4423,61 @@ async def _generate_image_attachments(
                 for k in ("mission", "tone", "audience", "values") if sp.get(k)]
     agent_name = AGENTS[agent_id]["name"] if agent_id in AGENTS else "Agent"
 
+    # ── Org logo injection ─────────────────────────────────────────────
+    # If the org uploaded brand logos (primary and/or alt), pass them to
+    # Nano Banana as reference images so every generated visual carries
+    # the brand mark. Nano Banana's multi-image input lets it compose
+    # the logo onto the scene with correct scale and lighting — see the
+    # `generate_image_via_nano_banana` docstring for details.
+    logo_paths: List[Path] = []
+    org_doc: Optional[dict] = None
+    if org_id:
+        try:
+            org_doc = await db.organizations.find_one(
+                {"_id": ObjectId(org_id)},
+                {"brand_assets": 1, "name": 1},
+            )
+        except Exception as exc:
+            logger.warning("logo lookup failed for org %s: %s", org_id, exc)
+            org_doc = None
+        brand = (org_doc or {}).get("brand_assets") or {}
+        for kind in ("primary_logo", "alt_logo"):
+            asset = brand.get(kind) or {}
+            fname = (asset or {}).get("filename") or ""
+            if not fname:
+                continue
+            candidate = UPLOAD_DIR / fname
+            if candidate.is_file():
+                logo_paths.append(candidate)
+                continue
+            # Fallback: rehydrate from GridFS (mirror is keyed by filename
+            # in `media_files`) if the disk copy got swept on redeploy.
+            try:
+                blob, _mime, _orig = await recover_bytes_from_gridfs(fname)
+            except Exception as exc:
+                logger.warning("GridFS logo load failed (%s): %s", fname, exc)
+                blob = None
+            if blob:
+                try:
+                    candidate.parent.mkdir(parents=True, exist_ok=True)
+                    candidate.write_bytes(blob)
+                    logo_paths.append(candidate)
+                except Exception as exc:
+                    logger.warning("Could not rehydrate logo %s: %s", fname, exc)
+
+    logo_directive = ""
+    if logo_paths:
+        brand_name = (org_doc or {}).get("name") if org_id else None
+        logo_directive = (
+            f"\n\nBRAND LOGO — REFERENCE IMAGE{'S' if len(logo_paths) > 1 else ''} "
+            f"ATTACHED: the {len(logo_paths)} reference image"
+            f"{'s' if len(logo_paths) > 1 else ''} provided IS the brand logo "
+            f"{('for ' + brand_name) if brand_name else ''}. Incorporate it into "
+            "the generated image tastefully — overlay it at corner/header scale "
+            "(do NOT make it the hero subject), preserve its colors and "
+            "proportions exactly, do NOT redraw or stylize the logo itself."
+        )
+
     async def _one(block: dict) -> Optional[dict]:
         prompt = (block.get("prompt") or "").strip()
         if not prompt:
@@ -4382,6 +4490,7 @@ async def _generate_image_attachments(
             f"voice and aesthetics. {aspect_hint} Render any text crisp "
             f"and legible."
             + (("\n" + "\n".join(sp_lines)) if sp_lines else "")
+            + logo_directive
         )
         # Lift the aspect hint into the prompt too — Nano Banana doesn't
         # accept an explicit aspect-ratio param, so the only way to bias
@@ -4389,7 +4498,10 @@ async def _generate_image_attachments(
         if aspect and aspect not in prompt:
             prompt = f"{prompt}\n\nAspect ratio: {aspect}."
         try:
-            filename, _caption = await generate_image_via_nano_banana(prompt, system_msg)
+            filename, _caption = await generate_image_via_nano_banana(
+                prompt, system_msg,
+                input_image_paths=(logo_paths or None),
+            )
         except Exception as exc:
             logger.warning("Inline image-block generation failed: %s", exc)
             return None

@@ -3,6 +3,16 @@
 Plain-English feature inventory of **Foundry by SoulPrint Engine** for non-technical teammates. Each section is a category of capabilities and what they do for users.
 
 ---
+## 🤖 Feb 18, 2026 — Telegram CoS: loop-stop + brand-logo injection
+- **Bug A — endless response loop**: when the agent emitted 3-5 `[[IMAGE]]` blocks in a single reply (e.g. "Here are three variants"), Telegram delivered them sequentially as Nano Banana finished each call (5-15s apart), which users perceived as the bot "spamming drafts unprompted". New helper `_cap_image_blocks_for_telegram` in `server.py` (just above `telegram_cos_turn`) keeps only the **first** `[[IMAGE]]` block and folds the rest into a single trailing nudge: `_(Held N additional draft visuals — reply 'another variation' for the next one.)_`. Idempotent — single-block replies pass through unchanged.
+- **Bug B — generated images ignored uploaded org logos**: `_generate_image_attachments` in `server.py` now reads `org.brand_assets.primary_logo.filename` (and `alt_logo.filename` when present), resolves them in `UPLOAD_DIR` with a GridFS rehydrate fallback via `recover_bytes_from_gridfs`, and passes the resolved `Path`s to `generate_image_via_nano_banana(..., input_image_paths=...)`. The system prompt is augmented with a "BRAND LOGO — REFERENCE IMAGE ATTACHED" directive instructing Nano Banana to overlay the logo at corner/header scale, preserve colors/proportions, and NOT redraw or stylize the mark itself. Works for both web-chat AND Telegram-source `[[IMAGE]]` blocks.
+- **8 new pytest cases**:
+  - `tests/test_telegram_loop_fix.py` (6 cases) — single block passes through, multi-block caps to 1, held-nudge pluralization, `max_blocks=2` variant, empty/None safety.
+  - `tests/test_image_logo_injection.py` (2 async cases with mocked Nano Banana) — verifies the logo path lands in `input_image_paths` AND that the BRAND LOGO directive appears in the system message; second case verifies orgs with no logo get `input_image_paths=None` (not an empty list).
+- All 29 related backend tests pass; backend reboots cleanly with no new errors in `/var/log/supervisor/backend.err.log`.
+
+---
+
 ## 🛡️ Feb 17, 2026 — GDPR data export + right-to-erasure (Phase 1) + SOC 2 readiness doc
 - **GDPR Article 15 / 20 — Data export**: new `/app/backend/privacy.py` module. `POST /api/account/export` kicks off a background ZIP-builder job; `GET /api/account/export` polls; `GET /api/account/export/download/<token>` streams the ZIP with single-use token semantics. ZIPs auto-expire after 24h and get swept by a daily APScheduler housekeeping job.
   - ZIP contents: `account.json` (no password hash), `memory/`, `connections.json` (OAuth tokens stripped), per-org folders with `role.json`, `conversations/direct/` (DMs + private CoS), `conversations/team-authored.json` (only messages the user wrote), `documents/_manifest.json`, `soulprints.json` (owners/admins only). README inside ZIP explains the data-rights scope and what is intentionally NOT included.
