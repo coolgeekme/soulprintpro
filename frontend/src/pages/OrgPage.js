@@ -189,7 +189,13 @@ export default function OrgPage() {
         try {
           const { data } = await api.get(`/orgs/${orgId}/invites`);
           setInvites(data);
-        } catch (_) {}
+        } catch (err) {
+          // Soft-fail — invite list is a nice-to-have on the org page
+          // and we don't want to block the whole page render on a 403
+          // / 500 from the invites endpoint. Log so it shows up in the
+          // browser console for debugging without alarming the user.
+          console.warn("Failed to load invites:", err?.message);
+        }
       }
       // Lazy-create the caller's PRIVATE Chief of Staff thread for this
       // org and fetch the full list of their threads in parallel. The

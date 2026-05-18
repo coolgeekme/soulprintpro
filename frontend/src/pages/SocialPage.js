@@ -964,10 +964,15 @@ function PostCard({ post, orgId, onUpdate, onReplace, onDelete, publishable, onA
             <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 mt-2">
               {post.media.slice(0, 3).map((m, i) => {
                 const url = m.url?.startsWith("http") ? m.url : `${BACKEND_URL}${m.url}`;
+                // Use the media URL (which is unique per attachment) as the
+                // React key — array-index would cause <img>/<video>
+                // elements to be reused incorrectly if the user re-attaches
+                // different media without a full post reload.
+                const key = m.url || `media-${i}`;
                 return m.kind === "image" ? (
-                  <img key={i} src={url} alt="" className="w-full h-32 object-cover rounded-lg border border-white/10" />
+                  <img key={key} src={url} alt="" className="w-full h-32 object-cover rounded-lg border border-white/10" />
                 ) : (
-                  <video key={i} src={url} controls className="w-full h-32 object-cover rounded-lg border border-white/10" />
+                  <video key={key} src={url} controls className="w-full h-32 object-cover rounded-lg border border-white/10" />
                 );
               })}
             </div>

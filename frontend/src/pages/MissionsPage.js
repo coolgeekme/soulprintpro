@@ -690,8 +690,12 @@ function MissionDetail({ orgId, missionId }) {
               {mission.artifacts.map((a, i) => {
                 const url = a.url?.startsWith("http") ? a.url : `${BACKEND_URL}${a.url}`;
                 const isImg = (a.mime || "").startsWith("image/");
+                // Prefer artifact id / url over array-index — protects
+                // against subtle state loss if a mission re-emits its
+                // artifact list out-of-order on a refresh poll.
+                const key = a.document_id || a.id || a.url || `artifact-${i}`;
                 return (
-                  <li key={i} className="sp-glass rounded-xl p-3 flex flex-col gap-2">
+                  <li key={key} className="sp-glass rounded-xl p-3 flex flex-col gap-2">
                     <div className="flex items-start gap-2.5">
                       <div className="w-8 h-8 rounded-lg sp-glass-strong flex items-center justify-center shrink-0">
                         {isImg ? <ImageIcon className="w-3.5 h-3.5" /> : <FileText className="w-3.5 h-3.5" />}
