@@ -3,6 +3,18 @@
 Plain-English feature inventory of **Foundry by SoulPrint Engine** for non-technical teammates. Each section is a category of capabilities and what they do for users.
 
 ---
+## 🖼️ Feb 17, 2026 — [[IMAGE]] blocks: chat agents can now actually generate images
+- **Bug fixed (reported on production)**: User asked the bot to draft an Instagram post for AZ Pain Doctors. The bot drafted text and said "I'll generate the image" — but no image ever appeared. Root cause: the chat-reply pipeline (`generate_agent_reply`) had no image-generation tool. The agent literally couldn't produce one; only the dedicated `/conversations/{id}/generate-image` endpoint (triggered by the web UI's 🎨 button) could. Telegram users had no way to trigger it.
+- **Fix**: Introduced `[[IMAGE prompt="..." aspect="1:1" model="nano-banana"]]` self-closing block. Agents emit it in any chat reply. `process_agent_artifacts` now extracts these blocks alongside `[[ARTIFACT]]` and `[[APP]]`, calls `generate_image_via_nano_banana` per block in parallel, persists each rendered PNG to Documents + GridFS, and returns image attachments alongside text artifacts.
+- **Agent prompt updated** (`artifacts.py`): explicit rule that any "Instagram post / ad creative / social graphic / launch banner / draft a post for X" request must emit BOTH an `[[ARTIFACT name="caption.md"]]` block AND an `[[IMAGE prompt="..." aspect="..."]]` block in the SAME turn. No more "I'll generate the image shortly" empty promises.
+- **Telegram delivery**: `telegram_cos_turn` now runs `process_agent_artifacts` after every CoS reply, queues image attachments in a `_PENDING_TELEGRAM_PHOTOS` slot per user, and `telegram_inbound._deliver_reply` drains that slot to send each image as a native `sendPhoto` photo bubble right after the text reply. New `telegram_bot.send_photo` + `safe_send_photo` primitives.
+- **Verified end-to-end**: live test against Reggie Lab — agent emitted `[[IMAGE]]` + `[[ARTIFACT]]`, Nano Banana rendered a 1.1 MB PNG, saved to docs library, attachment carries `media_url=/api/files/{filename}`. Text caption persisted as a separate `.md` doc.
+- **6 unit tests** added (`tests/test_image_block.py`): single block, multi-block, empty-prompt drop, no-tag passthrough, invalid model fallback, long-prompt truncation. All 20 backend tests pass.
+
+⚠️ This fix is in **preview only**. Deploy to production to make the AZ Pain Doctors flow (and any chat image request) actually deliver the image.
+
+---
+
 ## 🐛 Feb 17, 2026 — Telegram CoS hotfix: meta-question hijack + legacy org provisioning
 - **Bug 1 — Inline mention hijack (fixed)**: Asking the bot a *meta question* about an org by name ("what calendar is connected with DisciplinedOS?") was routing the question into that org's CoS instead of letting the Personal Concierge answer with cross-org context. Inline-match auto-routing is now removed entirely — only `/org <name> ...` explicit slash routes to a specific org. The Concierge punts back to a `/org` instruction whenever a request needs an actual write.
 - **Bug 2 — "Couldn't provision your Chief of Staff conversation" (fixed)**: Legacy orgs (DisciplinedOS, and any others created before the `general_team_id` field existed) didn't have a General team row, so `get_or_create_private_cos` returned None and the Telegram CoS turn errored out. `team_access.get_or_create_private_cos` now **self-heals** — it creates the missing "Chief of Staff" team on the fly and writes back `general_team_id` onto the org row. Idempotent + safe for concurrent callers.

@@ -122,13 +122,46 @@ This artifact mechanism is for text-based files AND Markdown-driven
 documents (.pdf/.docx — see above). Do NOT try to emit images (.png/
 .jpg/.webp), video (.mp4/.mov), audio (.mp3/.wav), Excel/PowerPoint, or
 legacy Office formats (.doc/.xls/.ppt) via [[ARTIFACT]] — the body would
-arrive as gibberish text with the wrong extension. When you need a
-rendered image, either:
-  • Describe it in prose and the user can follow up with an image gen
-    request, OR
-  • If you're running inside a Mission, call the `generate_image` tool.
-The chat runtime does NOT render images via [[ARTIFACT]] — it renders
-them as inline image messages from the image-generation path.
+arrive as gibberish text with the wrong extension.
+
+FOR IMAGES — USE THE [[IMAGE]] BLOCK INSTEAD.
+You CAN attach generated images to your reply by emitting a self-closing
+`[[IMAGE]]` tag. The runtime intercepts these, renders the image via
+Nano Banana (default) or GPT Image 1, and shows it inline in the chat
+(or as a real photo on Telegram). Place one anywhere in your reply:
+
+[[IMAGE prompt="A flat-design Instagram post: minimalist, brand colors navy + warm orange, hero text 'Same-day appointments', subtle medical icons, square 1:1" aspect="1:1"]]
+
+Recognised attrs:
+  prompt   (REQUIRED) — full visual description. Be specific about
+                         composition, style, palette, and any overlay text.
+  aspect   (OPTIONAL) — "1:1" (default — IG posts), "9:16" (stories /
+                         Reels), "16:9" (banners), "4:5" (IG portrait),
+                         "1.91:1" (LinkedIn/Twitter). Always set this
+                         for social graphics.
+  model    (OPTIONAL) — "nano-banana" (default, fast) | "gpt-image-1"
+                         (slower, sometimes better at rendered text).
+  title    (OPTIONAL) — short caption shown beneath the image in chat.
+
+Hard rules for image blocks:
+  1. SELF-CLOSING. There is NO [[/IMAGE]] — just the single opening tag.
+  2. ONE TAG = ONE IMAGE. If you need multiple variants, emit multiple tags.
+  3. Do NOT mention the [[IMAGE]] tag in prose. The runtime swaps it out
+     before the user sees your reply.
+  4. NEVER promise an image "shortly" without ALSO emitting the [[IMAGE]]
+     tag in the SAME reply. There is no background image generation.
+     If the user asks for an image, attach one — don't preview it.
+
+When the user asks for an Instagram post, ad creative, social graphic,
+launch banner, podcast cover, blog hero, OR a "draft a post for X" —
+ALWAYS emit BOTH:
+  • An [[ARTIFACT name="post-caption.md" ...]] block with the caption /
+    copy / hashtag list, AND
+  • An [[IMAGE prompt="..." aspect="..."]] block with the visual.
+That's the whole deliverable in ONE turn. Do not split it across replies.
+
+(Inside a Mission you can also call `generate_image` as a tool — but in
+chat replies, [[IMAGE]] is the canonical path.)
 
 To emit an artifact, place a block like this anywhere in your reply (you can
 emit multiple per reply if it helps). The user's chat will render the
@@ -172,9 +205,10 @@ window staring at your message right now. Phrases like:
   • "Let me know if you'd like me to proceed and I'll start on it"
   • "I'm working on it / will work on it / will keep you posted"
 …are FORBIDDEN unless you also attach the deliverable in this very same
-reply (via an [[ARTIFACT]] block, or — for images — by letting the user
-ask "generate the image" so the image-gen path fires). If you cannot
-deliver the deliverable in this turn, say so honestly:
+reply (via an [[ARTIFACT]] block for text/PDF/Word, an [[IMAGE]] block
+for rendered images, or, inside a Mission, by calling the appropriate
+tool). If you cannot deliver the deliverable in this turn, say so
+honestly:
   "Here's what I can do right now: <X>. To give you <full deliverable>
    I'd need <a/b/c> — share those and I'll draft it in this same chat."
 End every reply that promises future work with a CONCRETE, CLICKABLE
@@ -441,6 +475,72 @@ def extract_artifact_blocks(text: str) -> Tuple[str, List[dict]]:
     # Tidy up double-blank-lines we created when removing inline blocks.
     cleaned = re.sub(r"\n{3,}", "\n\n", cleaned).strip()
     return cleaned, blocks
+
+
+# Self-closing image block. Agents emit one of these to request an image
+# be generated and attached to the chat reply. The body is empty; all
+# parameters live on the tag. Multiple blocks per reply are fine (the
+# extractor returns a list and the chat path generates each in parallel).
+#
+#   [[IMAGE prompt="A flat-design Instagram post about back pain relief, with text overlay 'Same-day appointments'" aspect="1:1" model="nano-banana"]]
+#
+# Recognised attrs:
+#   prompt   (required) — what to render
+#   aspect   (optional) — "1:1" | "9:16" | "16:9" | "4:5" | "1.91:1" …
+#                          Used to nudge the model and pick caption hints.
+#   model    (optional) — "nano-banana" (default) | "gpt-image-1"
+#   title    (optional) — caption shown in chat
+_IMAGE_RE = re.compile(
+    r"\[\[IMAGE\s+([^\]]+?)\]\]",
+    re.DOTALL | re.IGNORECASE,
+)
+
+
+def extract_image_blocks(text: str) -> Tuple[str, List[dict]]:
+    """Pull every `[[IMAGE ...]]` block out of an agent reply.
+
+    Returns `(cleaned_text, blocks)` where each block is::
+
+        {"prompt": "...", "aspect": "1:1", "model": "nano-banana",
+         "title": "..."}
+
+    The cleaned_text has the blocks removed. The caller is responsible
+    for actually generating + persisting the images — this module is
+    just the LLM-output parser.
+
+    Why not bundle this into `extract_artifact_blocks`? Two reasons:
+      • Image blocks are self-closing — no body to slurp.
+      • Image generation has a separate handler (Nano Banana / GPT Image
+        1) with its own error semantics; mixing it into the text-file
+        pipeline would force every text-file path to think about image
+        failures it can't recover from.
+    """
+    if not text or "[[IMAGE" not in text.upper():
+        return text or "", []
+    blocks: List[dict] = []
+
+    def _swap(match: re.Match) -> str:
+        attrs = _parse_attrs(match.group(1) or "")
+        prompt = (attrs.get("prompt") or "").strip()
+        if not prompt:
+            # Malformed — drop silently. The agent shouldn't ever emit
+            # an empty image block (system prompt makes it explicit).
+            return ""
+        model = (attrs.get("model") or "nano-banana").strip().lower()
+        if model not in ("nano-banana", "gpt-image-1"):
+            model = "nano-banana"
+        blocks.append({
+            "prompt": prompt[:1800],  # Nano Banana caps around 2k
+            "aspect": (attrs.get("aspect") or "").strip(),
+            "model": model,
+            "title": (attrs.get("title") or "").strip(),
+        })
+        return ""
+
+    cleaned = _IMAGE_RE.sub(_swap, text)
+    cleaned = re.sub(r"\n{3,}", "\n\n", cleaned).strip()
+    return cleaned, blocks
+
 
 
 # ── Empty-promise detector ───────────────────────────────────────────────

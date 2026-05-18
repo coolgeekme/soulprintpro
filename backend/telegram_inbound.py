@@ -465,20 +465,62 @@ async def handle_inbound(
         chat_id=chat_id, org_label=org["name"],
         reply_text=reply_text or "Done.",
         speak=transcript_used,
+        user_id=user_id,
     )
 
 
 async def _deliver_reply(
     *, chat_id: int, org_label: str, reply_text: str, speak: bool,
+    user_id: Optional[str] = None,
 ) -> None:
     """Send the agent's reply back to the Telegram chat. Always sends
-    the text version (so the user can scroll back and re-read); when
-    `speak=True` (the user sent voice input) we ALSO synthesise a TTS
-    voice note and send it right after, so they get an "auditory"
-    reply that matches the input modality.
+    the text version (so the user can scroll back and re-read).
+
+    When `speak=True` (the user sent voice input) we ALSO synthesise a
+    TTS voice note so they get an auditory reply that matches the input
+    modality.
+
+    When `user_id` is supplied we drain any pending Telegram photo
+    attachments queued by ``server.telegram_cos_turn`` (i.e. images the
+    agent generated via `[[IMAGE]]` blocks in the same turn) and send
+    each as a native ``sendPhoto`` photo bubble.
     """
     formatted = telegram_bot.format_nudge(org_label=org_label, body=reply_text)
     await telegram_bot.safe_send(chat_id, formatted)
+
+    # Photos queued by the CoS turn — drain & send before the voice note
+    # so the visual context arrives BEFORE the spoken summary.
+    if user_id:
+        try:
+            from server import pop_pending_telegram_photos  # type: ignore
+            from pathlib import Path
+            import os as _os
+            queued = pop_pending_telegram_photos(user_id)
+            upload_dir = Path(_os.environ.get("UPLOAD_DIR", "/app/backend/uploads"))
+            for att in queued:
+                fname = att.get("media_filename") or att.get("filename") or ""
+                if not fname:
+                    continue
+                fpath = upload_dir / fname
+                if not fpath.is_file():
+                    # Best-effort fallback to the docs library copy.
+                    docs_dir = Path(_os.environ.get("DOCS_DIR", "/app/backend/docs"))
+                    fpath = docs_dir / fname
+                if not fpath.is_file():
+                    logger.warning("Queued Telegram photo missing on disk: %s", fname)
+                    continue
+                try:
+                    img_bytes = fpath.read_bytes()
+                except Exception as exc:
+                    logger.warning("Could not read queued photo %s: %s", fname, exc)
+                    continue
+                caption = (att.get("title") or "") or None
+                await telegram_bot.safe_send_photo(
+                    chat_id, img_bytes, caption=caption, filename=fname,
+                )
+        except Exception as exc:
+            logger.warning("Telegram photo delivery failed: %s", exc)
+
     if not speak:
         return
     try:

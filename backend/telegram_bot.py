@@ -217,6 +217,60 @@ async def safe_send(chat_id: int | str, text: str, **kwargs) -> bool:
         return False
 
 
+async def send_photo(
+    chat_id: int | str,
+    image_bytes: bytes,
+    *,
+    caption: Optional[str] = None,
+    filename: str = "image.png",
+    timeout: float = 30.0,
+) -> Dict[str, Any]:
+    """Upload `image_bytes` as a Telegram photo (`sendPhoto` endpoint).
+
+    Telegram renders sendPhoto inline as a native photo bubble with
+    expand-to-fullscreen and download affordances — significantly
+    better UX than ``sendDocument`` (file attachment) for chat images.
+    Caption supports the same HTML subset as ``send_message``.
+    """
+    url = f"{_API_BASE}/bot{_token()}/sendPhoto"
+    data = {"chat_id": str(chat_id)}
+    if caption:
+        # Telegram caps photo captions at 1024 chars. We trim hard so
+        # the upload itself never gets rejected mid-multipart.
+        data["caption"] = caption[:1024]
+        data["parse_mode"] = "HTML"
+    # Best-effort mime detection from filename — Telegram is forgiving.
+    fname = filename or "image.png"
+    mime = (
+        "image/jpeg" if fname.lower().endswith((".jpg", ".jpeg")) else
+        "image/webp" if fname.lower().endswith(".webp") else
+        "image/png"
+    )
+    files = {"photo": (fname, image_bytes, mime)}
+    async with httpx.AsyncClient(timeout=timeout) as cli:
+        resp = await cli.post(url, data=data, files=files)
+    try:
+        body = resp.json()
+    except ValueError:
+        resp.raise_for_status()
+        raise RuntimeError(f"Telegram sendPhoto returned non-JSON: {resp.text[:200]}")
+    if not body.get("ok"):
+        raise RuntimeError(f"Telegram sendPhoto failed: {body.get('description') or body}")
+    return body.get("result") or {}
+
+
+async def safe_send_photo(
+    chat_id: int | str, image_bytes: bytes, **kwargs,
+) -> bool:
+    """Fire-and-forget photo send. Logs failures, returns success bool."""
+    try:
+        await send_photo(chat_id, image_bytes, **kwargs)
+        return True
+    except Exception as exc:
+        logger.warning("Telegram sendPhoto to %s failed: %s", chat_id, exc)
+        return False
+
+
 async def send_voice(
     chat_id: int | str,
     audio_bytes: bytes,

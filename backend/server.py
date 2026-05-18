@@ -2396,14 +2396,32 @@ async def telegram_cos_turn(
         reply_text = "Done."
 
     # Persist the agent reply so the web UI shows it too.
+    agent_message_id = str(uuid.uuid4())
+
+    # Process [[ARTIFACT]] + [[IMAGE]] blocks — same pipeline the web
+    # chat uses. Without this the Telegram bot saying "I'll generate
+    # the image" would never actually produce one (the chat-reply LLM
+    # has no direct image-gen tool; it emits `[[IMAGE]]` tags that
+    # this step intercepts and renders).
+    attachments: List[dict] = []
+    try:
+        reply_text, attachments = await process_agent_artifacts(
+            reply_text,
+            conv=conv, agent_id=agent_id,
+            message_id=agent_message_id, created_by=user_id,
+        )
+    except Exception as exc:
+        logger.warning("telegram artifact processing failed: %s", exc)
+
     agent_message = {
-        "id": str(uuid.uuid4()),
+        "id": agent_message_id,
         "conversation_id": str(conv["_id"]),
         "sender_type": "agent",
         "sender_id": None,
         "sender_name": (AGENTS.get(agent_id) or {}).get("name") or "Chief of Staff",
         "agent_id": agent_id,
         "text": reply_text,
+        "attachments": attachments,
         "timestamp": datetime.now(timezone.utc),
         "source": "telegram",
     }
@@ -2412,7 +2430,29 @@ async def telegram_cos_turn(
         {"_id": conv["_id"]},
         {"$set": {"last_message_at": datetime.now(timezone.utc)}},
     )
+    # Hand the image attachments back to the Telegram inbound handler
+    # via a module-level cache keyed by user_id — the handler will pop
+    # them right after our return and send sendPhoto for each. We don't
+    # return them as a tuple to keep this function's existing contract
+    # (returns reply text) so every other Telegram entry-point keeps
+    # working without changes.
+    image_attachments = [a for a in attachments if (a.get("kind") == "image")]
+    if image_attachments:
+        _PENDING_TELEGRAM_PHOTOS[user_id] = image_attachments
     return reply_text
+
+
+# Per-user one-shot bucket for image attachments to send AFTER the text
+# reply. Populated by `telegram_cos_turn`, drained by the Telegram
+# inbound handler. Module-level because we don't want to thread a new
+# return value through every caller — only the Telegram path needs it.
+_PENDING_TELEGRAM_PHOTOS: Dict[str, List[dict]] = {}
+
+
+def pop_pending_telegram_photos(user_id: str) -> List[dict]:
+    """Drain queued image attachments for a Telegram user. Returns the
+    list (possibly empty) and clears the slot atomically."""
+    return _PENDING_TELEGRAM_PHOTOS.pop(user_id, [])
 
 
 @team_r.delete("/teams/{team_id}")
@@ -4039,9 +4079,9 @@ async def generate_agent_reply(conv: dict, team: dict, agent_id: str,
 
 async def process_agent_artifacts(reply_text: str, *, conv: dict, agent_id: str,
                                   message_id: str, created_by: str) -> tuple[str, list]:
-    """Pull [[ARTIFACT]] + [[APP]] blocks out of an agent reply, persist
-    them as files + Documents records, and return (cleaned_text,
-    attachments_list).
+    """Pull [[ARTIFACT]] + [[APP]] + [[IMAGE]] blocks out of an agent
+    reply, persist them as files + Documents records, and return
+    (cleaned_text, attachments_list).
 
     `conv` must include `team_id` so we can resolve the org. If artifact
     extraction fails for any reason we swallow the error and return the
@@ -4051,6 +4091,7 @@ async def process_agent_artifacts(reply_text: str, *, conv: dict, agent_id: str,
         extract_app_bundles, strip_app_blocks, looks_like_html_app,
         save_app_bundle, upgrade_html_to_app,
     )
+    from artifacts import extract_image_blocks
     try:
         # ── Stage 1: multi-file [[APP]] bundles ───────────────────────
         # Extract bundles first (they own their own block syntax), then
@@ -4060,9 +4101,21 @@ async def process_agent_artifacts(reply_text: str, *, conv: dict, agent_id: str,
         if app_bundles:
             reply_text = strip_app_blocks(reply_text)
 
-        # ── Stage 2: standard [[ARTIFACT]] blocks ─────────────────────
+        # ── Stage 2: [[IMAGE]] blocks ─────────────────────────────────
+        # Process these BEFORE the text-artifact pass so the cleaned
+        # text we hand back to the user never contains an unrendered
+        # `[[IMAGE]]` tag (which would leak the internal block syntax
+        # if image-gen fails). Each block becomes one image attachment
+        # in the returned list — the frontend renders them inline
+        # under the message bubble; `telegram_cos_turn` sends them as
+        # native photos via Telegram's sendPhoto endpoint.
+        image_text, image_blocks = extract_image_blocks(reply_text or "")
+        if image_blocks:
+            reply_text = image_text
+
+        # ── Stage 3: standard [[ARTIFACT]] blocks ─────────────────────
         cleaned, blocks = extract_artifact_blocks(reply_text or "")
-        if not blocks and not app_bundles:
+        if not blocks and not app_bundles and not image_blocks:
             return _annotate_empty_promise(reply_text or "", has_artifacts=False), []
         team_id = conv.get("team_id")
         team_doc = await db.teams.find_one({"_id": ObjectId(team_id)}) if team_id else None
@@ -4112,6 +4165,19 @@ async def process_agent_artifacts(reply_text: str, *, conv: dict, agent_id: str,
             if att:
                 attachments.append(att)
 
+        # ── Stage 4: render & persist [[IMAGE]] blocks in parallel ────
+        # We run image generation AFTER text artifacts so the user-facing
+        # cleaned_text is finalised before we kick off the slow image
+        # calls. Each block is rendered via Nano Banana; errors per-
+        # block are isolated (one failed image doesn't drop the others).
+        if image_blocks:
+            img_attachments = await _generate_image_attachments(
+                image_blocks,
+                conv=conv, team=team_doc, agent_id=agent_id,
+                message_id=message_id, created_by=created_by,
+            )
+            attachments.extend(img_attachments)
+
         if not cleaned.strip():
             n = len(attachments)
             cleaned = f"📎 Attached {n} file{'s' if n != 1 else ''} for you."
@@ -4120,6 +4186,133 @@ async def process_agent_artifacts(reply_text: str, *, conv: dict, agent_id: str,
     except Exception as exc:
         logger.warning("artifact extraction failed: %s", exc)
         return reply_text or "", []
+
+
+# ── Image-block helper ──────────────────────────────────────────────────────
+_ASPECT_HINTS = {
+    "1:1": "Render as a perfect SQUARE 1:1, suitable for Instagram feed posts.",
+    "9:16": "Render as a TALL 9:16 vertical, suitable for Instagram Stories / Reels / TikTok.",
+    "16:9": "Render as a WIDE 16:9 horizontal, suitable for YouTube thumbnails / landing-page heroes.",
+    "4:5": "Render as a 4:5 portrait, suitable for Instagram portrait posts.",
+    "1.91:1": "Render as a 1.91:1 horizontal banner, suitable for LinkedIn / Twitter / Facebook link previews.",
+    "3:2": "Render as a 3:2 horizontal, classic photographic ratio.",
+    "2:3": "Render as a 2:3 portrait, classic photographic ratio.",
+}
+
+
+async def _generate_image_attachments(
+    image_blocks: List[dict],
+    *,
+    conv: dict, team: dict, agent_id: str,
+    message_id: str, created_by: str,
+) -> list:
+    """Generate every block in parallel, save each as a Document, and
+    return an attachment dict per success. Failures are logged but
+    don't break the others.
+    """
+    org_id = team.get("org_id") or ""
+    sp = team.get("soulprint") or {}
+    sp_lines = [f"{k.capitalize()}: {sp[k]}"
+                for k in ("mission", "tone", "audience", "values") if sp.get(k)]
+    agent_name = AGENTS[agent_id]["name"] if agent_id in AGENTS else "Agent"
+
+    async def _one(block: dict) -> Optional[dict]:
+        prompt = (block.get("prompt") or "").strip()
+        if not prompt:
+            return None
+        aspect = (block.get("aspect") or "").strip()
+        aspect_hint = _ASPECT_HINTS.get(aspect, "")
+        system_msg = (
+            f"You are {agent_name}, rendering an image on behalf of the "
+            f"team \"{team.get('name') or 'the team'}\". Honor the team's "
+            f"voice and aesthetics. {aspect_hint} Render any text crisp "
+            f"and legible."
+            + (("\n" + "\n".join(sp_lines)) if sp_lines else "")
+        )
+        # Lift the aspect hint into the prompt too — Nano Banana doesn't
+        # accept an explicit aspect-ratio param, so the only way to bias
+        # it is via prose. Doubling-up between system + prompt is fine.
+        if aspect and aspect not in prompt:
+            prompt = f"{prompt}\n\nAspect ratio: {aspect}."
+        try:
+            filename, _caption = await generate_image_via_nano_banana(prompt, system_msg)
+        except Exception as exc:
+            logger.warning("Inline image-block generation failed: %s", exc)
+            return None
+        img_bytes_path = UPLOAD_DIR / filename
+        try:
+            img_bytes = img_bytes_path.read_bytes()
+        except Exception:
+            img_bytes = b""
+        # Register as a real Document so the org library + share URL flows
+        # work without special-casing. Mirrors the bookkeeping done by
+        # the existing `/generate-image` route.
+        org_folder = DOCS_DIR / org_id
+        org_folder.mkdir(parents=True, exist_ok=True)
+        doc_filename = f"{uuid.uuid4().hex}.png"
+        try:
+            (org_folder / doc_filename).write_bytes(img_bytes)
+        except Exception as exc:
+            logger.warning("Could not persist generated image to docs: %s", exc)
+        # Mirror to GridFS so the file survives container redeploys.
+        gridfs_id = None
+        try:
+            from file_storage import save_blob_to_gridfs as _save_gfs
+            gridfs_id = await _save_gfs(db, img_bytes, doc_filename, "image/png")
+        except Exception as exc:
+            logger.warning("GridFS mirror failed for generated image: %s", exc)
+        friendly_title = (block.get("title") or "").strip() or "Generated image"
+        doc = {
+            "id": str(uuid.uuid4()),
+            "org_id": org_id,
+            "conversation_id": str(conv.get("_id") or ""),
+            "message_id": message_id,
+            "agent_id": agent_id,
+            "agent_name": agent_name,
+            "created_by": created_by,
+            "filename": doc_filename,
+            "gridfs_id": gridfs_id,
+            "original_name": f"{friendly_title.replace(' ', '_')[:60]}.png",
+            "title": friendly_title,
+            "mime": "image/png",
+            "kind": "image",
+            "ext": "png",
+            "size": len(img_bytes),
+            "preview": "",
+            "tags": [],
+            "media_prompt": block.get("prompt"),
+            "created_at": datetime.now(timezone.utc),
+        }
+        await db.documents.insert_one({**doc})
+        return {
+            "document_id": doc["id"],
+            "filename": filename,
+            "original_name": doc["original_name"],
+            "title": friendly_title,
+            "mime": "image/png",
+            "kind": "image",
+            "ext": "png",
+            "size": len(img_bytes),
+            # The chat & Telegram paths both serve images from /api/files
+            # for the original (uploads dir) copy. Keep both so callers
+            # can pick whichever is more convenient.
+            "url": f"/api/files/{filename}",
+            "media_url": f"/api/files/{filename}",
+            "media_filename": filename,
+            "media_prompt": block.get("prompt"),
+        }
+
+    results = await asyncio.gather(
+        *[_one(b) for b in image_blocks], return_exceptions=True,
+    )
+    out: list = []
+    for r in results:
+        if isinstance(r, Exception):
+            logger.warning("image-block worker raised: %s", r)
+            continue
+        if r:
+            out.append(r)
+    return out
 
 # ── Smart agent router ──────────────────────────────────────────────────────
 ROUTER_FALLBACK = "specialized-chief-of-staff"
