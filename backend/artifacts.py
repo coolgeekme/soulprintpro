@@ -160,6 +160,36 @@ ALWAYS emit BOTH:
   • An [[IMAGE prompt="..." aspect="..."]] block with the visual.
 That's the whole deliverable in ONE turn. Do not split it across replies.
 
+MANDATORY — AUTO-IMAGE FOR SOCIAL POSTS.
+For ANY of the following request types you MUST emit an [[IMAGE]] block
+in the SAME reply as the caption — without being asked, without
+previewing, without offering to "create a visual concept later":
+  • Instagram post, Story, Reel, carousel slide
+  • Facebook post, cover photo
+  • LinkedIn post, header, banner
+  • Twitter / X post or header
+  • TikTok cover / thumbnail
+  • YouTube thumbnail, banner, end-card
+  • Pinterest pin
+  • Reddit post art
+  • Threads / Bluesky / Mastodon post
+  • Generic "social media post", "social graphic", "ad creative",
+    "launch graphic", "promo image", "campaign creative"
+
+The ONLY exception is when the user explicitly opts out with phrases
+like "text only", "no image", "just the caption", "caption only",
+"draft only the copy", "skip the visual", "I have my own image", or
+similar unambiguous opt-out language. Anything else — including
+ambiguous requests like "draft a post" or "I need a post for X" — gets
+BOTH the caption artifact AND the image block, every time, in this
+turn. Telling the user "I can't create or send images" is FORBIDDEN —
+you CAN, by emitting the [[IMAGE]] block above.
+
+For CAROUSELS (multi-slide IG / LinkedIn / TikTok), emit ONE [[IMAGE]]
+block per slide so a "5-slide carousel" request produces 5 images, not
+just the cover. Keep the prompts visually consistent (same palette,
+typography, layout grid) so the slides feel like a set.
+
 (Inside a Mission you can also call `generate_image` as a tool — but in
 chat replies, [[IMAGE]] is the canonical path.)
 
@@ -247,6 +277,82 @@ try:
     RESOURCEFULNESS_DIRECTIVE = RESOURCEFULNESS_DIRECTIVE + _APP_DIRECTIVE
 except Exception:  # pragma: no cover — module not available at lint time
     pass
+
+
+# Concrete few-shot examples appended LAST so they're the most-recent
+# context the LLM sees before deciding what to emit. Without these,
+# gpt-4.1-mini tends to default to deferential "Want me to generate
+# the image?" prose instead of just emitting the block. Examples are
+# the highest-leverage prompt-engineering trick we have here.
+_FEWSHOT_EXAMPLES = """
+
+CONCRETE EXAMPLES — STUDY THESE BEFORE REPLYING.
+
+# Example 1 — User: "Draft an IG post for AZ Pain Doctors."
+# CORRECT reply (note: caption attached as .md, image attached, NO permission asked):
+> Here's a clean square IG post for AZ Pain Doctors — caption and visual ready to go.
+>
+> [[ARTIFACT name="az-pain-doctors-ig-post.md" mime="text/markdown" title="AZ Pain Doctors — IG caption"]]
+> Tired of living with chronic pain? You don't have to. ✋
+>
+> At AZ Pain Doctors we combine advanced diagnostics with personalised treatment plans so you can finally get a clear path to relief — without the runaround.
+>
+> ✅ Same-day appointments
+> ✅ Insurance-friendly
+> ✅ Board-certified specialists
+>
+> Tap the link in our bio to book today.
+>
+> #ArizonaPain #ChronicPainRelief #PainManagement #AZHealth #SameDayCare
+> [[/ARTIFACT]]
+>
+> [[IMAGE prompt="A clean modern Instagram square post for a Phoenix pain-management clinic. Calm sage-green and warm-cream palette. Soft photographic style: a relieved adult patient outdoors at golden hour, hands relaxed, no medical iconography. Bold serif headline overlay reads 'Relief, on your schedule' in the upper third; small wordmark 'AZ Pain Doctors' bottom-left. Square 1:1, well-lit, on-brand, professional." aspect="1:1" title="AZ Pain Doctors IG post"]]
+
+# Example 2 — User: "I need a launch graphic for LinkedIn for our new pricing page."
+# CORRECT reply (1.91:1 banner aspect, no permission asked):
+> Here's the LinkedIn launch graphic and post copy.
+>
+> [[ARTIFACT name="pricing-launch-linkedin.md" mime="text/markdown" title="LinkedIn launch post"]]
+> Pricing should be simple. Today it is.
+>
+> We just rolled out a transparent new pricing page — three tiers, no hidden fees, and everything you need to compare side-by-side.
+>
+> Take a look →
+> [[/ARTIFACT]]
+>
+> [[IMAGE prompt="A polished LinkedIn launch banner. Off-white background with subtle paper-texture. Three vertical pricing cards drawn in a clean editorial illustration style — minimal, no real numbers, just card shapes with hierarchy. Bold sans-serif headline 'Pricing should be simple' top-left. 1.91:1 aspect ratio." aspect="1.91:1" title="Pricing launch — LinkedIn banner"]]
+
+# Example 3 — User: "Draft an IG post for our new latte. Text only, I have my own photo."
+# CORRECT reply (user EXPLICITLY opted out — no [[IMAGE]] block):
+> Here's the caption only, since you have the photo handled.
+>
+> [[ARTIFACT name="latte-launch-ig.md" mime="text/markdown" title="Latte launch — IG caption"]]
+> Meet the Honeyed Lavender Latte. ☕💜
+> Local lavender, raw clover honey, oat or whole milk. On the menu through August.
+>
+> #SmallBatch #LavenderLatte #CafeLife
+> [[/ARTIFACT]]
+
+# Example 4 — User (after a caption-only reply): "I would like an image"
+# CORRECT reply (do NOT say "I can't create images" — just emit the block):
+> Here you go.
+>
+> [[IMAGE prompt="<re-derive a strong visual brief from the previous caption + soulprint context>" aspect="1:1" title="<short title>"]]
+
+# WRONG reply (FORBIDDEN — never write anything like this):
+> Want me to generate a matching branded image for the post as well?
+> I'll create the image in my next message.
+> I can't create or send images. Let me know if you want a visual concept I can describe.
+> The platform will generate the image for you on your next request.
+
+These four wrong replies are the SINGLE MOST COMMON failure mode and
+they all break the user's trust. NEVER ASK PERMISSION. NEVER PROMISE
+FOR LATER. NEVER REFUSE. If the user asked for a post or graphic of
+any kind, emit the [[IMAGE]] block alongside the caption in the SAME
+turn. That is the entire rule.
+"""
+
+RESOURCEFULNESS_DIRECTIVE = RESOURCEFULNESS_DIRECTIVE + _FEWSHOT_EXAMPLES
 
 # ── Block parser ───────────────────────────────────────────────────────────
 # Tolerant regex: optional whitespace around tags, dotall over the body, and

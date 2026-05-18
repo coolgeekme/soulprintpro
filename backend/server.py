@@ -2630,24 +2630,33 @@ NO_FAKE_PROMISES_DIRECTIVE = (
     "• You CANNOT send 'in the next message', 'in a moment', 'shortly', "
     "'in just a sec', or schedule any future autonomous action. "
     "Every chat reply you write is the entire turn. Period.\n"
-    "• Image / video / file generation is handled AUTOMATICALLY by the "
-    "platform when the USER's current message asks for one. You do not "
-    "trigger generation by promising it. If the user wants an image, "
-    "they will ask for it again or rephrase, and the platform will "
-    "generate it inline with that turn.\n"
+    "• Image generation is INSIDE YOUR CONTROL via the [[IMAGE]] block "
+    "(see the artifact directive above). To produce an image, emit "
+    "[[IMAGE prompt=\"<full visual description>\" aspect=\"1:1\"]] in "
+    "the SAME reply as your prose. The runtime intercepts these blocks, "
+    "renders the image via Nano Banana, and attaches it inline. NEVER "
+    "tell the user 'I can't create images' or 'the platform will "
+    "generate it' — that is FALSE. You can, and you must, when the "
+    "request is for a social-media post / ad creative / launch graphic "
+    "/ banner / cover / story / Reel / thumbnail / carousel slide.\n"
+    "• File / video / music generation: for non-image binaries you "
+    "either use the [[ARTIFACT]] block (`.pdf` / `.docx` / `.md` / etc.) "
+    "or, inside a Mission, call the corresponding tool (`generate_video`, "
+    "`generate_music`). In chat, video/music aren't yet inlineable — "
+    "say so honestly and ask the user to start a Mission for those.\n"
     "• If you cannot complete a task in this single reply, SAY SO "
     "EXPLICITLY: state what blocks you (missing input, capability gap, "
     "needs Mission), and ask the user to provide what's missing or to "
     "kick off a Mission. Do NOT pretend you'll get to it later.\n"
-    "• Phrases that are FORBIDDEN: 'I'll send', 'I'll generate', "
+    "• Phrases that are FORBIDDEN: 'I'll send', 'I'll generate it next', "
     "'I'll have those ready', 'expect them next', 'in just a moment', "
-    "'stand by', 'just wrapping up', 'final touches', 'right away'. "
-    "These create a fake sense of progress and frustrate the user.\n"
-    "• If you've apologized for missing images more than ONCE in this "
-    "thread, STOP apologizing — instead, plainly tell the user the "
-    "image system needs them to ask again with explicit instructions "
-    "(e.g. 'Generate 4 wordmark logos for Vision Kinetix in different "
-    "colors'). Their next message with that prompt will trigger it.\n"
+    "'stand by', 'just wrapping up', 'final touches', 'right away', "
+    "'the platform will generate the image', 'I can't create or send "
+    "images'. These create a fake sense of progress and frustrate the user.\n"
+    "• If a user asks for an image and you didn't attach one in your "
+    "previous reply, STOP apologising and STOP punting back to the "
+    "platform — emit an [[IMAGE]] block RIGHT NOW in this reply. "
+    "That IS how you generate the image.\n"
 )
 
 async def load_assets_brief(org_id: str, max_items: int = 30) -> List[dict]:
@@ -4065,6 +4074,10 @@ async def generate_agent_reply(conv: dict, team: dict, agent_id: str,
                     user_prompt=prompt,
                 )
                 if tool_text is not None:
+                    tool_text = _inject_social_image_block_if_missing(
+                        latest_user_text or "", tool_text or "",
+                        team=team, conv=conv,
+                    )
                     return tool_text, web_sources
     except Exception as exc:
         # Never let tool failures break the chat — fall through to the
@@ -4075,7 +4088,148 @@ async def generate_agent_reply(conv: dict, team: dict, agent_id: str,
     except Exception as exc:
         logger.exception("LLM error: %s", exc)
         return "I'm having trouble thinking right now — try me again in a moment.", []
+    # Safety-net: if the user's message clearly asked for a social-media
+    # post and the LLM forgot to emit an [[IMAGE]] block (e.g. asked the
+    # user "want me to generate a visual?" instead — a recurring gpt-
+    # 4.1-mini failure mode), auto-inject one derived from the reply.
+    # This guarantees every social-post request ships with an image
+    # without depending on perfect LLM compliance.
+    text = _inject_social_image_block_if_missing(
+        latest_user_text or "", text or "",
+        team=team, conv=conv,
+    )
     return text, web_sources
+
+
+# ── Social-post auto-image injector ─────────────────────────────────────────
+# Trigger phrases that signal "this is a social-media post request".
+# Matched case-insensitively against the user's message; one hit is enough.
+_SOCIAL_POST_TRIGGERS = re.compile(
+    r"\b("
+    r"instagram\s+post|ig\s+post|ig\s+story|ig\s+reel|ig\s+carousel|"
+    r"insta\s+post|reels?\s+post|"
+    r"facebook\s+post|fb\s+post|facebook\s+cover|"
+    r"linkedin\s+post|linkedin\s+banner|linkedin\s+header|"
+    r"tiktok\s+(?:post|cover|thumbnail)|"
+    r"x\s+post|twitter\s+post|x\s+header|twitter\s+header|"
+    r"youtube\s+thumbnail|yt\s+thumbnail|youtube\s+banner|"
+    r"pinterest\s+pin|reddit\s+post\s+art|"
+    r"threads?\s+post|bluesky\s+post|mastodon\s+post|"
+    r"social\s+(?:media\s+)?post|social\s+graphic|"
+    r"ad\s+creative|launch\s+graphic|launch\s+banner|"
+    r"promo\s+image|campaign\s+creative|"
+    r"draft\s+(?:an?\s+)?(?:post|graphic|creative|banner)\s+for|"
+    r"draft\s+(?:a\s+)?(?:caption|copy)\s+(?:and|with|plus)\s+(?:image|visual|graphic)"
+    r")\b",
+    re.IGNORECASE,
+)
+
+# Opt-outs — when the user explicitly says they don't want an image, we
+# never inject one. Matched against the user's CURRENT message only.
+_SOCIAL_POST_OPTOUT = re.compile(
+    r"\b("
+    r"text\s+only|caption\s+only|just\s+the\s+caption|just\s+the\s+copy|"
+    r"no\s+image|no\s+visual|skip\s+the\s+(?:image|visual|graphic)|"
+    r"draft\s+(?:only|just)\s+the\s+(?:caption|copy|text)|"
+    r"i('?ll|\s+will)\s+(?:provide|attach|supply)\s+(?:the\s+)?(?:image|photo|visual)|"
+    r"i\s+have\s+(?:my\s+own|the)\s+(?:image|photo|visual)"
+    r")\b",
+    re.IGNORECASE,
+)
+
+
+def _aspect_from_user_text(text: str) -> str:
+    """Pick a sensible default aspect ratio based on what the user said.
+
+    Order matters — LinkedIn/Twitter/Facebook win over generic 'banner'
+    so "LinkedIn launch banner" routes to 1.91:1, not 16:9.
+    """
+    t = (text or "").lower()
+    if any(p in t for p in ("story", "reel", "tiktok", "9:16", "vertical")):
+        return "9:16"
+    if any(p in t for p in ("linkedin", "twitter post", "x post", "1.91:1",
+                              "fb cover", "facebook cover", "facebook post")):
+        return "1.91:1"
+    if any(p in t for p in ("youtube thumbnail", "yt thumbnail", "16:9",
+                              "youtube banner", "yt banner", "banner")):
+        return "16:9"
+    if "4:5" in t or "portrait" in t:
+        return "4:5"
+    # Default: square IG post.
+    return "1:1"
+
+
+def _derive_image_prompt_from_reply(reply: str, *, team: dict, user_text: str) -> str:
+    """Build a sensible image prompt from the agent's caption + team
+    SoulPrint when the LLM forgot to attach one. Strips markdown
+    hashtags / emojis, keeps the first ~600 chars of substantive copy
+    so the image actually matches the message."""
+    body = re.sub(r"\[\[ARTIFACT[^\]]*\]\]", "", reply, flags=re.I)
+    body = re.sub(r"\[\[/ARTIFACT\]\]", "", body, flags=re.I)
+    body = re.sub(r"#[\w]+", "", body)            # drop hashtags
+    body = re.sub(r"\*+", "", body)                # drop ** **
+    body = re.sub(r"\s{2,}", " ", body).strip()
+    body = body[:600]
+    sp = (team or {}).get("soulprint") or {}
+    palette_hint = ""
+    tone = (sp.get("tone") or "").strip()
+    audience = (sp.get("audience") or "").strip()
+    brand = (team or {}).get("name") or ""
+    parts = [
+        "A polished modern social-media post image",
+        f"for {brand}." if brand else ".",
+        "Editorial-grade visual quality, on-brand, no AI giveaways.",
+    ]
+    if tone:
+        parts.append(f"Tone: {tone}.")
+    if audience:
+        parts.append(f"Audience: {audience}.")
+    if body:
+        parts.append(f"The post copy reads: \"{body}\".")
+    parts.append(
+        "Compose a single hero image — strong focal subject, generous "
+        "negative space, room for any short headline text overlay. "
+        "Render any text crisply if included. Avoid stock-photo cliches."
+    )
+    return " ".join(parts)
+
+
+def _inject_social_image_block_if_missing(
+    user_text: str, reply_text: str, *, team: Optional[dict] = None,
+    conv: Optional[dict] = None,
+) -> str:
+    """Auto-append an [[IMAGE]] block when the user clearly asked for a
+    social-media post but the LLM forgot to attach one. Idempotent —
+    if the reply already contains an [[IMAGE]] tag we leave it alone.
+
+    Why this is needed: gpt-4.1-mini has a stubborn habit of asking
+    permission ("Want me to generate a matching image?") despite the
+    explicit "AUTO-IMAGE FOR SOCIAL POSTS" directive in the system
+    prompt. This post-process guarantees the image ships with the
+    caption every time.
+    """
+    if not user_text or not reply_text:
+        return reply_text or ""
+    if "[[IMAGE" in (reply_text or "").upper():
+        return reply_text
+    if not _SOCIAL_POST_TRIGGERS.search(user_text):
+        return reply_text
+    if _SOCIAL_POST_OPTOUT.search(user_text):
+        return reply_text
+    # Build the prompt + aspect from context.
+    image_prompt = _derive_image_prompt_from_reply(
+        reply_text, team=team or {}, user_text=user_text,
+    )
+    aspect = _aspect_from_user_text(user_text)
+    # Sanitise the prompt for inclusion inside a `prompt="..."` attribute
+    # (escape quotes; collapse newlines so the regex parser doesn't trip).
+    safe_prompt = image_prompt.replace("\\", "\\\\").replace('"', '\\"')
+    safe_prompt = re.sub(r"\s+", " ", safe_prompt).strip()
+    injected = (
+        f'\n\n[[IMAGE prompt="{safe_prompt}" aspect="{aspect}" '
+        f'title="Auto-generated visual"]]'
+    )
+    return (reply_text.rstrip() + injected)
 
 async def process_agent_artifacts(reply_text: str, *, conv: dict, agent_id: str,
                                   message_id: str, created_by: str) -> tuple[str, list]:

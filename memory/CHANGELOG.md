@@ -3,6 +3,22 @@
 Plain-English feature inventory of **Foundry by SoulPrint Engine** for non-technical teammates. Each section is a category of capabilities and what they do for users.
 
 ---
+## 🤖 Feb 17, 2026 — Mandatory auto-image for social posts (no permission asked)
+- **Production complaint addressed**: bot was responding to "Draft an IG post for AZ Pain Doctors" with text + "Want me to generate a matching image?" — never delivering the image even when user said yes. Root cause was a contradictory `NO_FAKE_PROMISES_DIRECTIVE` that told the agent "image generation is handled AUTOMATICALLY by the platform — you do not trigger generation." That made the LLM refuse images.
+- **Fix 1 — Directive rewrite**: `NO_FAKE_PROMISES_DIRECTIVE` now says "Image generation is INSIDE YOUR CONTROL via the `[[IMAGE]]` block." Forbidden phrases explicitly include "I can't create or send images", "The platform will generate the image", "Want me to generate", etc.
+- **Fix 2 — Mandatory clause**: Added "MANDATORY — AUTO-IMAGE FOR SOCIAL POSTS" to `RESOURCEFULNESS_DIRECTIVE`. Any of IG/FB/LinkedIn/X/TikTok/YouTube/Pinterest/Reddit/Threads/etc. post requests MUST emit BOTH a caption `[[ARTIFACT]]` AND an `[[IMAGE]]` block in the SAME turn. Opt-outs ("text only", "no image", "caption only", "I have my own photo") are honored. Carousels emit one `[[IMAGE]]` per slide.
+- **Fix 3 — Few-shot examples**: appended 4 CONCRETE correct-vs-wrong example replies to the directive (most-recent context the LLM sees). Eliminates the "Want me to generate?" failure mode.
+- **Fix 4 — Safety-net injector**: `_inject_social_image_block_if_missing` runs after every chat reply (both LlmChat path and Composio-tool path). If the user's message triggers `_SOCIAL_POST_TRIGGERS`, didn't opt out via `_SOCIAL_POST_OPTOUT`, AND the reply has no `[[IMAGE]]` block — auto-inject one with a derived prompt + sensible aspect ratio (`1:1` IG, `9:16` Story/Reel/TikTok, `1.91:1` LinkedIn/FB banner, `16:9` YouTube thumbnail). Belt-and-braces guarantees the image ships regardless of LLM compliance.
+- **Verified live**:
+  - "Draft an IG post for AZ Pain Doctors" → emits both `[[ARTIFACT]]` and `[[IMAGE]]` naturally, no permission asked.
+  - Same prompt + "text only, I have my own photo" → caption only, no `[[IMAGE]]`. Opt-out respected.
+  - Safety-net regex matches: IG/FB/LinkedIn/X/TikTok/YouTube/Pinterest/Threads variants; rejects unrelated questions ("what's the weather"). 8 new pytest cases (`tests/test_social_image_autoinject.py`).
+- **All 28 backend tests pass.**
+
+⚠️ **Production redeploy required** for the AZ Pain Doctors flow to actually deliver the image. The fix is fully in preview.
+
+---
+
 ## 🖼️ Feb 17, 2026 — [[IMAGE]] blocks: chat agents can now actually generate images
 - **Bug fixed (reported on production)**: User asked the bot to draft an Instagram post for AZ Pain Doctors. The bot drafted text and said "I'll generate the image" — but no image ever appeared. Root cause: the chat-reply pipeline (`generate_agent_reply`) had no image-generation tool. The agent literally couldn't produce one; only the dedicated `/conversations/{id}/generate-image` endpoint (triggered by the web UI's 🎨 button) could. Telegram users had no way to trigger it.
 - **Fix**: Introduced `[[IMAGE prompt="..." aspect="1:1" model="nano-banana"]]` self-closing block. Agents emit it in any chat reply. `process_agent_artifacts` now extracts these blocks alongside `[[ARTIFACT]]` and `[[APP]]`, calls `generate_image_via_nano_banana` per block in parallel, persists each rendered PNG to Documents + GridFS, and returns image attachments alongside text artifacts.
