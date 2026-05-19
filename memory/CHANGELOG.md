@@ -3,6 +3,39 @@
 Plain-English feature inventory of **Foundry by SoulPrint Engine** for non-technical teammates. Each section is a category of capabilities and what they do for users.
 
 ---
+## 🐛 Feb 19, 2026 — Composio: naive-datetime TypeError root-cause fix
+**Production bug**: after the previous fix shipped, users saw the new "Couldn't load your existing Composio connections" inline banner on every single Connections-panel load. Banner was working as designed — but it was masking a **persistent backend crash**, not a transient hiccup. `list_connections` was crashing 100% of the time for orgs that had any pre-existing connection row.
+
+**Real root cause**: MongoDB returns BSON datetimes as **naive** Python `datetime` objects by default (Motor doesn't enable `tz_aware=True`). All our writers use `datetime.now(timezone.utc)` (aware), so the DB write is correct UTC. But on read, the value comes back without tzinfo. Then:
+```python
+now = datetime.now(timezone.utc)            # aware
+(now - r["initiated_at"]).total_seconds()   # TypeError: can't subtract offset-naive and offset-aware datetimes
+```
+This crashed every iteration of the auto-refresh loop in `list_connections`, which propagated up and triggered the soft-error banner. **It was 100% reproducible** for any org that had a row in `composio_connections`.
+
+**Fix** (`composio_integration.py`):
+
+1. **`_ensure_aware(dt)` helper** — coerces naive datetimes to UTC-aware (treats them as UTC since every writer uses `datetime.now(timezone.utc)`). Returns None on None input, passes through already-aware values.
+
+2. **Applied at every subtraction point**:
+   - `list_connections` auto-refresh loop (`now - ini` → `now - _ensure_aware(ini)`)
+   - `list_connections` `pending_age_seconds` stamp
+   - `list_connections` ISO-serialization loop
+   - `refresh_connection_status` STUCK-detection age calculation
+
+3. **Per-row try/except in the hydration loop** — if a single connection row throws (corrupted field, broken Composio metadata), the row falls back to its minimum surfacing without taking the whole list down. Bad row logged with `connection_id + toolkit + exc` for diagnosis.
+
+**Tests** — 3 new pytest cases in `tests/test_composio_naive_datetime.py`:
+- `test_list_connections_handles_naive_datetimes_from_mongo` — reproduces the exact production crash with naive datetimes
+- `test_one_malformed_row_does_not_tank_the_whole_list` — confirms per-row try/except isolation
+- `test_ensure_aware_handles_none_and_aware_inputs` — helper unit tests
+
+All 19 Composio-resilience tests pass.
+
+**Production action**: redeploy. After deploy → Connections panel will load correctly for every existing org. The soft-error banner from yesterday is still there as a safety net but should never fire under normal operation now.
+
+---
+
 ## 🔌 Feb 19, 2026 — Connections panel: catalog-always + IG target-picker softening
 **Production bugs reported** (foundryagents.ai, on top of yesterday's STUCK fix):
   1. "Composio integration list no longer showing up on main Org page" — the **toolkit catalog** (Gmail / Slack / FB / etc. + Add cards) blanked out, leaving only the intro copy. Root cause: `composio_list_toolkits` returned `await list_connections(...)` inline, so a single transient Composio 5xx or a malformed row crashed the WHOLE endpoint, leaving the FE with no toolkits to render.

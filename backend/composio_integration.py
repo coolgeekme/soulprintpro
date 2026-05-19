@@ -38,6 +38,24 @@ from typing import Any, Dict, List, Optional
 # minted <60s ago is skipped to avoid pointless API churn).
 _STALE_INITIATED_SECONDS = 60
 
+
+def _ensure_aware(dt: Optional[datetime]) -> Optional[datetime]:
+    """Coerce a datetime to UTC-aware.
+
+    MongoDB stores BSON datetimes as UTC but returns them as **naive**
+    Python ``datetime`` objects by default (Motor doesn't enable
+    ``tz_aware=True``). Subtracting an aware ``datetime.now(timezone.utc)``
+    from a naive value raises ``TypeError`` in Python. This helper
+    treats naive datetimes AS UTC (which is correct for every row we
+    write — every writer uses ``datetime.now(timezone.utc)`` so the
+    stored value really is UTC, just stripped of tzinfo on read).
+    """
+    if dt is None:
+        return None
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=timezone.utc)
+    return dt
+
 logger = logging.getLogger(__name__)
 
 # Toolkits Foundry exposes "above the fold" in the Connections UI. Order
@@ -446,9 +464,10 @@ async def refresh_connection_status(db, connection_id: str) -> Dict[str, Any]:
     # Cancel + retry" call-to-action instead of an endless spinner.
     if status == "INITIATED" and existing:
         attempts = int(existing.get("refresh_attempts") or 0) + 1
+        ini_aware = _ensure_aware(existing.get("initiated_at"))
         age = (
-            datetime.now(timezone.utc) - existing["initiated_at"]
-        ).total_seconds() if isinstance(existing.get("initiated_at"), datetime) else 0
+            datetime.now(timezone.utc) - ini_aware
+        ).total_seconds() if isinstance(ini_aware, datetime) else 0
         if attempts >= 3 and age >= 300:  # 5 min + 3 refresh attempts
             status = "STUCK"
             logger.info(
@@ -598,7 +617,7 @@ async def list_connections(db, org_id: str, user_id: str) -> List[Dict[str, Any]
     for r in rows:
         if r.get("status") != "INITIATED":
             continue
-        ini = r.get("initiated_at")
+        ini = _ensure_aware(r.get("initiated_at"))
         if not isinstance(ini, datetime):
             continue
         if (now - ini).total_seconds() < _STALE_INITIATED_SECONDS:
@@ -623,41 +642,63 @@ async def list_connections(db, org_id: str, user_id: str) -> List[Dict[str, Any]
             {"_id": 0},
         ).sort("initiated_at", -1).to_list(500)
 
-    # Hydrate with the human-readable name. Featured toolkits come from
-    # our static list; non-featured fall back to the cached catalog,
-    # finally to the slug itself if Composio's catalog isn't available.
+    # Hydrate with the human-readable name. Each row is wrapped in its
+    # own try/except so a single malformed row (e.g. a stuck FB attempt
+    # with a half-written params blob) can't tank the whole list — the
+    # bad row just falls back to its minimum fields and the rest of the
+    # panel still renders.
+    hydrated: List[Dict[str, Any]] = []
     for r in rows:
-        slug = r.get("toolkit") or ""
-        meta = _TOOLKIT_META.get(slug)
-        if meta:
-            r["toolkit_name"] = meta["name"]
-            r["toolkit_description"] = meta["description"]
-        else:
-            cat = _CATALOG_CACHE.get(slug)
-            r["toolkit_name"] = (cat or {}).get("name") or slug
-            r["toolkit_description"] = (cat or {}).get("description") or ""
-        # Platform-specific display label so the Connections UI can show
-        # "@azpaindoctors" for IG or "AZ Pain Doctors (Page)" for FB
-        # instead of the generic "Connected" pill.
-        if slug == "facebook" and r.get("facebook_page_name"):
-            r["display_label"] = r["facebook_page_name"]
-        elif slug == "instagram" and r.get("instagram_username"):
-            r["display_label"] = f"@{r['instagram_username']}"
-        # Surface target-selection state for the Meta picker UI.
-        if slug in ("facebook", "instagram"):
-            r["has_target"] = bool(r.get("facebook_page_id") or r.get("instagram_user_id"))
-            r["target_summary"] = _meta_target_summary(r)
-        # Stamp the pending age (in seconds) so the FE can show
-        # "Connecting… (3 min)" and surface a "taking too long" nudge
-        # without re-deriving timestamps client-side. ACTIVE rows skip.
-        if r.get("status") in ("INITIATED", "STUCK") and isinstance(r.get("initiated_at"), datetime):
-            r["pending_age_seconds"] = int((now - r["initiated_at"]).total_seconds())
-        # Normalise dates to ISO so JSON serialisation is clean.
-        for k in ("initiated_at", "activated_at", "last_synced_at"):
-            v = r.get(k)
-            if isinstance(v, datetime):
-                r[k] = v.isoformat()
-    return rows
+        try:
+            slug = r.get("toolkit") or ""
+            meta = _TOOLKIT_META.get(slug)
+            if meta:
+                r["toolkit_name"] = meta["name"]
+                r["toolkit_description"] = meta["description"]
+            else:
+                cat = _CATALOG_CACHE.get(slug)
+                r["toolkit_name"] = (cat or {}).get("name") or slug
+                r["toolkit_description"] = (cat or {}).get("description") or ""
+            # Platform-specific display label so the Connections UI can show
+            # "@azpaindoctors" for IG or "AZ Pain Doctors (Page)" for FB
+            # instead of the generic "Connected" pill.
+            if slug == "facebook" and r.get("facebook_page_name"):
+                r["display_label"] = r["facebook_page_name"]
+            elif slug == "instagram" and r.get("instagram_username"):
+                r["display_label"] = f"@{r['instagram_username']}"
+            # Surface target-selection state for the Meta picker UI.
+            if slug in ("facebook", "instagram"):
+                r["has_target"] = bool(r.get("facebook_page_id") or r.get("instagram_user_id"))
+                r["target_summary"] = _meta_target_summary(r)
+            # Stamp the pending age (in seconds) so the FE can show
+            # "Connecting… (3 min)" and surface a "taking too long" nudge
+            # without re-deriving timestamps client-side. ACTIVE rows skip.
+            if r.get("status") in ("INITIATED", "STUCK"):
+                ini_aware = _ensure_aware(r.get("initiated_at"))
+                if isinstance(ini_aware, datetime):
+                    r["pending_age_seconds"] = int((now - ini_aware).total_seconds())
+            # Normalise dates to ISO so JSON serialisation is clean.
+            for k in ("initiated_at", "activated_at", "last_synced_at"):
+                v = _ensure_aware(r.get(k))
+                if isinstance(v, datetime):
+                    r[k] = v.isoformat()
+            hydrated.append(r)
+        except Exception as exc:
+            logger.warning(
+                "Composio: skipping malformed connection row %s (toolkit=%s): %s",
+                r.get("connection_id"), r.get("toolkit"), exc,
+            )
+            # Still surface the row with raw fields so the UI shows
+            # *something* — better than silently dropping the user's
+            # connection. Drop only the fields we know are broken.
+            r.pop("pending_age_seconds", None)
+            r["toolkit_name"] = r.get("toolkit_name") or r.get("toolkit") or "Unknown"
+            for k in ("initiated_at", "activated_at", "last_synced_at"):
+                v = r.get(k)
+                if isinstance(v, datetime):
+                    r[k] = v.replace(tzinfo=timezone.utc).isoformat() if v.tzinfo is None else v.isoformat()
+            hydrated.append(r)
+    return hydrated
 
 
 def _meta_target_summary(r: Dict[str, Any]) -> Optional[Dict[str, Optional[str]]]:
