@@ -3,6 +3,32 @@
 Plain-English feature inventory of **Foundry by SoulPrint Engine** for non-technical teammates. Each section is a category of capabilities and what they do for users.
 
 ---
+## 🎨 Feb 19, 2026 — Post image generation: background-task pattern
+**Production bug** (Maradyne org, on top of yesterday's remix fix): clicking Regenerate on a post copy showed "Generation failed". Same root cause as the remix network-error bug — `/social/posts/{id}/generate-image` was blocking on Nano Banana for 30-90s, exceeding production-ingress proxy timeouts (60-100s).
+
+**Fix** (`/app/backend/social_posts.py`):
+
+1. **`/generate-image` returns `status_code=202`** with `image_status="pending"` after persisting the user's prompt synchronously. No more inline blocking.
+
+2. **`_run_generate_bg` coroutine** runs Nano Banana + logo composite + DB update in the background. Kicked off with `asyncio.create_task(_run_generate_bg())`.
+
+3. **Terminal status flips** — `image_status="ready"` + image dict on success, `image_status="error"` + `image_error="Generation failed — tap Regenerate to retry."` on failure.
+
+4. **Frontend updates** (`SocialPage.js`):
+   - `generate()` interprets 202 + pending → "Generating image — 30-90s…" toast (vs the legacy "Image generated" toast which fired before the image actually existed).
+   - **Polling loop cap raised 90s → 180s** (23 → 45 ticks at 4s) — Nano Banana image-to-image takes 30-90s and the prior cap left spinners stuck on the slow path.
+   - Polling loop now **surfaces error toasts** when posts land in `image_status="error"` after polling completes — without this users stared at a now-still card wondering what happened.
+
+**Tests** — 5 new pytest cases in `tests/test_generate_image_async.py` mirroring the remix-async test pattern (status_code=202, create_task usage, pending-before-task ordering, sync prompt persist, error-status on failure). All 10 image-async tests pass (5 remix + 5 generate).
+
+**Production action**: redeploy. After deploy, clicking Generate / Regenerate on a post:
+1. Modal closes / Edit-prompt collapses immediately with a "Generating image — 30-90s" toast.
+2. Card shows a spinner (existing pending-state UI).
+3. Polling swaps in the finished image when Nano Banana completes (typically 45-75s).
+4. On failure, the spinner clears + a precise error toast appears + the card surfaces `image_error` text.
+
+---
+
 ## 🎨 Feb 19, 2026 — Asset remix: background-task pattern (network-error fix)
 **Production bug**: users got a "network error" when remixing an uploaded image asset in an org. Root cause: the `/social/posts/{id}/remix-asset` endpoint called `generate_image_via_nano_banana(...)` **synchronously** inside the request handler. Nano Banana image-to-image takes 30-90 seconds depending on prompt complexity. Production-ingress proxies (Cloudflare / k8s ingress) typically cut connections at 60-100s, so the HTTP request died mid-generation and the browser surfaced the generic axios "network error".
 

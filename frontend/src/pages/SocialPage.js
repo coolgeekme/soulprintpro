@@ -198,7 +198,12 @@ export default function SocialPage() {
     let attempts = 0;
     const interval = setInterval(async () => {
       attempts += 1;
-      if (attempts > 23 /* ~90s at 4s ticks */) {
+      // Cap at 180s (45 attempts × 4s). Nano Banana image-to-image
+      // ranges 30-90s on its own, and the background-task launch adds
+      // a few hundred ms — 90s wasn't enough for the slow path and
+      // left the spinner permanently spinning. 180s gives a real
+      // safety margin without being intrusive.
+      if (attempts > 45) {
         clearInterval(interval);
         return;
       }
@@ -210,6 +215,17 @@ export default function SocialPage() {
         // useEffect tick will re-evaluate `hasPending` and return early.
         if (!data.some((p) => p.image_status === "pending")) {
           clearInterval(interval);
+          // If any post landed in `error` state, surface a single
+          // toast so users notice instead of staring at a now-still
+          // card wondering what happened.
+          const errored = data.filter((p) => p.image_status === "error");
+          if (errored.length) {
+            toast.error(
+              errored.length === 1
+                ? errored[0].image_error || "Image generation failed — tap Regenerate."
+                : `${errored.length} images failed to generate — tap Regenerate on each.`,
+            );
+          }
         }
       } catch { /* swallow — next tick will retry */ }
     }, 4000);
@@ -1230,7 +1246,19 @@ function PostCoverImage({ post, orgId, onUpdate, onReplace }) {
       const body = customPrompt !== null ? { prompt: customPrompt } : {};
       const { data } = await api.post(`/social/posts/${post.id}/generate-image`, body);
       Object.assign(post, data);
-      toast.success(customPrompt ? "Image regenerated with your prompt" : "Image generated");
+      // Backend now runs Nano Banana in a background task (so production
+      // ingress timeouts can't kill the request) and returns 202 with
+      // image_status: "pending". The SocialPage polling loop swaps in
+      // the final image — toast copy reflects that wait state.
+      if (data?.image_status === "pending") {
+        toast.message(
+          customPrompt
+            ? "Regenerating with your prompt — 30-90 seconds…"
+            : "Generating image — 30-90 seconds…",
+        );
+      } else {
+        toast.success(customPrompt ? "Image regenerated with your prompt" : "Image generated");
+      }
       onUpdate(post.id, { status: data.status });
       setShowPromptEditor(false);
     } catch (err) {

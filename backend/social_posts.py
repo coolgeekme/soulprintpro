@@ -1056,7 +1056,7 @@ def make_social_router(*, db, AGENTS, EMERGENT_LLM_KEY, LlmChat, UserMessage,
         doc["_id"] = res.inserted_id
         return serialize_social_post(doc)
 
-    @r.post("/social/posts/{post_id}/generate-image")
+    @r.post("/social/posts/{post_id}/generate-image", status_code=202)
     async def generate_post_image(
         post_id: str,
         body: GenerateImageBody = Body(default_factory=GenerateImageBody),
@@ -1067,6 +1067,12 @@ def make_social_router(*, db, AGENTS, EMERGENT_LLM_KEY, LlmChat, UserMessage,
         scaffold, different creative body). The override is persisted on
         the post as `image_prompt` so subsequent regenerations keep it
         unless the user clears or re-edits it.
+
+        Runs Nano Banana in a background task — production-ingress
+        proxy timeouts (60-100s) would otherwise kill the HTTP request
+        mid-generation. Returns 202 with the post flipped to
+        ``image_status: "pending"`` and the SocialPage polling loop
+        swaps in the finished image when ready.
         """
         try:
             post = await db.social_posts.find_one({"_id": _OID(post_id)})
@@ -1075,31 +1081,56 @@ def make_social_router(*, db, AGENTS, EMERGENT_LLM_KEY, LlmChat, UserMessage,
         if not post:
             raise HTTPException(404, "Post not found")
         await require_org_member(post["org_id"], u["id"])
-        org = await db.organizations.find_one({"_id": _OID(post["org_id"])})
+
         override = (body.prompt or "").strip()
-        # Fall back to the persisted image_prompt from a previous edit
-        effective_prompt = override or (post.get("image_prompt") or "")
-        img = await _generate_post_image(post, org or {}, effective_prompt)
-        if not img:
-            raise HTTPException(502, "Could not generate image. Try again in a moment.")
-        update = {"image": img}
-        # Persist the resolved body prompt on EVERY successful generation,
-        # not just when the user explicitly typed an override. This way the
-        # "Edit prompt" affordance always shows the actual text Nano Banana
-        # used (be it the user's override, a previously-saved override, or
-        # the auto-derived post copy). Before this fix, auto-generated
-        # posts had `image_prompt = ""` and the editor opened blank, leaving
-        # users guessing what was sent.
+        # Persist the prompt synchronously so the post survives a
+        # refresh — without this, the Edit-prompt editor would open
+        # blank mid-regeneration if the user navigates away and back.
         resolved_body = (
             override
             or (post.get("image_prompt") or "").strip()
             or (post.get("text") or "").strip()[:600]
         )
+        pending_update: dict = {
+            "image_status": "pending",
+            "image_pending_at": datetime.now(timezone.utc),
+        }
         if resolved_body:
-            update["image_prompt"] = resolved_body
+            pending_update["image_prompt"] = resolved_body
         await db.social_posts.update_one(
-            {"_id": _OID(post_id)}, {"$set": update},
+            {"_id": _OID(post_id)},
+            {"$set": pending_update, "$unset": {"image_error": ""}},
         )
+
+        async def _run_generate_bg():
+            try:
+                org = await db.organizations.find_one({"_id": _OID(post["org_id"])})
+                effective_prompt = override or (post.get("image_prompt") or "")
+                img = await _generate_post_image(post, org or {}, effective_prompt)
+                if not img:
+                    raise RuntimeError("Nano Banana returned empty image")
+                update = {
+                    "image": img,
+                    "image_status": "ready",
+                    "image_updated_at": datetime.now(timezone.utc),
+                }
+                if resolved_body:
+                    update["image_prompt"] = resolved_body
+                await db.social_posts.update_one(
+                    {"_id": _OID(post_id)},
+                    {"$set": update, "$unset": {"image_error": "", "image_pending_at": ""}},
+                )
+            except Exception as exc:
+                logger.warning("Post image generation failed: %s", exc)
+                await db.social_posts.update_one(
+                    {"_id": _OID(post_id)},
+                    {"$set": {
+                        "image_status": "error",
+                        "image_error": "Generation failed — tap Regenerate to retry.",
+                    }, "$unset": {"image_pending_at": ""}},
+                )
+
+        asyncio.create_task(_run_generate_bg())
         fresh = await db.social_posts.find_one({"_id": _OID(post_id)})
         return serialize_social_post(fresh)
 
