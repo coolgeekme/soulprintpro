@@ -17,16 +17,17 @@ import "../styles/foundry-chrome.css";
  * separate sprites.
  */
 
-const SIGIL_IMG = "https://customer-assets.emergentagent.com/job_emergent-wing/artifacts/sner1z09_Foundry%20intro%20%281%29.png";
-const HERO_LOGO = "https://customer-assets.emergentagent.com/job_emergent-wing/artifacts/sner1z09_Foundry%20intro%20%281%29.png";
-// Side-by-side marketing banner showcasing what a Spark-tier Foundry
-// workspace produces — slotted into the "See what Foundry forges"
-// section below the tier grid.
-const SPARK_SHOWCASE_IMG = "https://customer-assets.emergentagent.com/job_emergent-wing/artifacts/c12bbtiy_26b7e30cac5e4b58b89f271b067737b3.png";
-// Compact stacked-mark used in the navbar (emblem + FOUNDRY + tagline).
-// Different file from HERO_LOGO so we can tune size/crop independently
-// when the hero artwork evolves.
-const NAV_LOGO = "https://customer-assets.emergentagent.com/job_emergent-wing/artifacts/zntnh88h_Foundry%20logo.png";
+const SIGIL_IMG = "/brand/foundry_intro.png";
+const HERO_LOGO = "/brand/foundry_intro.png";
+// Right-panel-only crop of the original side-by-side Spark marketing
+// banner — the left panel had garbled AI-generated copy that won't
+// pass a marketing read-through, so we ship only the clean right
+// half ("Small Business? Meet Big Innovation" + swirl mark + CTA).
+const SPARK_SHOWCASE_IMG = "/brand/spark_panel.png";
+// Background-cleaned swirl mark used in the navbar. Sourced as
+// transparent PNG so it sits cleanly on the dark page surface
+// without the original artwork's navy bezel.
+const NAV_LOGO = "/brand/foundry_swirl.png";
 
 const TIERS = [
   {
@@ -75,10 +76,15 @@ function Wordmark() {
         src={NAV_LOGO}
         alt="Foundry"
         className="h-12 w-12 object-contain shrink-0"
-        style={{ filter: "drop-shadow(0 0 6px rgba(216,118,49,.22))" }}
+        style={{ filter: "drop-shadow(0 0 10px rgba(216,118,49,.32))" }}
       />
-      <div className="chr-sub-wordmark leading-tight">
-        POWERED BY <span className="accent">SOULPRINT</span> ENGINE
+      <div className="leading-tight">
+        <div className="chr-display text-lg tracking-[0.18em] text-white/90">
+          FOUNDRY
+        </div>
+        <div className="chr-sub-wordmark mt-0.5">
+          POWERED BY <span className="accent">SOULPRINT</span> ENGINE
+        </div>
       </div>
     </Link>
   );

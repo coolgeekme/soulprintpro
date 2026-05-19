@@ -15,12 +15,12 @@ import "../styles/foundry-chrome.css";
  * three "states" stay visually fused to the source artwork.
  */
 
-const SIGIL_IMG = "https://customer-assets.emergentagent.com/job_emergent-wing/artifacts/sner1z09_Foundry%20intro%20%281%29.png";
+const SIGIL_IMG = "/brand/foundry_intro.png";
 // "INTRODUCING: FOUNDRY" hero composition shown above the tier grid — re-uses
 // the same source as SIGIL_IMG so the tier emblems and the master mark
 // always feel forged from the same artwork.
-const HERO_INTRO_IMG = "https://customer-assets.emergentagent.com/job_emergent-wing/artifacts/sner1z09_Foundry%20intro%20%281%29.png";
-const NAV_LOGO = "https://customer-assets.emergentagent.com/job_emergent-wing/artifacts/zntnh88h_Foundry%20logo.png";
+const HERO_INTRO_IMG = "/brand/foundry_intro.png";
+const NAV_LOGO = "/brand/foundry_swirl.png";
 
 const TIERS = [
   {
@@ -135,10 +135,15 @@ function Wordmark() {
         src={NAV_LOGO}
         alt="Foundry"
         className="h-12 w-12 object-contain shrink-0"
-        style={{ filter: "drop-shadow(0 0 6px rgba(216,118,49,.22))" }}
+        style={{ filter: "drop-shadow(0 0 10px rgba(216,118,49,.32))" }}
       />
-      <div className="chr-sub-wordmark leading-tight">
-        POWERED BY <span className="accent">SOULPRINT</span> ENGINE
+      <div className="leading-tight">
+        <div className="chr-display text-lg tracking-[0.18em] text-white/90">
+          FOUNDRY
+        </div>
+        <div className="chr-sub-wordmark mt-0.5">
+          POWERED BY <span className="accent">SOULPRINT</span> ENGINE
+        </div>
       </div>
     </Link>
   );
