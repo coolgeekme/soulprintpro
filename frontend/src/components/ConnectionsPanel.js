@@ -100,7 +100,7 @@ export default function ConnectionsPanel({ orgId }) {
         setToolkits(data.toolkits || []);
         setConnections(data.connections || []);
         const stillPending = (data.connections || []).some(
-          (c) => c.status === "INITIATED",
+          (c) => c.status === "INITIATED",  // STUCK is terminal — don't keep polling it
         );
         for (const c of data.connections || []) {
           if (c.status === "INITIATED") {
@@ -231,6 +231,33 @@ export default function ConnectionsPanel({ orgId }) {
       load();
     } catch (err) {
       toast.error(err?.response?.data?.detail || "Couldn't cancel the pending connection");
+    }
+  };
+
+  // One-click recovery for STUCK rows: delete the failed attempt then
+  // immediately fire a fresh OAuth flow for the same toolkit, preserving
+  // the user's original nickname so the new row picks up where the old
+  // one left off. This is the production-grade retry that makes "stuck"
+  // a self-healing state instead of a manual-cleanup dead end.
+  const handleRetryStuck = async (conn, slug) => {
+    setBusySlug(slug);
+    try {
+      // 1. Clear the failed row first.
+      try {
+        await api.delete(`/orgs/${orgId}/composio/connections/${conn.connection_id}`);
+      } catch (_) {/* keep going; the connect endpoint also prunes */}
+      // 2. Fresh OAuth — same toolkit + preserved nickname.
+      const { data } = await api.post(`/orgs/${orgId}/composio/connect`, {
+        toolkit: slug,
+        nickname: (conn.nickname || "").trim() || null,
+      });
+      window.open(data.redirect_url, "_blank", "noopener,noreferrer");
+      toast.message("Retry started — finish authorisation in the new tab.");
+      load();
+    } catch (err) {
+      toast.error(err?.response?.data?.detail || "Couldn't retry the connection");
+    } finally {
+      setBusySlug(null);
     }
   };
 
@@ -372,8 +399,14 @@ export default function ConnectionsPanel({ orgId }) {
                           />
                         ) : (
                           <span className="flex-1 truncate flex flex-col leading-tight">
-                            <span className="truncate">
-                              {c.nickname || c.display_label || c.account_label || (c.status === "INITIATED" ? formatPendingLabel(c) : "Connected")}
+                            <span className={"truncate " + (c.status === "STUCK" ? "text-red-300" : "")}>
+                              {c.nickname || c.display_label || c.account_label || (
+                                c.status === "STUCK"
+                                  ? "Connection failed"
+                                  : c.status === "INITIATED"
+                                    ? formatPendingLabel(c)
+                                    : "Connected"
+                              )}
                             </span>
                             {c.display_label && c.nickname && c.nickname !== c.display_label && (
                               <span className="text-[10px] opacity-50 truncate">
@@ -383,6 +416,11 @@ export default function ConnectionsPanel({ orgId }) {
                             {c.status === "INITIATED" && (c.pending_age_seconds || 0) >= 90 && (
                               <span className="text-[10px] text-amber-300 truncate">
                                 Taking longer than usual — click Cancel and reconnect if the OAuth window already closed.
+                              </span>
+                            )}
+                            {c.status === "STUCK" && (
+                              <span className="text-[10px] text-red-300 truncate">
+                                The OAuth grant didn't complete. Click Retry to start over — your other connections are unaffected.
                               </span>
                             )}
                           </span>
@@ -416,6 +454,16 @@ export default function ConnectionsPanel({ orgId }) {
                               Cancel
                             </button>
                           </>
+                        )}
+                        {c.status === "STUCK" && (
+                          <button
+                            onClick={() => handleRetryStuck(c, t.slug)}
+                            className="text-[10px] px-1.5 py-0.5 rounded border border-red-400/40 text-red-300 hover:bg-red-500/10"
+                            title="Wipe this failed attempt and start a fresh OAuth"
+                            data-testid={`retry-stuck-${c.connection_id}-btn`}
+                          >
+                            Retry
+                          </button>
                         )}
                         {c.status === "ACTIVE" && (
                           <button

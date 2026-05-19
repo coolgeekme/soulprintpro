@@ -3,6 +3,27 @@
 Plain-English feature inventory of **Foundry by SoulPrint Engine** for non-technical teammates. Each section is a category of capabilities and what they do for users.
 
 ---
+## 🔌 Feb 19, 2026 — Composio Connections: zombie-row recovery (round 2)
+**Production bug, reported twice on foundryagents.ai**: Facebook connection sat on "Connecting…" forever even after round-1's auto-refresh + Cancel button fix. Root cause: when Composio kept returning `INITIATED` past the OAuth grant deadline (popup closed early, Meta never POSTed the callback, etc.), every refresh just persisted "still INITIATED" with no terminal state — so the row became a permanent zombie that needed manual deletion before "+ Add" worked again.
+
+**Two-layer fix shipped**:
+
+1. **Zombie prune on `initiate_connection`** — when the user clicks "+ Add Facebook" after a stuck attempt, the backend `$delete_many`'s any other `INITIATED` or `STUCK` row for the same `(composio_user_id, toolkit)` tuple that's >120s old before minting the fresh pending row. **No more "click Cancel first, then Add" two-step dance** — `+ Add` always starts clean.
+
+2. **`STUCK` terminal status on `refresh_connection_status`** — `refresh_attempts` counter tracks how many times we've polled Composio for the same row. When `attempts >= 3` AND `age >= 5 min` AND Composio still says `INITIATED`, we flip the row to `STUCK` ourselves. The FE then shows a red "Connection failed — Retry" badge instead of a misleading spinner forever.
+
+3. **Composio 5xx tolerance** — `connected_accounts.get()` exceptions are now caught + logged (warning, not exception). Returns the existing row's snapshot so the panel doesn't 500 when Composio's API has a transient hiccup.
+
+4. **One-click Retry on STUCK rows** (`ConnectionsPanel.js`) — `handleRetryStuck` deletes the failed row + immediately fires a fresh OAuth flow for the same toolkit, preserving the user's nickname. Production-grade self-healing instead of manual cleanup.
+
+5. **`STUCK` rows participate in pending-age stamping** so the FE can show "failed 8 min ago" copy.
+
+**Tests** — 7 new pytest cases in `tests/test_composio_stuck_recovery.py`: prune-stale-FB, preserve-IG-active, preserve-other-user, prune-STUCK-too, mark-zombie-as-STUCK, don't-mark-young-rows-STUCK, Composio-5xx-tolerance, STUCK-age-stamp. All 13 Composio-recovery tests pass.
+
+**Bonus — answered the user's Meta strategy question**: granting "all current + future Pages" on each org's OAuth flow IS the correct strategy. Foundry's per-org `Target Picker` scopes the actual publish to a single Page; even though every token has visibility to all your Pages, Foundry never auto-posts — the user has to pick a target per org. Locking the grant to a single Page would force a re-grant on every new Page addition.
+
+---
+
 ## 🏗️ Feb 18, 2026 — Lead-hunt missions: kitchen-sink fix (round 2)
 **Production bug (reported twice on foundryagents.ai)**: a "harvest verified business leads across Phoenix/Austin/Atlanta/Baltimore/Miami" mission shipped a CSV with **1 data row** even after the round-1 fix (csv_append_rows + 15-row gate + DATA-HARVEST recipe + drafter upgrade). Root cause: the recipe pointed the agent at Chamber of Commerce / BBB / Yelp / LinkedIn — all Cloudflare-protected — so every `web_scrape` returned empty, the agent had no rows to push to `csv_append_rows`, and the one-shot finish gate let it through after a single nudge.
 

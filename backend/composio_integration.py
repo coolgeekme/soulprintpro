@@ -26,7 +26,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 
 
@@ -351,6 +351,31 @@ async def initiate_connection(
         raise ValueError(f"Toolkit '{toolkit}' is not available")
     client = _get_client()
     cu = composio_user_id(org_id, user_id)
+
+    # ── Zombie pruning ──────────────────────────────────────────────────
+    # If the user is hitting "+ Add" for `toolkit` after a prior attempt
+    # got stuck (popup closed before grant, network drop mid-OAuth, etc.)
+    # they don't have to first click "Cancel" on the stale row — we
+    # auto-delete any INITIATED row older than 2 minutes for the same
+    # (composio_user_id, toolkit) tuple so the panel doesn't pile up
+    # half-finished attempts. ACTIVE rows are NEVER pruned here — only
+    # incomplete ones for the toolkit being re-attempted.
+    prune_cutoff = datetime.now(timezone.utc) - timedelta(seconds=120)
+    try:
+        prune_result = await db.composio_connections.delete_many({
+            "composio_user_id": cu,
+            "toolkit": toolkit,
+            "status": {"$in": ["INITIATED", "STUCK"]},
+            "initiated_at": {"$lt": prune_cutoff},
+        })
+        if prune_result.deleted_count:
+            logger.info(
+                "Composio: pruned %d stale %s pending row(s) for user %s before fresh OAuth",
+                prune_result.deleted_count, toolkit, cu,
+            )
+    except Exception as exc:
+        logger.warning("Composio: zombie prune skipped (%s)", exc)
+
     req = client.connected_accounts.link(
         user_id=cu,
         auth_config_id=ac_id,
@@ -396,15 +421,48 @@ async def refresh_connection_status(db, connection_id: str) -> Dict[str, Any]:
     set explicitly (ON or OFF) are left alone.
     """
     client = _get_client()
-    acct = client.connected_accounts.get(nanoid=connection_id)
-    status = getattr(acct, "status", None)
+    try:
+        acct = client.connected_accounts.get(nanoid=connection_id)
+        status = getattr(acct, "status", None)
+    except Exception as exc:
+        # Composio occasionally 5xxs or 404s on freshly-minted connection
+        # ids (eventual consistency). Don't crash the caller — return the
+        # row's current snapshot and let the next refresh try again.
+        logger.warning("Composio: connected_accounts.get(%s) failed: %s", connection_id, exc)
+        existing = await db.composio_connections.find_one(
+            {"connection_id": connection_id}, {"_id": 0},
+        )
+        return {"connection_id": connection_id, "status": (existing or {}).get("status")}
     existing = await db.composio_connections.find_one(
         {"connection_id": connection_id}, {"_id": 0},
     )
     was_active = (existing or {}).get("status") == "ACTIVE"
+
+    # ── Stuck-row detection ────────────────────────────────────────────
+    # When Composio keeps returning INITIATED past a reasonable wait, the
+    # OAuth grant almost certainly failed silently (popup closed early,
+    # Meta never POSTed the callback, or the user denied scopes). We
+    # mark the row STUCK so the UI can surface a clear "failed — click
+    # Cancel + retry" call-to-action instead of an endless spinner.
+    if status == "INITIATED" and existing:
+        attempts = int(existing.get("refresh_attempts") or 0) + 1
+        age = (
+            datetime.now(timezone.utc) - existing["initiated_at"]
+        ).total_seconds() if isinstance(existing.get("initiated_at"), datetime) else 0
+        if attempts >= 3 and age >= 300:  # 5 min + 3 refresh attempts
+            status = "STUCK"
+            logger.info(
+                "Composio: marking %s connection %s STUCK (age=%ds attempts=%d)",
+                existing.get("toolkit"), connection_id, int(age), attempts,
+            )
+        updated_attempts = attempts
+    else:
+        updated_attempts = 0
+
     updated = {
         "status": status,
         "last_synced_at": datetime.now(timezone.utc),
+        "refresh_attempts": updated_attempts,
     }
     if status == "ACTIVE":
         updated["activated_at"] = datetime.now(timezone.utc)
@@ -592,7 +650,7 @@ async def list_connections(db, org_id: str, user_id: str) -> List[Dict[str, Any]
         # Stamp the pending age (in seconds) so the FE can show
         # "Connecting… (3 min)" and surface a "taking too long" nudge
         # without re-deriving timestamps client-side. ACTIVE rows skip.
-        if r.get("status") == "INITIATED" and isinstance(r.get("initiated_at"), datetime):
+        if r.get("status") in ("INITIATED", "STUCK") and isinstance(r.get("initiated_at"), datetime):
             r["pending_age_seconds"] = int((now - r["initiated_at"]).total_seconds())
         # Normalise dates to ISO so JSON serialisation is clean.
         for k in ("initiated_at", "activated_at", "last_synced_at"):
