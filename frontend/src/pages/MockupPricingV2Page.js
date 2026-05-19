@@ -15,7 +15,11 @@ import "../styles/foundry-chrome.css";
  * three "states" stay visually fused to the source artwork.
  */
 
-const SIGIL_IMG = "https://customer-assets.emergentagent.com/job_emergent-wing/artifacts/1uouv1t6_image%20%2826%29.png";
+const SIGIL_IMG = "https://customer-assets.emergentagent.com/job_emergent-wing/artifacts/sner1z09_Foundry%20intro%20%281%29.png";
+// "INTRODUCING: FOUNDRY" hero composition shown above the tier grid — re-uses
+// the same source as SIGIL_IMG so the tier emblems and the master mark
+// always feel forged from the same artwork.
+const HERO_INTRO_IMG = "https://customer-assets.emergentagent.com/job_emergent-wing/artifacts/sner1z09_Foundry%20intro%20%281%29.png";
 const NAV_LOGO = "https://customer-assets.emergentagent.com/job_emergent-wing/artifacts/zntnh88h_Foundry%20logo.png";
 
 const TIERS = [
@@ -149,10 +153,10 @@ function TierSigil({ offset = "50%" }) {
         style={{
           backgroundImage: `url('${SIGIL_IMG}')`,
           backgroundRepeat: "no-repeat",
-          // Skip the wordmark band ("SPARK"/"TEMPER"/"REFINE") under each
-          // emblem in the source artwork so the card shows only the sigil.
-          backgroundPosition: `${offset} 22%`,
-          backgroundSize: "320% auto",
+          // Crop the lower band of the Foundry-intro composition where
+          // the three tier emblems live (Spark/Temper/Refine cards).
+          backgroundPosition: `${offset} 62%`,
+          backgroundSize: "300% auto",
           filter: "drop-shadow(0 0 12px rgba(95,168,214,.25))",
         }}
       />
@@ -308,6 +312,23 @@ export default function MockupPricingV2Page() {
       </header>
 
       <section className="relative z-10 max-w-7xl mx-auto px-6 md:px-10 pt-12 pb-12 text-center">
+        {/* INTRODUCING:FOUNDRY hero composition — crop the top half so
+            only the master diamond + "FORGE YOUR EDGE" wordmark show;
+            the bottom-half tier cards are rendered properly-sized in
+            the TierCard sigils below this hero. */}
+        <div
+          role="img"
+          aria-label="Introducing Foundry — Forge your edge"
+          className="mx-auto mb-6 w-full max-w-[480px] aspect-[4/3]"
+          style={{
+            backgroundImage: `url('${HERO_INTRO_IMG}')`,
+            backgroundRepeat: "no-repeat",
+            backgroundPosition: "center top",
+            backgroundSize: "100% auto",
+            filter: "drop-shadow(0 20px 60px rgba(95,168,214,.18))",
+          }}
+          data-testid="mockup-v2-pricing-hero-intro"
+        />
         <div className="chr-eyebrow inline-flex items-center gap-2 mb-4">
           <Hexagon className="w-3 h-3 text-blue-300" /> Three sigils. One forge.
         </div>

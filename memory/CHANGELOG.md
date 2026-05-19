@@ -3,6 +3,33 @@
 Plain-English feature inventory of **Foundry by SoulPrint Engine** for non-technical teammates. Each section is a category of capabilities and what they do for users.
 
 ---
+## 🏗️ Feb 18, 2026 — Lead-hunt missions: kitchen-sink fix (round 2)
+**Production bug (reported twice on foundryagents.ai)**: a "harvest verified business leads across Phoenix/Austin/Atlanta/Baltimore/Miami" mission shipped a CSV with **1 data row** even after the round-1 fix (csv_append_rows + 15-row gate + DATA-HARVEST recipe + drafter upgrade). Root cause: the recipe pointed the agent at Chamber of Commerce / BBB / Yelp / LinkedIn — all Cloudflare-protected — so every `web_scrape` returned empty, the agent had no rows to push to `csv_append_rows`, and the one-shot finish gate let it through after a single nudge.
+
+**Kitchen-sink fix (4 components, all shipped)**:
+
+1. **`public_data_sources.py`** — new module wrapping 4 real JSON APIs that don't require scraping or blocking-prone OAuth:
+   - `search_sec_edgar(query, state=None)` — SEC EDGAR full-text via efts.sec.gov. Verified live: 10 rows per call for "healthcare" / "consulting". Returns company name + state + SIC-mapped industry + canonical SEC company-page URL.
+   - `search_usaspending(state, naics_keyword=None)` — USAspending.gov autocomplete/recipient endpoint. Verified live: 10 rows per state × keyword combo (AZ healthcare, TX technology, GA finance, MD consulting, FL marketing). Falls back to the state's full name as `search_text` when no keyword supplied (API requires non-empty). Now uses Foundry's standards-compliant Wikipedia/SEC-friendly User-Agent.
+   - `search_wikipedia_companies(query)` — Wikipedia full-text `list=search` (NOT opensearch, which only matches title prefixes and missed the canonical articles). Picks the first hit titled "List of companies/corporations …" containing a query token. Parses BOTH wikitable rows (Phoenix, Miami) AND bullet-list `<li><a title=>` flavours (Austin, Atlanta) — scoped strictly to `mw-parser-output` so navigation chrome doesn't leak in. Verified live: 20 rows for Phoenix/Austin/Atlanta/Miami; Baltimore returns 0 (article format mismatch — acceptable, 4/5 metros work).
+   - `search_opencorporates(jurisdiction, q)` — registered for forward-compat; fails soft with a hint pointing the agent to the other 3 sources because OC's free tier now requires an API key.
+
+2. **4 new mission tools** wrapping the helpers (in `missions.py`'s `build_tools`): `sec_edgar_search`, `usaspending_recipients`, `wikipedia_companies_list`, `opencorporates_search`. All return rows pre-shaped for the standard lead-hunt CSV columns so the agent can push the array straight into `csv_append_rows`.
+
+3. **Multi-attempt dataset gate** — `dataset_gate_warned` boolean replaced with `dataset_gate_warn_count`. Gate fires up to `DATASET_GATE_MAX_NUDGES=3` times with escalating urgency text ("FINISH BLOCKED" → "SECOND WARNING" → "FINAL WARNING — after this finish goes through but the mission will be marked PARTIAL"). After the cap, finish is allowed but `partial_reason` is stamped on the mission doc. Fixes the round-1 issue where the agent ignored one nudge and re-called finish.
+
+4. **Hardened lead-mission system prompt** (`_build_lead_mission_system_prompt` in `server.py`) — dropped the broken aggregator list (Chamber/BBB/Yelp/LinkedIn) and replaced with explicit "START WITH THE JSON-API TOOLS, NOT WEB SCRAPING" mandate plus the 4-step per-metro loop using the new tools. Tells the agent point-blank: 2 metros of JSON-API calls already clears the 15-row gate. Stops the doom-loop on Cloudflare-blocked aggregators.
+
+**Tests** — 16 new pytest cases in `tests/test_public_data_sources.py` covering shape conformance, state filtering, address parsing, SIC mapping, both Wikipedia formats (table + bullet list), and irrelevant-hit rejection. All 57 lead-hunt-related tests pass; backend reboots clean.
+
+**Production impact**: for the user's exact mission goal (verified live):
+- SEC EDGAR healthcare: 10 rows · consulting: 10 rows
+- Wikipedia: 20 rows × 4 of 5 metros = 80 rows
+- USAspending: 10 rows × 5 states × multiple keywords = 50+ rows
+- **Realistic harvest: 180+ rows from 3 free JSON APIs, NO scraping.**
+
+---
+
 ## 🔌 Feb 18, 2026 — Composio Connections: stuck-INITIATED UX
 **Production bug (foundryagents.ai)**: Facebook "+ Add" → OAuth popup completed → UI stuck on "Connecting…" for 30+ minutes with no Page picker shown. Root cause: post-callback poll window was only 30s (10 attempts × 3s) and `list_connections` returned cached statuses — when Composio's INITIATED → ACTIVE webhook lagged >30s (common for Meta), the row was orphaned in the DB and the UI had no way out. Three-part fix:
 
