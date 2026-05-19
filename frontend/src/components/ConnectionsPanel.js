@@ -61,6 +61,11 @@ export default function ConnectionsPanel({ orgId }) {
   const [nicknameDraft, setNicknameDraft] = useState({ slug: null, value: "" });
   const [renameDraft, setRenameDraft] = useState({ id: null, value: "" });
   const [browseOpen, setBrowseOpen] = useState(false);
+  // Non-fatal "we couldn't pull your connected accounts but the toolkit
+  // catalog still renders" banner — shown inline so users can keep
+  // adding new connections even when an existing row is causing the
+  // list to crash on the backend.
+  const [connectionsError, setConnectionsError] = useState(null);
   const location = useLocation();
   const nav = useNavigate();
 
@@ -70,8 +75,15 @@ export default function ConnectionsPanel({ orgId }) {
       setToolkits(data.toolkits || []);
       setConnections(data.connections || []);
       setAvailable(Boolean(data.available));
+      setConnectionsError(data.connections_error || null);
     } catch (err) {
+      // Hard failure (the whole endpoint 500'd). Leave any previously
+      // loaded toolkits in place so the user doesn't lose the "+ Add"
+      // grid mid-session, and surface a single toast + inline banner.
       toast.error("Couldn't load integrations");
+      setConnectionsError(
+        "Couldn't reach the integrations service. Try Refresh in a moment.",
+      );
     } finally {
       setLoading(false);
     }
@@ -340,6 +352,26 @@ export default function ConnectionsPanel({ orgId }) {
       </div>
 
       <ConnectionsHowToGuide />
+
+      {connectionsError && (
+        <div
+          className="flex items-start gap-2 rounded-lg border border-amber-400/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-200"
+          data-testid="connections-soft-error"
+        >
+          <AlertTriangle className="w-3.5 h-3.5 mt-0.5 shrink-0" />
+          <span className="leading-relaxed">
+            {connectionsError}
+            {" "}
+            <button
+              onClick={load}
+              className="underline underline-offset-2 hover:text-amber-100"
+              data-testid="connections-soft-error-retry"
+            >
+              Retry now
+            </button>
+          </span>
+        </div>
+      )}
 
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
         {visibleToolkits.map((t) => {

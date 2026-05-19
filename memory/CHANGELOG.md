@@ -3,6 +3,32 @@
 Plain-English feature inventory of **Foundry by SoulPrint Engine** for non-technical teammates. Each section is a category of capabilities and what they do for users.
 
 ---
+## 🔌 Feb 19, 2026 — Connections panel: catalog-always + IG target-picker softening
+**Production bugs reported** (foundryagents.ai, on top of yesterday's STUCK fix):
+  1. "Composio integration list no longer showing up on main Org page" — the **toolkit catalog** (Gmail / Slack / FB / etc. + Add cards) blanked out, leaving only the intro copy. Root cause: `composio_list_toolkits` returned `await list_connections(...)` inline, so a single transient Composio 5xx or a malformed row crashed the WHOLE endpoint, leaving the FE with no toolkits to render.
+  2. "Couldn't load your Facebook Pages — Connect Facebook for this org first" modal popping when clicking **Select target** on an IG row, even when IG was connected and granted Page permissions. Root cause: the route hard-errored before even *trying* the FB-list-pages call if no separate FB row existed.
+
+**Fixes**:
+
+1. **Catalog-always resilience** in `composio_list_toolkits` — `list_connections` now runs inside try/except. On failure we return featured toolkits + an empty connections list + a `connections_error: "Couldn't load your existing Composio connections (transient API hiccup)…"` flag. `+ Add` grid never blanks out again.
+
+2. **Inline soft-error banner** in `ConnectionsPanel.js` — `connectionsError` state renders an amber `AlertTriangle` banner with a `Retry now` link button right above the toolkit grid. Far better UX than the previous "toast fires + panel goes blank" failure mode.
+
+3. **Hard-fail toast also preserves state** — if the WHOLE endpoint 500s, the catch branch no longer wipes the previously-loaded toolkits; the panel stays usable, the banner says "Couldn't reach the integrations service".
+
+4. **Loosened IG → FB target lookup** in `composio_available_targets`:
+   - If toolkit is `instagram` AND no ACTIVE FB row exists, we now **try the FB_LIST_MANAGED_PAGES call against the IG row's token first** — Composio routes Meta tools by user, not by toolkit row, so an IG OAuth grant with `pages_show_list` permission can list Pages without a separate FB connection.
+   - Only AFTER the IG-path try comes back with 0 Pages do we surface the "connect FB" nudge — and the error copy explicitly explains "either the IG OAuth didn't include Manage Pages, or you have no FB Pages linked to this IG Business account" + the actionable fix.
+   - Removed the dead-code duplicate exception handler that ruff was flagging.
+
+**Tests** — 3 new pytest cases in `tests/test_composio_toolkits_resilience.py`: endpoint-returns-catalog-when-connections-blows-up, clean-path-omits-error-flag, composio-unavailable-returns-empty-safely. All 16 Composio-related tests pass. Backend boots clean.
+
+**Production action**: redeploy. After deploy:
+- The "+ Add" grid will reappear immediately on the Org page even if FB is still in STUCK state.
+- Clicking **Select target** on the IG row should now either show the Page picker directly (IG token has Page perms) OR surface a precise actionable error (IG token doesn't — add FB).
+
+---
+
 ## 🔌 Feb 19, 2026 — Composio Connections: zombie-row recovery (round 2)
 **Production bug, reported twice on foundryagents.ai**: Facebook connection sat on "Connecting…" forever even after round-1's auto-refresh + Cancel button fix. Root cause: when Composio kept returning `INITIATED` past the OAuth grant deadline (popup closed early, Meta never POSTed the callback, etc.), every refresh just persisted "still INITIATED" with no terminal state — so the row became a permanent zombie that needed manual deletion before "+ Add" worked again.
 

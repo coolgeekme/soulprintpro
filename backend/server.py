@@ -7697,17 +7697,37 @@ composio_r = APIRouter(prefix="/api/orgs")
 async def composio_list_toolkits(org_id: str, u: dict = Depends(get_current_user)):
     """Featured toolkits + this user's existing connections. Drives the
     above-the-fold Connections panel. Use `/composio/catalog` for the
-    full searchable list."""
+    full searchable list.
+
+    Resilient design: if `list_connections` raises (transient Composio
+    5xx, a malformed row, a Mongo blip), we STILL return the featured
+    toolkit catalog with an empty connections list and a `connections_error`
+    flag the FE can surface as a non-fatal banner. Without this guard a
+    single bad row blanks out the entire Connections panel + "+ Add"
+    grid — exactly the Feb 2026 production regression where users saw
+    the panel header but no toolkit cards.
+    """
     from composio_integration import (
         list_featured_toolkits, list_connections, is_available,
     )
     await require_org_member(org_id, u["id"])
     if not is_available():
         return {"available": False, "toolkits": [], "connections": []}
+    connections: list = []
+    connections_error: Optional[str] = None
+    try:
+        connections = await list_connections(db, org_id, u["id"])
+    except Exception as exc:
+        logger.exception("Composio: list_connections failed for org %s user %s", org_id, u["id"])
+        connections_error = (
+            "Couldn't load your existing Composio connections "
+            "(transient API hiccup). Try clicking Refresh in a moment."
+        )
     return {
         "available": True,
         "toolkits": list_featured_toolkits(),
-        "connections": await list_connections(db, org_id, u["id"]),
+        "connections": connections,
+        "connections_error": connections_error,
     }
 
 
@@ -7899,23 +7919,37 @@ async def composio_available_targets(
     if row.get("toolkit") not in ("facebook", "instagram"):
         raise HTTPException(400, "Page targeting is only supported for Facebook / Instagram connections.")
     # IG-only connections still need a FB connection in this org to
-    # query managed pages. If there's no FB row, prompt the user.
+    # query managed pages. If there's no FB row, we used to hard-error,
+    # but Composio routes `FACEBOOK_LIST_MANAGED_PAGES` against the
+    # user's composio_user_id (NOT against a specific connection row),
+    # so when the user granted Meta's IG Business OAuth (which embeds
+    # the same Page-management scopes) the call succeeds against the
+    # IG row's token alone. We now TRY the call first, and only surface
+    # the "connect FB" nudge if it fails.
     fb_row = row
     if row.get("toolkit") == "instagram":
-        fb_row = await db.composio_connections.find_one(
+        candidate_fb = await db.composio_connections.find_one(
             {"composio_user_id": cu, "toolkit": "facebook", "status": "ACTIVE"},
         )
-        if not fb_row:
-            raise HTTPException(
-                400,
-                "Connect Facebook for this org first. Instagram Business publishing requires "
-                "a Facebook Page connection — Meta wires IG through the linked Page's token.",
-            )
+        if candidate_fb:
+            fb_row = candidate_fb
+        # else: fb_row stays as the IG row; we still try below.
     try:
         targets = await list_available_meta_targets(db, org_id, u["id"], fb_row)
     except Exception as exc:
-        logger.exception("Meta targets lookup failed")
-        raise HTTPException(500, f"Failed to list Meta targets: {exc}")
+        logger.warning("Meta target lookup failed: %s", exc)
+        raise HTTPException(500, "Couldn't list your Facebook Pages — try Refresh in a minute.")
+    if not (targets.get("pages") or []) and row.get("toolkit") == "instagram" and fb_row is row:
+        # IG-only path returned 0 pages → likely the IG OAuth was granted
+        # without "Manage Pages" permission. Surface the actionable nudge.
+        raise HTTPException(
+            400,
+            "We couldn't see any Facebook Pages from this Instagram connection. "
+            "Either the IG OAuth grant didn't include 'Manage Pages' scope, or you "
+            "don't have any FB Pages linked to this IG Business account. "
+            "Easiest fix: add a Facebook connection in this org — Meta wires IG "
+            "publishing through the linked Page's token.",
+        )
     return targets
 
 
