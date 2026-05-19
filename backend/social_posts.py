@@ -1189,7 +1189,7 @@ def make_social_router(*, db, AGENTS, EMERGENT_LLM_KEY, LlmChat, UserMessage,
         fresh = await db.social_posts.find_one({"_id": _OID(post_id)})
         return serialize_social_post(fresh)
 
-    @r.post("/social/posts/{post_id}/remix-asset")
+    @r.post("/social/posts/{post_id}/remix-asset", status_code=202)
     async def remix_asset_into_cover(
         post_id: str,
         body: dict = Body(...),
@@ -1200,6 +1200,12 @@ def make_social_router(*, db, AGENTS, EMERGENT_LLM_KEY, LlmChat, UserMessage,
         background, lifestyle variant, platform retarget, etc.). Body:
 
             { "asset_id": str, "prompt": str }
+
+        Runs Nano Banana in a background task so production-ingress
+        proxy timeouts (60-100s on most CDNs) can't kill the request
+        mid-generation. Returns 202 immediately with the post in
+        ``image_status: "pending"`` and the SocialPage polling loop
+        (already watching that field) picks up the finished image.
         """
         asset_id = (body.get("asset_id") or "").strip()
         prompt = (body.get("prompt") or "").strip()
@@ -1225,77 +1231,94 @@ def make_social_router(*, db, AGENTS, EMERGENT_LLM_KEY, LlmChat, UserMessage,
         if not src_path.is_file():
             raise HTTPException(404, "Source asset file missing on disk")
 
-        org = await db.organizations.find_one({"_id": _OID(post["org_id"])})
-        # Persist the user's prompt so subsequent "Regenerate" calls keep
-        # intent; mirrors the override flow in /generate-image.
+        # Flip the post into "pending" immediately + persist the prompt
+        # so the SocialPage poll picks up the spinner state.
         await db.social_posts.update_one(
             {"_id": _OID(post_id)},
-            {"$set": {"image_prompt": prompt}},
+            {"$set": {
+                "image_prompt": prompt,
+                "image_status": "pending",
+                "image_pending_at": datetime.now(timezone.utc),
+            }},
         )
-        # Fold Soul + visual-style into the prompt so the remix stays
-        # on-brand. Nano Banana composes best with concise direction; we
-        # cap each segment.
-        soul = (org or {}).get("soul") or {}
-        brand_bits: list[str] = []
-        if soul.get("tone"): brand_bits.append(f"Tone: {soul['tone']}")
-        if soul.get("audience"): brand_bits.append(f"Audience: {soul['audience']}")
-        ba = (org or {}).get("brand_assets") or {}
-        if (ba.get("visual_style") or "").strip():
-            brand_bits.append(f"Visual style: {ba['visual_style'][:300]}")
-        full_prompt = (
-            "Using the SOURCE IMAGE provided as the base, create a new on-brand "
-            "variation. Keep the subject/product clearly recognizable from the "
-            "source image.\n\n"
-            f"--- User direction ---\n{prompt}\n\n"
-            + ("--- Brand context ---\n" + "\n".join(brand_bits) if brand_bits else "")
-        ).strip()
-        sys_msg = (
-            "You are a brand-aware image artist. Produce ONE photograph/"
-            "illustration that fits the user's direction while keeping the "
-            "source subject visually coherent. Square 1:1 by default unless the "
-            "user asks otherwise. High quality, vivid, on-brand."
-        )
-        try:
-            fname, _caption = await generate_image_via_nano_banana(
-                full_prompt, sys_msg, input_image_paths=[src_path],
-            )
-        except Exception as exc:
-            logger.warning("Asset remix failed: %s", exc)
-            raise HTTPException(502, "Remix failed — try a different prompt or check back in a moment")
 
-        # Reapply logo (same compose pattern as /generate-image).
-        primary = (ba.get("primary_logo") or {}) if ba else {}
-        logo_filename = (primary or {}).get("filename") or ""
-        final_filename = fname
-        with_logo = False
-        if logo_filename and compose_logo_on_image:
+        async def _run_remix_bg():
             try:
-                # Rehydrate base + logo from GridFS if disk was wiped.
-                base_path = await _ensure_local(fname)
-                logo_path = await _ensure_local(logo_filename)
-                if base_path is not None and logo_path is not None:
-                    composed = compose_logo_on_image(
-                        base_path, logo_path,
-                        position=post.get("logo_position") or "bottom-right",
-                    )
-                    if composed:
-                        final_filename = composed.name
-                        with_logo = True
+                org = await db.organizations.find_one({"_id": _OID(post["org_id"])})
+                # Fold Soul + visual-style into the prompt so the remix stays
+                # on-brand.
+                soul = (org or {}).get("soul") or {}
+                brand_bits: list[str] = []
+                if soul.get("tone"): brand_bits.append(f"Tone: {soul['tone']}")
+                if soul.get("audience"): brand_bits.append(f"Audience: {soul['audience']}")
+                ba = (org or {}).get("brand_assets") or {}
+                if (ba.get("visual_style") or "").strip():
+                    brand_bits.append(f"Visual style: {ba['visual_style'][:300]}")
+                full_prompt = (
+                    "Using the SOURCE IMAGE provided as the base, create a new on-brand "
+                    "variation. Keep the subject/product clearly recognizable from the "
+                    "source image.\n\n"
+                    f"--- User direction ---\n{prompt}\n\n"
+                    + ("--- Brand context ---\n" + "\n".join(brand_bits) if brand_bits else "")
+                ).strip()
+                sys_msg = (
+                    "You are a brand-aware image artist. Produce ONE photograph/"
+                    "illustration that fits the user's direction while keeping the "
+                    "source subject visually coherent. Square 1:1 by default unless the "
+                    "user asks otherwise. High quality, vivid, on-brand."
+                )
+                fname, _caption = await generate_image_via_nano_banana(
+                    full_prompt, sys_msg, input_image_paths=[src_path],
+                )
+                # Reapply logo (same compose pattern as /generate-image).
+                primary = (ba.get("primary_logo") or {}) if ba else {}
+                logo_filename = (primary or {}).get("filename") or ""
+                final_filename = fname
+                with_logo = False
+                if logo_filename and compose_logo_on_image:
+                    try:
+                        base_path = await _ensure_local(fname)
+                        logo_path = await _ensure_local(logo_filename)
+                        if base_path is not None and logo_path is not None:
+                            composed = compose_logo_on_image(
+                                base_path, logo_path,
+                                position=post.get("logo_position") or "bottom-right",
+                            )
+                            if composed:
+                                final_filename = composed.name
+                                with_logo = True
+                    except Exception as exc:
+                        logger.warning("Remix logo compose failed: %s", exc)
+                image = {
+                    "filename": final_filename,
+                    "raw_filename": fname,
+                    "url": f"/api/files/{final_filename}",
+                    "with_logo": with_logo,
+                    "source": "asset_remix",
+                    "source_asset_id": str(asset["_id"]),
+                }
+                await db.social_posts.update_one(
+                    {"_id": _OID(post_id)},
+                    {"$set": {
+                        "image": image,
+                        "image_status": "ready",
+                        "image_updated_at": datetime.now(timezone.utc),
+                    }, "$unset": {"image_error": "", "image_pending_at": ""}},
+                )
             except Exception as exc:
-                logger.warning("Remix logo compose failed: %s", exc)
+                logger.warning("Asset remix failed: %s", exc)
+                await db.social_posts.update_one(
+                    {"_id": _OID(post_id)},
+                    {"$set": {
+                        "image_status": "error",
+                        "image_error": "Remix failed — try a different prompt.",
+                    }, "$unset": {"image_pending_at": ""}},
+                )
 
-        image = {
-            "filename": final_filename,
-            "raw_filename": fname,
-            "url": f"/api/files/{final_filename}",
-            "with_logo": with_logo,
-            "source": "asset_remix",
-            "source_asset_id": str(asset["_id"]),
-        }
-        await db.social_posts.update_one(
-            {"_id": _OID(post_id)},
-            {"$set": {"image": image, "image_updated_at": datetime.now(timezone.utc)}},
-        )
+        asyncio.create_task(_run_remix_bg())
+        # Return the post in its pending state so the FE can show the
+        # spinner immediately. The polling loop will swap in the final
+        # image once the background task lands.
         fresh = await db.social_posts.find_one({"_id": _OID(post_id)})
         return serialize_social_post(fresh)
 

@@ -76,7 +76,16 @@ export default function AssetPickerModal({ orgId, postId, onClose, onPicked }) {
         asset_id: picked.id,
         prompt: prompt.trim(),
       });
-      toast.success("Remix done");
+      // Backend now runs the Nano Banana call in a background task (so
+      // production-ingress proxy timeouts can't kill the request) and
+      // returns the post in image_status: "pending". The SocialPage
+      // polling loop swaps in the final image as soon as it's ready.
+      const status = data?.image_status;
+      if (status === "pending") {
+        toast.message("Remixing your photo — this can take 30-90 seconds.");
+      } else {
+        toast.success("Remix done");
+      }
       onPicked(data);
       onClose();
     } catch (err) {

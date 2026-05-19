@@ -3,6 +3,29 @@
 Plain-English feature inventory of **Foundry by SoulPrint Engine** for non-technical teammates. Each section is a category of capabilities and what they do for users.
 
 ---
+## 🎨 Feb 19, 2026 — Asset remix: background-task pattern (network-error fix)
+**Production bug**: users got a "network error" when remixing an uploaded image asset in an org. Root cause: the `/social/posts/{id}/remix-asset` endpoint called `generate_image_via_nano_banana(...)` **synchronously** inside the request handler. Nano Banana image-to-image takes 30-90 seconds depending on prompt complexity. Production-ingress proxies (Cloudflare / k8s ingress) typically cut connections at 60-100s, so the HTTP request died mid-generation and the browser surfaced the generic axios "network error".
+
+**Fix** (`/app/backend/social_posts.py`):
+
+1. **Route now returns `status_code=202`** immediately after persisting `image_status="pending"` + `image_prompt` synchronously. No more blocking on Nano Banana.
+
+2. **`_run_remix_bg` coroutine** holds the full pipeline: prompt assembly → Nano Banana call → logo compositor → final post update. Kicked off with `asyncio.create_task(_run_remix_bg())` (same pattern already used elsewhere in `social_posts.py` for `publish_post`).
+
+3. **Terminal status flips** on completion (`image_status="ready"` + image dict) or failure (`image_status="error"` + `image_error="Remix failed — try a different prompt."`). The SocialPage's existing `image_status === "pending"` polling loop picks up both outcomes — no FE plumbing changes needed.
+
+4. **AssetPickerModal copy update** — toast switches from "Remix done" to "Remixing your photo — this can take 30-90 seconds." when the response comes back in pending state, so users know the spinner they're about to see on the post is normal.
+
+**Tests** — 5 new pytest cases in `tests/test_remix_async.py` using AST-style code inspection (fast + no router-init boilerplate): status_code=202 decorator, asyncio.create_task usage, pending-status-before-task ordering, synchronous prompt persistence, terminal error-status on failure. All pass.
+
+**Production action**: redeploy. After deploy, remixing an asset will:
+- Close the AssetPickerModal immediately
+- Show "Remixing your photo… 30-90 seconds" toast
+- The post card shows a spinner (existing pending-state UI)
+- Polling loop swaps in the new image when Nano Banana finishes
+
+---
+
 ## 🐛 Feb 19, 2026 — Composio: naive-datetime TypeError root-cause fix
 **Production bug**: after the previous fix shipped, users saw the new "Couldn't load your existing Composio connections" inline banner on every single Connections-panel load. Banner was working as designed — but it was masking a **persistent backend crash**, not a transient hiccup. `list_connections` was crashing 100% of the time for orgs that had any pre-existing connection row.
 
