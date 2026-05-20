@@ -7075,23 +7075,33 @@ async def upload_asset(
     if ext not in ALLOWED_ASSET_EXTS:
         raise HTTPException(400, f"Unsupported file type: .{ext or '?'}")
 
-    # Stream up to MAX_ASSET_SIZE to disk
+    # Stream up to MAX_ASSET_SIZE to a bytes buffer (so we can mirror to
+    # GridFS) AND to disk for fast same-pod reads. Disk is ephemeral
+    # across redeploys; GridFS is the durable copy that lets us
+    # rehydrate the disk after a container restart.
     org_dir = ASSETS_DIR / org_id
     org_dir.mkdir(parents=True, exist_ok=True)
     filename = f"{uuid.uuid4().hex}.{ext}"
     path = org_dir / filename
     total = 0
-    with path.open("wb") as out:
-        while True:
-            chunk = await file.read(1024 * 1024)
-            if not chunk:
-                break
-            total += len(chunk)
-            if total > MAX_ASSET_SIZE:
-                out.close()
-                path.unlink(missing_ok=True)
-                raise HTTPException(413, "File too large (10 MB max)")
-            out.write(chunk)
+    buf = bytearray()
+    while True:
+        chunk = await file.read(1024 * 1024)
+        if not chunk:
+            break
+        total += len(chunk)
+        if total > MAX_ASSET_SIZE:
+            raise HTTPException(413, "File too large (10 MB max)")
+        buf.extend(chunk)
+    content = bytes(buf)
+    # persist_bytes writes to disk + mirrors to GridFS + registers the
+    # filename→gridfs_id row in media_files so the serve handler can
+    # rehydrate from GridFS after a redeploy.
+    await persist_bytes(
+        path, content,
+        original_name=original_name,
+        mime=file.content_type or "application/octet-stream",
+    )
 
     text_excerpt = ""
     if is_text_extractable(ext):
