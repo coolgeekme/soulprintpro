@@ -1254,6 +1254,39 @@ async def _fail_mission(db, mission_id: str, err: str) -> None:
             "finished_at": datetime.now(timezone.utc),
         }},
     )
+    # Fire an error email so the team can triage failed missions. The
+    # rate-limiter in error_reporter folds identical fingerprints to
+    # once per 30 min, so a runaway buggy mission won't flood the inbox.
+    try:
+        m = await db.missions.find_one(
+            {"id": mission_id},
+            {"goal": 1, "org_id": 1, "created_by": 1, "lead_agent": 1},
+        )
+        if m:
+            from error_reporter import report_error_async as _report
+            user_email = None
+            try:
+                u_doc = await db.users.find_one(
+                    {"id": m.get("created_by")}, {"email": 1}
+                )
+                user_email = (u_doc or {}).get("email")
+            except Exception:
+                pass
+            await _report(
+                kind="mission",
+                org_id=str(m.get("org_id") or ""),
+                user_email=user_email,
+                user_id=str(m.get("created_by") or ""),
+                message=err,
+                extra={
+                    "mission_id": mission_id,
+                    "lead_agent": str(m.get("lead_agent") or ""),
+                    "goal": (m.get("goal") or "")[:300],
+                },
+                link=f"/app/missions/{mission_id}",
+            )
+    except Exception as exc:
+        logger.warning("error_reporter notify failed for mission %s: %s", mission_id, exc)
 
 
 # ── Tools ──────────────────────────────────────────────────────────────────

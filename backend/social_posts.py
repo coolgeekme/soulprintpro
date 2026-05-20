@@ -785,6 +785,24 @@ def make_social_router(*, db, AGENTS, EMERGENT_LLM_KEY, LlmChat, UserMessage,
             raise
         except Exception as exc:
             logger.exception("social draft generation failed")
+            # Best-effort error notification — never blocks the response.
+            try:
+                from error_reporter import fire_and_forget as _report_err
+                _report_err(
+                    kind="social_draft",
+                    org_id=org_id,
+                    user_email=u.get("email"),
+                    user_id=u.get("id"),
+                    message=str(exc),
+                    exc=exc,
+                    extra={
+                        "prompt": (body.prompt or "")[:300],
+                        "platforms": ",".join(platforms or []),
+                        "count": body.count,
+                    },
+                )
+            except Exception:
+                pass
             # Network-class errors get a friendlier toast — these are the
             # "random" failures the user reported. "AI provider hiccup"
             # is verbatim copy the FE renders so they know to retry.
@@ -1166,6 +1184,19 @@ def make_social_router(*, db, AGENTS, EMERGENT_LLM_KEY, LlmChat, UserMessage,
                 )
             except Exception as exc:
                 logger.warning("Post image generation failed: %s", exc)
+                try:
+                    from error_reporter import report_error_async as _report
+                    await _report(
+                        kind="image_generate",
+                        org_id=str(post.get("org_id") or ""),
+                        user_email=u.get("email"),
+                        user_id=u.get("id"),
+                        message=str(exc),
+                        exc=exc,
+                        extra={"post_id": str(post.get("_id") or "")},
+                    )
+                except Exception:
+                    pass
                 await db.social_posts.update_one(
                     {"_id": _OID(post_id)},
                     {"$set": {
@@ -1382,6 +1413,23 @@ def make_social_router(*, db, AGENTS, EMERGENT_LLM_KEY, LlmChat, UserMessage,
                 )
             except Exception as exc:
                 logger.warning("Asset remix failed: %s", exc)
+                try:
+                    from error_reporter import report_error_async as _report
+                    await _report(
+                        kind="asset_remix",
+                        org_id=str(post.get("org_id") or ""),
+                        user_email=u.get("email"),
+                        user_id=u.get("id"),
+                        message=str(exc),
+                        exc=exc,
+                        extra={
+                            "post_id": str(post.get("_id") or ""),
+                            "asset_id": str(asset.get("_id") or ""),
+                            "prompt": (prompt or "")[:200],
+                        },
+                    )
+                except Exception:
+                    pass
                 await db.social_posts.update_one(
                     {"_id": _OID(post_id)},
                     {"$set": {
