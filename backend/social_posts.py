@@ -1242,10 +1242,34 @@ def make_social_router(*, db, AGENTS, EMERGENT_LLM_KEY, LlmChat, UserMessage,
         # /app/backend/uploads/assets/{org_id}/{filename}.
         assets_dir = _Path(upload_dir) / "assets" / post["org_id"]
         src_path = assets_dir / src_filename
+        # If the file isn't on disk, try to rehydrate from the GridFS
+        # mirror BEFORE shutil.copyfile would otherwise fail. This is
+        # the same fix as the /remix-asset endpoint — every "use the
+        # asset bytes locally" code path has to defend against
+        # disk-was-wiped-by-redeploy, not just the serve handler.
         if not src_path.is_file():
-            # Fallback for cases where assets live elsewhere; serve handler
-            # will still resolve via GridFS.
-            pass
+            try:
+                from server import recover_bytes_from_gridfs
+                blob, _mime, _orig = await recover_bytes_from_gridfs(src_filename)
+                if blob:
+                    assets_dir.mkdir(parents=True, exist_ok=True)
+                    src_path.write_bytes(blob)
+                    logger.info(
+                        "Use-as-cover: rehydrated asset %s for org %s from GridFS (%d bytes)",
+                        src_filename, post["org_id"], len(blob),
+                    )
+            except Exception as exc:
+                logger.warning(
+                    "Use-as-cover: GridFS rehydrate attempt failed for asset %s: %s",
+                    src_filename, exc,
+                )
+            if not src_path.is_file():
+                raise HTTPException(
+                    404,
+                    "Source asset file is no longer available. It was uploaded "
+                    "before durable storage was enabled — please re-upload it "
+                    "and try again.",
+                )
 
         # Copy into uploads/ so the composer can read it; new random name
         # so future deletions of the source asset don't blow up the post.
@@ -1334,8 +1358,37 @@ def make_social_router(*, db, AGENTS, EMERGENT_LLM_KEY, LlmChat, UserMessage,
         from pathlib import Path as _Path
         assets_dir = _Path(upload_dir) / "assets" / post["org_id"]
         src_path = assets_dir / asset["filename"]
+        # If the on-disk asset file is missing (typical after a container
+        # redeploy wipes ephemeral disk), try to rehydrate from the
+        # GridFS mirror. The serve handler already does this for read
+        # requests — remix has to do it too or the user sees a thumbnail
+        # in the picker (because the picker rehydrates) but a hard
+        # "Source asset file missing on disk" error when they hit Remix.
         if not src_path.is_file():
-            raise HTTPException(404, "Source asset file missing on disk")
+            recovered = False
+            try:
+                from server import recover_bytes_from_gridfs
+                blob, _mime, _orig = await recover_bytes_from_gridfs(asset["filename"])
+                if blob:
+                    assets_dir.mkdir(parents=True, exist_ok=True)
+                    src_path.write_bytes(blob)
+                    recovered = True
+                    logger.info(
+                        "Remix: rehydrated asset %s for org %s from GridFS (%d bytes)",
+                        asset["filename"], post["org_id"], len(blob),
+                    )
+            except Exception as exc:
+                logger.warning(
+                    "Remix: GridFS rehydrate attempt failed for asset %s: %s",
+                    asset["filename"], exc,
+                )
+            if not recovered:
+                raise HTTPException(
+                    404,
+                    "Source asset file is no longer available. It was uploaded "
+                    "before durable storage was enabled — please re-upload it "
+                    "and try again.",
+                )
 
         # Flip the post into "pending" immediately + persist the prompt
         # so the SocialPage poll picks up the spinner state.
