@@ -932,6 +932,7 @@ def make_audits_router(
                 await persist_bytes(
                     upload_dir / pdf_filename, pdf_bytes,
                     original_name=pdf_filename, mime="application/pdf",
+                    stamp_for_proof=True,
                 )
                 pdf_bytes_for_email = pdf_bytes
             except Exception as exc:

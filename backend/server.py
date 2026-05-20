@@ -112,7 +112,8 @@ db = client[os.environ["DB_NAME"]]
 from file_storage import save_blob_to_gridfs, read_blob_from_gridfs  # noqa: E402
 
 async def persist_bytes(disk_path: Path, content: bytes,
-                        original_name: str = "", mime: str = "") -> Optional[str]:
+                        original_name: str = "", mime: str = "",
+                        *, stamp_for_proof: bool = False) -> Optional[str]:
     """Write ``content`` to ``disk_path`` AND mirror to MongoDB GridFS.
 
     Disk stays primary for fast local serving. The returned ``gridfs_id``
@@ -125,11 +126,18 @@ async def persist_bytes(disk_path: Path, content: bytes,
     basename, so the global serve handlers can recover bytes for ANY
     file written through this helper without each owning collection
     having to remember the gridfs_id.
+
+    When ``stamp_for_proof=True``, the bytes are also submitted to the
+    OpenTimestamps calendar network for Bitcoin-anchored integrity
+    proofs. Use this for high-stakes deliverables (audit PDFs, signed
+    briefs) where downstream consumers may want to independently
+    verify authenticity via the ``ots`` CLI.
     """
     disk_path.parent.mkdir(parents=True, exist_ok=True)
     disk_path.write_bytes(content)
     gridfs_id = await save_blob_to_gridfs(
         db, content, original_name or disk_path.name, mime,
+        stamp_for_proof=stamp_for_proof,
     )
     if gridfs_id:
         try:

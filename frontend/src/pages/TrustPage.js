@@ -103,12 +103,15 @@ function Hero() {
         }}>say yes</span>.
       </h1>
       <p className="mt-5 text-base sm:text-lg sp-subtle leading-relaxed max-w-2xl">
-        Most AI platforms hand you a SOC 2 PDF and call it a day. We took the
-        opposite approach: every conversation, file, credential, and decision
-        your team makes on Foundry is protected by primitives we can
-        actually point at — encryption you can verify, anchors you can
-        cryptographically check, audit trails no one (including us) can
-        rewrite.
+        A SOC 2 PDF tells you an auditor checked a list once. We took a
+        different approach in parallel: every artifact your agents create on
+        Foundry — every PDF, audit, brief, exported report — gets a SHA-256
+        fingerprint anchored on the Bitcoin blockchain via OpenTimestamps
+        within ~6 hours. So does a daily Merkle root over key business
+        records (mission events, workspace invites used, org members joined,
+        audit leads captured). Any third party can re-hash a record and
+        verify the proof with the open-source <code className="text-[12px] px-1 sp-glass rounded">ots</code> CLI
+        — no cooperation from us required.
       </p>
       <div className="mt-7 flex items-center gap-2 flex-wrap">
         <a href="#comparison" className="sp-btn sp-btn-primary text-sm" data-testid="trust-cta-compare">
