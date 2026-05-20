@@ -244,12 +244,31 @@ export default function SocialPage() {
     if (!prompt.trim()) return;
     if (!composePlatforms.length) { toast.error("Pick at least one platform"); return; }
     setComposing(true);
+    // Automatic single retry on transient 503s — the production
+    // "Failed to generate" toast was caused by intermittent OpenAI 5xx
+    // / rate-limit hits during the draft LLM call. One silent retry
+    // after a 1.5s back-off rescues most of those without bothering
+    // the user. The backend's 503 path also has its own retry against
+    // a faster fallback model.
+    const attemptDraft = async (attempt = 1) => {
+      try {
+        const { data } = await api.post(`/orgs/${orgId}/social/draft`, {
+          prompt: prompt.trim(),
+          platforms: composePlatforms,
+          count,
+        });
+        return data;
+      } catch (err) {
+        const status = err?.response?.status;
+        if (status === 503 && attempt < 2) {
+          await new Promise((r) => setTimeout(r, 1500));
+          return attemptDraft(attempt + 1);
+        }
+        throw err;
+      }
+    };
     try {
-      const { data } = await api.post(`/orgs/${orgId}/social/draft`, {
-        prompt: prompt.trim(),
-        platforms: composePlatforms,
-        count,
-      });
+      const data = await attemptDraft();
       const fresh = data.posts || [];
       setPosts((prev) => [...fresh, ...prev]);
       setPrompt("");
@@ -268,7 +287,10 @@ export default function SocialPage() {
         toast.success(`Drafted ${fresh.length} post${fresh.length === 1 ? "" : "s"}`);
       }
     } catch (err) {
-      toast.error(err?.response?.data?.detail || "Could not draft posts");
+      // Distinguish a real failure from "all retries used" so the user
+      // knows whether to refine the prompt vs simply try again.
+      const detail = err?.response?.data?.detail || "Could not draft posts";
+      toast.error(detail, { duration: 5500 });
     } finally { setComposing(false); }
   };
 

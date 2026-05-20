@@ -3,6 +3,30 @@
 Plain-English feature inventory of **Foundry by SoulPrint Engine** for non-technical teammates. Each section is a category of capabilities and what they do for users.
 
 ---
+## ✍️ Feb 20, 2026 — Social Queue draft: resilience hardening (random failures fix)
+**Production bug**: users got intermittent "Failed to generate" toasts when generating posts in the Social Queue. Reported as random / non-reproducible — which matches a **transient LLM provider hiccup** profile (OpenAI 5xx, rate-limit, or a slow run that drifts past the production-ingress proxy timeout).
+
+Root cause: `_draft_via_agent` in `social_posts.py` was a **single-shot** call to `gpt-4.1-mini` with NO timeout guard, NO retry, and NO fallback model. Every transient failure became a user-visible 502.
+
+**Three-layer fix**:
+
+1. **Per-attempt timeout** — every LLM call now wrapped in `asyncio.wait_for(chat.send_message(...), timeout=...)`. Times out at 50s (primary) / 35s (fallback) — well inside the production-ingress 60-100s window so we fail-fast with a precise error before the request dies at the proxy.
+
+2. **`_MODEL_ATTEMPTS` retry list** — three attempts in order:
+   - `gpt-4.1-mini` 50s (primary)
+   - `gpt-4.1-mini` 50s (immediate retry — most transient OpenAI hiccups clear in <2s)
+   - `gpt-4.1-nano` 35s (cheaper + faster fallback — handles cases where the mini model is degraded provider-side)
+
+3. **Status code 503 (not 502)** on exhausted retries — the FE has a one-shot `attemptDraft(attempt=2)` retry-on-503 loop in `SocialPage.js` that adds yet another silent retry from the client side after a 1.5s back-off. So a single transient hiccup now gets up to **6 chances** (3 backend × 2 frontend) to succeed before the user even sees a toast.
+
+4. **Friendlier error copy** — `TimeoutError` surfaces as `"Timeout — try again in a few seconds; the AI provider was slow."` distinct from a real LLM error (`"AI provider hiccup: <exc>"`). Empty-body case explicitly says "try again with a more specific prompt".
+
+**Tests** — 5 new pytest cases in `tests/test_social_draft_resilience.py` (timeout literal exists, multi-model attempts, 503 status, TimeoutError handling, route uses 503 not 502). 15 image+draft resilience tests pass total.
+
+**Production action**: redeploy. After deploy, the "Failed to generate" frequency should drop near-zero. The few cases where ALL 6 attempts fail will show a precise, actionable error toast.
+
+---
+
 ## 🎨 Feb 19, 2026 — Post image generation: background-task pattern
 **Production bug** (Maradyne org, on top of yesterday's remix fix): clicking Regenerate on a post copy showed "Generation failed". Same root cause as the remix network-error bug — `/social/posts/{id}/generate-image` was blocking on Nano Banana for 30-90s, exceeding production-ingress proxy timeouts (60-100s).
 

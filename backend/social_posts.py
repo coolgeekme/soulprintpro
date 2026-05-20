@@ -205,12 +205,53 @@ async def _draft_via_agent(
         f"Generate exactly {count} posts, distributed across the requested "
         f"platforms ({pf_list}). Never include the JSON keys in the post copy."
     )
-    chat = LlmChat(
-        api_key=EMERGENT_LLM_KEY,
-        session_id=f"social-draft:{uuid.uuid4()}",
-        system_message=system,
-    ).with_model("openai", "gpt-4.1-mini")
-    raw = (await chat.send_message(UserMessage(text=prompt))) or ""
+
+    # ── Resilient LLM call ─────────────────────────────────────────────
+    # Three failure modes seen in production:
+    #   (a) Transient OpenAI 5xx / rate-limit
+    #   (b) gpt-4.1-mini slow run that drifts past the production-ingress
+    #       proxy's 60-100s timeout, killing the HTTP request
+    #   (c) Empty / malformed model output that the JSON parser below
+    #       can't recover
+    # We mitigate (a)+(b) here with: 50s per-attempt timeout, ONE retry,
+    # and a faster fallback model. (c) is handled by the parser below.
+    _MODEL_ATTEMPTS = [
+        ("openai", "gpt-4.1-mini", 50.0),  # primary
+        ("openai", "gpt-4.1-mini", 50.0),  # immediate retry on same model
+        ("openai", "gpt-4.1-nano", 35.0),  # cheaper + faster fallback
+    ]
+    raw = ""
+    last_exc: Optional[Exception] = None
+    for provider, model, timeout_s in _MODEL_ATTEMPTS:
+        try:
+            chat = LlmChat(
+                api_key=EMERGENT_LLM_KEY,
+                session_id=f"social-draft:{uuid.uuid4()}",
+                system_message=system,
+            ).with_model(provider, model)
+            raw = await asyncio.wait_for(
+                chat.send_message(UserMessage(text=prompt)),
+                timeout=timeout_s,
+            )
+            raw = (raw or "").strip()
+            if raw:
+                break
+            last_exc = RuntimeError(f"{model} returned empty body")
+        except asyncio.TimeoutError as exc:
+            last_exc = exc
+            logger.warning("Social draft: %s timed out after %ss", model, timeout_s)
+        except Exception as exc:
+            last_exc = exc
+            logger.warning("Social draft: %s failed (%s)", model, exc)
+    if not raw:
+        # All attempts failed — surface a precise error the caller can
+        # convert into a clean toast.
+        kind = (
+            "Timeout — try again in a few seconds; the AI provider was slow."
+            if isinstance(last_exc, asyncio.TimeoutError)
+            else f"AI provider hiccup: {last_exc}"
+        )
+        raise HTTPException(503, kind)
 
     # Strip stray ```json fences and grab the first complete JSON array.
     # The earlier `\[.*?\]` non-greedy regex truncated arrays whose objects
@@ -744,10 +785,13 @@ def make_social_router(*, db, AGENTS, EMERGENT_LLM_KEY, LlmChat, UserMessage,
             raise
         except Exception as exc:
             logger.exception("social draft generation failed")
-            raise HTTPException(502, f"Could not generate drafts: {exc}") from exc
+            # Network-class errors get a friendlier toast — these are the
+            # "random" failures the user reported. "AI provider hiccup"
+            # is verbatim copy the FE renders so they know to retry.
+            raise HTTPException(503, f"AI provider hiccup: {exc}") from exc
 
         if not posts:
-            raise HTTPException(502, "Agent returned no usable drafts. Try a more specific prompt.")
+            raise HTTPException(503, "AI provider returned no usable drafts — try again with a more specific prompt or retry in a moment.")
 
         now = datetime.now(timezone.utc)
         docs: list[dict] = []
