@@ -175,17 +175,65 @@ export default function OrgPage() {
   const load = async () => {
     setLoading(true);
     try {
-      const [orgRes, teamsRes, membersRes, assetsRes] = await Promise.all([
+      // Use allSettled so a transient failure on members/teams/assets
+      // doesn't blow up the whole page. The primary /orgs/{id} call is
+      // the only hard prerequisite — if it fails, we bounce; otherwise
+      // we render with whatever we got and surface a specific error.
+      const [orgRes, teamsRes, membersRes, assetsRes] = await Promise.allSettled([
         api.get(`/orgs/${orgId}`),
         api.get(`/orgs/${orgId}/teams`),
         api.get(`/orgs/${orgId}/members`),
         api.get(`/orgs/${orgId}/assets`),
       ]);
-      setOrg(orgRes.data);
-      setTeams(teamsRes.data);
-      setMembers(membersRes.data);
-      setAssets(assetsRes.data);
-      if (orgRes.data.role === "owner" || orgRes.data.role === "admin") {
+      if (orgRes.status === "rejected") {
+        const err = orgRes.reason;
+        const code = err?.response?.status;
+        const detail = err?.response?.data?.detail || err?.message || "Unknown error";
+        console.error("Failed /orgs/" + orgId, { code, detail, err });
+        if (code === 404) {
+          toast.error("Organization not found.");
+        } else if (code === 403) {
+          toast.error("You don't have access to this organization.");
+        } else {
+          toast.error(`Failed to load organization (${code || "network"}): ${detail}`);
+        }
+        nav("/app");
+        return;
+      }
+      setOrg(orgRes.value.data);
+      // Sub-resource failures degrade gracefully — log + toast but
+      // keep the page renderable. This avoids a single dodgy member
+      // record or asset blob taking down the whole org page.
+      if (teamsRes.status === "fulfilled") {
+        setTeams(teamsRes.value.data);
+      } else {
+        console.warn("Failed to load teams:", teamsRes.reason);
+        setTeams([]);
+      }
+      if (membersRes.status === "fulfilled") {
+        setMembers(membersRes.value.data);
+      } else {
+        console.warn("Failed to load members:", membersRes.reason);
+        setMembers([]);
+      }
+      if (assetsRes.status === "fulfilled") {
+        setAssets(assetsRes.value.data);
+      } else {
+        console.warn("Failed to load assets:", assetsRes.reason);
+        setAssets([]);
+      }
+      // If any sub-resource failed, surface ONE consolidated toast so the
+      // user knows the page is partially loaded (not "everything's fine").
+      const failedSubs = [
+        ["teams", teamsRes],
+        ["members", membersRes],
+        ["assets", assetsRes],
+      ].filter(([, r]) => r.status === "rejected");
+      if (failedSubs.length > 0) {
+        const names = failedSubs.map(([n]) => n).join(", ");
+        toast.error(`Couldn't load: ${names}. Page is partially loaded.`, { duration: 6000 });
+      }
+      if (orgRes.value.data.role === "owner" || orgRes.value.data.role === "admin") {
         try {
           const { data } = await api.get(`/orgs/${orgId}/invites`);
           setInvites(data);
@@ -209,9 +257,6 @@ export default function OrgPage() {
         setMyCos(cosRes.data);
         setMyCosThreads(threadsRes.data?.threads || []);
       } catch (_) { /* non-fatal — user can still use the shared CoS */ }
-    } catch (err) {
-      toast.error("Failed to load organization");
-      nav("/app");
     } finally {
       setLoading(false);
     }
