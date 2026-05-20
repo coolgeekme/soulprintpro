@@ -3407,7 +3407,7 @@ _DOC_INTENT_RE = re.compile(
     r"code\s*(?:snippet|block|sample|example)?|"
     r"html|css|javascript|typescript|"
     r"embed\s*code|tracking\s*pixel|"
-    r"watermark\s*(?:tag|html|css|code|markup|snippet|element)?|"
+    r"watermark\s+(?:tag|html|css|code|markup|snippet|element|div|span|overlay\s+css)|"
     r"meta\s*tag|og\s*tag|schema\.org|"
     r"react\s*component|vue\s*component|"
     r"regex|regular\s*expression|"
@@ -3511,7 +3511,43 @@ _IMAGE_DERIVE_RE = re.compile(
     re.IGNORECASE,
 )
 
-def _quick_image_edit_intent(text: str, has_image: bool) -> bool:
+# Anaphoric references the user can use to point at a previous image
+# WITHOUT attaching one in the current turn. Used by the chat-handler
+# inline-edit-iteration path so a verbose strategy/code message doesn't
+# get mis-routed to image editing just because the word "image" appeared.
+# Must be a tight phrase — "this image" YES, "the image" YES, "regenerate
+# it" YES; "Collection image" / "salami image" / "product image" NO.
+_IMAGE_ANAPHORA_RE = re.compile(
+    r"\b("
+    # Demonstrative + image-noun: "this image", "that photo", "these graphics"
+    r"(this|that|these|those)\s+(image|photo|picture|pic|graphic|illustration|logo|banner|thumbnail|poster|cover|render|artwork|drawing|sketch|painting|design)|"
+    # "the X" referring to a previously-made image. Tight list of nouns so
+    # "the website" / "the collection" / "the salami image" don't match.
+    r"the\s+(image|photo|picture|pic|graphic|illustration|logo|banner|thumbnail|poster|cover|render|artwork|drawing|sketch|painting|design)\b|"
+    # "(re)?generate / edit / redo / make / remake / restyle / etc. it/that/this"
+    r"(re)?generate\s+(it|that|this)\b|"
+    r"edit\s+(it|that|this)\b|"
+    r"redo\s+(it|that|this)\b|"
+    r"remake\s+(it|that|this)\b|"
+    r"restyle\s+(it|that|this)\b|"
+    # "another version/variant/take/variation"
+    r"another\s+(version|variant|variation|take|attempt|try)|"
+    # Possessives: "my logo", "your image"
+    r"(my|your|our)\s+(image|photo|picture|pic|graphic|illustration|logo|banner|thumbnail|poster|cover|artwork|design)|"
+    # Explicit "the last/previous/prior" image reference.
+    r"(the\s+)?(last|previous|prior)\s+(image|photo|picture|pic|graphic|render|generation|version|edit)"
+    r")\b",
+    re.IGNORECASE,
+)
+
+# Max-length cap for an inline edit-iteration trigger. Real edit commands
+# are terse ("darker", "make the B bigger", "add a sun to the corner").
+# Anything longer is almost certainly a strategy / brief / code request
+# that incidentally mentions "image" — never an image edit.
+_INLINE_EDIT_MAX_CHARS = 600
+
+
+def _quick_image_edit_intent(text: str, has_image: bool, *, strict: bool = False) -> bool:
     """Treat as edit intent when the user has just attached an image AND
     one of these is true:
 
@@ -3525,8 +3561,37 @@ def _quick_image_edit_intent(text: str, has_image: bool) -> bool:
     Returns False (→ vision-describe path) for plain "describe this" or
     "summarize what's in here" prompts where no image keyword + verb pair
     exists.
+
+    ``strict=True`` is used by the chat-handler inline-edit-iteration
+    path (no attachment in this turn — we look up the previous image in
+    the conv). It adds three guards so a 2000-word strategy email that
+    incidentally mentions "product image" doesn't get mis-routed to
+    image editing:
+
+    - Doc-intent veto: if the message asks for a doc / code / snippet /
+      brief / report / strategy, never treat as image edit.
+    - Length cap: real edit commands are terse (<= 600 chars). Anything
+      longer is almost certainly a different kind of ask.
+    - Anaphoric reference: the message must explicitly point at AN image
+      (``this image``, ``the image``, ``regenerate it``, ``my logo``,
+      ``the previous image``) — not just contain the word "image" inside
+      a different sentence about something else.
     """
     if not has_image or not text:
+        return False
+    if strict:
+        # Doc-intent always wins — never image-edit a code/snippet/brief.
+        if _DOC_INTENT_RE.search(text):
+            return False
+        if len(text) > _INLINE_EDIT_MAX_CHARS:
+            return False
+        # Must anaphorically point at AN image — incidental mentions of
+        # the word "image" inside an unrelated sentence don't count.
+        # When the anaphora hits, that's a strong enough signal on its
+        # own (the user is explicitly referring to a previous image and
+        # the message is terse + doc-free).
+        if _IMAGE_ANAPHORA_RE.search(text):
+            return True
         return False
     if _EDIT_VERBS_RE.search(text):
         return True
@@ -4948,7 +5013,7 @@ async def send_message(conv_id: str, body: SendMessageBody, u: dict = Depends(ge
         # lets users iterate on their last image without re-uploading
         # anything. e.g. "darker letter B, more curved".
         edit_src: Optional[Path] = None
-        if _quick_image_edit_intent(body.text or "", True):
+        if _quick_image_edit_intent(body.text or "", True, strict=True):
             try:
                 edit_src = await _find_last_image_in_conv(conv_id)
             except Exception as exc:
@@ -4989,7 +5054,7 @@ async def send_message(conv_id: str, body: SendMessageBody, u: dict = Depends(ge
                 responders = []  # edited image alone is enough
             except Exception as exc:
                 logger.warning("inline image edit failed, falling back: %s", exc)
-        elif _quick_image_edit_intent(body.text or "", True):
+        elif _quick_image_edit_intent(body.text or "", True, strict=True):
             # User clearly asked for an edit but we couldn't locate a source
             # image AT ALL (disk wiped + GridFS empty). Better to tell them
             # truthfully than to silently generate an unrelated vision
