@@ -9289,6 +9289,96 @@ async def admin_run_daily_anchor(u: dict = Depends(_require_superadmin_dep)):
     row = await poi.build_daily_audit_anchor(db, include_today=True)
     return row or {"ok": False, "detail": "No records in window or every calendar failed"}
 
+
+@app.delete("/api/admin/composio/meta/wipe-all")
+async def admin_wipe_all_meta_connections(
+    u: dict = Depends(_require_superadmin_dep),
+):
+    """Nuke EVERY Facebook + Instagram Composio connection across all orgs.
+
+    Use this when Composio's authorization has been revoked at the
+    Meta side (Business Settings → Connected business apps → Remove)
+    and every row in our DB is now an orphan pointing at a dead OAuth
+    grant. Every affected org will have to reconnect from scratch.
+
+    Also clears any pinned meta_target fields on the org doc
+    (`facebook_page_id`, `instagram_user_id`, `facebook_pages`,
+    `instagram_accounts`) so the UI doesn't try to publish to a
+    page id that's no longer authorized.
+
+    Superadmin-only — returns a structured summary of what was wiped.
+    """
+    # 1) Count what we're about to wipe so the response has real numbers.
+    matched_connections = await db.composio_connections.count_documents(
+        {"toolkit": {"$in": ["facebook", "instagram"]}}
+    )
+    by_status_cursor = db.composio_connections.aggregate([
+        {"$match": {"toolkit": {"$in": ["facebook", "instagram"]}}},
+        {"$group": {
+            "_id": {"toolkit": "$toolkit", "status": "$status"},
+            "n": {"$sum": 1},
+        }},
+        {"$sort": {"_id": 1}},
+    ])
+    by_status = []
+    async for row in by_status_cursor:
+        by_status.append({
+            "toolkit": row["_id"].get("toolkit"),
+            "status": row["_id"].get("status"),
+            "count": row["n"],
+        })
+    distinct_orgs = await db.composio_connections.distinct(
+        "org_id", {"toolkit": {"$in": ["facebook", "instagram"]}}
+    )
+
+    # 2) Wipe the connection rows themselves.
+    del_result = await db.composio_connections.delete_many(
+        {"toolkit": {"$in": ["facebook", "instagram"]}}
+    )
+
+    # 3) Strip any pinned Meta target metadata from affected org docs so
+    #    the Social UI doesn't try to publish to a dead page id. We
+    #    unset *all* the Meta-shaped fields ever written by the picker,
+    #    not just the ones we know about today, to stay forward-safe.
+    orgs_update = await db.organizations.update_many(
+        {"$or": [
+            {"facebook_page_id": {"$exists": True}},
+            {"instagram_user_id": {"$exists": True}},
+            {"facebook_pages": {"$exists": True}},
+            {"instagram_accounts": {"$exists": True}},
+            {"meta_target": {"$exists": True}},
+        ]},
+        {"$unset": {
+            "facebook_page_id": "",
+            "facebook_page_name": "",
+            "facebook_page_access_token": "",
+            "instagram_user_id": "",
+            "instagram_username": "",
+            "facebook_pages": "",
+            "instagram_accounts": "",
+            "meta_target": "",
+        }},
+    )
+
+    logger.info(
+        "Admin wipe: deleted %d Meta composio rows across %d orgs (orgs cleared: %d)",
+        del_result.deleted_count, len(distinct_orgs), orgs_update.modified_count,
+    )
+
+    return {
+        "ok": True,
+        "matched_before": matched_connections,
+        "deleted_connections": del_result.deleted_count,
+        "distinct_orgs_affected": len(distinct_orgs),
+        "orgs_metadata_cleared": orgs_update.modified_count,
+        "by_status_before": by_status,
+        "next_steps": (
+            "Each affected org owner should reconnect Facebook/Instagram from "
+            "the Connections panel. Re-authorize Composio in Meta Business "
+            "Settings first if you revoked it there."
+        ),
+    }
+
 @app.on_event("startup")
 async def startup():
     await db.users.create_index("email", unique=True)

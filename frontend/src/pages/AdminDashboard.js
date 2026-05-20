@@ -7,7 +7,9 @@ import {
 import {
   Loader2, Users, Building2, Layers, Rocket, MessageSquare,
   Activity, DollarSign, Search, ShieldCheck, Target, KeyRound,
+  Wrench,
 } from "lucide-react";
+import { toast } from "sonner";
 
 import api from "../lib/api";
 import { useAuth } from "../context/AuthContext";
@@ -33,6 +35,7 @@ const TAB_DEFS = [
   { id: "missions", label: "Missions", icon: Rocket },
   { id: "audits",   label: "Audits", icon: Target },
   { id: "access",   label: "Access Codes", icon: KeyRound },
+  { id: "tools",    label: "Tools", icon: Wrench },
 ];
 
 function StatCard({ icon: Icon, label, value, sub }) {
@@ -571,7 +574,135 @@ export default function AdminDashboard() {
         {tab === "missions" && <MissionsPanel />}
         {tab === "audits" && <AdminAuditsPanel />}
         {tab === "access" && <AdminAccessCodesPanel />}
+        {tab === "tools" && <AdminToolsPanel />}
       </main>
+    </div>
+  );
+}
+
+
+/**
+ * AdminToolsPanel — superadmin-only one-click platform maintenance.
+ *
+ * Each tool is a single destructive action with a confirm dialog. The
+ * underlying API is gated to is_superadmin server-side so a tampered
+ * client still gets nothing.
+ */
+function AdminToolsPanel() {
+  const [busy, setBusy] = useState(null);
+  const [lastResult, setLastResult] = useState(null);
+
+  const run = async (key, opts) => {
+    if (!window.confirm(opts.confirm)) return;
+    setBusy(key);
+    setLastResult(null);
+    try {
+      const { data } = await api({ method: opts.method, url: opts.url });
+      setLastResult({ key, data });
+      toast.success(opts.successToast || "Done.");
+    } catch (err) {
+      const detail = err?.response?.data?.detail || err?.message || "Unknown error";
+      toast.error(`Failed: ${detail}`);
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const tools = [
+    {
+      key: "wipe_meta",
+      title: "Wipe ALL Facebook + Instagram connections",
+      desc: (
+        <>
+          Deletes every <code className="text-[11px] px-1 sp-glass rounded">facebook</code> /
+          {" "}<code className="text-[11px] px-1 sp-glass rounded">instagram</code> row from{" "}
+          <code className="text-[11px] px-1 sp-glass rounded">composio_connections</code>{" "}
+          across every org. Also unsets any pinned Meta target metadata
+          (<code className="text-[11px]">facebook_page_id</code>,{" "}
+          <code className="text-[11px]">instagram_user_id</code>,{" "}
+          <code className="text-[11px]">facebook_pages</code>, etc.) on org docs.
+          Use after revoking Composio's authorization on Meta — every existing
+          row is now an orphan. Each affected org owner reconnects from scratch.
+        </>
+      ),
+      confirm: "This will delete EVERY Facebook + Instagram connection across ALL orgs. Owners will have to reconnect from scratch. Continue?",
+      successToast: "Wiped Meta connections fleet-wide.",
+      method: "DELETE",
+      url: "/admin/composio/meta/wipe-all",
+      destructive: true,
+    },
+    {
+      key: "run_anchor",
+      title: "Run daily integrity anchor now",
+      desc: (
+        <>
+          Manually builds a daily Merkle root over key business records and
+          submits it to OpenTimestamps. Use after a calendar outage or to
+          retroactively anchor a missed day.
+        </>
+      ),
+      confirm: "Build + submit a new integrity anchor right now?",
+      successToast: "Anchor build kicked off.",
+      method: "POST",
+      url: "/admin/integrity-anchors/run-now",
+      destructive: false,
+    },
+  ];
+
+  return (
+    <div className="space-y-3" data-testid="admin-tools-panel">
+      <div className="sp-glass-strong rounded-2xl p-5">
+        <div className="flex items-center gap-2 mb-1">
+          <Wrench className="w-4 h-4 text-orange-300" />
+          <h2 className="text-base font-medium">Platform maintenance tools</h2>
+        </div>
+        <p className="text-xs sp-subtle">
+          One-click operational actions. Every action is destructive or
+          fleet-wide — use the confirm dialog to think twice.
+        </p>
+      </div>
+
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
+        {tools.map((t) => (
+          <div
+            key={t.key}
+            className="sp-glass-strong rounded-2xl p-5 flex flex-col gap-3"
+            style={t.destructive ? { borderLeft: "3px solid rgba(244,63,94,0.6)" } : undefined}
+            data-testid={`admin-tool-${t.key}`}
+          >
+            <div>
+              <div className="font-medium text-sm mb-1">{t.title}</div>
+              <div className="text-xs sp-subtle leading-relaxed">{t.desc}</div>
+            </div>
+            <button
+              type="button"
+              onClick={() => run(t.key, t)}
+              disabled={busy !== null}
+              className={`sp-btn text-xs self-start ${
+                t.destructive ? "sp-btn-danger" : "sp-btn-primary"
+              } disabled:opacity-50`}
+              data-testid={`admin-tool-${t.key}-run`}
+            >
+              {busy === t.key ? (
+                <><Loader2 className="w-3.5 h-3.5 animate-spin" /> Running…</>
+              ) : (
+                "Run"
+              )}
+            </button>
+          </div>
+        ))}
+      </div>
+
+      {lastResult && (
+        <div className="sp-glass rounded-2xl p-5" data-testid="admin-tools-last-result">
+          <div className="text-[10px] uppercase tracking-widest sp-subtle mb-2">
+            Last result · {lastResult.key}
+          </div>
+          <pre className="text-[11px] leading-relaxed whitespace-pre-wrap break-words sp-subtle">
+            {JSON.stringify(lastResult.data, null, 2)}
+          </pre>
+        </div>
+      )}
     </div>
   );
 }
