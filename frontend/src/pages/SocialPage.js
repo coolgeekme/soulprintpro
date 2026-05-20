@@ -868,25 +868,72 @@ function PostCard({ post, orgId, onUpdate, onReplace, onDelete, publishable, onA
           re-trying. Hidden until a publish has happened. */}
       {post.publish_results && Object.keys(post.publish_results).length > 0 && (
         <div className="flex flex-wrap gap-1.5 mt-2" data-testid={`publish-results-${post.id}`}>
-          {Object.entries(post.publish_results).map(([platform, r]) => (
-            <span
-              key={platform}
-              className={`inline-flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded-full border ${
-                r.ok
-                  ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-200"
-                  : "border-red-500/30 bg-red-500/10 text-red-200 cursor-help"
-              }`}
-              title={r.error || (r.ok ? "Posted" : "Failed")}
-              onClick={() => {
-                if (!r.ok) {
-                  alert(`${platform.toUpperCase()} failed:\n\n${r.error || "Unknown error"}\n\nTool: ${r.tool || "—"}\n\nRaw response:\n${JSON.stringify(r.response, null, 2)?.slice(0, 1500) || "(no response captured)"}`);
-                }
-              }}
-            >
-              {r.ok ? <CheckCircle2 className="w-2.5 h-2.5" /> : <AlertTriangle className="w-2.5 h-2.5" />}
-              {platform}
-            </span>
-          ))}
+          {Object.entries(post.publish_results).map(([platform, r]) => {
+            // If the publisher attached a public URL (e.g. LinkedIn URN
+            // → /feed/update/{urn}), let the success chip become a real
+            // "View on X →" link so the user can immediately verify
+            // where the post landed. Critical diagnostic when a post
+            // "succeeds" but the user can't find it on their feed.
+            const verifyUrl = r.ok ? r.post_url : null;
+            const hasWarning = r.ok && r.warning;
+            const baseCls = `inline-flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded-full border ${
+              !r.ok
+                ? "border-red-500/30 bg-red-500/10 text-red-200 cursor-help"
+                : hasWarning
+                  ? "border-amber-500/30 bg-amber-500/10 text-amber-200"
+                  : "border-emerald-500/30 bg-emerald-500/10 text-emerald-200"
+            } ${verifyUrl ? "hover:bg-emerald-500/20 cursor-pointer underline-offset-2" : ""}`;
+            const labelText = (
+              <>
+                {!r.ok ? (
+                  <AlertTriangle className="w-2.5 h-2.5" />
+                ) : hasWarning ? (
+                  <AlertTriangle className="w-2.5 h-2.5" />
+                ) : (
+                  <CheckCircle2 className="w-2.5 h-2.5" />
+                )}
+                {platform}
+                {verifyUrl && <span className="ml-1">→ View</span>}
+              </>
+            );
+            const tooltipText = !r.ok
+              ? (r.error || "Failed")
+              : hasWarning
+                ? r.warning
+                : (r.external_id ? `Posted · ${r.external_id}` : "Posted");
+            if (verifyUrl) {
+              return (
+                <a
+                  key={platform}
+                  href={verifyUrl}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className={baseCls}
+                  title={tooltipText}
+                  data-testid={`publish-chip-${post.id}-${platform}`}
+                >
+                  {labelText}
+                </a>
+              );
+            }
+            return (
+              <span
+                key={platform}
+                className={baseCls}
+                title={tooltipText}
+                onClick={() => {
+                  if (!r.ok) {
+                    alert(`${platform.toUpperCase()} failed:\n\n${r.error || "Unknown error"}\n\nTool: ${r.tool || "—"}\n\nRaw response:\n${JSON.stringify(r.response, null, 2)?.slice(0, 1500) || "(no response captured)"}`);
+                  } else if (hasWarning) {
+                    alert(`${platform.toUpperCase()} — heads up:\n\n${r.warning}\n\nRaw response:\n${JSON.stringify(r.response, null, 2)?.slice(0, 1500) || "(no response captured)"}`);
+                  }
+                }}
+                data-testid={`publish-chip-${post.id}-${platform}`}
+              >
+                {labelText}
+              </span>
+            );
+          })}
         </div>
       )}
       {/* Fallback details button when status is failed/partial but

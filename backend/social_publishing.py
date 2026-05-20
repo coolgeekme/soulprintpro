@@ -22,8 +22,10 @@ OAuth credentials for it.
 """
 from __future__ import annotations
 
+import json
 import logging
 import os
+import re
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
@@ -225,11 +227,109 @@ def _flatten_pages(resp: Any) -> List[Dict[str, Any]]:
 
 
 # ── Per-platform publish flows ──────────────────────────────────────────────
+# LinkedIn URN patterns we expect to see in the Composio response payload.
+# Composio passes through LinkedIn's response shape, which on success
+# includes ``urn:li:share:{id}`` (legacy Share API) or
+# ``urn:li:ugcPost:{id}`` (UGC API) — sometimes also exposed as a
+# top-level ``id`` field or a ``post_id`` mapped from the Restli wrapper.
+_LINKEDIN_URN_RE = re.compile(r"urn:li:(?:share|ugcPost|activity):\d+", re.IGNORECASE)
+
+
+def _extract_linkedin_urn(resp: Any) -> Optional[str]:
+    """Pull a LinkedIn share/ugcPost URN out of a Composio publish
+    response. We look in several shapes because Composio wraps the
+    Restli wrapper differently across SDK versions; falling back to a
+    regex over the stringified payload catches anything not in a
+    documented field.
+    """
+    if not resp:
+        return None
+    # Stringify-and-regex is the most resilient strategy when Composio
+    # response shapes evolve. We do it FIRST then narrow if needed.
+    try:
+        m = _LINKEDIN_URN_RE.search(json.dumps(resp))
+        if m:
+            return m.group(0)
+    except Exception:
+        pass
+    if isinstance(resp, dict):
+        for k in ("urn", "post_urn", "share_urn", "ugc_post_urn", "id", "post_id"):
+            v = resp.get(k)
+            if isinstance(v, str) and v.startswith("urn:li:"):
+                return v
+        for shape_key in ("data", "response"):
+            shape = resp.get(shape_key)
+            inner = _extract_linkedin_urn(shape) if shape else None
+            if inner:
+                return inner
+    return None
+
+
+def _linkedin_post_url(urn: Optional[str]) -> Optional[str]:
+    """Build a public-feed permalink for a LinkedIn URN.
+
+    LinkedIn's web app reliably resolves ``/feed/update/{urn}`` for any
+    of the three URN shapes (share / ugcPost / activity). If the
+    visibility was set to LOGGED_IN_MEMBERS or CONNECTIONS, the URL
+    still resolves — it just shows a sign-in wall instead of the post.
+    Useful as a diagnostic anchor for the post-publish UI.
+    """
+    if not urn:
+        return None
+    return f"https://www.linkedin.com/feed/update/{urn}/"
+
+
 async def _publish_linkedin(db, org_id, user_id, post, conn) -> Dict[str, Any]:
-    return _result_envelope(await _exec(
-        db, org_id, user_id, "LINKEDIN_CREATE_LINKED_IN_POST",
-        {"commentary": _text_for(post, "linkedin") or post.get("text", "")},
-    ), tool="LINKEDIN_CREATE_LINKED_IN_POST")
+    """Publish a post to LinkedIn via Composio.
+
+    Composio's ``LINKEDIN_CREATE_LINKED_IN_POST`` derives the author
+    URN from the authorized access token (i.e. it posts to the LinkedIn
+    member who completed the OAuth grant). We also explicitly request
+    PUBLIC visibility so the post is visible to anyone, not just the
+    user's connections — useful debugging signal if a post "succeeds"
+    but the user can't find it on their own feed.
+
+    On success we extract the LinkedIn URN from the response and
+    attach a public ``post_url`` so the UI can render a "View on
+    LinkedIn →" link that the user can click to verify exactly where
+    their post landed.
+    """
+    commentary = _text_for(post, "linkedin") or post.get("text", "")
+    args: Dict[str, Any] = {
+        "commentary": commentary,
+        # Force public visibility. LinkedIn's API default is
+        # ``PUBLIC`` but some Composio wrappers default to
+        # ``LOGGED_IN_MEMBERS``. Make it explicit so the post is
+        # actually findable.
+        "visibility": "PUBLIC",
+        "lifecycleState": "PUBLISHED",
+    }
+    exec_result = await _exec(db, org_id, user_id, "LINKEDIN_CREATE_LINKED_IN_POST", args)
+    envelope = _result_envelope(exec_result, tool="LINKEDIN_CREATE_LINKED_IN_POST")
+    if envelope.get("ok"):
+        urn = _extract_linkedin_urn(envelope.get("response"))
+        url = _linkedin_post_url(urn)
+        if urn:
+            envelope["external_id"] = urn
+        if url:
+            envelope["post_url"] = url
+        else:
+            # Even if we couldn't extract a URN, surface the raw
+            # response to the user (truncated) so they at least have
+            # something to act on. A "succeeded but no URN" outcome is
+            # almost always Composio falsely reporting success — flag it.
+            logger.warning(
+                "LinkedIn publish reported success but no URN extracted. "
+                "Post id=%s response=%s",
+                post.get("id"), str(envelope.get("response"))[:400],
+            )
+            envelope["warning"] = (
+                "LinkedIn reported success but we couldn't extract a post "
+                "URN from the response — this sometimes means the post "
+                "wasn't actually published. Check the connected LinkedIn "
+                "account directly."
+            )
+    return envelope
 
 
 async def _publish_facebook(db, org_id, user_id, post, conn) -> Dict[str, Any]:
