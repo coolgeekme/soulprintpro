@@ -1954,6 +1954,8 @@ async def get_org_spend(
             "_id": "$user_id",
             "cost_usd": {"$sum": "$cost_usd"},
             "calls": {"$sum": 1},
+            "prompt_tokens": {"$sum": "$prompt_tokens"},
+            "completion_tokens": {"$sum": "$completion_tokens"},
             "last_active": {"$max": "$created_at"},
         }},
         {"$sort": {"cost_usd": -1}},
@@ -1964,6 +1966,8 @@ async def get_org_spend(
             "_id": {"$ifNull": ["$kind_label", "other"]},
             "cost_usd": {"$sum": "$cost_usd"},
             "calls": {"$sum": 1},
+            "prompt_tokens": {"$sum": "$prompt_tokens"},
+            "completion_tokens": {"$sum": "$completion_tokens"},
         }},
         {"$sort": {"cost_usd": -1}},
     ]
@@ -2005,6 +2009,9 @@ async def get_org_spend(
             "email": name_map.get(r["_id"] or "", {}).get("email") or "",
             "cost_usd": round(r["cost_usd"], 4),
             "calls": r["calls"],
+            "prompt_tokens": r.get("prompt_tokens", 0),
+            "completion_tokens": r.get("completion_tokens", 0),
+            "total_tokens": (r.get("prompt_tokens", 0) + r.get("completion_tokens", 0)),
             "last_active": (
                 r["last_active"].isoformat()
                 if isinstance(r.get("last_active"), datetime) else None
@@ -2013,7 +2020,14 @@ async def get_org_spend(
         for r in by_user_rows
     ]
     by_kind = [
-        {"label": r["_id"], "cost_usd": round(r["cost_usd"], 4), "calls": r["calls"]}
+        {
+            "label": r["_id"],
+            "cost_usd": round(r["cost_usd"], 4),
+            "calls": r["calls"],
+            "prompt_tokens": r.get("prompt_tokens", 0),
+            "completion_tokens": r.get("completion_tokens", 0),
+            "total_tokens": (r.get("prompt_tokens", 0) + r.get("completion_tokens", 0)),
+        }
         for r in by_kind_rows
     ]
 
@@ -2042,6 +2056,10 @@ async def get_org_spend(
             "llm_calls": org_totals.get("calls", 0),
             "prompt_tokens": org_totals.get("prompt_tokens", 0),
             "completion_tokens": org_totals.get("completion_tokens", 0),
+            "total_tokens": (
+                org_totals.get("prompt_tokens", 0)
+                + org_totals.get("completion_tokens", 0)
+            ),
             "missions_started": missions_total,
             "audits_started": audits_total,
             "members": members_total,
