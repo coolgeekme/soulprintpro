@@ -218,6 +218,13 @@ export default function SecurityPage() {
                 </li>
               ))}
             </ul>
+            <div className="mt-4 pt-4 border-t border-white/5">
+              <Link to="/legal/soc2-roadmap"
+                    className="inline-flex items-center gap-1.5 text-xs text-orange-300 hover:text-orange-200 underline-offset-2 hover:underline"
+                    data-testid="security-soc2-roadmap-link">
+                See the full SOC 2 control roadmap <ArrowRight className="w-3 h-3" />
+              </Link>
+            </div>
           </Section>
         )}
 
