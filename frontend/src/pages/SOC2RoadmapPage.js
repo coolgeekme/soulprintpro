@@ -219,15 +219,17 @@ export default function SOC2RoadmapPage() {
             Refine tier · dedicated deployment
           </div>
           <h2 className="text-xl sm:text-2xl font-medium tracking-tight mb-2">
-            SOC 2 Type II attestation, scoped to your own tenant.
+            SOC 2 Type II — on the roadmap for the dedicated build.
           </h2>
           <p className="text-sm sp-subtle leading-relaxed">
             The shared platform's roadmap above is one stream of work. The
             other is the <b className="text-white/85">Refine reference build</b> — a
-            dedicated single-tenant deployment template we operate separately,
-            audit independently, and clone for each Refine customer. Every
-            Refine customer inherits the attestation under NDA without paying
-            for their own audit. HIPAA BAA available on request.
+            dedicated single-tenant deployment template we operate
+            separately. When we engage an auditor it will be scoped to this
+            template; once the Type II attestation lands, every Refine
+            customer inherits the report under NDA without paying for their
+            own audit. Until then, Refine customers get the dedicated
+            deployment with all controls listed above operating today.
           </p>
           <div className="mt-4 flex gap-2 flex-wrap">
             <Link to="/pricing" className="sp-btn sp-btn-primary text-xs">

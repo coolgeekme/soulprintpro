@@ -372,10 +372,13 @@ SECURITY_POLICY_DOC = {
         ),
         "soc2_refine_tier": (
             "Refine tier: each customer receives a dedicated single-tenant "
-            "deployment built from our SOC 2-attested reference template. "
-            "Type II report scoped to your tenant is included; we share the "
-            "report and the auditor's letter under NDA. HIPAA-ready with a "
-            "signed BAA on request."
+            "deployment built from our reference template. SOC 2 Type II "
+            "attestation scoped to this template is on the roadmap — once "
+            "we engage an auditor and the report lands, every Refine "
+            "customer inherits it under NDA without paying for their own "
+            "audit. Until then, Refine customers get the dedicated "
+            "deployment with the controls listed in the roadmap operating "
+            "today."
         ),
         "gdpr": (
             "Right-to-erasure handled via account deletion; data subject "
