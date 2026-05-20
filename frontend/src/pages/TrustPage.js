@@ -479,10 +479,17 @@ function Compliance() {
         </div>
         <div className="grid sm:grid-cols-2 gap-4 mt-4 text-sm sp-subtle leading-relaxed">
           <div>
-            <div className="text-white/85 font-medium mb-1">SOC 2 — Type II in progress</div>
-            The control set (access reviews, encryption, incident playbooks,
-            change management) is operating today. Audit window is open.
-            We'd rather tell you the truth than wave a logo.
+            <div className="text-white/85 font-medium mb-1">SOC 2 — preparing for audit</div>
+            Encryption (TLS 1.2+ everywhere, AES-256 at rest), per-org
+            authorization, brute-force lockout, security headers, and
+            superadmin action logging are <b className="text-white/85">operating today</b>.
+            Documented incident-response playbook, quarterly access reviews,
+            and formal change-management evidence are <b className="text-white/85">in progress</b>.
+            We haven't engaged an auditor yet — when we do we'll say so.{" "}
+            <a href="/legal/soc2-roadmap"
+               className="text-orange-300 hover:text-orange-200 underline-offset-2 hover:underline">
+              See the full control roadmap →
+            </a>
           </div>
           <div>
             <div className="text-white/85 font-medium mb-1">GDPR — Right-to-erasure honored</div>
