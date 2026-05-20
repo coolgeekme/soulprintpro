@@ -113,10 +113,10 @@ export default function ConnectionsPanel({ orgId }) {
         setConnections(data.connections || []);
         const conns = data.connections || [];
         const stillPending = conns.some(
-          (c) => c.status === "INITIATED",  // STUCK/FAILED/EXPIRED are terminal — don't keep polling
+          (c) => c.status === "INITIATED" || c.status === "INITIALIZING",
         );
         for (const c of conns) {
-          if (c.status === "INITIATED") {
+          if (c.status === "INITIATED" || c.status === "INITIALIZING") {
             try {
               const { data: refreshed } = await api.post(`/orgs/${orgId}/composio/connections/${c.connection_id}/refresh`);
               if (refreshed?.auto_enabled_agents) {
@@ -428,7 +428,7 @@ export default function ConnectionsPanel({ orgId }) {
                       <li className="flex items-center gap-2 text-xs pl-1" data-testid={`account-row-${c.connection_id}`}>
                         {c.status === "ACTIVE" ? (
                           <Check className="h-3 w-3 text-emerald-400 flex-shrink-0" />
-                        ) : c.status === "INITIATED" ? (
+                        ) : ["INITIATED", "INITIALIZING"].includes(c.status) ? (
                           <Loader2 className="h-3 w-3 animate-spin text-amber-400 flex-shrink-0" />
                         ) : (
                           // STUCK / FAILED / EXPIRED / INACTIVE — all error states.
@@ -470,7 +470,9 @@ export default function ConnectionsPanel({ orgId }) {
                                         ? "Disabled — click Retry to reconnect"
                                         : c.status === "INITIATED"
                                           ? formatPendingLabel(c)
-                                          : `Unknown status (${c.status || "?"})`}
+                                          : c.status === "INITIALIZING"
+                                            ? "Initializing — Composio is preparing the OAuth handshake…"
+                                            : `Unknown status (${c.status || "?"})`}
                             </span>
                             {c.display_label && c.nickname && c.nickname !== c.display_label && (
                               <span className="text-[10px] opacity-50 truncate">

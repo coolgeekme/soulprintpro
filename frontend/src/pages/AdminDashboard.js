@@ -610,6 +610,28 @@ function AdminToolsPanel() {
 
   const tools = [
     {
+      key: "wipe_zombies",
+      title: "Wipe non-ACTIVE Composio connection rows (all toolkits, all orgs)",
+      desc: (
+        <>
+          Deletes every row from <code className="text-[11px] px-1 sp-glass rounded">composio_connections</code>{" "}
+          with status <code className="text-[11px]">INITIALIZING</code>,{" "}
+          <code className="text-[11px]">INITIATED</code>,{" "}
+          <code className="text-[11px]">STUCK</code>,{" "}
+          <code className="text-[11px]">FAILED</code>,{" "}
+          <code className="text-[11px]">EXPIRED</code>, or{" "}
+          <code className="text-[11px]">INACTIVE</code> across every org. ACTIVE
+          rows are NEVER deleted. Use after a reconnect leaves stale rows
+          cluttering up the UI — owners only see working ACTIVE rows after this.
+        </>
+      ),
+      confirm: "This will delete every non-ACTIVE Composio connection row across ALL orgs. ACTIVE rows are preserved. Continue?",
+      successToast: "Wiped zombie connection rows fleet-wide.",
+      method: "DELETE",
+      url: "/admin/composio/zombies/wipe-all",
+      destructive: true,
+    },
+    {
       key: "wipe_meta",
       title: "Wipe ALL Facebook + Instagram connections",
       desc: (

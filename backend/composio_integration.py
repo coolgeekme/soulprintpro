@@ -374,16 +374,21 @@ async def initiate_connection(
     # If the user is hitting "+ Add" for `toolkit` after a prior attempt
     # got stuck (popup closed before grant, network drop mid-OAuth, etc.)
     # they don't have to first click "Cancel" on the stale row — we
-    # auto-delete any INITIATED row older than 2 minutes for the same
+    # auto-delete any non-ACTIVE row older than 2 minutes for the same
     # (composio_user_id, toolkit) tuple so the panel doesn't pile up
     # half-finished attempts. ACTIVE rows are NEVER pruned here — only
-    # incomplete ones for the toolkit being re-attempted.
+    # incomplete or terminal-failure ones for the toolkit being re-attempted.
     prune_cutoff = datetime.now(timezone.utc) - timedelta(seconds=120)
     try:
         prune_result = await db.composio_connections.delete_many({
             "composio_user_id": cu,
             "toolkit": toolkit,
-            "status": {"$in": ["INITIATED", "STUCK"]},
+            "status": {
+                "$in": [
+                    "INITIATED", "INITIALIZING",
+                    "STUCK", "FAILED", "EXPIRED", "INACTIVE",
+                ],
+            },
             "initiated_at": {"$lt": prune_cutoff},
         })
         if prune_result.deleted_count:
@@ -462,7 +467,7 @@ async def refresh_connection_status(db, connection_id: str) -> Dict[str, Any]:
     # Meta never POSTed the callback, or the user denied scopes). We
     # mark the row STUCK so the UI can surface a clear "failed — click
     # Cancel + retry" call-to-action instead of an endless spinner.
-    if status == "INITIATED" and existing:
+    if status in ("INITIATED", "INITIALIZING") and existing:
         attempts = int(existing.get("refresh_attempts") or 0) + 1
         ini_aware = _ensure_aware(existing.get("initiated_at"))
         age = (

@@ -9290,6 +9290,55 @@ async def admin_run_daily_anchor(u: dict = Depends(_require_superadmin_dep)):
     return row or {"ok": False, "detail": "No records in window or every calendar failed"}
 
 
+@app.delete("/api/admin/composio/zombies/wipe-all")
+async def admin_wipe_zombie_connections(
+    u: dict = Depends(_require_superadmin_dep),
+):
+    """Delete every non-ACTIVE composio connection row across all orgs.
+
+    Useful when a Composio reconnect (e.g. after revoking + re-authorizing
+    in Meta Business Settings) leaves zombie rows in INITIALIZING /
+    INITIATED / STUCK / FAILED / EXPIRED / INACTIVE state cluttering up
+    the UI. ACTIVE rows are NEVER deleted.
+
+    Per-org owner consequences: none — they only see their working
+    ACTIVE connections after this. They never had to do anything with
+    the zombie rows anyway.
+    """
+    zombie_statuses = ["INITIATED", "INITIALIZING", "STUCK", "FAILED", "EXPIRED", "INACTIVE"]
+    matched = await db.composio_connections.count_documents({"status": {"$in": zombie_statuses}})
+    by_status_cursor = db.composio_connections.aggregate([
+        {"$match": {"status": {"$in": zombie_statuses}}},
+        {"$group": {
+            "_id": {"toolkit": "$toolkit", "status": "$status"},
+            "n": {"$sum": 1},
+        }},
+        {"$sort": {"_id": 1}},
+    ])
+    by_status = []
+    async for row in by_status_cursor:
+        by_status.append({
+            "toolkit": row["_id"].get("toolkit"),
+            "status": row["_id"].get("status"),
+            "count": row["n"],
+        })
+    distinct_orgs = await db.composio_connections.distinct(
+        "org_id", {"status": {"$in": zombie_statuses}}
+    )
+    del_result = await db.composio_connections.delete_many({"status": {"$in": zombie_statuses}})
+    logger.info(
+        "Admin zombie wipe: deleted %d non-ACTIVE rows across %d orgs",
+        del_result.deleted_count, len(distinct_orgs),
+    )
+    return {
+        "ok": True,
+        "matched_before": matched,
+        "deleted": del_result.deleted_count,
+        "distinct_orgs_affected": len(distinct_orgs),
+        "by_status_before": by_status,
+    }
+
+
 @app.delete("/api/admin/composio/meta/wipe-all")
 async def admin_wipe_all_meta_connections(
     u: dict = Depends(_require_superadmin_dep),

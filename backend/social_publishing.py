@@ -471,11 +471,32 @@ async def _try_ig_for_page(
 
     Composio Meta surface exposes a few variants; we attempt them in
     priority order and return as soon as one yields an instagram id.
+
+    NOTE: Meta's Graph API only returns ``instagram_business_account``
+    when you explicitly request the field. Each candidate below passes
+    a ``fields`` argument naming the IG fields we care about. We try
+    both a comma-string and a list shape because Composio's tool
+    wrappers vary by toolkit version on how they accept ``fields``.
     """
+    ig_field_csv = "instagram_business_account{id,username,name,profile_picture_url},connected_instagram_account{id,username,name,profile_picture_url},name,id"
+    ig_field_list = [
+        "instagram_business_account",
+        "connected_instagram_account",
+        "name",
+        "id",
+    ]
     candidates = [
-        ("FACEBOOK_GET_PAGE_DETAILS", {"page_id": page_id}),
+        ("FACEBOOK_GET_PAGE_DETAILS",     {"page_id": page_id, "fields": ig_field_csv}),
+        ("FACEBOOK_GET_PAGE_DETAILS",     {"page_id": page_id, "fields": ig_field_list}),
+        ("FACEBOOK_GET_PAGE_INFORMATION", {"page_id": page_id, "fields": ig_field_csv}),
+        ("FACEBOOK_GET_PAGE_INFORMATION", {"page_id": page_id, "fields": ig_field_list}),
+        ("FACEBOOK_GET_PAGE",             {"page_id": page_id, "fields": ig_field_csv}),
+        # Bare calls as a last resort — some Composio wrappers always
+        # include the IG fields regardless of the ``fields`` argument
+        # and reject unknown args with 400.
+        ("FACEBOOK_GET_PAGE_DETAILS",     {"page_id": page_id}),
         ("FACEBOOK_GET_PAGE_INFORMATION", {"page_id": page_id}),
-        ("FACEBOOK_GET_PAGE", {"page_id": page_id}),
+        ("FACEBOOK_GET_PAGE",             {"page_id": page_id}),
     ]
     for tool, args in candidates:
         try:
@@ -496,7 +517,37 @@ async def _try_ig_for_page(
             ig_id = str(ig.get("id") or ig.get("ig_user_id") or "")
             username = ig.get("username") or ig.get("name") or ""
             if ig_id:
+                logger.info(
+                    "FB→IG link resolved for page %s via %s: ig_id=%s username=%s",
+                    page_id, tool, ig_id, username,
+                )
                 return {"ig_user_id": ig_id, "username": username}
+    # Final fallback: ask Composio's Instagram side directly. If the
+    # user's IG connection exists and knows which FB Page it's behind,
+    # we can reverse-resolve without needing the FB Page response.
+    try:
+        res = await _exec(
+            db, org_id, user_id, "INSTAGRAM_GET_USER_INFO",
+            {"fields": "id,username,name,profile_picture_url"},
+        )
+        if res.get("success"):
+            payload = res.get("response") or {}
+            data = payload.get("data") if isinstance(payload, dict) and isinstance(payload.get("data"), dict) else payload
+            if isinstance(data, dict):
+                ig_id = str(data.get("id") or data.get("ig_user_id") or "")
+                username = data.get("username") or data.get("name") or ""
+                if ig_id:
+                    logger.info(
+                        "FB→IG link reverse-resolved via INSTAGRAM_GET_USER_INFO: ig_id=%s username=%s",
+                        ig_id, username,
+                    )
+                    return {"ig_user_id": ig_id, "username": username}
+    except Exception:
+        pass
+    logger.info(
+        "FB→IG link lookup exhausted all candidates for page %s — no linked IG found",
+        page_id,
+    )
     return None
 
 
