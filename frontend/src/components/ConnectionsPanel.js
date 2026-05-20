@@ -111,10 +111,11 @@ export default function ConnectionsPanel({ orgId }) {
         if (cancelled) return;
         setToolkits(data.toolkits || []);
         setConnections(data.connections || []);
-        const stillPending = (data.connections || []).some(
-          (c) => c.status === "INITIATED",  // STUCK is terminal — don't keep polling it
+        const conns = data.connections || [];
+        const stillPending = conns.some(
+          (c) => c.status === "INITIATED",  // STUCK/FAILED/EXPIRED are terminal — don't keep polling
         );
-        for (const c of data.connections || []) {
+        for (const c of conns) {
           if (c.status === "INITIATED") {
             try {
               const { data: refreshed } = await api.post(`/orgs/${orgId}/composio/connections/${c.connection_id}/refresh`);
@@ -125,12 +126,27 @@ export default function ConnectionsPanel({ orgId }) {
           }
         }
         if (!stillPending) {
-          if (autoEnabledTotal > 0) {
-            toast.success(
-              `Account connected. Enabled tools for ${autoEnabledTotal} matching agent${autoEnabledTotal === 1 ? "" : "s"}.`,
+          // Distinguish success from terminal failure: success means at
+          // least one ACTIVE row exists; otherwise the OAuth round-trip
+          // landed in FAILED/EXPIRED/INACTIVE and we should NOT show a
+          // misleading "Account connected." toast.
+          const anyActive = conns.some((c) => c.status === "ACTIVE");
+          const anyFailed = conns.some((c) =>
+            ["FAILED", "EXPIRED", "INACTIVE", "STUCK"].includes(c.status),
+          );
+          if (anyActive) {
+            if (autoEnabledTotal > 0) {
+              toast.success(
+                `Account connected. Enabled tools for ${autoEnabledTotal} matching agent${autoEnabledTotal === 1 ? "" : "s"}.`,
+              );
+            } else {
+              toast.success("Account connected.");
+            }
+          } else if (anyFailed) {
+            toast.error(
+              "OAuth didn't complete. Click Retry on the failed row to try again.",
+              { duration: 8000 },
             );
-          } else {
-            toast.success("Account connected.");
           }
           cancelled = true;
           nav(`/app/org/${orgId}#connections`, { replace: true });
@@ -412,8 +428,12 @@ export default function ConnectionsPanel({ orgId }) {
                       <li className="flex items-center gap-2 text-xs pl-1" data-testid={`account-row-${c.connection_id}`}>
                         {c.status === "ACTIVE" ? (
                           <Check className="h-3 w-3 text-emerald-400 flex-shrink-0" />
-                        ) : (
+                        ) : c.status === "INITIATED" ? (
                           <Loader2 className="h-3 w-3 animate-spin text-amber-400 flex-shrink-0" />
+                        ) : (
+                          // STUCK / FAILED / EXPIRED / INACTIVE — all error states.
+                          // Render a red X so the user immediately sees "this isn't connected".
+                          <X className="h-3 w-3 text-red-400 flex-shrink-0" />
                         )}
                         {isRenaming ? (
                           <input
@@ -431,14 +451,26 @@ export default function ConnectionsPanel({ orgId }) {
                           />
                         ) : (
                           <span className="flex-1 truncate flex flex-col leading-tight">
-                            <span className={"truncate " + (c.status === "STUCK" ? "text-red-300" : "")}>
-                              {c.nickname || c.display_label || c.account_label || (
-                                c.status === "STUCK"
-                                  ? "Connection failed"
-                                  : c.status === "INITIATED"
-                                    ? formatPendingLabel(c)
-                                    : "Connected"
-                              )}
+                            <span className={"truncate " + (
+                              ["STUCK", "FAILED", "EXPIRED", "INACTIVE"].includes(c.status)
+                                ? "text-red-300" : ""
+                            )}>
+                              {/* Status-derived label takes priority over nickname/display_label
+                                  for non-ACTIVE rows so a stale account_label from a previous
+                                  successful grant doesn't mask the current failure state. */}
+                              {c.status === "ACTIVE"
+                                ? (c.nickname || c.display_label || c.account_label || "Connected")
+                                : c.status === "STUCK"
+                                  ? "Connection failed — click Retry"
+                                  : c.status === "FAILED"
+                                    ? "OAuth grant failed — click Retry"
+                                    : c.status === "EXPIRED"
+                                      ? "Connection expired — click Retry to reconnect"
+                                      : c.status === "INACTIVE"
+                                        ? "Disabled — click Retry to reconnect"
+                                        : c.status === "INITIATED"
+                                          ? formatPendingLabel(c)
+                                          : `Unknown status (${c.status || "?"})`}
                             </span>
                             {c.display_label && c.nickname && c.nickname !== c.display_label && (
                               <span className="text-[10px] opacity-50 truncate">
@@ -450,9 +482,11 @@ export default function ConnectionsPanel({ orgId }) {
                                 Taking longer than usual — click Cancel and reconnect if the OAuth window already closed.
                               </span>
                             )}
-                            {c.status === "STUCK" && (
+                            {["STUCK", "FAILED", "EXPIRED", "INACTIVE"].includes(c.status) && (
                               <span className="text-[10px] text-red-300 truncate">
-                                The OAuth grant didn't complete. Click Retry to start over — your other connections are unaffected.
+                                {c.status === "EXPIRED"
+                                  ? "Your Facebook/Meta session no longer valid — Meta auto-expires tokens after ~60 days."
+                                  : "Meta didn't grant the required scopes (pages_manage_posts, instagram_content_publish). Retry — if it keeps failing, the Facebook app may need additional permissions approved."}
                               </span>
                             )}
                           </span>
@@ -487,7 +521,7 @@ export default function ConnectionsPanel({ orgId }) {
                             </button>
                           </>
                         )}
-                        {c.status === "STUCK" && (
+                        {["STUCK", "FAILED", "EXPIRED", "INACTIVE"].includes(c.status) && (
                           <button
                             onClick={() => handleRetryStuck(c, t.slug)}
                             className="text-[10px] px-1.5 py-0.5 rounded border border-red-400/40 text-red-300 hover:bg-red-500/10"

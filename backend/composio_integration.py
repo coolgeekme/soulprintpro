@@ -468,7 +468,12 @@ async def refresh_connection_status(db, connection_id: str) -> Dict[str, Any]:
         age = (
             datetime.now(timezone.utc) - ini_aware
         ).total_seconds() if isinstance(ini_aware, datetime) else 0
-        if attempts >= 3 and age >= 300:  # 5 min + 3 refresh attempts
+        # Lowered from 5min+3attempts → 90s+2attempts so users get a
+        # clear failure state quickly instead of staring at a silent
+        # spinner. Composio normally flips INITIATED → ACTIVE within
+        # 30-45s of the user completing the Meta OAuth flow; if it
+        # hasn't happened by 90s the grant almost certainly failed.
+        if attempts >= 2 and age >= 90:
             status = "STUCK"
             logger.info(
                 "Composio: marking %s connection %s STUCK (age=%ds attempts=%d)",
