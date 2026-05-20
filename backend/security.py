@@ -262,8 +262,8 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
 
 
 SECURITY_POLICY_DOC = {
-    "version": "1.1",
-    "last_reviewed": "2026-05-08",
+    "version": "1.2",
+    "last_reviewed": "2026-02-09",
     "data_residency": {
         "primary_region": "US",
         "database": "MongoDB Atlas (managed, encrypted at rest)",
@@ -364,10 +364,28 @@ SECURITY_POLICY_DOC = {
         "expected_response_hours": 24,
     },
     "compliance_posture": {
-        "soc2": "Targeting Type II; key controls (access reviews, "
-                "incident playbooks, encryption) operating today.",
-        "gdpr": "Right-to-erasure handled via account deletion; "
-                "data subject requests routed to team@archeforge.com.",
+        "soc2_shared_platform": (
+            "Shared Spark/Temper platform: operating SOC 2-aligned controls "
+            "today (access reviews, incident playbooks, encryption at rest "
+            "and in transit, audit logging). Type II attestation on the "
+            "shared multi-tenant platform is on the roadmap."
+        ),
+        "soc2_refine_tier": (
+            "Refine tier: each customer receives a dedicated single-tenant "
+            "deployment built from our SOC 2-attested reference template. "
+            "Type II report scoped to your tenant is included; we share the "
+            "report and the auditor's letter under NDA. HIPAA-ready with a "
+            "signed BAA on request."
+        ),
+        "gdpr": (
+            "Right-to-erasure handled via account deletion; data subject "
+            "requests routed to team@archeforge.com. Sub-processors listed "
+            "at /legal/sub-processors."
+        ),
+        "data_processing_agreement": (
+            "Standard DPA available on request for any tier. Custom DPA + "
+            "redlines supported on Refine."
+        ),
     },
 }
 

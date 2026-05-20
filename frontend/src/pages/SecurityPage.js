@@ -208,13 +208,13 @@ export default function SecurityPage() {
         {/* Compliance posture */}
         {policy?.compliance_posture && (
           <Section title="Compliance posture">
-            <ul className="space-y-1.5 text-sm sp-subtle">
+            <ul className="space-y-2.5 text-sm sp-subtle">
               {Object.entries(policy.compliance_posture).map(([k, v]) => (
                 <li key={k}>
-                  <span className="font-medium text-white/85 uppercase mr-1.5">
-                    {k}:
-                  </span>
-                  {v}
+                  <div className="text-[10px] uppercase tracking-widest text-white/70 mb-0.5">
+                    {k.replace(/_/g, " ")}
+                  </div>
+                  <div className="leading-relaxed">{v}</div>
                 </li>
               ))}
             </ul>

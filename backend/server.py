@@ -3394,13 +3394,38 @@ _VERB_HINTS_RE = re.compile(
 # artifact, never shortcut to image generation even if the message also
 # contains an ambiguous verb like "create" or "design".
 _DOC_INTENT_RE = re.compile(
-    r"\b(?:\.pdf|\.docx|\.doc|\.txt|\.md|\.csv|\.tsv|\.json|\.html|\.ics|\.vcf|\.eml|\.sh|\.py|\.js|\.ts|\.sql|\.yaml|\.yml|\.xml|\.rtf|"
+    # Group A: word-keyword alternatives gated by \b on both sides.
+    r"(?:\b(?:"
     r"pdf|docx|word\s+doc(?:ument)?|markdown|"
     r"brief|report|memo|whitepaper|white\s+paper|plan|proposal|spec(?:ification)?|"
     r"checklist|outline|agenda|meeting\s+notes?|transcript|"
     r"invoice|receipt|contract|sop|"
     r"spreadsheet|csv|tsv|table|"
-    r"calendar\s+invite|\.ics\b|vcard|contact\s+card)\b",
+    r"calendar\s+invite|vcard|contact\s+card|"
+    # Code-snippet & web-component intent — never an image, always a code artifact.
+    r"snippet|"
+    r"code\s*(?:snippet|block|sample|example)?|"
+    r"html|css|javascript|typescript|"
+    r"embed\s*code|tracking\s*pixel|"
+    r"watermark\s*(?:tag|html|css|code|markup|snippet|element)?|"
+    r"meta\s*tag|og\s*tag|schema\.org|"
+    r"react\s*component|vue\s*component|"
+    r"regex|regular\s*expression|"
+    r"sql\s*query|sql\s*statement|"
+    r"json\s*payload|api\s*response|curl\s*command|"
+    r"webhook\s*payload|web\s*component|"
+    r"shortcode|"
+    r"dockerfile|docker[-\s]?compose|"
+    r"shell\s*script|bash\s*script|powershell\s*script|"
+    r"terraform|github\s*action|ci\s*config|"
+    r"cron(?:job)?(?:\s*entry|\s*expression)?"
+    r")\b"
+    # Group B: dotted file extensions — `.` is non-word so the leading
+    # \b doesn't bind; we anchor with a non-word lookbehind/start instead.
+    r"|(?:^|(?<=[\s\(\[,;:'\"]))(?:\.pdf|\.docx|\.doc|\.txt|\.md|\.csv|\.tsv|\.json|\.html|\.css|\.js|\.ts|\.tsx|\.jsx|\.ics|\.vcf|\.eml|\.sh|\.py|\.sql|\.yaml|\.yml|\.xml|\.rtf)\b"
+    # Group C: HTML-tag literals like `<script>`, `<div>`.
+    r"|<\s*(?:script|style|div|span|img|html|head|body|footer|header|p|h\d|button|form|input|svg|iframe|template|link|meta|a)\b"
+    r")",
     re.IGNORECASE,
 )
 
@@ -3611,6 +3636,12 @@ async def detect_image_intent(message: str) -> bool:
         "checklist / outline / SOP / invoice / receipt / contract / agenda / "
         "meeting notes / transcript / CSV / spreadsheet / table / calendar invite / "
         ".ics / .vcf / .eml — those are text artifacts, not images. "
+        "Also lean STRONG NO for any CODE / SNIPPET / SCRIPT request — HTML / CSS / "
+        "JavaScript / TypeScript / Python / SQL / shell / regex / JSON payload / "
+        "API response / curl command / Dockerfile / terraform / cron expression / "
+        "React or Vue component / embed code / tracking pixel / meta tag / og tag / "
+        "watermark (HTML or CSS overlay) / schema markup — those are source code, "
+        "not images, even when the word 'design' or 'create' or 'make' appears. "
         "Also lean NO for: describing an existing image, asking for image-related "
         "advice, mere mentions, or any request that involves motion / animation / "
         "video. "

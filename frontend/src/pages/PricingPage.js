@@ -90,6 +90,7 @@ const TIERS = [
       "White-label everything: domain, logo, client portal",
       "SSO/SAML · SCIM · DPA · custom data retention (scoped into your build)",
       "Dedicated infra option — your own cluster (scoped into your build)",
+      "SOC 2 Type II attestation on your dedicated build · HIPAA-ready BAA on request",
       "Dedicated CSM + QBR",
     ],
     studioPerk: "$2,000/mo ArcheForge credits included + 30% off everything after",
@@ -251,6 +252,10 @@ const COMPARE_MATRIX = [
       { label: "SSO / SAML · SCIM",                     spark: false, tempered: false, refine: "custom" },
       { label: "DPA + custom data retention",           spark: false, tempered: false, refine: "custom" },
       { label: "Dedicated infra option",                spark: false, tempered: false, refine: "custom" },
+      { label: "SOC 2 Type II attestation",             spark: false, tempered: false, refine: "Included on dedicated build" },
+      { label: "HIPAA-ready (BAA on request)",          spark: false, tempered: false, refine: "Included on dedicated build" },
+      { label: "Customer-managed encryption keys (BYOK)", spark: false, tempered: false, refine: "custom" },
+      { label: "Audit log export (SIEM-ready)",          spark: false, tempered: false, refine: true },
     ],
   },
   {
