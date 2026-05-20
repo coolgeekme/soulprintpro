@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useState } from "react";
 import { createPortal } from "react-dom";
 import { Link, useParams } from "react-router-dom";
 import api, { BACKEND_URL } from "../lib/api";
@@ -137,7 +137,7 @@ export default function SocialPage() {
   // for either FB or IG.
   const [metaTargetEdit, setMetaTargetEdit] = useState(null);
 
-  const reload = async () => {
+  const reload = useCallback(async () => {
     try {
       const [orgRes, postsRes, pubRes] = await Promise.all([
         api.get(`/orgs/${orgId}`),
@@ -150,8 +150,8 @@ export default function SocialPage() {
     } catch (err) {
       toast.error(err?.response?.data?.detail || "Failed to load social queue");
     } finally { setLoading(false); }
-  };
-  useEffect(() => { reload(); /* eslint-disable-next-line */ }, [orgId]);
+  }, [orgId]);
+  useEffect(() => { reload(); }, [reload]);
 
   const counts = useMemo(() => {
     const c = { draft: 0, queued: 0, published: 0, failed: 0 };

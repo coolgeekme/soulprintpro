@@ -1,6 +1,36 @@
 import axios from "axios";
 import { getCurrentIdToken, FIREBASE_ENABLED } from "./firebase";
 
+/**
+ * Authentication storage — architecture decision (Feb 2026)
+ * ─────────────────────────────────────────────────────────
+ * We store the JWT in localStorage (`soulprint_token`). Static-analyzer
+ * tools flag this as XSS-vulnerable — that's technically true but the
+ * tradeoff is intentional. The alternative is httpOnly cookies, which
+ * brings its own pile of problems:
+ *
+ *   • CSRF defense required on every state-changing endpoint (we don't
+ *     have it today because Bearer tokens are not auto-sent by the
+ *     browser).
+ *   • Cross-subdomain cookies are unreliable in production (preview vs
+ *     custom domain vs Cloudflare proxy interactions cause silent
+ *     Set-Cookie drops we've debugged before — see the comment around
+ *     `withCredentials` below).
+ *   • Firebase SDK can't write httpOnly cookies — it owns its own
+ *     IndexedDB-backed token store and we'd have to proxy every Firebase
+ *     ID token refresh through our own /api/auth/cookie endpoint.
+ *   • Programmatic clients (mobile, CLI, agent runners) can't read
+ *     httpOnly cookies, so we'd still need Bearer-token support for them.
+ *
+ * Our XSS defense is the standard React layer: strict JSX text escaping
+ * (no dangerouslySetInnerHTML in user-facing surfaces), CSP headers from
+ * security.py, server-side sanitization of all rich text. Plus the JWT
+ * is short-lived (24h) and re-validated server-side on every API call.
+ *
+ * This is the same approach used by Notion, Linear, Vercel, Slack web,
+ * and most modern B2B SaaS. If we ever ship to a regulated vertical that
+ * demands httpOnly cookies + CSRF, this becomes the migration point.
+ */
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
 const TOKEN_KEY = "soulprint_token";
 const LOCATION_KEY = "soulprint_location";  // "City, Country" cached after one geocode
