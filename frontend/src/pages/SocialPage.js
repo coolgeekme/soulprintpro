@@ -551,7 +551,18 @@ export default function SocialPage() {
         <div className="flex flex-col gap-2 mb-8">
           <span className="sp-chip"><Megaphone className="w-3 h-3" /> Generate &amp; queue</span>
           <h1 className="sp-display text-4xl md:text-5xl">Social Queue</h1>
-          <p className="sp-subtle">Draft posts with your agents, schedule them, then one-click publish to each platform's web composer. No accounts to connect, no API keys to wrangle.</p>
+          <p className="sp-subtle">
+            Draft posts with your agents, schedule them, and Foundry auto-publishes at the chosen time.{" "}
+            <a
+              href="/docs/social-queue"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="underline underline-offset-2 hover:text-white/90"
+              data-testid="social-docs-link"
+            >
+              How it works →
+            </a>
+          </p>
         </div>
 
         {/* Compose form */}

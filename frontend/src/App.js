@@ -30,6 +30,7 @@ import TermsPage from "./pages/TermsPage";
 import SubProcessorsPage from "./pages/SubProcessorsPage";
 import SOC2RoadmapPage from "./pages/SOC2RoadmapPage";
 import UseCasesPage from "./pages/UseCasesPage";
+import DocsSocialQueuePage from "./pages/DocsSocialQueuePage";
 import MockupHomePage from "./pages/MockupHomePage";
 import MockupPricingPage from "./pages/MockupPricingPage";
 import MockupHomeV2Page from "./pages/MockupHomeV2Page";
@@ -89,6 +90,7 @@ function App() {
                 <Route path="/legal/sub-processors" element={<SubProcessorsPage />} />
                 <Route path="/legal/soc2-roadmap" element={<SOC2RoadmapPage />} />
                 <Route path="/use-cases" element={<UseCasesPage />} />
+                <Route path="/docs/social-queue" element={<DocsSocialQueuePage />} />
                 <Route path="/mockup/home" element={<MockupHomePage />} />
                 <Route path="/mockup/pricing" element={<MockupPricingPage />} />
                 <Route path="/mockup/home-v2" element={<MockupHomeV2Page />} />
