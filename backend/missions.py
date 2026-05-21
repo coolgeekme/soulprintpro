@@ -299,6 +299,88 @@ class DraftGoalBody(BaseModel):
 GOAL_MIN_CHARS = 200
 GOAL_MAX_CHARS = 1800
 
+# Deterministic social-media intent detector for the mission drafter.
+# Background: the LLM drafter is non-deterministic — the same "create 7 IG
+# posts" input has been observed to (a) correctly route to the
+# `draft_to_social_queue` tool one turn, then (b) hallucinate a `.pdf`
+# deliverable on the next turn. This regex runs over the RAW user input
+# so we can forcibly append a hard tool-routing directive to whatever
+# the drafter LLM produced. It is intentionally broad — any plausible
+# social-post phrasing should match. Order matters for readability only.
+_SOCIAL_PLATFORM_RE = re.compile(
+    r"\b("
+    r"instagram|ig\b|insta\b|"
+    r"linkedin|li\b|"
+    r"twitter|tweet(?:s)?|x\.com|"
+    r"facebook|fb\b|"
+    r"tiktok|tt\b|"
+    r"threads|"
+    r"bluesky|bsky|"
+    r"mastodon|"
+    r"pinterest|pin(?:s)?\b|"
+    r"reddit|"
+    r"youtube|yt\b|shorts?\b|"
+    r"reels?\b|"
+    r"social(?:\s*media)?|"
+    r"caption(?:s)?"
+    r")\b",
+    re.IGNORECASE,
+)
+_SOCIAL_VERB_RE = re.compile(
+    r"\b("
+    r"draft(?:s|ing)?|"
+    r"write|writing|written|"
+    r"create|creating|created|"
+    r"generate|generating|generated|"
+    r"make|making|made|"
+    r"queue(?:\s*up)?|"
+    r"schedule|scheduling|scheduled|"
+    r"post(?:s|ing)?|"
+    r"publish(?:es|ing|ed)?|"
+    r"prepare|preparing|prepared"
+    r")\b",
+    re.IGNORECASE,
+)
+_SOCIAL_NOUN_RE = re.compile(
+    r"\b("
+    r"post(?:s)?|tweet(?:s)?|caption(?:s)?|reel(?:s)?|short(?:s)?|"
+    r"story|stories|carousel(?:s)?|thread(?:s)?|update(?:s)?"
+    r")\b",
+    re.IGNORECASE,
+)
+
+
+def _has_social_intent(text: str) -> bool:
+    """Return True iff the raw input clearly asks for social-media drafts.
+
+    Heuristic: must mention a social platform/format keyword AND either
+    a "produce-content" verb or a "post"-shaped noun. Empty input is
+    treated as no-intent. Calibrated against the missions in
+    `tests/test_mission_social_queue_routing.py`.
+    """
+    if not text or not text.strip():
+        return False
+    t = text.strip()
+    if not _SOCIAL_PLATFORM_RE.search(t):
+        return False
+    return bool(_SOCIAL_VERB_RE.search(t) or _SOCIAL_NOUN_RE.search(t))
+
+
+# Hard tool-routing directive appended to drafted goals when the user's
+# raw input matched _has_social_intent but the drafter LLM still came
+# back with a `.pdf`, `.md`, `.docx`, or `write_artifact` deliverable.
+# Phrased as an instruction to the downstream mission lead, not to the
+# user — the goal IS the lead's brief.
+_SOCIAL_QUEUE_DIRECTIVE = (
+    "\n\nDELIVERABLE OVERRIDE — SOCIAL QUEUE ONLY: "
+    "Use the `draft_to_social_queue` tool to insert each post directly "
+    "into the Social Queue → Drafts tab. Do NOT use `write_artifact`. "
+    "Do NOT produce a .pdf, .md, .docx, .txt, or any other file — the "
+    "user wants ready-to-schedule drafts in the Queue, not a document. "
+    "Definition of done: every requested post exists as a draft in the "
+    "Social Queue, then call `finish`."
+)
+
 _DRAFTER_SYSTEM = """You rewrite a rough user idea into a polished autonomous-mission goal for the Foundry lead-agent loop.
 
 Foundry missions are run by an LLM that picks tools (web_search, browse_url, browse_click/fill/submit, write_artifact, generate_image, read_org_document, …), iterates, and ships a deliverable. The single biggest predictor of a successful run is a precise goal. Your job is to write one.
@@ -2944,6 +3026,30 @@ def make_missions_router(
 
         if not polished:
             raise HTTPException(502, "Goal drafter returned an empty response.")
+
+        # Deterministic post-pass: if the user's RAW input clearly asks
+        # for social-media drafts but the LLM came back with a doc/.pdf/
+        # .md/`write_artifact` deliverable, forcibly append a hard
+        # routing directive so the downstream mission lead cannot
+        # misroute to the document tool. This is the ONLY belt-and-
+        # braces guard against the drafter's observed non-determinism
+        # on the same prompt.
+        raw_for_intent = body.goal or ""
+        if body.refine_instruction.strip():
+            raw_for_intent = f"{raw_for_intent}\n{body.refine_instruction}"
+        if _has_social_intent(raw_for_intent):
+            needs_directive = "draft_to_social_queue" not in polished
+            mentions_doc = bool(
+                re.search(
+                    r"\.(pdf|md|docx|doc|txt|rtf)\b|"
+                    r"\bwrite_artifact\b",
+                    polished,
+                    re.IGNORECASE,
+                )
+            )
+            if needs_directive or mentions_doc:
+                polished = polished.rstrip() + _SOCIAL_QUEUE_DIRECTIVE
+
         # Clip to the upper budget so the textarea never gets flooded.
         if len(polished) > GOAL_MAX_CHARS:
             polished = polished[:GOAL_MAX_CHARS].rstrip()
