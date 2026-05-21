@@ -3027,6 +3027,24 @@ def make_missions_router(
         if not polished:
             raise HTTPException(502, "Goal drafter returned an empty response.")
 
+        # ── Applied-rules telemetry ────────────────────────────────────
+        # We expose these to the frontend so the user can see WHY the
+        # drafter produced what it did. Each rule reports:
+        #   id     — stable machine key
+        #   status — "fired" (changed/justified output) | "skipped"
+        #            (rule checked, didn't apply) | "info" (purely info)
+        #   label  — short human title
+        #   detail — one-sentence explanation
+        applied_rules: List[dict] = []
+
+        mode_label = "Refine existing goal" if body.refine_instruction.strip() else "Draft from rough idea"
+        applied_rules.append({
+            "id": "mode",
+            "status": "info",
+            "label": "Mode",
+            "detail": mode_label,
+        })
+
         # Deterministic post-pass: if the user's RAW input clearly asks
         # for social-media drafts but the LLM came back with a doc/.pdf/
         # .md/`write_artifact` deliverable, forcibly append a hard
@@ -3037,26 +3055,106 @@ def make_missions_router(
         raw_for_intent = body.goal or ""
         if body.refine_instruction.strip():
             raw_for_intent = f"{raw_for_intent}\n{body.refine_instruction}"
-        if _has_social_intent(raw_for_intent):
+        social_intent = _has_social_intent(raw_for_intent)
+        if social_intent:
+            platform_m = _SOCIAL_PLATFORM_RE.search(raw_for_intent)
+            verb_m = _SOCIAL_VERB_RE.search(raw_for_intent)
+            noun_m = _SOCIAL_NOUN_RE.search(raw_for_intent)
+            matched_bits = []
+            if platform_m:
+                matched_bits.append(f"platform={platform_m.group(0).lower()}")
+            if verb_m:
+                matched_bits.append(f"verb={verb_m.group(0).lower()}")
+            if noun_m:
+                matched_bits.append(f"noun={noun_m.group(0).lower()}")
+            applied_rules.append({
+                "id": "social_intent_detector",
+                "status": "fired",
+                "label": "Social intent detected",
+                "detail": (
+                    "Your input mentions social media — the drafter is "
+                    "locked into the Social Queue routing path. Matched: "
+                    + " · ".join(matched_bits or ["(generic)"])
+                ),
+            })
+
             needs_directive = "draft_to_social_queue" not in polished
-            mentions_doc = bool(
-                re.search(
-                    r"\.(pdf|md|docx|doc|txt|rtf)\b|"
-                    r"\bwrite_artifact\b",
-                    polished,
-                    re.IGNORECASE,
-                )
+            mentions_doc_match = re.search(
+                r"\.(pdf|md|docx|doc|txt|rtf)\b|\bwrite_artifact\b",
+                polished,
+                re.IGNORECASE,
             )
-            if needs_directive or mentions_doc:
+            if needs_directive or mentions_doc_match:
                 polished = polished.rstrip() + _SOCIAL_QUEUE_DIRECTIVE
+                if mentions_doc_match:
+                    detail = (
+                        f"The LLM produced a goal mentioning "
+                        f"'{mentions_doc_match.group(0)}' — appended a "
+                        f"hard override forcing `draft_to_social_queue` "
+                        f"so your posts land in the Drafts tab, not as a file."
+                    )
+                else:
+                    detail = (
+                        "The LLM's polished goal didn't name "
+                        "`draft_to_social_queue` — appended a hard "
+                        "override so the mission lead can't misroute."
+                    )
+                applied_rules.append({
+                    "id": "social_queue_directive",
+                    "status": "fired",
+                    "label": "Forced Social Queue routing",
+                    "detail": detail,
+                })
+            else:
+                applied_rules.append({
+                    "id": "social_queue_directive",
+                    "status": "skipped",
+                    "label": "Social Queue routing",
+                    "detail": (
+                        "The LLM already named `draft_to_social_queue` "
+                        "and avoided document-shaped deliverables — no "
+                        "override needed."
+                    ),
+                })
+        else:
+            applied_rules.append({
+                "id": "social_intent_detector",
+                "status": "skipped",
+                "label": "Social intent detector",
+                "detail": "No social-media keywords found — Queue routing not applied.",
+            })
 
         # Clip to the upper budget so the textarea never gets flooded.
+        truncated = False
         if len(polished) > GOAL_MAX_CHARS:
             polished = polished[:GOAL_MAX_CHARS].rstrip()
+            truncated = True
+        if truncated:
+            applied_rules.append({
+                "id": "length_cap",
+                "status": "fired",
+                "label": "Length cap",
+                "detail": f"Goal was clipped to {GOAL_MAX_CHARS} characters.",
+            })
+
+        final_len = len(polished)
+        if final_len < GOAL_MIN_CHARS:
+            applied_rules.append({
+                "id": "length_floor",
+                "status": "fired",
+                "label": "Under the sweet-spot floor",
+                "detail": (
+                    f"At {final_len} chars this is under the "
+                    f"{GOAL_MIN_CHARS}-char floor — short goals tend to "
+                    "drift. Consider refining for more detail."
+                ),
+            })
+
         return {
             "goal": polished,
-            "char_count": len(polished),
+            "char_count": final_len,
             "char_target": [GOAL_MIN_CHARS, GOAL_MAX_CHARS],
+            "applied_rules": applied_rules,
         }
 
 

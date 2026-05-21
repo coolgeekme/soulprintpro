@@ -1,5 +1,5 @@
 import React, { useState } from "react";
-import { Loader2, Check, X, RotateCcw, Wand2 } from "lucide-react";
+import { Loader2, Check, X, RotateCcw, Wand2, Info, ChevronDown } from "lucide-react";
 import { toast } from "sonner";
 import api from "../lib/api";
 
@@ -35,11 +35,14 @@ export default function MissionGoalDrafter({ currentGoal, onAccept, disabled }) 
   // Output
   const [draft, setDraft] = useState("");
   const [draftMeta, setDraftMeta] = useState(null);  // { char_count, char_target }
+  const [appliedRules, setAppliedRules] = useState([]);  // [{ id, status, label, detail }]
+  const [showRules, setShowRules] = useState(false);
   const [refineInput, setRefineInput] = useState("");
 
   const reset = () => {
     setRough(""); setDeliverable(""); setSuccess("");
-    setDraft(""); setDraftMeta(null); setRefineInput("");
+    setDraft(""); setDraftMeta(null); setAppliedRules([]); setShowRules(false);
+    setRefineInput("");
   };
 
   const close = () => { setOpen(false); reset(); };
@@ -58,6 +61,7 @@ export default function MissionGoalDrafter({ currentGoal, onAccept, disabled }) 
       });
       setDraft(data.goal);
       setDraftMeta({ char_count: data.char_count, char_target: data.char_target });
+      setAppliedRules(Array.isArray(data.applied_rules) ? data.applied_rules : []);
     } catch (err) {
       const msg = err?.response?.data?.detail || "Couldn't draft a goal — try again.";
       toast.error(msg);
@@ -79,6 +83,7 @@ export default function MissionGoalDrafter({ currentGoal, onAccept, disabled }) 
       });
       setDraft(data.goal);
       setDraftMeta({ char_count: data.char_count, char_target: data.char_target });
+      setAppliedRules(Array.isArray(data.applied_rules) ? data.applied_rules : []);
       setRefineInput("");
     } catch (err) {
       const msg = err?.response?.data?.detail || "Couldn't refine the goal — try again.";
@@ -226,6 +231,14 @@ export default function MissionGoalDrafter({ currentGoal, onAccept, disabled }) 
             {draft}
           </div>
 
+          {appliedRules.length > 0 && (
+            <WhyPanel
+              rules={appliedRules}
+              open={showRules}
+              onToggle={() => setShowRules((v) => !v)}
+            />
+          )}
+
           <div className="flex flex-wrap items-end gap-2 pt-1">
             <input
               value={refineInput}
@@ -279,5 +292,86 @@ function Field({ label, hint, required, testId, children }) {
       {children}
       {hint && <div className="text-[10px] sp-subtle mt-1">{hint}</div>}
     </div>
+  );
+}
+
+/**
+ * WhyPanel — collapsible "Why this output?" reveal that explains which
+ * deterministic rules the backend applied to the drafted goal. Useful
+ * for power users who want to understand why their wording got rewritten
+ * (e.g. "social intent detected → forced draft_to_social_queue").
+ *
+ * Status pills:
+ *   • fired    — rule activated and changed/justified the output (orange)
+ *   • skipped  — rule checked but didn't apply (muted)
+ *   • info     — informational metadata, not a rule (muted)
+ */
+function WhyPanel({ rules, open, onToggle }) {
+  const firedCount = rules.filter((r) => r.status === "fired").length;
+  return (
+    <div
+      className="rounded-xl border border-white/10 overflow-hidden"
+      style={{ background: "var(--card-bg, rgba(255,255,255,0.03))" }}
+      data-testid="drafter-why-panel"
+    >
+      <button
+        type="button"
+        onClick={onToggle}
+        className="w-full px-3 py-2 flex items-center justify-between text-[11px] sp-subtle hover:text-white/90 transition"
+        data-testid="drafter-why-toggle"
+        aria-expanded={open}
+      >
+        <span className="inline-flex items-center gap-1.5">
+          <Info className="w-3.5 h-3.5" />
+          Why this output?
+          {firedCount > 0 && (
+            <span
+              className="ml-1 text-[10px] px-1.5 py-0.5 rounded-full bg-orange-500/15 text-orange-300 normal-case tracking-normal"
+              data-testid="drafter-why-fired-count"
+            >
+              {firedCount} {firedCount === 1 ? "rule" : "rules"} fired
+            </span>
+          )}
+        </span>
+        <ChevronDown
+          className={`w-3.5 h-3.5 transition-transform ${open ? "rotate-180" : ""}`}
+        />
+      </button>
+      {open && (
+        <ul className="px-3 pb-3 pt-1 space-y-2" data-testid="drafter-why-list">
+          {rules.map((r) => (
+            <RuleRow key={r.id} rule={r} />
+          ))}
+          <li className="text-[10px] sp-subtle pt-1 leading-relaxed">
+            Rules run in order on top of the LLM's draft. Goals that name a
+            tool explicitly (e.g. <code className="px-1 rounded bg-white/5">draft_to_social_queue</code>)
+            are the strongest signal to the downstream mission lead.
+          </li>
+        </ul>
+      )}
+    </div>
+  );
+}
+
+function RuleRow({ rule }) {
+  const pillStyle = {
+    fired: "bg-orange-500/15 text-orange-300",
+    skipped: "bg-white/5 text-white/40",
+    info: "bg-sky-500/10 text-sky-300",
+  }[rule.status] || "bg-white/5 text-white/40";
+  return (
+    <li className="flex items-start gap-2" data-testid={`drafter-why-rule-${rule.id}`}>
+      <span
+        className={`text-[9px] uppercase tracking-widest px-1.5 py-0.5 rounded-full ${pillStyle} shrink-0 mt-0.5`}
+      >
+        {rule.status}
+      </span>
+      <div className="text-[11px] leading-snug">
+        <div className="font-medium" style={{ color: "var(--fg)" }}>
+          {rule.label}
+        </div>
+        <div className="sp-subtle">{rule.detail}</div>
+      </div>
+    </li>
   );
 }
