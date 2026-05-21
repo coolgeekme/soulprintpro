@@ -9801,6 +9801,28 @@ async def startup():
         replace_existing=True,
         next_run_time=datetime.now(timezone.utc) + timedelta(seconds=120),
     )
+
+    # ── Social Queue auto-publish tick ──────────────────────────────────
+    # Every 60 seconds, scan for `queued` social posts whose
+    # `scheduled_for` has passed and either fire the live publish
+    # (auto_publish=True, the default) or mark them ready for manual
+    # send. Without this job, scheduled posts would sit in the queue
+    # forever even though the user picked a fire-time.
+    async def _social_autopublish_tick():
+        try:
+            from social_posts import promote_due_drafts
+            await promote_due_drafts(db=db)
+        except Exception as exc:
+            logger.warning("Social auto-publish tick failed: %s", exc)
+
+    scheduler.add_job(
+        _social_autopublish_tick,
+        trigger="interval",
+        seconds=60,
+        id="social_autopublish",
+        replace_existing=True,
+        next_run_time=datetime.now(timezone.utc) + timedelta(seconds=15),
+    )
     # ── Brand-logo GridFS backfill ───────────────────────────────────────
     # Older logos were saved to disk only and vanish on pod redeploys
     # (the ephemeral container fs gets wiped). Mirror any logo that's
