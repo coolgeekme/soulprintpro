@@ -8706,6 +8706,13 @@ def _build_mission_tools_factory():
         perplexity_available=_perplexity_available,
         generate_image_for=generate_image_for,
         save_artifacts=_save_artifacts,
+        # Pass the LLM scaffolding through so draft_to_social_queue can
+        # actually call the same _draft_via_agent helper the live
+        # /api/social/draft endpoint uses — same shape, same on-brand
+        # quality, same Soul + style-guide injection.
+        LlmChat=LlmChat,
+        UserMessage=UserMessage,
+        EMERGENT_LLM_KEY=EMERGENT_LLM_KEY,
     )
 
 

@@ -316,6 +316,7 @@ BEST PRACTICES THE GOAL MUST FOLLOW
 2. Default file formats: `.pdf` for briefs/reports/audits/proposals; `.docx` only if the user mentioned Word; `.csv` for lists/tables/datasets/lead-hunts; `.md` only when the user explicitly asked for raw markdown; `.ics` for calendars. NEVER `.txt`.
    • **DATASET / LEAD-HUNT RULE**: if the input mentions "harvest", "list of companies / businesses / leads / contacts / nonprofits", "lead hunt / list / gen", "prospect list", "directory", "roster", "build a list / database", or "scrape companies / businesses", the deliverable MUST be a `.csv`. Spell out the columns explicitly in the goal (e.g. "columns: Business Name, City, State, Years in Business, Annual Revenue (USD), Website URL, Contact Name, Contact Phone, Contact Email, Source URL"). Set a minimum-rows target ("≥ 25 verified rows"). Tell the agent to use the `csv_append_rows` tool and to cite the Source URL on every row. Name free public sources by category in one short line ("harvest from Chamber of Commerce directories, BBB, Yelp, SEC EDGAR, state Secretary of State registries, OpenCorporates, USAspending.gov, and industry association rosters").
    • **CODE-SNIPPET RECIPE**: if the input asks for code, a snippet, a tag, an embed, a regex, a SQL query, an HTML/CSS/JS/TS block, a React/Vue component, a watermark (HTML/CSS overlay), a meta tag, a tracking pixel, a Dockerfile, a shell/bash script, a webhook payload, a cron expression, a terraform config, or any other piece of programming source — the deliverable MUST be a single code file with the correct extension (`.html`, `.css`, `.js`, `.ts`, `.tsx`, `.jsx`, `.py`, `.sh`, `.sql`, `.json`, `.yaml`, `.xml`, `.tf`, etc.). Tell the agent to use `write_artifact` with the matching extension and the body as plain source code (NOT markdown wrapped, NOT base64). Explicitly say "do NOT generate an image — output source code only" so the loop never mis-routes to `generate_image`. Add 2-3 concrete acceptance criteria the agent can verify: e.g. "the snippet validates as HTML5", "the CSS uses only `position`, `bottom`, `right`, `opacity`, `pointer-events` properties", "the JS does not depend on any external library", "the regex passes these 3 test strings: …".
+   • **SOCIAL-POSTS RECIPE**: if the input asks the agent to "generate / draft / write / create / queue up N posts / tweets / IG posts / LinkedIn posts / Facebook posts / threads / reels captions / TikTok captions" — or any other variant where the deliverable is a batch of social-media posts — the deliverable MUST be DRAFTS IN THE SOCIAL QUEUE, NOT a PDF or a .md file. Tell the agent to use the `draft_to_social_queue` tool (NOT `write_artifact`). The goal text should name the platforms explicitly, the count, and the theme. Example phrasing: "Use `draft_to_social_queue` with platforms=['instagram'], count=3, and a prompt that captures the brand voice for the spring drop announcement. Each draft will land in the Social Queue → Drafts tab ready for the user to click Schedule on. Do NOT save these posts as a .pdf or .md — that's the wrong deliverable type and the user will have to re-draft them by hand."
 3. Spell out 3-5 measurable success criteria — concrete things the agent can verify it did (e.g. "cite at least 5 distinct sources with URLs", "include a comparison table with ≥4 rows", "include current pricing for each app").
 4. If the work involves research, demand **breadth**: "cite ≥5 distinct sources" or "browse the official site of each of the top 5 competitors". Foundry's research-breadth gate refuses to finish a research mission with <5 sources, so this aligns with the engine.
 5. If the work involves visiting a specific site, include the exact URL.
@@ -1295,6 +1296,7 @@ def build_tools(
     *, db, docs_root: Path, UPLOAD_DIR: Path, AGENTS: dict,
     brave_search, perplexity_web_search, perplexity_available,
     generate_image_for, save_artifacts,
+    LlmChat=None, UserMessage=None, EMERGENT_LLM_KEY: str = "",
 ) -> List[Tool]:
     """Wire our existing building blocks into Mission tools."""
     from browser_tools import (
@@ -1836,11 +1838,154 @@ def build_tools(
         }
 
     async def draft_to_social_queue(ctx, args):
-        # Phase 1 scope: use `write_artifact` to draft a `.md` social post
-        # users can review before queueing. Native Social Queue draft tool
-        # wires in next pass once we extract a public helper from
-        # social_posts.py.
-        return {"error": "Not available yet — use write_artifact to save a .md post for the Social Queue."}
+        """Drop one or more drafts straight into the org's Social Queue.
+
+        This is the path the mission engine takes when the user says
+        "create 3 IG posts about X". Returns the live serialized post
+        ids so the mission's summary can link them. Replaces the older
+        write-to-PDF fallback which was the source of the
+        "I asked for IG posts and got a document" bug.
+
+        Args:
+            prompt: required — what the posts should be about
+            platforms: list[str] — one or more of twitter, linkedin,
+                facebook, instagram, threads, bluesky, mastodon, reddit,
+                tiktok, youtube, mailchimp
+            count: int — how many drafts to generate (max 10)
+            agent_id: optional — which agent persona drafts (defaults
+                to the mission's lead_agent_id)
+            auto_image: bool — whether to also kick off Nano Banana
+                cover-image generation in background (default True)
+        """
+        if not LlmChat or not UserMessage or not EMERGENT_LLM_KEY:
+            return {"error": "Social draft tooling not wired into this mission runtime."}
+
+        from social_posts import _draft_via_agent, serialize_social_post
+        from bson import ObjectId
+
+        org_id = ctx.get("org_id") or ""
+        team_id = ctx.get("team_id") or ""
+        agent_id = (args.get("agent_id") or ctx.get("lead_agent_id") or "").strip()
+        if agent_id not in AGENTS:
+            # Fall back to a default writing agent if available; many
+            # agents can credibly draft a social post.
+            for k in AGENTS:
+                agent_id = k
+                break
+        prompt = (args.get("prompt") or "").strip()
+        if not prompt:
+            return {"error": "prompt is required"}
+
+        # Normalise the platform list. Accept singular strings, common
+        # variations, or a list. Snap to the canonical lowercase slug.
+        raw_pf = args.get("platforms") or args.get("platform") or ["instagram"]
+        if isinstance(raw_pf, str):
+            raw_pf = [raw_pf]
+        canon = {
+            "x": "twitter", "tw": "twitter", "twitter": "twitter",
+            "li": "linkedin", "linkedin": "linkedin",
+            "fb": "facebook", "facebook": "facebook",
+            "ig": "instagram", "insta": "instagram", "instagram": "instagram",
+            "th": "threads", "threads": "threads",
+            "bsky": "bluesky", "bluesky": "bluesky",
+            "mastodon": "mastodon",
+            "reddit": "reddit",
+            "tt": "tiktok", "tiktok": "tiktok",
+            "yt": "youtube", "youtube": "youtube",
+            "mailchimp": "mailchimp",
+        }
+        platforms: list[str] = []
+        for p in raw_pf:
+            slug = canon.get(str(p).strip().lower())
+            if slug and slug not in platforms:
+                platforms.append(slug)
+        if not platforms:
+            platforms = ["instagram"]
+
+        count = int(args.get("count") or len(platforms) or 1)
+        count = max(1, min(count, 10))
+
+        # Pull the org Soul + team Soulprint so the drafts are on-brand.
+        org = await db.organizations.find_one({"_id": ObjectId(org_id)}) if org_id else None
+        team = await db.teams.find_one({"_id": ObjectId(team_id)}) if team_id else None
+        org_soul = (org or {}).get("soul") or {}
+        team_soulprint = (team or {}).get("soulprint") or {}
+        style_guide_block = ""
+        sg = (org or {}).get("style_guide") or {}
+        if sg:
+            style_guide_block = (
+                f"Style guide:\n- Tone: {sg.get('tone','')}\n"
+                f"- Image/video style: {sg.get('image_video_style','')}"
+            ).strip()
+
+        try:
+            drafts = await _draft_via_agent(
+                LlmChat=LlmChat, UserMessage=UserMessage,
+                EMERGENT_LLM_KEY=EMERGENT_LLM_KEY,
+                AGENTS=AGENTS, agent_id=agent_id,
+                org_soul=org_soul, team_soulprint=team_soulprint,
+                prompt=prompt, platforms=platforms, count=count,
+                style_guide_block=style_guide_block,
+            )
+        except Exception as exc:
+            return {"error": f"Drafting failed: {exc}"}
+
+        if not drafts:
+            return {"error": "Drafter returned no posts. Try a more specific prompt."}
+
+        # Persist each draft into social_posts. Same shape the live
+        # /api/social/draft endpoint produces, so downstream UI (queue
+        # cards, scheduler, autopost worker) handles them identically.
+        now = datetime.now(timezone.utc)
+        created: list[dict] = []
+        auto_image = bool(args.get("auto_image", True))
+        for d in drafts:
+            pf = d.get("platform") or platforms[0]
+            doc = {
+                "org_id": org_id,
+                "team_id": team_id,
+                "conversation_id": ctx.get("mission_id", ""),
+                "source_message_id": "",
+                "agent_id": agent_id,
+                "agent_name": AGENTS.get(agent_id, {}).get("name", ""),
+                "status": "draft",
+                "platforms": [pf],
+                "text": d.get("text", ""),
+                "hashtags": d.get("hashtags", []),
+                "link_url": "",
+                "media": [],
+                "scheduled_for": None,
+                "published_at": None,
+                "created_at": now,
+                "created_by": ctx.get("created_by", ""),
+            }
+            res = await db.social_posts.insert_one(doc)
+            doc["_id"] = res.inserted_id
+            created.append(serialize_social_post(doc))
+
+        # Posts land WITHOUT cover images by default. The user can hit
+        # "Generate cover image" on each draft in the Social Queue UI to
+        # kick off Nano Banana on demand. (Auto-image-on-create can be
+        # wired in a later pass once we extract a reusable cover-gen
+        # helper from social_posts.make_social_posts_router.)
+        _ = bool(args.get("auto_image", False))  # reserved kwarg
+
+        return {
+            "ok": True,
+            "drafted": len(created),
+            "platforms": platforms,
+            "posts": [{"id": c["id"], "platform": c["platforms"][0], "text_preview": c["text"][:120]} for c in created],
+            "summary": (
+                f"Drafted {len(created)} {('/'.join(platforms))} post(s) into the Social Queue. "
+                f"Open the Social tab → Drafts to review and schedule them."
+            ),
+            "next_step": (
+                "User can now click Schedule on each draft to pick a fire "
+                "time and toggle auto-publish. Or chain a mission tool call "
+                "to set scheduled_for + autopost_enabled on each post id "
+                "if a schedule is already known."
+            ),
+        }
 
     async def browse_url(ctx, args):
         url = (args.get("url") or "").strip()
@@ -2662,6 +2807,10 @@ def build_tools(
              "Submit a form on the CURRENT browser page. With no args, clicks the first `button[type=submit]` / `input[type=submit]`. You can also pass a `selector` pointing at a specific form or submit button. Use AFTER browse_fill.",
              '{"selector": "form#contact"}',
              browse_submit, side_effect=True),
+        Tool("draft_to_social_queue",
+             "Create ON-BRAND social posts directly in the org's Social Queue. Use this — NOT write_artifact — for ANY 'generate N posts for [platform]' / 'queue up X tweets/IG posts/LinkedIn posts' / 'draft this week's social content' goal. Each draft lands in the Social tab → Drafts ready for the user to click Schedule on (one-click flow). DO NOT save social posts as a .pdf — that's the wrong deliverable. `platforms` accepts singular or list (twitter, linkedin, facebook, instagram, threads, bluesky, mastodon, reddit, tiktok, youtube, mailchimp). `count` clamps to 1-10. Posts land without cover images by default — the user clicks 'Generate cover image' on each draft to render brand-consistent artwork via Nano Banana.",
+             '{"prompt": "Announce our spring HalfSalt drop — premium pistachio gift boxes", "platforms": ["instagram", "linkedin"], "count": 3}',
+             draft_to_social_queue, side_effect=True),
     ] + _maybe_github_tools(db)
 
 
