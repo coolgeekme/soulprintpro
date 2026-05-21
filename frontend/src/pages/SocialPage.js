@@ -105,6 +105,189 @@ const isoToLocalInput = (iso) => {
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
 };
 
+// Build a list of smart schedule presets in the user's local timezone.
+// These are computed at render time so "Tomorrow 9am" is always tomorrow
+// from the user's perspective, not a stale relative.
+function buildSchedulePresets() {
+  const now = new Date();
+  const pad = (n) => String(n).padStart(2, "0");
+  const fmt = (d) =>
+    `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+  const addHours = (h) => { const d = new Date(now); d.setHours(d.getHours() + h, 0, 0, 0); return d; };
+  const nextDayAt = (offsetDays, hour) => {
+    const d = new Date(now); d.setDate(d.getDate() + offsetDays); d.setHours(hour, 0, 0, 0); return d;
+  };
+  // Next Monday at 10am — if today IS Monday and it's before 10am, today.
+  const nextMondayAt10 = () => {
+    const d = new Date(now);
+    const dow = d.getDay(); // 0=Sun,1=Mon
+    const offset = dow === 1 && d.getHours() < 10 ? 0 : (1 - dow + 7) % 7 || 7;
+    d.setDate(d.getDate() + offset); d.setHours(10, 0, 0, 0); return d;
+  };
+  // Friend-of-marketing-team "optimal time" preset: tomorrow 9am.
+  return [
+    { label: "In 1 hour",      hint: "Right after lunch / quick share",  value: fmt(addHours(1)) },
+    { label: "Tomorrow 9am",   hint: "Morning audience",                 value: fmt(nextDayAt(1, 9)) },
+    { label: "Tomorrow 1pm",   hint: "Lunch break audience",             value: fmt(nextDayAt(1, 13)) },
+    { label: "Tomorrow 6pm",   hint: "Evening audience",                 value: fmt(nextDayAt(1, 18)) },
+    { label: "Next Monday 10am", hint: "Start the work-week strong",     value: fmt(nextMondayAt10()) },
+  ];
+}
+
+// Compact, focused scheduling popover. Triggered from the action row's
+// "Schedule" button so the user doesn't have to enter edit mode.
+function QuickSchedulePopover({ post, orgId, onClose, onSaved }) {
+  const [picked, setPicked] = useState(isoToLocalInput(post.scheduled_for) || "");
+  const [autopost, setAutopost] = useState(post.autopost_enabled !== false);
+  const [busy, setBusy] = useState(false);
+  const presets = useMemo(() => buildSchedulePresets(), []);
+
+  // Close on Escape and on outside click. Both are standard popover UX
+  // and prevent the popover from hanging open if the user clicks away.
+  useEffect(() => {
+    const onKey = (e) => { if (e.key === "Escape") onClose(); };
+    const onDoc = (e) => {
+      // Only close on outside-click — the popover root has
+      // data-testid="quick-schedule-popover-{id}" and we stop propagation
+      // on clicks inside, so any click reaching document was outside.
+      const inside = e.target.closest?.(`[data-testid="quick-schedule-popover-${post.id}"]`);
+      const triggerBtn = e.target.closest?.(`[data-testid="schedule-btn-${post.id}"]`);
+      if (!inside && !triggerBtn) onClose();
+    };
+    window.addEventListener("keydown", onKey);
+    document.addEventListener("mousedown", onDoc);
+    return () => {
+      window.removeEventListener("keydown", onKey);
+      document.removeEventListener("mousedown", onDoc);
+    };
+  }, [post.id, onClose]);
+
+  const save = async () => {
+    if (!picked) {
+      toast.error("Pick a time first");
+      return;
+    }
+    setBusy(true);
+    try {
+      const iso = new Date(picked).toISOString();
+      await api.patch(`/social/posts/${post.id}`, {
+        scheduled_for: iso,
+        status: "queued",
+      });
+      if (autopost) {
+        try {
+          await api.post(`/social/posts/${post.id}/schedule-autopost`, {
+            scheduled_for: iso,
+          });
+        } catch (e) {
+          // Non-fatal — the post is still scheduled; autopost just isn't
+          // wired. Surface it so user can retry from the edit form.
+          toast.warning("Scheduled, but couldn't enable autopost. Edit the post to retry.");
+        }
+      } else {
+        // Make sure no zombie autopost mission is pinned from earlier.
+        try { await api.delete(`/social/posts/${post.id}/schedule-autopost`); } catch (_) {}
+      }
+      toast.success(autopost ? "Scheduled — Foundry will publish at the set time" : "Scheduled");
+      onSaved?.();
+      onClose();
+    } catch (err) {
+      toast.error(err?.response?.data?.detail || "Couldn't schedule the post");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div
+      className="absolute z-30 right-0 mt-2 w-[320px] sm:w-[360px] rounded-2xl shadow-2xl sp-glass-strong p-4 space-y-3"
+      style={{ border: "1px solid var(--input-border)" }}
+      data-testid={`quick-schedule-popover-${post.id}`}
+      onClick={(e) => e.stopPropagation()}
+    >
+      <div className="flex items-start justify-between gap-2">
+        <div>
+          <div className="text-sm font-medium">Schedule this post</div>
+          <div className="text-[11px] sp-subtle mt-0.5">
+            Pick a time — Foundry will publish at the scheduled moment.
+          </div>
+        </div>
+        <button onClick={onClose} className="sp-btn sp-btn-ghost !px-1.5 !py-0.5" data-testid={`quick-schedule-close-${post.id}`}>
+          <X className="w-3.5 h-3.5" />
+        </button>
+      </div>
+
+      {/* Smart presets — one-click scheduling for the common cases. */}
+      <div className="space-y-1">
+        <div className="text-[10px] uppercase tracking-widest sp-subtle">Quick picks</div>
+        <div className="grid grid-cols-1 gap-1">
+          {presets.map((p) => (
+            <button
+              key={p.label}
+              type="button"
+              onClick={() => setPicked(p.value)}
+              className={`flex items-center justify-between gap-2 rounded-lg px-2.5 py-1.5 text-xs border transition text-left ${
+                picked === p.value
+                  ? "border-orange-400 bg-orange-500/15 text-white"
+                  : "border-white/10 hover:bg-white/5 sp-subtle hover:text-white"
+              }`}
+              data-testid={`quick-preset-${post.id}-${p.label.replace(/\s+/g, "-").toLowerCase()}`}
+            >
+              <span className="font-medium">{p.label}</span>
+              <span className="text-[10px] opacity-60">{p.hint}</span>
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {/* Custom time fallback */}
+      <div className="space-y-1 pt-1 border-t border-white/5">
+        <div className="text-[10px] uppercase tracking-widest sp-subtle">Or pick custom</div>
+        <input
+          type="datetime-local"
+          value={picked}
+          onChange={(e) => setPicked(e.target.value)}
+          className="w-full rounded-lg px-2.5 py-1.5 text-sm"
+          style={{ background: "var(--input-bg)", border: "1px solid var(--input-border)", color: "var(--fg)" }}
+          data-testid={`quick-schedule-custom-${post.id}`}
+        />
+      </div>
+
+      {/* Autopost toggle */}
+      <label className="flex items-start gap-2 text-xs cursor-pointer pt-1">
+        <input
+          type="checkbox"
+          checked={autopost}
+          onChange={(e) => setAutopost(e.target.checked)}
+          className="accent-orange-500 mt-0.5"
+          data-testid={`quick-schedule-autopost-${post.id}`}
+        />
+        <span>
+          <span className="text-white/90 font-medium">Auto-publish at the scheduled time</span>
+          <span className="block text-[10px] sp-subtle">
+            Foundry will fire the publish for you. Uncheck to schedule a draft you'll publish manually.
+          </span>
+        </span>
+      </label>
+
+      {/* CTAs */}
+      <div className="flex justify-end gap-2 pt-1">
+        <button onClick={onClose} className="sp-btn sp-btn-ghost text-xs" data-testid={`quick-schedule-cancel-${post.id}`}>
+          Cancel
+        </button>
+        <button
+          onClick={save}
+          disabled={busy || !picked}
+          className="sp-btn sp-btn-primary text-xs disabled:opacity-50"
+          data-testid={`quick-schedule-save-${post.id}`}
+        >
+          {busy ? <><Loader2 className="w-3.5 h-3.5 animate-spin" /> Scheduling…</> : <><Calendar className="w-3.5 h-3.5" /> Schedule</>}
+        </button>
+      </div>
+    </div>
+  );
+}
+
 // ──────────────────────────────────────────────────────────────────────────
 export default function SocialPage() {
   const { orgId } = useParams();
@@ -577,6 +760,11 @@ function PostCard({ post, orgId, onUpdate, onReplace, onDelete, publishable, onA
     post.autopost_platform || (post.platforms || []).find((p) => AUTOPOST_PLATFORMS.includes(p)) || "twitter"
   );
   const [autopostBusy, setAutopostBusy] = useState(false);
+
+  // QuickSchedule popover — visible only on demand. Lets users schedule
+  // a post in 2 clicks (Schedule button → preset → done) instead of 4-5
+  // (Pencil → scroll to datetime → save → toggle autopost).
+  const [quickScheduleOpen, setQuickScheduleOpen] = useState(false);
 
   // Re-sync if upstream post changes (e.g. after schedule auto-flips status)
   useEffect(() => {
@@ -1147,6 +1335,38 @@ function PostCard({ post, orgId, onUpdate, onReplace, onDelete, publishable, onA
               </a>
             )}
             <div className="ml-auto flex items-center gap-2">
+              {/* Schedule button — primary affordance for "I want this
+                  to post later". Opens a focused popover with smart
+                  presets so the user doesn't have to enter edit mode
+                  just to schedule. Only shown for unpublished posts
+                  (already-published or in-flight posts can't be
+                  re-scheduled). */}
+              {!["published", "publishing"].includes(post.status) && (
+                <div className="relative" data-testid={`schedule-wrapper-${post.id}`}>
+                  <button
+                    type="button"
+                    onClick={() => setQuickScheduleOpen((v) => !v)}
+                    className={`sp-btn text-xs ${
+                      post.scheduled_for ? "sp-btn-ghost" : "sp-btn-primary"
+                    }`}
+                    title={post.scheduled_for
+                      ? `Currently scheduled for ${formatScheduleLocal(post.scheduled_for)} — click to change`
+                      : "Schedule this post for a later time"}
+                    data-testid={`schedule-btn-${post.id}`}
+                  >
+                    <Calendar className="w-3 h-3" />
+                    {post.scheduled_for ? "Reschedule" : "Schedule"}
+                  </button>
+                  {quickScheduleOpen && (
+                    <QuickSchedulePopover
+                      post={post}
+                      orgId={orgId}
+                      onClose={() => setQuickScheduleOpen(false)}
+                      onSaved={() => onUpdate(post.id, {})}
+                    />
+                  )}
+                </div>
+              )}
               {/* Live publish via Composio — visible whenever the post
                   targets at least one supported direct-publish platform.
                   Enabled when connected; otherwise disabled with a
