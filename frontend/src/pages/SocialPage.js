@@ -136,7 +136,12 @@ function buildSchedulePresets() {
 
 // Compact, focused scheduling popover. Triggered from the action row's
 // "Schedule" button so the user doesn't have to enter edit mode.
-function QuickSchedulePopover({ post, orgId, onClose, onSaved }) {
+//
+// Rendered via React Portal at document.body so it stacks above every
+// other card on the page — sibling cards use `sp-glass-strong` whose
+// `backdrop-filter` creates a new stacking context that would otherwise
+// trap a non-portaled popover behind them, regardless of `z-index`.
+function QuickSchedulePopover({ post, orgId, anchorRect, onClose, onSaved }) {
   const [picked, setPicked] = useState(isoToLocalInput(post.scheduled_for) || "");
   const [autopost, setAutopost] = useState(post.autopost_enabled !== false);
   const [busy, setBusy] = useState(false);
@@ -161,6 +166,27 @@ function QuickSchedulePopover({ post, orgId, onClose, onSaved }) {
       document.removeEventListener("mousedown", onDoc);
     };
   }, [post.id, onClose]);
+
+  // Compute absolute (document-relative) position anchored to the
+  // Schedule button. We default to "right edge of the button, just
+  // below it" then auto-flip up if the popover would clip the viewport
+  // bottom. Width matches the desktop popover (~360px); we never let it
+  // overflow the right edge of the viewport.
+  const POP_W = Math.min(360, window.innerWidth - 16);
+  const POP_H_ESTIMATE = 460;  // Tall enough to cover presets + custom + autopost + CTAs.
+  const scrollY = window.scrollY || document.documentElement.scrollTop;
+  const scrollX = window.scrollX || document.documentElement.scrollLeft;
+  let top = (anchorRect?.bottom ?? 100) + scrollY + 6;
+  let left = (anchorRect?.right ?? 100) + scrollX - POP_W;
+  if (left < 8) left = 8;  // Don't clip left edge.
+  if (left + POP_W > window.innerWidth + scrollX - 8) {
+    left = window.innerWidth + scrollX - POP_W - 8;
+  }
+  // Flip up if the popover would clip the bottom of the viewport.
+  if (top + POP_H_ESTIMATE > scrollY + window.innerHeight - 12) {
+    top = (anchorRect?.top ?? 100) + scrollY - POP_H_ESTIMATE - 6;
+    if (top < scrollY + 8) top = scrollY + 8;
+  }
 
   const save = async () => {
     if (!picked) {
@@ -198,10 +224,16 @@ function QuickSchedulePopover({ post, orgId, onClose, onSaved }) {
     }
   };
 
-  return (
+  return createPortal(
     <div
-      className="absolute z-30 right-0 mt-2 w-[320px] sm:w-[360px] rounded-2xl shadow-2xl sp-glass-strong p-4 space-y-3"
-      style={{ border: "1px solid var(--input-border)" }}
+      className="rounded-2xl shadow-2xl sp-glass-strong p-4 space-y-3"
+      style={{
+        position: "absolute",
+        top, left,
+        width: POP_W,
+        zIndex: 9999,
+        border: "1px solid var(--input-border)",
+      }}
       data-testid={`quick-schedule-popover-${post.id}`}
       onClick={(e) => e.stopPropagation()}
     >
@@ -284,7 +316,8 @@ function QuickSchedulePopover({ post, orgId, onClose, onSaved }) {
           {busy ? <><Loader2 className="w-3.5 h-3.5 animate-spin" /> Scheduling…</> : <><Calendar className="w-3.5 h-3.5" /> Schedule</>}
         </button>
       </div>
-    </div>
+    </div>,
+    document.body,
   );
 }
 
@@ -775,7 +808,9 @@ function PostCard({ post, orgId, onUpdate, onReplace, onDelete, publishable, onA
   // QuickSchedule popover — visible only on demand. Lets users schedule
   // a post in 2 clicks (Schedule button → preset → done) instead of 4-5
   // (Pencil → scroll to datetime → save → toggle autopost).
-  const [quickScheduleOpen, setQuickScheduleOpen] = useState(false);
+  // Stored as the DOMRect of the Schedule trigger button so the popover
+  // (which portals to document.body) knows where to anchor.
+  const [quickScheduleAnchor, setQuickScheduleAnchor] = useState(null);
 
   // Re-sync if upstream post changes (e.g. after schedule auto-flips status)
   useEffect(() => {
@@ -1353,10 +1388,19 @@ function PostCard({ post, orgId, onUpdate, onReplace, onDelete, publishable, onA
                   (already-published or in-flight posts can't be
                   re-scheduled). */}
               {!["published", "publishing"].includes(post.status) && (
-                <div className="relative" data-testid={`schedule-wrapper-${post.id}`}>
+                <>
                   <button
                     type="button"
-                    onClick={() => setQuickScheduleOpen((v) => !v)}
+                    onClick={(e) => {
+                      // Capture the trigger's DOMRect so the portaled
+                      // popover knows where to anchor. Toggle off if
+                      // already open.
+                      if (quickScheduleAnchor) {
+                        setQuickScheduleAnchor(null);
+                      } else {
+                        setQuickScheduleAnchor(e.currentTarget.getBoundingClientRect());
+                      }
+                    }}
                     className={`sp-btn text-xs ${
                       post.scheduled_for ? "sp-btn-ghost" : "sp-btn-primary"
                     }`}
@@ -1368,15 +1412,16 @@ function PostCard({ post, orgId, onUpdate, onReplace, onDelete, publishable, onA
                     <Calendar className="w-3 h-3" />
                     {post.scheduled_for ? "Reschedule" : "Schedule"}
                   </button>
-                  {quickScheduleOpen && (
+                  {quickScheduleAnchor && (
                     <QuickSchedulePopover
                       post={post}
                       orgId={orgId}
-                      onClose={() => setQuickScheduleOpen(false)}
+                      anchorRect={quickScheduleAnchor}
+                      onClose={() => setQuickScheduleAnchor(null)}
                       onSaved={() => onUpdate(post.id, {})}
                     />
                   )}
-                </div>
+                </>
               )}
               {/* Live publish via Composio — visible whenever the post
                   targets at least one supported direct-publish platform.
