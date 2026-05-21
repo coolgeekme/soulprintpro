@@ -1963,27 +1963,41 @@ def build_tools(
             doc["_id"] = res.inserted_id
             created.append(serialize_social_post(doc))
 
-        # Posts land WITHOUT cover images by default. The user can hit
-        # "Generate cover image" on each draft in the Social Queue UI to
-        # kick off Nano Banana on demand. (Auto-image-on-create can be
-        # wired in a later pass once we extract a reusable cover-gen
-        # helper from social_posts.make_social_posts_router.)
-        _ = bool(args.get("auto_image", False))  # reserved kwarg
+        # Cover image generation — fires Nano Banana on each new draft
+        # in the background so cards appear in the queue with brand-
+        # consistent artwork. Default ON; pass auto_image=false to skip
+        # (e.g. when the user plans to attach asset-library images
+        # manually). The kickoff is non-blocking — each background task
+        # flips the post's `image_status` from pending → ready when
+        # done; SocialPage polls for the swap.
+        auto_image = bool(args.get("auto_image", True))
+        cover_kickoff = 0
+        if auto_image and created:
+            try:
+                from social_posts import kickoff_post_image_generation
+                for c in created:
+                    if await kickoff_post_image_generation(db=db, post_id=c["id"]):
+                        cover_kickoff += 1
+            except Exception as exc:
+                logger.warning(
+                    "Mission auto-image kickoff failed: %s", exc,
+                )
 
         return {
             "ok": True,
             "drafted": len(created),
             "platforms": platforms,
+            "cover_images_kicked_off": cover_kickoff,
             "posts": [{"id": c["id"], "platform": c["platforms"][0], "text_preview": c["text"][:120]} for c in created],
             "summary": (
-                f"Drafted {len(created)} {('/'.join(platforms))} post(s) into the Social Queue. "
-                f"Open the Social tab → Drafts to review and schedule them."
+                f"Drafted {len(created)} {('/'.join(platforms))} post(s) into the Social Queue"
+                + (f" — cover images generating in background for {cover_kickoff} of them" if cover_kickoff else "")
+                + ". Open the Social tab → Drafts to review and schedule them."
             ),
             "next_step": (
                 "User can now click Schedule on each draft to pick a fire "
-                "time and toggle auto-publish. Or chain a mission tool call "
-                "to set scheduled_for + autopost_enabled on each post id "
-                "if a schedule is already known."
+                "time and toggle auto-publish. Cover images render in "
+                "~10-30s in the background — the queue cards auto-refresh."
             ),
         }
 
@@ -2808,8 +2822,8 @@ def build_tools(
              '{"selector": "form#contact"}',
              browse_submit, side_effect=True),
         Tool("draft_to_social_queue",
-             "Create ON-BRAND social posts directly in the org's Social Queue. Use this — NOT write_artifact — for ANY 'generate N posts for [platform]' / 'queue up X tweets/IG posts/LinkedIn posts' / 'draft this week's social content' goal. Each draft lands in the Social tab → Drafts ready for the user to click Schedule on (one-click flow). DO NOT save social posts as a .pdf — that's the wrong deliverable. `platforms` accepts singular or list (twitter, linkedin, facebook, instagram, threads, bluesky, mastodon, reddit, tiktok, youtube, mailchimp). `count` clamps to 1-10. Posts land without cover images by default — the user clicks 'Generate cover image' on each draft to render brand-consistent artwork via Nano Banana.",
-             '{"prompt": "Announce our spring HalfSalt drop — premium pistachio gift boxes", "platforms": ["instagram", "linkedin"], "count": 3}',
+             "Create ON-BRAND social posts directly in the org's Social Queue, with auto-generated cover images. Use this — NOT write_artifact — for ANY 'generate N posts for [platform]' / 'queue up X tweets/IG posts/LinkedIn posts' / 'draft this week's social content' goal. Each draft lands in the Social tab → Drafts ready for the user to click Schedule on (one-click flow). Brand-consistent cover images render in the background via Nano Banana (default on) using the org's Soul + Style Guide visual direction. DO NOT save social posts as a .pdf — that's the wrong deliverable. `platforms` accepts singular or list (twitter, linkedin, facebook, instagram, threads, bluesky, mastodon, reddit, tiktok, youtube, mailchimp). `count` clamps to 1-10. Pass `auto_image: false` only if the user wants to attach their own images from the asset library.",
+             '{"prompt": "Announce our spring HalfSalt drop — premium pistachio gift boxes", "platforms": ["instagram", "linkedin"], "count": 3, "auto_image": true}',
              draft_to_social_queue, side_effect=True),
     ] + _maybe_github_tools(db)
 

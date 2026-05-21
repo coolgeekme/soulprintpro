@@ -32,6 +32,83 @@ from pydantic import BaseModel, Field
 
 logger = logging.getLogger(__name__)
 
+
+# Module-level hook for the cover-image generator. Set inside
+# `make_social_posts_router` when the social router is built, so other
+# subsystems (e.g. the mission engine's `draft_to_social_queue` tool)
+# can kick off Nano Banana cover-image generation on freshly-created
+# drafts without duplicating the 100+ line `_generate_post_image`
+# closure. None until the router boots; mission tool calls become
+# no-ops if the router hasn't been built yet (boot-order safety).
+_POST_IMAGE_CALLBACK = None  # type: ignore[assignment]
+
+
+async def kickoff_post_image_generation(*, db, post_id: str) -> bool:
+    """Public entry point — kicks off background cover-image generation
+    for an existing draft. Used by the mission tool after drafting posts
+    so each card lands in the queue with a brand-consistent cover image.
+
+    Returns True if generation was scheduled, False if the post / org
+    couldn't be loaded or the image callback isn't registered.
+    """
+    if _POST_IMAGE_CALLBACK is None:
+        logger.info(
+            "kickoff_post_image_generation: callback not registered yet — "
+            "skipping for post %s",
+            post_id,
+        )
+        return False
+    try:
+        from bson import ObjectId as _OID
+        post = await db.social_posts.find_one({"_id": _OID(post_id)})
+        if not post:
+            return False
+        # Flip the post into pending so SocialPage's polling loop picks
+        # up the eventual ready/error state.
+        await db.social_posts.update_one(
+            {"_id": _OID(post_id)},
+            {"$set": {
+                "image_status": "pending",
+                "image_pending_at": datetime.now(timezone.utc),
+            }, "$unset": {"image_error": ""}},
+        )
+        org = await db.organizations.find_one({"_id": _OID(post["org_id"])})
+
+        async def _run():
+            try:
+                img = await _POST_IMAGE_CALLBACK(post, org or {}, "")
+                if not img:
+                    raise RuntimeError("image generator returned empty result")
+                await db.social_posts.update_one(
+                    {"_id": _OID(post_id)},
+                    {"$set": {
+                        "image": img,
+                        "image_status": "ready",
+                        "image_updated_at": datetime.now(timezone.utc),
+                    }, "$unset": {"image_error": "", "image_pending_at": ""}},
+                )
+            except Exception as exc:
+                logger.warning(
+                    "Mission-kickoff image gen failed for post %s: %s",
+                    post_id, exc,
+                )
+                await db.social_posts.update_one(
+                    {"_id": _OID(post_id)},
+                    {"$set": {
+                        "image_status": "error",
+                        "image_error": "Generation failed — tap Regenerate to retry.",
+                    }, "$unset": {"image_pending_at": ""}},
+                )
+
+        asyncio.create_task(_run())
+        return True
+    except Exception as exc:
+        logger.warning(
+            "kickoff_post_image_generation failed for post %s: %s",
+            post_id, exc,
+        )
+        return False
+
 # Platforms we know how to handle. Order is intentional — UI renders pills in
 # this sequence. Anything outside this set is rejected at API boundary.
 SUPPORTED_PLATFORMS = (
@@ -665,6 +742,14 @@ def make_social_router(*, db, AGENTS, EMERGENT_LLM_KEY, LlmChat, UserMessage,
             "raw_filename": fname,  # un-composited base, kept so we can re-anchor logo cheaply
             "model_used": source_model,  # "nano-banana" (default) or "kie:flux-kontext-pro" (fallback) — admin trail
         }
+
+    # Register the closure as the module-level callback so subsystems
+    # outside this router (e.g. the mission engine's
+    # `draft_to_social_queue` tool) can kick off cover-image generation
+    # on a freshly-created draft. See `kickoff_post_image_generation`
+    # at the top of this file.
+    global _POST_IMAGE_CALLBACK
+    _POST_IMAGE_CALLBACK = _generate_post_image
 
     async def _generate_post_image_via_kie_then_fallback(
         *, prompt: str, system_message: str,
