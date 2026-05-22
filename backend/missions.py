@@ -366,6 +366,36 @@ def _has_social_intent(text: str) -> bool:
     return bool(_SOCIAL_VERB_RE.search(t) or _SOCIAL_NOUN_RE.search(t))
 
 
+# Asset-library intent detector — fires when the user explicitly asks
+# the mission to use their uploaded Asset Library images. Catches the
+# real-world bug report: "use the images in the asset library and remix
+# them in the posts" → mission ignored assets, produced text-only drafts.
+_ASSET_INTENT_RE = re.compile(
+    r"\b("
+    r"asset(?:s)?\s*library|"
+    r"asset(?:s)?(?:\s+from\s+(?:the\s+)?library)?|"
+    r"my\s+(?:\w+\s+)?(?:photo(?:s)?|image(?:s)?|picture(?:s)?|pic(?:s)?)|"
+    r"our\s+(?:\w+\s+)?(?:photo(?:s)?|image(?:s)?|picture(?:s)?|pic(?:s)?|product\s+shot(?:s)?|team\s+photo(?:s)?|brand\s+image(?:s)?)|"
+    r"(?:the\s+)?(?:product\s+shot(?:s)?|team\s+photo(?:s)?|brand\s+image(?:s)?|uploaded\s+(?:photo(?:s)?|image(?:s)?|picture(?:s)?))|"
+    r"remix(?:\s+(?:my|our|the))?\s+(?:\w+\s+)?(?:photo(?:s)?|image(?:s)?|picture(?:s)?|pic(?:s)?|asset(?:s)?)|"
+    r"use\s+(?:the\s+)?(?:image(?:s)?|photo(?:s)?|picture(?:s)?)\s+(?:in|from)\s+(?:the\s+)?(?:asset(?:s)?\s*)?library|"
+    r"attach\s+(?:my|our|the)\s+(?:\w+\s+)?(?:photo(?:s)?|image(?:s)?)"
+    r")\b",
+    re.IGNORECASE,
+)
+
+
+def _has_asset_intent(text: str) -> bool:
+    """Return True iff the raw input asks the mission to use Asset
+    Library images (not auto-generated covers). Looser than
+    `_has_social_intent` — this is a content modifier, not a routing
+    decision.
+    """
+    if not text or not text.strip():
+        return False
+    return bool(_ASSET_INTENT_RE.search(text))
+
+
 # Hard tool-routing directive appended to drafted goals when the user's
 # raw input matched _has_social_intent but the drafter LLM still came
 # back with a `.pdf`, `.md`, `.docx`, or `write_artifact` deliverable.
@@ -379,6 +409,26 @@ _SOCIAL_QUEUE_DIRECTIVE = (
     "user wants ready-to-schedule drafts in the Queue, not a document. "
     "Definition of done: every requested post exists as a draft in the "
     "Social Queue, then call `finish`."
+)
+
+# Hard asset-routing directive appended when the user asked the
+# mission to use Asset Library images but the drafted goal didn't
+# instruct the agent to call `list_org_assets` + pass `asset_ids` to
+# `draft_to_social_queue`. Closes the bug: "I told the mission to use
+# the images in the asset library and remix them but the posts came
+# back text-only."
+_ASSET_LIBRARY_DIRECTIVE = (
+    "\n\nASSET-LIBRARY OVERRIDE: "
+    "The user explicitly asked you to use images from the Asset Library. "
+    "STEP 1 — call `list_org_assets` (optionally filter by `category` "
+    "or `query`) to discover what's available. STEP 2 — pass the "
+    "returned ids as `asset_ids` to `draft_to_social_queue` with "
+    "`remix: true` (so each cover image is an on-brand variant of one "
+    "of the user's photos via Nano Banana). Do NOT skip step 1 and do "
+    "NOT call `draft_to_social_queue` without `asset_ids` — the user "
+    "will see text-only posts with auto-generated covers instead of "
+    "their actual brand photography, which is exactly what they "
+    "asked to avoid."
 )
 
 _DRAFTER_SYSTEM = """You rewrite a rough user idea into a polished autonomous-mission goal for the Foundry lead-agent loop.
@@ -398,7 +448,7 @@ BEST PRACTICES THE GOAL MUST FOLLOW
 2. Default file formats: `.pdf` for briefs/reports/audits/proposals; `.docx` only if the user mentioned Word; `.csv` for lists/tables/datasets/lead-hunts; `.md` only when the user explicitly asked for raw markdown; `.ics` for calendars. NEVER `.txt`.
    • **DATASET / LEAD-HUNT RULE**: if the input mentions "harvest", "list of companies / businesses / leads / contacts / nonprofits", "lead hunt / list / gen", "prospect list", "directory", "roster", "build a list / database", or "scrape companies / businesses", the deliverable MUST be a `.csv`. Spell out the columns explicitly in the goal (e.g. "columns: Business Name, City, State, Years in Business, Annual Revenue (USD), Website URL, Contact Name, Contact Phone, Contact Email, Source URL"). Set a minimum-rows target ("≥ 25 verified rows"). Tell the agent to use the `csv_append_rows` tool and to cite the Source URL on every row. Name free public sources by category in one short line ("harvest from Chamber of Commerce directories, BBB, Yelp, SEC EDGAR, state Secretary of State registries, OpenCorporates, USAspending.gov, and industry association rosters").
    • **CODE-SNIPPET RECIPE**: if the input asks for code, a snippet, a tag, an embed, a regex, a SQL query, an HTML/CSS/JS/TS block, a React/Vue component, a watermark (HTML/CSS overlay), a meta tag, a tracking pixel, a Dockerfile, a shell/bash script, a webhook payload, a cron expression, a terraform config, or any other piece of programming source — the deliverable MUST be a single code file with the correct extension (`.html`, `.css`, `.js`, `.ts`, `.tsx`, `.jsx`, `.py`, `.sh`, `.sql`, `.json`, `.yaml`, `.xml`, `.tf`, etc.). Tell the agent to use `write_artifact` with the matching extension and the body as plain source code (NOT markdown wrapped, NOT base64). Explicitly say "do NOT generate an image — output source code only" so the loop never mis-routes to `generate_image`. Add 2-3 concrete acceptance criteria the agent can verify: e.g. "the snippet validates as HTML5", "the CSS uses only `position`, `bottom`, `right`, `opacity`, `pointer-events` properties", "the JS does not depend on any external library", "the regex passes these 3 test strings: …".
-   • **SOCIAL-POSTS RECIPE**: if the input asks the agent to "generate / draft / write / create / queue up N posts / tweets / IG posts / LinkedIn posts / Facebook posts / threads / reels captions / TikTok captions" — or any other variant where the deliverable is a batch of social-media posts — the deliverable MUST be DRAFTS IN THE SOCIAL QUEUE, NOT a PDF or a .md file. Tell the agent to use the `draft_to_social_queue` tool (NOT `write_artifact`). The goal text should name the platforms explicitly, the count, and the theme. Example phrasing: "Use `draft_to_social_queue` with platforms=['instagram'], count=3, and a prompt that captures the brand voice for the spring drop announcement. Each draft will land in the Social Queue → Drafts tab ready for the user to click Schedule on. Do NOT save these posts as a .pdf or .md — that's the wrong deliverable type and the user will have to re-draft them by hand."
+   • **SOCIAL-POSTS RECIPE**: if the input asks the agent to "generate / draft / write / create / queue up N posts / tweets / IG posts / LinkedIn posts / Facebook posts / threads / reels captions / TikTok captions" — or any other variant where the deliverable is a batch of social-media posts — the deliverable MUST be DRAFTS IN THE SOCIAL QUEUE, NOT a PDF or a .md file. Tell the agent to use the `draft_to_social_queue` tool (NOT `write_artifact`). The goal text should name the platforms explicitly, the count, and the theme. Example phrasing: "Use `draft_to_social_queue` with platforms=['instagram'], count=3, and a prompt that captures the brand voice for the spring drop announcement. Each draft will land in the Social Queue → Drafts tab ready for the user to click Schedule on. Do NOT save these posts as a .pdf or .md — that's the wrong deliverable type and the user will have to re-draft them by hand." **ASSET-LIBRARY VARIANT**: if the input also mentions "use the images in the asset library / our photos / our product shots / remix my images / attach our team photo", the goal MUST explicitly tell the agent to FIRST call `list_org_assets` (optionally with `category=product|lifestyle|team` and a `query` substring matching the theme), THEN pass the returned ids as `asset_ids` to `draft_to_social_queue`. Default to `remix=true` so Nano Banana produces an on-brand variant per post; only use `remix=false` if the user explicitly asks for the original images unmodified. Example phrasing: "Step 1 — call `list_org_assets` with category='product' to discover available product photos. Step 2 — call `draft_to_social_queue` with platforms=['instagram'], count=7, asset_ids=[the ids from step 1], remix=true. Each post will get a unique on-brand cover derived from one of the user's uploaded photos."
 3. Spell out 3-5 measurable success criteria — concrete things the agent can verify it did (e.g. "cite at least 5 distinct sources with URLs", "include a comparison table with ≥4 rows", "include current pricing for each app").
 4. If the work involves research, demand **breadth**: "cite ≥5 distinct sources" or "browse the official site of each of the top 5 competitors". Foundry's research-breadth gate refuses to finish a research mission with <5 sources, so this aligns with the engine.
 5. If the work involves visiting a specific site, include the exact URL.
@@ -1919,6 +1969,91 @@ def build_tools(
             ),
         }
 
+    async def list_org_assets(ctx, args):
+        """List images in the org's Asset Library (db.assets).
+
+        Mission tool — use this when the user asks the mission to "use
+        the images in the asset library", "remix my photos", "attach our
+        product shots", etc. Returns a directory of usable image assets
+        with their ids, names, categories, and (optionally) descriptions
+        so the lead can pick the right ones to pass into
+        `draft_to_social_queue` via `asset_ids=[…]`.
+
+        Args (all optional):
+            category: filter by category — product, lifestyle, team,
+                venue, logo_variant, other
+            kind: defaults to "image" (the only kind useful for social
+                cover images). Pass "any" to also see PDFs/docs/video.
+            usable_in_social_only: defaults to True — drops anything the
+                uploader marked as "do not use in posts".
+            limit: 1-50, default 25.
+            query: substring match against original_name + description
+                (case-insensitive). Useful for "find the spring drop
+                product photos".
+        """
+        org_id = ctx.get("org_id") or ""
+        if not org_id:
+            return {"error": "list_org_assets requires an org context."}
+
+        from bson import ObjectId
+        mongo_query: dict = {"org_id": org_id}
+        kind = (args.get("kind") or "image").strip().lower()
+        if kind != "any":
+            mongo_query["kind"] = kind
+        if args.get("usable_in_social_only", True) and kind == "image":
+            mongo_query["usable_in_social"] = True
+        cat = (args.get("category") or "").strip().lower()
+        if cat:
+            mongo_query["category"] = cat
+        q = (args.get("query") or "").strip()
+        if q:
+            mongo_query["$or"] = [
+                {"original_name": {"$regex": re.escape(q), "$options": "i"}},
+                {"description": {"$regex": re.escape(q), "$options": "i"}},
+            ]
+        try:
+            limit = int(args.get("limit") or 25)
+        except (TypeError, ValueError):
+            limit = 25
+        limit = max(1, min(limit, 50))
+
+        cur = db.assets.find(mongo_query).sort("uploaded_at", -1).limit(limit)
+        listing: list[dict] = []
+        async for a in cur:
+            listing.append({
+                "id": str(a["_id"]),
+                "original_name": a.get("original_name", ""),
+                "kind": a.get("kind", ""),
+                "category": a.get("category", ""),
+                "description": (a.get("description") or "")[:240],
+                "size": a.get("size", 0),
+                "usable_in_social": bool(a.get("usable_in_social", False)),
+                "url": f"/api/files/assets/{a['filename']}",
+            })
+
+        if not listing:
+            return {
+                "assets": [],
+                "count": 0,
+                "hint": (
+                    "No matching assets in the library. "
+                    "If the user explicitly asked for asset-library images, "
+                    "tell them no usable images exist for this org and ask "
+                    "if they want auto-generated covers instead (auto_image=True)."
+                ),
+            }
+        return {
+            "assets": listing,
+            "count": len(listing),
+            "hint": (
+                "Pass any of these `id` values as `asset_ids` to "
+                "`draft_to_social_queue`. Set `remix=true` (default when "
+                "asset_ids is provided) to run each through Nano Banana "
+                "for an on-brand variant, or `remix=false` to attach the "
+                "original image verbatim."
+            ),
+        }
+
     async def draft_to_social_queue(ctx, args):
         """Drop one or more drafts straight into the org's Social Queue.
 
@@ -1937,7 +2072,19 @@ def build_tools(
             agent_id: optional — which agent persona drafts (defaults
                 to the mission's lead_agent_id)
             auto_image: bool — whether to also kick off Nano Banana
-                cover-image generation in background (default True)
+                cover-image generation in background (default True, but
+                automatically suppressed when asset_ids are provided)
+            asset_ids: list[str] — Asset Library image ids to attach as
+                post cover images. Round-robin across the generated
+                drafts. Discover ids first via `list_org_assets`.
+            remix: bool — when asset_ids are provided, defaults to True
+                = run each asset through Nano Banana image-to-image with
+                a brand-aware prompt to produce a unique on-brand
+                variant per post. False = attach the original asset
+                image verbatim to every assigned draft.
+            remix_prompt: str — optional override for the remix
+                direction. Defaults to "Reframe this image as an on-
+                brand cover for the post topic" — works for most cases.
         """
         if not LlmChat or not UserMessage or not EMERGENT_LLM_KEY:
             return {"error": "Social draft tooling not wired into this mission runtime."}
@@ -1987,6 +2134,31 @@ def build_tools(
         count = int(args.get("count") or len(platforms) or 1)
         count = max(1, min(count, 10))
 
+        # ── Resolve asset_ids (if provided) before drafting so we can
+        # echo accurate state back to the mission lead. Invalid ids are
+        # dropped but reported — better to ship N-1 covered drafts than
+        # to bail the whole mission on a typo'd id.
+        raw_asset_ids = args.get("asset_ids") or []
+        if isinstance(raw_asset_ids, str):
+            raw_asset_ids = [raw_asset_ids]
+        resolved_assets: list[dict] = []
+        unresolved_assets: list[str] = []
+        if raw_asset_ids and org_id:
+            for aid in raw_asset_ids:
+                aid_clean = str(aid).strip()
+                if not aid_clean:
+                    continue
+                try:
+                    a = await db.assets.find_one(
+                        {"_id": ObjectId(aid_clean), "org_id": org_id},
+                    )
+                except Exception:
+                    a = None
+                if not a or a.get("kind") != "image":
+                    unresolved_assets.append(aid_clean)
+                    continue
+                resolved_assets.append(a)
+
         # Pull the org Soul + team Soulprint so the drafts are on-brand.
         org = await db.organizations.find_one({"_id": ObjectId(org_id)}) if org_id else None
         team = await db.teams.find_one({"_id": ObjectId(team_id)}) if team_id else None
@@ -2019,9 +2191,14 @@ def build_tools(
         # /api/social/draft endpoint produces, so downstream UI (queue
         # cards, scheduler, autopost worker) handles them identically.
         now = datetime.now(timezone.utc)
+        # Default behaviour:
+        #   asset_ids provided → asset-driven covers (default remix=True)
+        #   no asset_ids       → auto_image controls Nano Banana cover gen
+        remix = bool(args.get("remix", True))
+        remix_prompt = (args.get("remix_prompt") or "").strip()
+        auto_image = bool(args.get("auto_image", True)) and not resolved_assets
         created: list[dict] = []
-        auto_image = bool(args.get("auto_image", True))
-        for d in drafts:
+        for idx, d in enumerate(drafts):
             pf = d.get("platform") or platforms[0]
             doc = {
                 "org_id": org_id,
@@ -2041,47 +2218,231 @@ def build_tools(
                 "created_at": now,
                 "created_by": ctx.get("created_by", ""),
             }
+            # If we have asset_ids, assign one (round-robin) to THIS draft.
+            assigned_asset = None
+            if resolved_assets:
+                assigned_asset = resolved_assets[idx % len(resolved_assets)]
+                if remix:
+                    # Mark pending — background remix kicks below.
+                    doc["image_status"] = "pending"
+                    doc["image_pending_at"] = now
+                    doc["image_prompt"] = (
+                        remix_prompt
+                        or f"On-brand cover for: {d.get('text', '')[:200]}".strip()
+                    )
+                else:
+                    # Attach the original asset directly as the cover.
+                    doc["image"] = {
+                        "filename": assigned_asset["filename"],
+                        "raw_filename": assigned_asset["filename"],
+                        "url": f"/api/files/assets/{assigned_asset['filename']}",
+                        "with_logo": False,
+                        "source": "asset_direct",
+                        "source_asset_id": str(assigned_asset["_id"]),
+                    }
+                    doc["image_status"] = "ready"
+                    doc["image_updated_at"] = now
             res = await db.social_posts.insert_one(doc)
             doc["_id"] = res.inserted_id
-            created.append(serialize_social_post(doc))
+            created.append({
+                "serialized": serialize_social_post(doc),
+                "assigned_asset": assigned_asset,
+            })
 
-        # Cover image generation — fires Nano Banana on each new draft
-        # in the background so cards appear in the queue with brand-
-        # consistent artwork. Default ON; pass auto_image=false to skip
-        # (e.g. when the user plans to attach asset-library images
-        # manually). The kickoff is non-blocking — each background task
-        # flips the post's `image_status` from pending → ready when
-        # done; SocialPage polls for the swap.
-        auto_image = bool(args.get("auto_image", True))
+        # ── Background image work ─────────────────────────────────────
+        # Three modes (mutually exclusive per post):
+        #   1. auto_image=True, no assets → Nano Banana cover gen from scratch
+        #   2. resolved_assets + remix=True → Nano Banana image-to-image
+        #      remix using each asset as base
+        #   3. resolved_assets + remix=False → already attached above, no
+        #      background work needed
         cover_kickoff = 0
         if auto_image and created:
             try:
                 from social_posts import kickoff_post_image_generation
                 for c in created:
-                    if await kickoff_post_image_generation(db=db, post_id=c["id"]):
+                    pid = c["serialized"]["id"]
+                    if await kickoff_post_image_generation(db=db, post_id=pid):
                         cover_kickoff += 1
             except Exception as exc:
-                logger.warning(
-                    "Mission auto-image kickoff failed: %s", exc,
+                logger.warning("Mission auto-image kickoff failed: %s", exc)
+
+        remix_kickoff = 0
+        if resolved_assets and remix:
+            import asyncio as _asyncio
+            for c in created:
+                pid = c["serialized"]["id"]
+                asset = c["assigned_asset"]
+                if not asset:
+                    continue
+                effective_prompt = (
+                    remix_prompt
+                    or f"On-brand cover for: {c['serialized'].get('text','')[:200]}".strip()
                 )
+                _asyncio.create_task(
+                    _remix_asset_for_post(
+                        post_id=pid, post_text=c["serialized"].get("text", ""),
+                        org_id=org_id, asset=asset, prompt=effective_prompt,
+                    )
+                )
+                remix_kickoff += 1
+
+        summary_bits = [
+            f"Drafted {len(created)} {('/'.join(platforms))} post(s) into the Social Queue",
+        ]
+        if remix_kickoff:
+            summary_bits.append(
+                f"remixing {remix_kickoff} asset-library image(s) via Nano Banana in background",
+            )
+        elif resolved_assets and not remix:
+            summary_bits.append(
+                f"attached {len(resolved_assets)} asset-library image(s) directly (no remix)",
+            )
+        elif cover_kickoff:
+            summary_bits.append(
+                f"generating fresh cover images for {cover_kickoff} draft(s) in background",
+            )
+        if unresolved_assets:
+            summary_bits.append(
+                f"{len(unresolved_assets)} asset id(s) were invalid and skipped",
+            )
 
         return {
             "ok": True,
             "drafted": len(created),
             "platforms": platforms,
             "cover_images_kicked_off": cover_kickoff,
-            "posts": [{"id": c["id"], "platform": c["platforms"][0], "text_preview": c["text"][:120]} for c in created],
-            "summary": (
-                f"Drafted {len(created)} {('/'.join(platforms))} post(s) into the Social Queue"
-                + (f" — cover images generating in background for {cover_kickoff} of them" if cover_kickoff else "")
-                + ". Open the Social tab → Drafts to review and schedule them."
+            "asset_remix_kicked_off": remix_kickoff,
+            "assets_attached_direct": (
+                len(resolved_assets) if (resolved_assets and not remix) else 0
             ),
+            "unresolved_asset_ids": unresolved_assets,
+            "posts": [
+                {
+                    "id": c["serialized"]["id"],
+                    "platform": c["serialized"]["platforms"][0],
+                    "text_preview": c["serialized"]["text"][:120],
+                    "asset_used": (
+                        c["assigned_asset"].get("original_name")
+                        if c["assigned_asset"] else None
+                    ),
+                }
+                for c in created
+            ],
+            "summary": " — ".join(summary_bits) + ". Open the Social tab → Drafts to review and schedule them.",
             "next_step": (
                 "User can now click Schedule on each draft to pick a fire "
                 "time and toggle auto-publish. Cover images render in "
                 "~10-30s in the background — the queue cards auto-refresh."
             ),
         }
+
+    async def _remix_asset_for_post(
+        *, post_id: str, post_text: str, org_id: str,
+        asset: dict, prompt: str,
+    ):
+        """Background task: run Nano Banana image-to-image using the
+        given Asset Library image as the source, then patch the post
+        with the resulting cover. Mirrors the live
+        /api/social/posts/{id}/remix-asset endpoint, factored out so
+        the mission tool can call it directly without an HTTP hop.
+        """
+        from bson import ObjectId
+        from pathlib import Path as _Path
+        try:
+            # Late import to avoid circular import (server imports missions).
+            from server import (
+                generate_image_via_nano_banana, recover_bytes_from_gridfs,
+            )
+        except Exception as exc:
+            logger.warning("Mission asset remix: server imports failed: %s", exc)
+            await db.social_posts.update_one(
+                {"_id": ObjectId(post_id)},
+                {"$set": {
+                    "image_status": "error",
+                    "image_error": "Image generator unavailable.",
+                }, "$unset": {"image_pending_at": ""}},
+            )
+            return
+
+        assets_dir = UPLOAD_DIR / "assets" / org_id
+        src_path = assets_dir / asset["filename"]
+        # Rehydrate from GridFS if disk copy was wiped (ephemeral container).
+        if not src_path.is_file():
+            try:
+                blob, _mime, _orig = await recover_bytes_from_gridfs(asset["filename"])
+                if blob:
+                    assets_dir.mkdir(parents=True, exist_ok=True)
+                    src_path.write_bytes(blob)
+            except Exception as exc:
+                logger.warning(
+                    "Mission asset remix: GridFS rehydrate failed for %s: %s",
+                    asset["filename"], exc,
+                )
+
+        if not src_path.is_file():
+            await db.social_posts.update_one(
+                {"_id": ObjectId(post_id)},
+                {"$set": {
+                    "image_status": "error",
+                    "image_error": "Source asset image was missing on disk.",
+                }, "$unset": {"image_pending_at": ""}},
+            )
+            return
+
+        try:
+            org = await db.organizations.find_one({"_id": ObjectId(org_id)})
+            soul = (org or {}).get("soul") or {}
+            brand_bits: list[str] = []
+            if soul.get("tone"):
+                brand_bits.append(f"Tone: {soul['tone']}")
+            if soul.get("audience"):
+                brand_bits.append(f"Audience: {soul['audience']}")
+            ba = (org or {}).get("brand_assets") or {}
+            if (ba.get("visual_style") or "").strip():
+                brand_bits.append(f"Visual style: {ba['visual_style'][:300]}")
+            full_prompt = (
+                "Using the SOURCE IMAGE provided as the base, create a new "
+                "on-brand variation. Keep the subject/product clearly "
+                "recognizable from the source.\n\n"
+                f"--- Post copy ---\n{post_text[:600]}\n\n"
+                f"--- Direction ---\n{prompt}\n\n"
+                + ("--- Brand context ---\n" + "\n".join(brand_bits) if brand_bits else "")
+            ).strip()
+            sys_msg = (
+                "You are a brand-aware image artist. Produce ONE photograph/"
+                "illustration that fits the user's direction while keeping "
+                "the source subject visually coherent. Square 1:1 by "
+                "default. High quality, vivid, on-brand."
+            )
+            fname, _cap = await generate_image_via_nano_banana(
+                full_prompt, sys_msg, input_image_paths=[src_path],
+            )
+            image = {
+                "filename": fname,
+                "raw_filename": fname,
+                "url": f"/api/files/{fname}",
+                "with_logo": False,
+                "source": "asset_remix_mission",
+                "source_asset_id": str(asset["_id"]),
+            }
+            await db.social_posts.update_one(
+                {"_id": ObjectId(post_id)},
+                {"$set": {
+                    "image": image,
+                    "image_status": "ready",
+                    "image_updated_at": datetime.now(timezone.utc),
+                }, "$unset": {"image_error": "", "image_pending_at": ""}},
+            )
+        except Exception as exc:
+            logger.warning("Mission asset remix failed: %s", exc)
+            await db.social_posts.update_one(
+                {"_id": ObjectId(post_id)},
+                {"$set": {
+                    "image_status": "error",
+                    "image_error": "Remix failed — try a different prompt.",
+                }, "$unset": {"image_pending_at": ""}},
+            )
 
     async def browse_url(ctx, args):
         url = (args.get("url") or "").strip()
@@ -2903,9 +3264,13 @@ def build_tools(
              "Submit a form on the CURRENT browser page. With no args, clicks the first `button[type=submit]` / `input[type=submit]`. You can also pass a `selector` pointing at a specific form or submit button. Use AFTER browse_fill.",
              '{"selector": "form#contact"}',
              browse_submit, side_effect=True),
+        Tool("list_org_assets",
+             "Browse the org's Asset Library (uploaded brand photos, product shots, lifestyle images, team photos, etc.). USE THIS BEFORE `draft_to_social_queue` whenever the user mentions 'use the asset library', 'use our images / photos', 'remix my product shots', 'attach our team photo', or similar. Returns a list of usable images with their ids — pass those ids as `asset_ids` to `draft_to_social_queue`. Filter via `category` (product/lifestyle/team/venue/logo_variant/other), `query` (substring match against name + description), or `kind=any` to also see non-image assets. Default limit 25.",
+             '{"category": "product", "query": "spring", "limit": 25}',
+             list_org_assets),
         Tool("draft_to_social_queue",
-             "Create ON-BRAND social posts directly in the org's Social Queue, with auto-generated cover images. Use this — NOT write_artifact — for ANY 'generate N posts for [platform]' / 'queue up X tweets/IG posts/LinkedIn posts' / 'draft this week's social content' goal. Each draft lands in the Social tab → Drafts ready for the user to click Schedule on (one-click flow). Brand-consistent cover images render in the background via Nano Banana (default on) using the org's Soul + Style Guide visual direction. DO NOT save social posts as a .pdf — that's the wrong deliverable. `platforms` accepts singular or list (twitter, linkedin, facebook, instagram, threads, bluesky, mastodon, reddit, tiktok, youtube, mailchimp). `count` clamps to 1-10. Pass `auto_image: false` only if the user wants to attach their own images from the asset library.",
-             '{"prompt": "Announce our spring HalfSalt drop — premium pistachio gift boxes", "platforms": ["instagram", "linkedin"], "count": 3, "auto_image": true}',
+             "Create ON-BRAND social posts directly in the org's Social Queue, with auto-generated cover images. Use this — NOT write_artifact — for ANY 'generate N posts for [platform]' / 'queue up X tweets/IG posts/LinkedIn posts' / 'draft this week's social content' goal. Each draft lands in the Social tab → Drafts ready for the user to click Schedule on (one-click flow). Brand-consistent cover images render in the background via Nano Banana (default on) using the org's Soul + Style Guide visual direction. DO NOT save social posts as a .pdf — that's the wrong deliverable. `platforms` accepts singular or list (twitter, linkedin, facebook, instagram, threads, bluesky, mastodon, reddit, tiktok, youtube, mailchimp). `count` clamps to 1-10. ASSET LIBRARY INTEGRATION: pass `asset_ids: [id1, id2, ...]` (discover ids via `list_org_assets`) to use the user's uploaded photos as the basis for each cover. Default `remix=true` runs each asset through Nano Banana image-to-image for an on-brand variant per post; `remix=false` attaches the original verbatim. When asset_ids are provided, `auto_image` is automatically suppressed.",
+             '{"prompt": "Announce our spring HalfSalt drop — premium pistachio gift boxes", "platforms": ["instagram"], "count": 3, "asset_ids": ["6603abc...", "6603def..."], "remix": true}',
              draft_to_social_queue, side_effect=True),
     ] + _maybe_github_tools(db)
 
@@ -3116,6 +3481,41 @@ def make_missions_router(
                         "override needed."
                     ),
                 })
+
+            # Asset-library sub-rule: only meaningful when social intent
+            # already fired. We don't want to inject the asset workflow
+            # into goals that aren't going through `draft_to_social_queue`.
+            if _has_asset_intent(raw_for_intent):
+                lists_assets = "list_org_assets" in polished
+                passes_asset_ids = bool(
+                    re.search(r"asset_ids\s*[:=]", polished, re.IGNORECASE)
+                )
+                if not (lists_assets and passes_asset_ids):
+                    polished = polished.rstrip() + _ASSET_LIBRARY_DIRECTIVE
+                    applied_rules.append({
+                        "id": "asset_library_directive",
+                        "status": "fired",
+                        "label": "Forced Asset Library workflow",
+                        "detail": (
+                            "Your input mentions Asset Library / your "
+                            "uploaded photos / remix — appended a hard "
+                            "override forcing the agent to call "
+                            "`list_org_assets` first and then pass "
+                            "`asset_ids` to `draft_to_social_queue` so "
+                            "your actual photos are used (with on-brand "
+                            "Nano Banana remix per post)."
+                        ),
+                    })
+                else:
+                    applied_rules.append({
+                        "id": "asset_library_directive",
+                        "status": "skipped",
+                        "label": "Asset Library workflow",
+                        "detail": (
+                            "The LLM already named both `list_org_assets` "
+                            "and `asset_ids` — no override needed."
+                        ),
+                    })
         else:
             applied_rules.append({
                 "id": "social_intent_detector",
