@@ -2194,9 +2194,22 @@ def build_tools(
         # Default behaviour:
         #   asset_ids provided → asset-driven covers (default remix=True)
         #   no asset_ids       → auto_image controls Nano Banana cover gen
+        #   media_type=video   → suppress image entirely, fire Kie video
+        media_type = (args.get("media_type") or "image").strip().lower()
+        if media_type not in ("image", "video"):
+            media_type = "image"
+        video_model = (args.get("video_model") or "veo3_fast").strip()
         remix = bool(args.get("remix", True))
         remix_prompt = (args.get("remix_prompt") or "").strip()
-        auto_image = bool(args.get("auto_image", True)) and not resolved_assets
+        # Video covers and image covers are mutually exclusive for new
+        # drafts. When the user wants video we suppress the image
+        # pipeline (auto + asset remix) so the card lands clean.
+        wants_video = (media_type == "video")
+        auto_image = (
+            bool(args.get("auto_image", True))
+            and not resolved_assets
+            and not wants_video
+        )
         created: list[dict] = []
         for idx, d in enumerate(drafts):
             pf = d.get("platform") or platforms[0]
@@ -2268,7 +2281,7 @@ def build_tools(
                 logger.warning("Mission auto-image kickoff failed: %s", exc)
 
         remix_kickoff = 0
-        if resolved_assets and remix:
+        if resolved_assets and remix and not wants_video:
             import asyncio as _asyncio
             for c in created:
                 pid = c["serialized"]["id"]
@@ -2286,6 +2299,43 @@ def build_tools(
                     )
                 )
                 remix_kickoff += 1
+
+        # ── Background VIDEO work ─────────────────────────────────────
+        # Kie.ai-driven. We don't import the FastAPI endpoint to avoid
+        # circular imports — instead we hit the same Kie helpers
+        # directly and patch the post doc on completion.
+        video_kickoff = 0
+        if wants_video and created and os.environ.get("KIE_API_KEY"):
+            import asyncio as _asyncio
+            for c in created:
+                pid = c["serialized"]["id"]
+                _asyncio.create_task(
+                    _kickoff_post_video(
+                        post_id=pid,
+                        post_text=c["serialized"].get("text", ""),
+                        platforms=c["serialized"].get("platforms", []),
+                        org_id=org_id,
+                        model=video_model,
+                    )
+                )
+                # Flip status synchronously so the polling UI shows the spinner.
+                await db.social_posts.update_one(
+                    {"_id": ObjectId(pid)},
+                    {"$set": {
+                        "video_status": "pending",
+                        "video_pending_at": now,
+                        "video_model": video_model,
+                        "video_prompt": (
+                            c["serialized"].get("text", "")[:600]
+                        ),
+                    }},
+                )
+                video_kickoff += 1
+        elif wants_video and not os.environ.get("KIE_API_KEY"):
+            logger.warning(
+                "Mission requested video covers but KIE_API_KEY is not set "
+                "— posts will land without covers."
+            )
 
         summary_bits = [
             f"Drafted {len(created)} {('/'.join(platforms))} post(s) into the Social Queue",
@@ -2306,12 +2356,20 @@ def build_tools(
             summary_bits.append(
                 f"{len(unresolved_assets)} asset id(s) were invalid and skipped",
             )
+        if video_kickoff:
+            summary_bits.append(
+                f"generating {video_kickoff} {video_model} video cover(s) — "
+                "Veo / Kling take 60-240s in background",
+            )
 
         return {
             "ok": True,
             "drafted": len(created),
             "platforms": platforms,
+            "media_type": media_type,
             "cover_images_kicked_off": cover_kickoff,
+            "video_covers_kicked_off": video_kickoff,
+            "video_model": video_model if wants_video else "",
             "asset_remix_kicked_off": remix_kickoff,
             "assets_attached_direct": (
                 len(resolved_assets) if (resolved_assets and not remix) else 0
@@ -2442,6 +2500,113 @@ def build_tools(
                     "image_status": "error",
                     "image_error": "Remix failed — try a different prompt.",
                 }, "$unset": {"image_pending_at": ""}},
+            )
+
+    async def _kickoff_post_video(
+        *, post_id: str, post_text: str, platforms: list,
+        org_id: str, model: str,
+    ):
+        """Background task: ask Kie.ai (Veo / Kling / etc.) to render a
+        video for the given post and patch the post doc on completion.
+        Used by `draft_to_social_queue` when the mission opts into
+        media_type='video'. Mirrors the
+        /api/social/posts/{id}/generate-video endpoint without the HTTP
+        hop, so the same error / pending state model applies.
+        """
+        from bson import ObjectId
+        try:
+            from server import (
+                _save_remote_url_to_uploads,
+                kie_generate_video as _kgv,
+            )
+            from kie_client import (
+                submit_kie_task, wait_for_kie_task, kie_provider_info,
+            )
+        except Exception as exc:
+            logger.warning("Mission video kickoff: server imports failed: %s", exc)
+            await db.social_posts.update_one(
+                {"_id": ObjectId(post_id)},
+                {"$set": {
+                    "video_status": "error",
+                    "video_error": "Video generator unavailable.",
+                }, "$unset": {"video_pending_at": ""}},
+            )
+            return
+
+        # Aspect ratio inference (mirrors social_posts._video_aspect_for_platform).
+        p = (platforms[0] if platforms else "").lower()
+        ar = "9:16" if p in ("instagram", "tiktok", "threads") else "16:9"
+
+        # Fold in brand context for on-brand cinematic direction.
+        org = await db.organizations.find_one({"_id": ObjectId(org_id)})
+        soul = (org or {}).get("soul") or {}
+        sg = (org or {}).get("style_guide") or {}
+        ba = (org or {}).get("brand_assets") or {}
+        bits: list[str] = []
+        if soul.get("tone"):
+            bits.append(f"Tone: {soul['tone']}")
+        if soul.get("audience"):
+            bits.append(f"Audience: {soul['audience']}")
+        vstyle = (sg.get("image_video_style") or ba.get("visual_style") or "").strip()
+        if vstyle:
+            bits.append(f"Visual style: {vstyle[:300]}")
+        full_prompt = (post_text or "").strip()[:600]
+        if bits:
+            full_prompt = (
+                f"{full_prompt}\n\n--- Brand context ---\n" + "\n".join(bits)
+            )
+
+        try:
+            cdn_url = None
+            if model in ("veo3", "veo3_fast", "veo3_lite"):
+                cdn_url = await _kgv(full_prompt, model=model, aspect_ratio=ar)
+            else:
+                if not kie_provider_info(model):
+                    raise RuntimeError(f"Unknown Kie model {model}")
+                task_id = await submit_kie_task(
+                    model_key=model, prompt=full_prompt,
+                    extra={"aspect_ratio": ar},
+                )
+                if not task_id:
+                    raise RuntimeError("Kie.ai refused the task")
+                urls = await wait_for_kie_task(task_id=task_id, model_key=model)
+                if urls:
+                    cdn_url = urls[0]
+            if not cdn_url:
+                raise RuntimeError("Kie.ai returned no video URL")
+
+            local_path = None
+            try:
+                local_path = await _save_remote_url_to_uploads(cdn_url, suffix=".mp4")
+            except Exception as exc:
+                logger.warning("Mission video local-mirror failed: %s", exc)
+            final_url = f"/api/files/{local_path.name}" if local_path else cdn_url
+            video = {
+                "filename": local_path.name if local_path else "",
+                "url": final_url,
+                "remote_url": cdn_url,
+                "model": model,
+                "aspect_ratio": ar,
+                "prompt": (post_text or "")[:600],
+                "source": "mission_draft_to_social_queue",
+            }
+            await db.social_posts.update_one(
+                {"_id": ObjectId(post_id)},
+                {"$set": {
+                    "video": video,
+                    "video_status": "ready",
+                    "video_aspect_ratio": ar,
+                    "video_updated_at": datetime.now(timezone.utc),
+                }, "$unset": {"video_error": "", "video_pending_at": ""}},
+            )
+        except Exception as exc:
+            logger.warning("Mission video kickoff failed: %s", exc)
+            await db.social_posts.update_one(
+                {"_id": ObjectId(post_id)},
+                {"$set": {
+                    "video_status": "error",
+                    "video_error": "Video generation failed — try a different model.",
+                }, "$unset": {"video_pending_at": ""}},
             )
 
     async def browse_url(ctx, args):
@@ -3269,8 +3434,8 @@ def build_tools(
              '{"category": "product", "query": "spring", "limit": 25}',
              list_org_assets),
         Tool("draft_to_social_queue",
-             "Create ON-BRAND social posts directly in the org's Social Queue, with auto-generated cover images. Use this — NOT write_artifact — for ANY 'generate N posts for [platform]' / 'queue up X tweets/IG posts/LinkedIn posts' / 'draft this week's social content' goal. Each draft lands in the Social tab → Drafts ready for the user to click Schedule on (one-click flow). Brand-consistent cover images render in the background via Nano Banana (default on) using the org's Soul + Style Guide visual direction. DO NOT save social posts as a .pdf — that's the wrong deliverable. `platforms` accepts singular or list (twitter, linkedin, facebook, instagram, threads, bluesky, mastodon, reddit, tiktok, youtube, mailchimp). `count` clamps to 1-10. ASSET LIBRARY INTEGRATION: pass `asset_ids: [id1, id2, ...]` (discover ids via `list_org_assets`) to use the user's uploaded photos as the basis for each cover. Default `remix=true` runs each asset through Nano Banana image-to-image for an on-brand variant per post; `remix=false` attaches the original verbatim. When asset_ids are provided, `auto_image` is automatically suppressed.",
-             '{"prompt": "Announce our spring HalfSalt drop — premium pistachio gift boxes", "platforms": ["instagram"], "count": 3, "asset_ids": ["6603abc...", "6603def..."], "remix": true}',
+             "Create ON-BRAND social posts directly in the org's Social Queue, with auto-generated cover images (or videos). Use this — NOT write_artifact — for ANY 'generate N posts for [platform]' / 'queue up X tweets/IG posts/LinkedIn posts/videos/Reels' / 'draft this week's social content' goal. Each draft lands in the Social tab → Drafts ready for the user to click Schedule on (one-click flow). Brand-consistent cover images render in the background via Nano Banana (default on) using the org's Soul + Style Guide visual direction. DO NOT save social posts as a .pdf — that's the wrong deliverable. `platforms` accepts singular or list (twitter, linkedin, facebook, instagram, threads, bluesky, mastodon, reddit, tiktok, youtube, mailchimp). `count` clamps to 1-10. ASSET LIBRARY INTEGRATION: pass `asset_ids: [id1, id2, ...]` (discover ids via `list_org_assets`) to use the user's uploaded photos as the basis for each cover. Default `remix=true` runs each asset through Nano Banana image-to-image for an on-brand variant per post; `remix=false` attaches the original verbatim. When asset_ids are provided, `auto_image` is automatically suppressed. VIDEO COVERS: pass `media_type: 'video'` to render a video cover per post via Kie.ai (Veo 3.1 by default). Override the engine via `video_model` — one of veo3_fast (default), veo3, kling-3, kling-3-pro, seedance-1-5, wan-2-6, sora-2, runway-aleph. Video aspect ratio is auto-inferred from the platform (Instagram/TikTok/Threads → 9:16; LinkedIn/YouTube/Facebook/Twitter → 16:9). Video covers and image covers are mutually exclusive on a freshly drafted post. Cinematic generation takes 60-240s per post in the background — the queue cards auto-refresh.",
+             '{"prompt": "Announce our spring HalfSalt drop — premium pistachio gift boxes", "platforms": ["instagram"], "count": 3, "media_type": "video", "video_model": "veo3_fast"}',
              draft_to_social_queue, side_effect=True),
     ] + _maybe_github_tools(db)
 

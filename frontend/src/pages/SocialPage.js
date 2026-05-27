@@ -5,7 +5,7 @@ import api, { BACKEND_URL } from "../lib/api";
 import TopBar from "../components/TopBar";
 import { toast } from "sonner";
 import {
-  Send, Wand2, Calendar, CheckCircle2, Trash2, Copy, ExternalLink, Download, Save, X, Loader2, Megaphone, Image as ImageIcon, Zap, KeyRound, AlertTriangle, Rocket, Pencil, UploadCloud, ShieldCheck, ChevronRight, Lightbulb, RefreshCcw, FolderOpen, Plug
+  Send, Wand2, Calendar, CheckCircle2, Trash2, Copy, ExternalLink, Download, Save, X, Loader2, Megaphone, Image as ImageIcon, Zap, KeyRound, AlertTriangle, Rocket, Pencil, UploadCloud, ShieldCheck, ChevronRight, Lightbulb, RefreshCcw, FolderOpen, Plug, Film, Play
 } from "lucide-react";
 import AssetPickerModal from "../components/AssetPickerModal";
 import WorkingIndicator from "../components/WorkingIndicator";
@@ -402,24 +402,22 @@ export default function SocialPage() {
     [posts, tab],
   );
 
-  // Poll for any post whose cover image is being generated in the
-  // background (image_status === "pending"). After /social/draft
-  // returns, the first post's image lands ~6-15s later — without this,
-  // the user sees a stale skeleton until they manually refresh.
-  // Stops polling automatically once nothing is pending or after 90s.
+  // Poll for any post whose cover image OR video is being generated in
+  // the background. Images land in ~6-30s (Nano Banana), videos in
+  // 60-240s (Kie.ai Veo / Kling / etc.). The polling cap is set to the
+  // longer of the two so video gen has time to finish.
+  // Stops polling automatically once nothing is pending.
   useEffect(() => {
-    const hasPending = posts.some((p) => p.image_status === "pending");
-    if (!hasPending) return undefined;
+    const hasPendingImage = posts.some((p) => p.image_status === "pending");
+    const hasPendingVideo = posts.some((p) => p.video_status === "pending");
+    if (!hasPendingImage && !hasPendingVideo) return undefined;
     let cancelled = false;
     let attempts = 0;
+    // 4s interval; videos can take ~240s so cap at 75 attempts (5 min).
+    const cap = hasPendingVideo ? 75 : 45;
     const interval = setInterval(async () => {
       attempts += 1;
-      // Cap at 180s (45 attempts × 4s). Nano Banana image-to-image
-      // ranges 30-90s on its own, and the background-task launch adds
-      // a few hundred ms — 90s wasn't enough for the slow path and
-      // left the spinner permanently spinning. 180s gives a real
-      // safety margin without being intrusive.
-      if (attempts > 45) {
+      if (attempts > cap) {
         clearInterval(interval);
         return;
       }
@@ -427,19 +425,26 @@ export default function SocialPage() {
         const { data } = await api.get(`/orgs/${orgId}/social/posts`);
         if (cancelled) return;
         setPosts(data);
-        // Stop the interval as soon as nothing is pending — the next
-        // useEffect tick will re-evaluate `hasPending` and return early.
-        if (!data.some((p) => p.image_status === "pending")) {
+        const stillImagePending = data.some((p) => p.image_status === "pending");
+        const stillVideoPending = data.some((p) => p.video_status === "pending");
+        if (!stillImagePending && !stillVideoPending) {
           clearInterval(interval);
-          // If any post landed in `error` state, surface a single
-          // toast so users notice instead of staring at a now-still
-          // card wondering what happened.
-          const errored = data.filter((p) => p.image_status === "error");
-          if (errored.length) {
+          // Surface error toasts so users notice failures instead of
+          // staring at a now-still card.
+          const erroredImg = data.filter((p) => p.image_status === "error");
+          if (erroredImg.length) {
             toast.error(
-              errored.length === 1
-                ? errored[0].image_error || "Image generation failed — tap Regenerate."
-                : `${errored.length} images failed to generate — tap Regenerate on each.`,
+              erroredImg.length === 1
+                ? erroredImg[0].image_error || "Image generation failed — tap Regenerate."
+                : `${erroredImg.length} images failed to generate — tap Regenerate on each.`,
+            );
+          }
+          const erroredVid = data.filter((p) => p.video_status === "error");
+          if (erroredVid.length) {
+            toast.error(
+              erroredVid.length === 1
+                ? erroredVid[0].video_error || "Video generation failed — pick a different model."
+                : `${erroredVid.length} videos failed — pick a different model and retry.`,
             );
           }
         }
@@ -447,7 +452,11 @@ export default function SocialPage() {
     }, 4000);
     return () => { cancelled = true; clearInterval(interval); };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [posts.some((p) => p.image_status === "pending"), orgId]);
+  }, [
+    posts.some((p) => p.image_status === "pending"),
+    posts.some((p) => p.video_status === "pending"),
+    orgId,
+  ]);
 
   const togglePlatform = (id) => {
     setComposePlatforms((prev) =>
@@ -1340,8 +1349,12 @@ function PostCard({ post, orgId, onUpdate, onReplace, onDelete, publishable, onA
             </div>
           )}
 
-          {/* Auto-generated cover image with logo overlay + 5-corner picker. */}
-          <PostCoverImage post={post} orgId={orgId} onUpdate={onUpdate} onReplace={onReplace} />
+          {/* Auto-generated cover (video takes precedence over image). */}
+          {post.video || post.video_status === "pending" ? (
+            <PostCoverVideo post={post} orgId={orgId} onUpdate={onUpdate} />
+          ) : (
+            <PostCoverImage post={post} orgId={orgId} onUpdate={onUpdate} onReplace={onReplace} />
+          )}
 
           <div className="flex flex-wrap items-center gap-2 pt-1">
             {post.platforms.map((id) => {
@@ -1562,6 +1575,7 @@ function PostCoverImage({ post, orgId, onUpdate, onReplace }) {
   const [applyingLogo, setApplyingLogo] = useState(false);
   const [showPromptEditor, setShowPromptEditor] = useState(false);
   const [showAssetPicker, setShowAssetPicker] = useState(false);
+  const [showVideoPicker, setShowVideoPicker] = useState(false);
   // The image prompt that was actually sent to Nano Banana for this post.
   // We prefer the persisted `image_prompt` (set on every successful
   // generation post-fix). For posts generated BEFORE the persistence
@@ -1685,6 +1699,16 @@ function PostCoverImage({ post, orgId, onUpdate, onReplace }) {
             </button>
             <button
               type="button"
+              onClick={() => setShowVideoPicker(true)}
+              disabled={generating}
+              className="sp-btn sp-btn-ghost text-xs disabled:opacity-50"
+              data-testid={`generate-video-${post.id}`}
+              title="Render an on-brand video cover via Veo 3.1, Kling, Wan, Sora, etc."
+            >
+              <Film className="w-3.5 h-3.5" /> Generate video
+            </button>
+            <button
+              type="button"
               onClick={() => setShowPromptEditor(true)}
               disabled={generating}
               className="sp-btn sp-btn-ghost text-xs disabled:opacity-50"
@@ -1724,6 +1748,13 @@ function PostCoverImage({ post, orgId, onUpdate, onReplace }) {
             postId={post.id}
             onClose={() => setShowAssetPicker(false)}
             onPicked={(data) => onReplace?.(data)}
+          />
+        )}
+        {showVideoPicker && (
+          <VideoGenerationModal
+            post={post}
+            onClose={() => setShowVideoPicker(false)}
+            onStarted={(data) => { Object.assign(post, data); onUpdate?.(post.id, { status: data.status }); }}
           />
         )}
       </div>
@@ -1826,6 +1857,12 @@ function PostCoverImage({ post, orgId, onUpdate, onReplace }) {
                 title="Replace with an existing photo from your Media Library — or remix one with AI">
           <FolderOpen className="w-3.5 h-3.5" /> Use a photo
         </button>
+        <button type="button" onClick={() => setShowVideoPicker(true)} disabled={generating}
+                className="sp-btn sp-btn-ghost text-xs disabled:opacity-50"
+                data-testid={`generate-video-${post.id}`}
+                title="Replace this image with a video cover (Veo 3.1, Kling, Sora, etc.)">
+          <Film className="w-3.5 h-3.5" /> Use video
+        </button>
         <button type="button" onClick={() => setShowPromptEditor(true)} disabled={generating}
                 className="sp-btn sp-btn-ghost text-xs disabled:opacity-50"
                 data-testid={`edit-image-prompt-${post.id}`}
@@ -1864,7 +1901,349 @@ function PostCoverImage({ post, orgId, onUpdate, onReplace }) {
           onPicked={(data) => onReplace?.(data)}
         />
       )}
+      {showVideoPicker && (
+        <VideoGenerationModal
+          post={post}
+          onClose={() => setShowVideoPicker(false)}
+          onStarted={(data) => { Object.assign(post, data); onUpdate?.(post.id, { status: data.status }); }}
+        />
+      )}
     </div>
+  );
+}
+
+/**
+ * PostCoverVideo — renders the video cover (or its pending/error state)
+ * with controls to regenerate, remove, or fall back to an image. Sibling
+ * to PostCoverImage; only one of the two is shown per post.
+ *
+ * Pending poll is handled by SocialPage's existing `posts.some(image_status === "pending")`
+ * loop — extended below to ALSO watch `video_status`.
+ */
+function PostCoverVideo({ post, orgId, onUpdate }) {
+  const [showPicker, setShowPicker] = useState(false);
+  const [removing, setRemoving] = useState(false);
+
+  const remove = async () => {
+    if (removing) return;
+    if (!window.confirm("Remove the video cover from this post? (You can generate a new one or attach an image.)")) return;
+    setRemoving(true);
+    try {
+      const { data } = await api.delete(`/social/posts/${post.id}/video`);
+      Object.assign(post, data);
+      onUpdate?.(post.id, { status: data.status });
+      toast.success("Video cover removed");
+    } catch (err) {
+      toast.error(err?.response?.data?.detail || "Couldn't remove video");
+    } finally { setRemoving(false); }
+  };
+
+  if (post.video_status === "pending") {
+    return (
+      <div className="mt-2">
+        <div
+          className="rounded-xl overflow-hidden border border-orange-500/20 aspect-video max-w-[420px] flex flex-col items-center justify-center gap-3 relative bg-black/40"
+          data-testid={`post-video-pending-${post.id}`}
+        >
+          <span aria-hidden className="absolute inset-0 sp-shimmer pointer-events-none" />
+          <Loader2 className="w-8 h-8 animate-spin opacity-80" />
+          <div className="text-xs sp-subtle px-3 text-center max-w-[280px] leading-relaxed">
+            Generating your video cover —<br />
+            {(post.video_model || "Veo 3.1")} typically takes 60-240s.
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  if (post.video_status === "error" || !post.video) {
+    return (
+      <div className="mt-2">
+        <div className="flex items-center justify-between sp-glass rounded-xl px-4 py-2.5 border border-red-500/20 gap-2 flex-wrap">
+          <div className="flex items-center gap-2 text-xs sp-subtle">
+            <AlertTriangle className="w-3.5 h-3.5 text-red-400" />
+            {post.video_error || "Video cover not available"}
+          </div>
+          <div className="flex items-center gap-1.5 shrink-0 flex-wrap">
+            <button
+              type="button"
+              onClick={() => setShowPicker(true)}
+              className="sp-btn sp-btn-primary text-xs"
+              data-testid={`video-retry-${post.id}`}
+            >
+              <Film className="w-3.5 h-3.5" /> Try again
+            </button>
+            <button
+              type="button"
+              onClick={remove}
+              disabled={removing}
+              className="sp-btn sp-btn-ghost text-xs disabled:opacity-50"
+              data-testid={`video-dismiss-${post.id}`}
+            >
+              Dismiss
+            </button>
+          </div>
+        </div>
+        {showPicker && (
+          <VideoGenerationModal
+            post={post}
+            onClose={() => setShowPicker(false)}
+            onStarted={(data) => { Object.assign(post, data); onUpdate?.(post.id, { status: data.status }); }}
+          />
+        )}
+      </div>
+    );
+  }
+
+  const url = post.video.url?.startsWith("http") ? post.video.url : `${BACKEND_URL}${post.video.url}`;
+  const isVertical = (post.video_aspect_ratio || post.video.aspect_ratio) === "9:16";
+
+  return (
+    <div className="mt-2 space-y-2">
+      <div
+        className={`rounded-xl overflow-hidden border border-white/10 bg-black/40 ${isVertical ? "max-w-[260px]" : "max-w-[420px]"}`}
+        data-testid={`post-video-${post.id}`}
+      >
+        <video
+          src={url}
+          controls
+          playsInline
+          preload="metadata"
+          className="w-full h-auto block"
+          data-testid={`post-video-player-${post.id}`}
+        />
+      </div>
+      <div className="flex flex-wrap items-center gap-1.5">
+        <span className="text-[10px] uppercase tracking-widest sp-subtle inline-flex items-center gap-1">
+          <Film className="w-3 h-3" /> {post.video.model || "video"} · {post.video_aspect_ratio || post.video.aspect_ratio || "16:9"}
+        </span>
+        <a href={url} download target="_blank" rel="noreferrer"
+           className="sp-btn sp-btn-ghost text-xs ml-auto"
+           data-testid={`download-video-${post.id}`}>
+          <Download className="w-3.5 h-3.5" /> Download
+        </a>
+        <button
+          type="button"
+          onClick={() => setShowPicker(true)}
+          className="sp-btn sp-btn-ghost text-xs"
+          data-testid={`regen-video-${post.id}`}
+          title="Generate a fresh video cover (pick model + prompt)"
+        >
+          <RefreshCcw className="w-3.5 h-3.5" /> Regenerate
+        </button>
+        <button
+          type="button"
+          onClick={remove}
+          disabled={removing}
+          className="sp-btn sp-btn-ghost text-xs disabled:opacity-50 hover:!text-red-300"
+          data-testid={`remove-video-${post.id}`}
+          title="Remove the video and switch back to an image cover"
+        >
+          {removing ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <X className="w-3.5 h-3.5" />}
+          Remove
+        </button>
+      </div>
+      {showPicker && (
+        <VideoGenerationModal
+          post={post}
+          onClose={() => setShowPicker(false)}
+          onStarted={(data) => { Object.assign(post, data); onUpdate?.(post.id, { status: data.status }); }}
+        />
+      )}
+    </div>
+  );
+}
+
+/**
+ * VideoGenerationModal — picks a Kie.ai model + aspect ratio + prompt
+ * override, then POSTs to /social/posts/{id}/generate-video. Returns 202
+ * with `video_status: "pending"` — the polling loop swaps in the final
+ * <video> when ready (typically 60-240s).
+ *
+ * Portaled to <body> so the modal isn't clipped by sibling post cards
+ * (whose `sp-glass-strong` backdrop-filter creates a strict stacking
+ * context — same trap that bit AssetPickerModal before its portal fix).
+ */
+const VIDEO_MODELS_FALLBACK = [
+  { key: "veo3_fast",    label: "Veo 3.1 (fast · default)" },
+  { key: "veo3",         label: "Veo 3.1 (full · highest fidelity)" },
+  { key: "kling-3",      label: "Kling 3 (great for product shots)" },
+  { key: "kling-3-pro",  label: "Kling 3 Pro (slower, more detail)" },
+  { key: "seedance-1-5", label: "Seedance 1.5 (stylised / animation)" },
+  { key: "wan-2-6",      label: "Wan 2.6 (long-form / scenes)" },
+  { key: "sora-2",       label: "Sora 2 (narrative)" },
+  { key: "runway-aleph", label: "Runway Aleph (cinematic)" },
+];
+
+function VideoGenerationModal({ post, onClose, onStarted }) {
+  const [model, setModel] = useState(post.video_model || "veo3_fast");
+  const [aspect, setAspect] = useState("Auto");
+  const [prompt, setPrompt] = useState(
+    (post.video_prompt && post.video_prompt.trim())
+    || (post.text || "").trim()
+    || "",
+  );
+  const [submitting, setSubmitting] = useState(false);
+  const [models, setModels] = useState(VIDEO_MODELS_FALLBACK);
+  const [configured, setConfigured] = useState(true);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const { data } = await api.get("/social/video-models");
+        if (!cancelled) {
+          setModels(data.models || VIDEO_MODELS_FALLBACK);
+          setConfigured(Boolean(data.configured));
+        }
+      } catch (e) {
+        // keep fallback list
+      }
+    })();
+    return () => { cancelled = true; };
+  }, []);
+
+  const submit = async () => {
+    if (submitting) return;
+    if (!prompt.trim()) { toast.error("Add a prompt or some post text first."); return; }
+    setSubmitting(true);
+    try {
+      const { data } = await api.post(`/social/posts/${post.id}/generate-video`, {
+        prompt: prompt.trim(),
+        model,
+        aspect_ratio: aspect,
+      });
+      onStarted?.(data);
+      toast.message("Generating video — 60-240 seconds. The card refreshes when it's ready.");
+      onClose?.();
+    } catch (err) {
+      toast.error(err?.response?.data?.detail || "Couldn't start the video generation.");
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  return createPortal(
+    <div
+      className="fixed inset-0 z-[95] flex items-center justify-center p-4"
+      style={{ background: "rgba(0,0,0,0.72)" }}
+      onClick={onClose}
+      data-testid={`video-gen-modal-${post.id}`}
+    >
+      <div
+        className="sp-glass-strong rounded-2xl p-5 max-w-xl w-full max-h-[90vh] overflow-auto"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="flex items-center justify-between mb-4">
+          <div>
+            <h3 className="sp-display text-xl inline-flex items-center gap-2">
+              <Film className="w-5 h-5 text-orange-300" /> Generate a video cover
+            </h3>
+            <p className="text-xs sp-subtle mt-0.5">
+              Kie.ai renders it in the background — 60-240s. The card refreshes when it's ready.
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={onClose}
+            className="sp-btn sp-btn-ghost !p-2"
+            data-testid={`video-gen-close-${post.id}`}
+          >
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+
+        {!configured && (
+          <div className="rounded-xl border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-200 mb-3 flex items-start gap-2">
+            <AlertTriangle className="w-4 h-4 mt-0.5 shrink-0" />
+            <span>
+              Video generation isn't configured on this deployment yet. Ask your admin to set <code className="px-1 rounded bg-black/30">KIE_API_KEY</code> in the backend env.
+            </span>
+          </div>
+        )}
+
+        <div className="space-y-4">
+          <div>
+            <label className="text-[10px] uppercase tracking-widest sp-subtle mb-1 block">Model</label>
+            <select
+              value={model}
+              onChange={(e) => setModel(e.target.value)}
+              disabled={submitting}
+              className="w-full sp-glass rounded-xl px-3 py-2 text-sm focus:outline-none"
+              style={{ background: "var(--input-bg)", color: "var(--fg)" }}
+              data-testid={`video-gen-model-${post.id}`}
+            >
+              {models.map((m) => (
+                <option key={m.key} value={m.key}>{m.label}</option>
+              ))}
+            </select>
+            <div className="text-[10px] sp-subtle mt-1">
+              Veo 3.1 fast is the cheapest + quickest. Sora 2 / Runway Aleph are best for cinematic narrative shots but take longer.
+            </div>
+          </div>
+          <div>
+            <label className="text-[10px] uppercase tracking-widest sp-subtle mb-1 block">Aspect ratio</label>
+            <div className="flex gap-1.5">
+              {["Auto", "9:16", "16:9"].map((opt) => (
+                <button
+                  key={opt}
+                  type="button"
+                  onClick={() => setAspect(opt)}
+                  disabled={submitting}
+                  className={`sp-chip text-xs ${aspect === opt ? "!bg-orange-500/20 !border-orange-400/40 !text-white" : ""}`}
+                  data-testid={`video-gen-aspect-${opt}-${post.id}`}
+                >
+                  {opt === "Auto" ? "Auto (from platform)" : opt}
+                </button>
+              ))}
+            </div>
+            <div className="text-[10px] sp-subtle mt-1">
+              Auto picks 9:16 for Reels / TikTok / Threads and 16:9 for everything else.
+            </div>
+          </div>
+          <div>
+            <label className="text-[10px] uppercase tracking-widest sp-subtle mb-1 block">Prompt</label>
+            <textarea
+              value={prompt}
+              onChange={(e) => setPrompt(e.target.value)}
+              disabled={submitting}
+              rows={4}
+              placeholder="Describe the scene — subject, mood, motion, lighting, camera move…"
+              className="w-full sp-glass rounded-xl px-3 py-2 text-sm focus:outline-none resize-y"
+              style={{ background: "var(--input-bg)", color: "var(--fg)" }}
+              data-testid={`video-gen-prompt-${post.id}`}
+            />
+            <div className="text-[10px] sp-subtle mt-1 leading-relaxed">
+              Your brand Soul + visual style are appended automatically. Defaults to the post copy.
+            </div>
+          </div>
+        </div>
+
+        <div className="flex items-center justify-end gap-2 mt-5">
+          <button
+            type="button"
+            onClick={onClose}
+            disabled={submitting}
+            className="sp-btn sp-btn-ghost text-xs disabled:opacity-50"
+          >
+            Cancel
+          </button>
+          <button
+            type="button"
+            onClick={submit}
+            disabled={submitting || !configured || !prompt.trim()}
+            className="sp-btn sp-btn-primary text-xs disabled:opacity-50 inline-flex items-center gap-1.5"
+            data-testid={`video-gen-submit-${post.id}`}
+          >
+            {submitting
+              ? <Loader2 className="w-3.5 h-3.5 animate-spin" />
+              : <Play className="w-3.5 h-3.5" />}
+            {submitting ? "Starting…" : "Generate video"}
+          </button>
+        </div>
+      </div>
+    </div>,
+    document.body,
   );
 }
 

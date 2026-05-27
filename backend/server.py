@@ -8411,6 +8411,12 @@ app.include_router(make_memory_router(
 
 from social_posts import make_social_router  # noqa: E402
 from brand import compose_logo_on_image as _compose_logo  # noqa: E402
+from kie_client import (  # noqa: E402
+    generate_video as _kie_generate_video,
+    submit_kie_task as _kie_submit_kie_task,
+    wait_for_kie_task as _kie_wait_for_kie_task,
+    kie_provider_info as _kie_provider_info,
+)
 social_r = make_social_router(
     db=db, AGENTS=AGENTS, EMERGENT_LLM_KEY=EMERGENT_LLM_KEY,
     LlmChat=LlmChat, UserMessage=UserMessage,
@@ -8422,6 +8428,11 @@ social_r = make_social_router(
     compose_logo_on_image=_compose_logo,
     upload_dir=UPLOAD_DIR,
     recover_bytes_from_gridfs=recover_bytes_from_gridfs,
+    kie_generate_video=_kie_generate_video,
+    kie_submit_kie_task=_kie_submit_kie_task,
+    kie_wait_for_kie_task=_kie_wait_for_kie_task,
+    kie_provider_info=_kie_provider_info,
+    save_remote_url_to_uploads=_save_remote_url_to_uploads,
 )
 app.include_router(social_r)
 

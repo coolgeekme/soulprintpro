@@ -21,6 +21,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import re
 import uuid
 from datetime import datetime, timezone
@@ -163,6 +164,36 @@ class GenerateImageBody(BaseModel):
     prompt: str = Field("", max_length=2000)
 
 
+# Video models we expose on the Social Queue UI. Subset of the Kie.ai
+# marketplace plus the legacy Veo paths. The labels are surfaced in the
+# frontend dropdown.
+SOCIAL_VIDEO_MODELS: dict[str, str] = {
+    "veo3_fast":      "Veo 3.1 (fast · default)",
+    "veo3":           "Veo 3.1 (full · highest fidelity)",
+    "kling-3":        "Kling 3 (great for product shots)",
+    "kling-3-pro":    "Kling 3 Pro (slower, more detail)",
+    "seedance-1-5":   "Seedance 1.5 (stylised / animation)",
+    "wan-2-6":        "Wan 2.6 (long-form / scenes)",
+    "sora-2":         "Sora 2 (narrative)",
+    "runway-aleph":   "Runway Aleph (cinematic)",
+}
+
+DEFAULT_SOCIAL_VIDEO_MODEL = "veo3_fast"
+
+
+class GenerateVideoBody(BaseModel):
+    """Body for POST /social/posts/{id}/generate-video.
+
+    `prompt` — optional override (defaults to post copy when blank).
+    `model` — one of SOCIAL_VIDEO_MODELS keys.
+    `aspect_ratio` — "Auto" (derive from platform), "16:9", "9:16", or "1:1".
+                     IG Reels / TikTok / YT Shorts → 9:16 · YT/LinkedIn → 16:9 · IG feed → 1:1.
+    """
+    prompt: str = Field("", max_length=2000)
+    model: str = Field(DEFAULT_SOCIAL_VIDEO_MODEL, max_length=40)
+    aspect_ratio: str = Field("Auto", max_length=8)
+
+
 class SuggestTopicsBody(BaseModel):
     """Body for POST /orgs/{id}/social/suggest-topics.
 
@@ -206,6 +237,16 @@ def serialize_social_post(p: dict) -> dict:
         "image_status": p.get("image_status", "ready" if p.get("image") else "none"),
         "image_prompt": p.get("image_prompt", ""),  # user-authored override prompt
         "logo_position": p.get("logo_position") or "bottom-right",
+        # ── Video cover (new) ────────────────────────────────────────
+        # Independent from `image`: a post can have either, both, or
+        # neither. UI shows the video player when present, image
+        # otherwise, "no cover" placeholder when both are missing.
+        "video": p.get("video") or None,
+        "video_status": p.get("video_status", "ready" if p.get("video") else "none"),
+        "video_prompt": p.get("video_prompt", ""),
+        "video_model": p.get("video_model", ""),
+        "video_aspect_ratio": p.get("video_aspect_ratio", ""),
+        "video_error": p.get("video_error", ""),
         "scheduled_for": _iso(p.get("scheduled_for")),
         "published_at": _iso(p.get("published_at")),
         # Live-publishing telemetry (set by social_publishing.publish_post).
@@ -568,7 +609,12 @@ def make_social_router(*, db, AGENTS, EMERGENT_LLM_KEY, LlmChat, UserMessage,
                        generate_image_via_nano_banana=None,
                        compose_logo_on_image=None,
                        upload_dir=None,
-                       recover_bytes_from_gridfs=None):
+                       recover_bytes_from_gridfs=None,
+                       kie_generate_video=None,
+                       kie_submit_kie_task=None,
+                       kie_wait_for_kie_task=None,
+                       kie_provider_info=None,
+                       save_remote_url_to_uploads=None):
     """Build the /api/social router with closure-bound dependencies from server.py.
 
     ``recover_bytes_from_gridfs`` is an async callable that, given an
@@ -1291,6 +1337,249 @@ def make_social_router(*, db, AGENTS, EMERGENT_LLM_KEY, LlmChat, UserMessage,
                 )
 
         asyncio.create_task(_run_generate_bg())
+        fresh = await db.social_posts.find_one({"_id": _OID(post_id)})
+        return serialize_social_post(fresh)
+
+    # ── Aspect-ratio helper for video gen ────────────────────────────
+    # Maps the post's first platform onto the right Kie.ai aspect_ratio.
+    # Returns one of "16:9", "9:16", "1:1" — Kie.ai accepts the first
+    # two; "1:1" gracefully degrades to 9:16 for engines that don't
+    # support it (the player still respects the actual rendered frame).
+    def _video_aspect_for_platform(platforms: list[str]) -> str:
+        if not platforms:
+            return "16:9"
+        p = (platforms[0] or "").lower()
+        # Vertical-first surfaces (Reels / Shorts / TikTok)
+        if p in ("instagram", "tiktok", "threads"):
+            return "9:16"
+        if p in ("youtube",) and False:  # placeholder for shorts
+            return "9:16"
+        # Default to landscape for LinkedIn / Facebook / Twitter / YouTube / etc.
+        return "16:9"
+
+    @r.post("/social/posts/{post_id}/generate-video", status_code=202)
+    async def generate_post_video(
+        post_id: str,
+        body: GenerateVideoBody = Body(default_factory=GenerateVideoBody),
+        u: dict = Depends(get_current_user),
+    ):
+        """Generate a video cover for a social post via Kie.ai. Fires the
+        actual generation in the background — Veo / Kling / Wan / Sora
+        can take 60-240s and would otherwise blow past the production
+        ingress proxy timeout.
+
+        Body fields:
+          • `prompt` — optional override (defaults to post copy)
+          • `model` — one of SOCIAL_VIDEO_MODELS (default veo3_fast)
+          • `aspect_ratio` — "Auto" (derive from platform), "16:9", "9:16"
+
+        Persists `video_status: "pending"` synchronously so the
+        SocialPage poll picks up the spinner immediately. When the
+        background task completes it patches `video` (with our local
+        capability URL) and flips `video_status: "ready"`.
+        """
+        if not os.environ.get("KIE_API_KEY"):
+            raise HTTPException(503, "Video generation isn't configured (KIE_API_KEY missing).")
+        try:
+            post = await db.social_posts.find_one({"_id": _OID(post_id)})
+        except Exception as exc:
+            raise HTTPException(400, "Invalid post id") from exc
+        if not post:
+            raise HTTPException(404, "Post not found")
+        await require_org_member(post["org_id"], u["id"])
+
+        # Model whitelist
+        model = (body.model or DEFAULT_SOCIAL_VIDEO_MODEL).strip()
+        if model not in SOCIAL_VIDEO_MODELS:
+            raise HTTPException(
+                422,
+                f"Unknown model {model!r} — pick one of {sorted(SOCIAL_VIDEO_MODELS)}.",
+            )
+
+        # Aspect ratio resolution
+        ar = (body.aspect_ratio or "Auto").strip()
+        if ar == "Auto":
+            ar = _video_aspect_for_platform(post.get("platforms") or [])
+        if ar not in ("16:9", "9:16"):
+            ar = "16:9"
+
+        # Prompt resolution + persist override so refresh doesn't blank
+        # the editor mid-generation.
+        override = (body.prompt or "").strip()
+        resolved_prompt = (
+            override
+            or (post.get("video_prompt") or "").strip()
+            or (post.get("text") or "").strip()[:600]
+        )
+        if not resolved_prompt:
+            raise HTTPException(422, "Need a prompt or some post text to generate a video.")
+
+        pending_update: dict = {
+            "video_status": "pending",
+            "video_pending_at": datetime.now(timezone.utc),
+            "video_prompt": resolved_prompt,
+            "video_model": model,
+            "video_aspect_ratio": ar,
+        }
+        await db.social_posts.update_one(
+            {"_id": _OID(post_id)},
+            {"$set": pending_update, "$unset": {"video_error": ""}},
+        )
+
+        # Fold the org Soul + style guide into the prompt so the video
+        # stays on-brand. Light touch — Kie's engines reward focused
+        # cinematic direction over walls of brand context.
+        org = await db.organizations.find_one({"_id": _OID(post["org_id"])})
+        soul = (org or {}).get("soul") or {}
+        sg = (org or {}).get("style_guide") or {}
+        ba = (org or {}).get("brand_assets") or {}
+        brand_bits: list[str] = []
+        if soul.get("tone"):
+            brand_bits.append(f"Tone: {soul['tone']}")
+        if soul.get("audience"):
+            brand_bits.append(f"Audience: {soul['audience']}")
+        if (sg.get("image_video_style") or "").strip():
+            brand_bits.append(f"Visual style: {sg['image_video_style'][:300]}")
+        elif (ba.get("visual_style") or "").strip():
+            brand_bits.append(f"Visual style: {ba['visual_style'][:300]}")
+        full_prompt = resolved_prompt
+        if brand_bits:
+            full_prompt = (
+                f"{resolved_prompt}\n\n--- Brand context ---\n"
+                + "\n".join(brand_bits)
+            )
+
+        async def _run_video_bg():
+            try:
+                # Veo paths use the legacy single-shot helper; everything
+                # else goes through the marketplace submit/wait API.
+                cdn_url: Optional[str] = None
+                if model in ("veo3", "veo3_fast", "veo3_lite"):
+                    if not kie_generate_video:
+                        raise RuntimeError("Veo client not wired in")
+                    cdn_url = await kie_generate_video(
+                        full_prompt, model=model, aspect_ratio=ar,
+                    )
+                else:
+                    if not kie_submit_kie_task or not kie_wait_for_kie_task:
+                        raise RuntimeError("Kie marketplace client not wired in")
+                    info = kie_provider_info(model) if kie_provider_info else None
+                    if not info:
+                        raise RuntimeError(f"Provider info missing for {model}")
+                    task_id = await kie_submit_kie_task(
+                        model_key=model, prompt=full_prompt,
+                        extra={"aspect_ratio": ar},
+                    )
+                    if not task_id:
+                        raise RuntimeError("Kie.ai refused the task (no taskId returned)")
+                    urls = await kie_wait_for_kie_task(
+                        task_id=task_id, model_key=model,
+                    )
+                    if urls:
+                        cdn_url = urls[0]
+                if not cdn_url:
+                    raise RuntimeError("Kie.ai returned no video URL")
+
+                # Mirror to local storage + GridFS so the link never
+                # expires when Kie's CDN evicts it.
+                local_path = None
+                if save_remote_url_to_uploads:
+                    try:
+                        local_path = await save_remote_url_to_uploads(
+                            cdn_url, suffix=".mp4",
+                        )
+                    except Exception as exc:
+                        logger.warning("Social video local-mirror failed: %s", exc)
+
+                final_url = (
+                    f"/api/files/{local_path.name}" if local_path else cdn_url
+                )
+                video = {
+                    "filename": local_path.name if local_path else "",
+                    "url": final_url,
+                    "remote_url": cdn_url,
+                    "model": model,
+                    "aspect_ratio": ar,
+                    "prompt": resolved_prompt[:600],
+                }
+                await db.social_posts.update_one(
+                    {"_id": _OID(post_id)},
+                    {"$set": {
+                        "video": video,
+                        "video_status": "ready",
+                        "video_updated_at": datetime.now(timezone.utc),
+                    }, "$unset": {"video_error": "", "video_pending_at": ""}},
+                )
+            except Exception as exc:
+                logger.warning("Post video generation failed: %s", exc)
+                try:
+                    from error_reporter import report_error_async as _report
+                    await _report(
+                        kind="video_generate",
+                        org_id=str(post.get("org_id") or ""),
+                        user_email=u.get("email"),
+                        user_id=u.get("id"),
+                        message=str(exc),
+                        exc=exc,
+                        extra={
+                            "post_id": str(post.get("_id") or ""),
+                            "model": model,
+                            "aspect_ratio": ar,
+                        },
+                    )
+                except Exception:
+                    pass
+                await db.social_posts.update_one(
+                    {"_id": _OID(post_id)},
+                    {"$set": {
+                        "video_status": "error",
+                        "video_error": (
+                            "Video generation failed — try a different "
+                            "model or shorten the prompt."
+                        ),
+                    }, "$unset": {"video_pending_at": ""}},
+                )
+
+        asyncio.create_task(_run_video_bg())
+        fresh = await db.social_posts.find_one({"_id": _OID(post_id)})
+        return serialize_social_post(fresh)
+
+    @r.get("/social/video-models")
+    async def list_video_models(u: dict = Depends(get_current_user)):
+        """Surface the available video models for the UI dropdown.
+
+        Auth-gated only (no org binding) — power users may want to see
+        the list before they pick a post to generate from.
+        """
+        configured = bool(os.environ.get("KIE_API_KEY"))
+        return {
+            "configured": configured,
+            "default": DEFAULT_SOCIAL_VIDEO_MODEL,
+            "models": [{"key": k, "label": v} for k, v in SOCIAL_VIDEO_MODELS.items()],
+        }
+
+    @r.delete("/social/posts/{post_id}/video")
+    async def remove_post_video(
+        post_id: str, u: dict = Depends(get_current_user),
+    ):
+        """Detach a video from the post. Doesn't delete the underlying
+        mp4 on disk — that may be referenced by `publish_results` /
+        scheduled jobs we don't want to break — but flips the post back
+        to a no-cover state so the UI offers Generate again."""
+        try:
+            post = await db.social_posts.find_one({"_id": _OID(post_id)})
+        except Exception as exc:
+            raise HTTPException(400, "Invalid post id") from exc
+        if not post:
+            raise HTTPException(404, "Post not found")
+        await require_org_member(post["org_id"], u["id"])
+        await db.social_posts.update_one(
+            {"_id": _OID(post_id)},
+            {"$set": {"video_status": "none"},
+             "$unset": {"video": "", "video_prompt": "", "video_model": "",
+                        "video_aspect_ratio": "", "video_error": "",
+                        "video_pending_at": ""}},
+        )
         fresh = await db.social_posts.find_one({"_id": _OID(post_id)})
         return serialize_social_post(fresh)
 
