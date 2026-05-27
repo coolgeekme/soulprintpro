@@ -6,7 +6,19 @@ from typing import Iterable
 
 log = logging.getLogger("assets")
 
-TEXT_LIKE_EXTS = {"txt", "md", "json", "csv", "log"}
+TEXT_LIKE_EXTS = {
+    # Plain text / data
+    "txt", "md", "markdown", "rst",
+    "json", "yaml", "yml", "toml",
+    "csv", "tsv", "log",
+    # Web & markup — extracted with tag-stripping so agent prompts get
+    # the prose, not the angle brackets.
+    "html", "htm", "xml", "rss", "atom", "svg",
+    # Rich text
+    "rtf",
+    # Code (rare but useful when users drop a config or snippet)
+    "py", "js", "ts", "css", "sql", "sh", "env",
+}
 PDF_EXTS = {"pdf"}
 DOCX_EXTS = {"docx"}
 IMAGE_EXTS = {"png", "jpg", "jpeg", "webp", "gif", "svg"}
@@ -20,9 +32,30 @@ def is_text_extractable(ext: str) -> bool:
 
 
 def extract_text(path: Path, ext: str) -> str:
-    """Best-effort text extraction; returns empty string on any failure."""
+    """Best-effort text extraction; returns empty string on any failure.
+
+    For HTML/XML/SVG, strips tags so the prompt context contains the
+    user-visible text, not the markup. RTF goes through a light
+    `striprtf` pass when the library is available, falls back to a
+    crude regex strip when it isn't.
+    """
     e = ext.lower().lstrip(".")
     try:
+        if e in {"html", "htm", "xml", "rss", "atom", "svg"}:
+            raw = path.read_text(encoding="utf-8", errors="ignore")
+            return _strip_html_like(raw)
+        if e == "rtf":
+            raw = path.read_text(encoding="utf-8", errors="ignore")
+            try:
+                from striprtf.striprtf import rtf_to_text  # type: ignore
+                return rtf_to_text(raw)
+            except Exception:
+                # Crude fallback — drop control words and braces. Good
+                # enough for the prompt context layer.
+                import re
+                no_groups = re.sub(r"[{}]", "", raw)
+                no_ctrl = re.sub(r"\\[a-zA-Z]+-?\d*\s?", "", no_groups)
+                return re.sub(r"\\[^a-zA-Z]", "", no_ctrl)
         if e in TEXT_LIKE_EXTS:
             return path.read_text(encoding="utf-8", errors="ignore")
         if e in PDF_EXTS:
@@ -42,6 +75,32 @@ def extract_text(path: Path, ext: str) -> str:
     except Exception as exc:
         log.warning("Text extraction failed for %s: %s", path, exc)
     return ""
+
+
+def _strip_html_like(raw: str) -> str:
+    """Crude tag stripper — good enough for prompt context.
+
+    Removes <script>/<style> blocks first (their contents are noise),
+    then removes everything between angle brackets, then collapses
+    whitespace. We deliberately don't pull in BeautifulSoup just for
+    this — it's a 2 MB add to keep prompts trim.
+    """
+    import re
+    import html as _html
+    # Drop script / style entirely (content + tags). DOTALL so it
+    # spans newlines.
+    s = re.sub(
+        r"<(script|style)\b[^>]*>.*?</\1\s*>", "",
+        raw, flags=re.IGNORECASE | re.DOTALL,
+    )
+    # Strip all remaining tags.
+    s = re.sub(r"<[^>]+>", " ", s)
+    # Decode HTML entities (&amp; → &, &#39; → ', etc.).
+    s = _html.unescape(s)
+    # Collapse whitespace.
+    s = re.sub(r"[ \t]+", " ", s)
+    s = re.sub(r"\n{3,}", "\n\n", s)
+    return s.strip()
 
 
 def trim(text: str, limit: int = MAX_TEXT_PER_ASSET) -> str:

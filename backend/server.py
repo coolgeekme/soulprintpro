@@ -7026,22 +7026,44 @@ assets_r = APIRouter(prefix="/api")
 ASSET_FILENAME_RE = re.compile(r"^[a-f0-9]{16,}\.[a-z0-9]{1,8}$", re.IGNORECASE)
 MAX_ASSET_SIZE = 10 * 1024 * 1024  # 10 MB
 ALLOWED_ASSET_EXTS = (
-    {"png", "jpg", "jpeg", "webp", "gif", "svg",
-     "pdf", "docx", "doc",
-     "txt", "md", "json", "csv", "log",
-     "mp3", "wav", "m4a",
-     "mp4", "mov", "webm",
-     "zip"}
+    # Images
+    {"png", "jpg", "jpeg", "webp", "gif", "svg", "bmp", "tif", "tiff", "heic", "heif", "avif", "ico"}
+    # Documents
+    | {"pdf", "docx", "doc", "rtf",
+       "xlsx", "xls", "csv",
+       "pptx", "ppt"}
+    # Plain text & structured data
+    | {"txt", "md", "markdown", "rst",
+       "json", "yaml", "yml", "toml",
+       "tsv", "log", "xml", "rss", "atom"}
+    # Web pages — users want to upload exported .htm / .html snapshots
+    # so agents can read them as brand reference (about pages, FAQs,
+    # blog drafts, scraped competitor pages, etc.).
+    | {"html", "htm"}
+    # Audio
+    | {"mp3", "wav", "m4a", "aac", "ogg", "flac"}
+    # Video
+    | {"mp4", "mov", "webm", "mkv", "avi"}
+    # Code / config (rare but useful)
+    | {"py", "js", "ts", "css", "sql", "sh", "env"}
+    # Archives
+    | {"zip", "tar", "gz", "tgz", "7z"}
 )
 
 def kind_for_ext(ext: str) -> str:
     e = ext.lower()
     if e in IMAGE_EXTS:    return "image"
+    if e in {"bmp", "tif", "tiff", "heic", "heif", "avif", "ico"}: return "image"
     if e in PDF_EXTS:      return "pdf"
     if e in DOCX_EXTS:     return "doc"
+    if e in {"doc", "rtf"}: return "doc"
+    if e in {"xlsx", "xls", "csv", "tsv"}: return "spreadsheet"
+    if e in {"pptx", "ppt"}: return "slides"
+    if e in {"html", "htm", "xml", "rss", "atom"}: return "web"
     if e in TEXT_LIKE_EXTS: return "text"
-    if e in {"mp3", "wav", "m4a"}:    return "audio"
-    if e in {"mp4", "mov", "webm"}:   return "video"
+    if e in {"mp3", "wav", "m4a", "aac", "ogg", "flac"}: return "audio"
+    if e in {"mp4", "mov", "webm", "mkv", "avi"}:        return "video"
+    if e in {"zip", "tar", "gz", "tgz", "7z"}:           return "archive"
     return "file"
 
 def serialize_asset(a: dict) -> dict:

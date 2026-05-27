@@ -1662,7 +1662,7 @@ function GeneralChatCard({ orgId, teamId, convId }) {
             ref={fileInputRef}
             type="file"
             multiple
-            accept="image/*,video/*,audio/*,.pdf,.doc,.docx,.txt,.md,.csv,.json,.log,.xlsx,.pptx,.rtf"
+            accept="image/*,video/*,audio/*,.pdf,.doc,.docx,.rtf,.txt,.md,.markdown,.rst,.csv,.tsv,.json,.yaml,.yml,.toml,.xml,.rss,.atom,.svg,.html,.htm,.log,.xlsx,.xls,.pptx,.ppt,.zip,.tar,.gz,.tgz,.7z,.py,.js,.ts,.css,.sql,.sh,.env"
             className="hidden"
             onChange={onPick}
             data-testid="general-file-input"
