@@ -32,6 +32,11 @@ const TOOLKIT_LOGO_BG = {
   zoom: "from-blue-500/20 to-sky-500/20",
   twitter: "from-zinc-200/20 to-zinc-400/20",
   linkedin: "from-blue-700/20 to-sky-500/20",
+  facebook: "from-blue-600/20 to-indigo-500/20",
+  instagram: "from-pink-500/20 to-fuchsia-500/20",
+  reddit: "from-orange-600/20 to-red-500/20",
+  tiktok: "from-zinc-900/30 to-pink-500/20",
+  youtube: "from-red-600/20 to-red-400/20",
   airtable: "from-amber-500/20 to-rose-500/20",
   gitlab: "from-orange-600/20 to-red-500/20",
 };
@@ -602,9 +607,10 @@ function NicknameModal({ slug, value, onChange, onCancel, onConfirm, existingCou
   // Surfaced inside the nickname modal so it's seen at the moment of
   // intent, not buried in some help doc.
   const PLATFORM_NOTES = {
-    instagram: "Composio uses Meta's Graph API, which requires your Instagram to be a Business or Creator account linked to a Facebook Page. Personal accounts won't work — Meta blocks them.",
-    facebook:  "You'll be asked to grant permissions for a specific Facebook Page. Choose the page you want agents to post on behalf of.",
-    tiktok:    "TikTok requires a developer-approved app — Composio doesn't have managed credentials, so this connection may not work without your own TikTok dev account.",
+    instagram: "Composio uses Meta's Graph API, which requires your Instagram to be a Business or Creator account linked to a Facebook Page. Personal accounts won't work — Meta blocks them. Auto-publish supports both image posts and Reels (9:16 vertical video).",
+    facebook:  "You'll be asked to grant permissions for a specific Facebook Page. Choose the page you want agents to post on behalf of. Supports image, video, and text posts.",
+    tiktok:    "Auto-publish supports both video and photo posts. TikTok's Content Posting API requires the connected account to be a Business or Creator profile; personal accounts can connect but won't be able to publish.",
+    youtube:   "Uploads land on the YouTube channel of the connected Google account. Vertical 9:16 clips ≤ 60s are automatically classified as Shorts by YouTube. Default privacy is Public — override per-post via the post variants if you want Unlisted/Private.",
     twitter:   "Twitter / X requires your own developer app credentials — Composio doesn't have managed credentials for this platform.",
   };
   const note = PLATFORM_NOTES[slug];
