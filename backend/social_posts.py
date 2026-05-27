@@ -1491,11 +1491,42 @@ def make_social_router(*, db, AGENTS, EMERGENT_LLM_KEY, LlmChat, UserMessage,
                     except Exception as exc:
                         logger.warning("Social video local-mirror failed: %s", exc)
 
-                final_url = (
-                    f"/api/files/{local_path.name}" if local_path else cdn_url
-                )
+                # ── 0-byte / corrupt guard ────────────────────────────
+                # _save_remote_url_to_uploads returns None on download
+                # failure, but a partial download can still leave a tiny
+                # file on disk. Anything under 50 KB definitely isn't a
+                # playable Veo3/Kling clip — short-circuit and surface
+                # an error rather than ship a 0:00 player to the user.
+                if local_path and local_path.is_file():
+                    try:
+                        size = local_path.stat().st_size
+                    except Exception:
+                        size = 0
+                    if size < 50 * 1024:
+                        logger.warning(
+                            "Social video mirror produced %d-byte file "
+                            "for %s — treating as failure.", size, local_path,
+                        )
+                        try:
+                            local_path.unlink()
+                        except Exception:
+                            pass
+                        local_path = None
+
+                if not local_path:
+                    # Local mirror failed AND we won't trust an
+                    # external Kie CDN URL in a video tag — those URLs
+                    # expire and frequently CORS-block in production
+                    # browsers. Mark as error so the user can retry.
+                    raise RuntimeError(
+                        "Video file mirror failed — try generating "
+                        "again. (Veo's CDN occasionally drops the "
+                        "final download; a retry usually works.)"
+                    )
+
+                final_url = f"/api/files/{local_path.name}"
                 video = {
-                    "filename": local_path.name if local_path else "",
+                    "filename": local_path.name,
                     "url": final_url,
                     "remote_url": cdn_url,
                     "model": model,

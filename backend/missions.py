@@ -2580,9 +2580,28 @@ def build_tools(
                 local_path = await _save_remote_url_to_uploads(cdn_url, suffix=".mp4")
             except Exception as exc:
                 logger.warning("Mission video local-mirror failed: %s", exc)
-            final_url = f"/api/files/{local_path.name}" if local_path else cdn_url
+            # 0-byte / partial-download guard — see social_posts._run_video_bg.
+            if local_path and local_path.is_file():
+                try:
+                    if local_path.stat().st_size < 50 * 1024:
+                        logger.warning(
+                            "Mission video mirror produced tiny file for %s — discarding.",
+                            local_path,
+                        )
+                        try:
+                            local_path.unlink()
+                        except Exception:
+                            pass
+                        local_path = None
+                except Exception:
+                    local_path = None
+            if not local_path:
+                raise RuntimeError(
+                    "Video mirror failed — Kie CDN drop, retry on the card."
+                )
+            final_url = f"/api/files/{local_path.name}"
             video = {
-                "filename": local_path.name if local_path else "",
+                "filename": local_path.name,
                 "url": final_url,
                 "remote_url": cdn_url,
                 "model": model,

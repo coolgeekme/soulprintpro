@@ -6440,7 +6440,11 @@ async def _save_remote_url_to_uploads(url: str, *, suffix: str = "") -> Optional
     mirror every other file path uses.
     """
     try:
-        async with httpx.AsyncClient(timeout=120.0, follow_redirects=True) as client:
+        # Long timeout — Veo 3 / Sora video files routinely run 25-40 MB
+        # and Kie's CDN can stream them slowly. 120s timed out on real
+        # production downloads; 300s gives a real safety margin without
+        # locking up the worker (downloads happen in a background task).
+        async with httpx.AsyncClient(timeout=300.0, follow_redirects=True) as client:
             resp = await client.get(url)
         if resp.status_code != 200 or not resp.content:
             logger.warning("Remote download failed: %s -> %s", url, resp.status_code)
@@ -7422,6 +7426,7 @@ async def serve_file(filename: str):
                 "$or": [
                     {"image.filename": filename},
                     {"image.raw_filename": filename},
+                    {"video.filename": filename},
                 ]
             })
             if not sp:
