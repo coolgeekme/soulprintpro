@@ -73,6 +73,8 @@ FEATURED_TOOLKITS: List[Dict[str, str]] = [
     {"slug": "facebook", "name": "Facebook", "description": "Post to Pages, manage content"},
     {"slug": "instagram", "name": "Instagram", "description": "Publish posts (Business/Creator + FB Page required)"},
     {"slug": "reddit", "name": "Reddit", "description": "Post to subreddits, manage account"},
+    {"slug": "tiktok", "name": "TikTok", "description": "Publish videos and photos"},
+    {"slug": "youtube", "name": "YouTube", "description": "Upload videos and Shorts"},
     {"slug": "linear", "name": "Linear", "description": "Track issues and sprints"},
     {"slug": "jira", "name": "Jira", "description": "Manage tickets across projects"},
     {"slug": "asana", "name": "Asana", "description": "Project & task management"},

@@ -55,6 +55,7 @@ PLATFORM_TOOLKITS = {
     "instagram": "instagram",
     "reddit":    "reddit",
     "tiktok":    "tiktok",
+    "youtube":   "youtube",
 }
 
 
@@ -174,6 +175,31 @@ def _image_url(post: Dict[str, Any]) -> Optional[str]:
     img = post.get("image") or {}
     raw = img.get("public_url") or img.get("url") or None
     return _absolutize(raw)
+
+
+def _video_url(post: Dict[str, Any]) -> Optional[str]:
+    """Absolute, https-prefixed video URL for `post`.
+
+    Same semantics as `_image_url` but for the `video` field. We prefer
+    `remote_url` (the Kie.ai CDN URL we cached at generation time)
+    because Meta/TikTok/YouTube can pull from any reachable HTTPS host —
+    and Kie's CDN is more robust than a single-pod local file URL when
+    the ingress proxy occasionally chokes on long mp4 streams. Falls
+    back to our local capability URL when the remote URL is absent.
+    """
+    vid = post.get("video") or {}
+    raw = vid.get("public_url") or vid.get("remote_url") or vid.get("url") or None
+    return _absolutize(raw)
+
+
+def _platform_wants_video(post: Dict[str, Any], platform: str) -> bool:
+    """True iff this platform has a meaningful video-cover path AND the
+    post actually has a video attached. Used to short-circuit
+    photo-based fallbacks for IG Reels / TikTok / YT Shorts.
+    """
+    if not _video_url(post):
+        return False
+    return platform in ("instagram", "tiktok", "youtube", "facebook")
 
 
 async def _exec(
@@ -362,6 +388,20 @@ async def _publish_facebook(db, org_id, user_id, post, conn) -> Dict[str, Any]:
     """Facebook posts go to a specific Page, not the user's profile.
     Page ID is the user-pinned target resolved above.
     """
+    video = _video_url(post)
+    if video:
+        # FB Pages can post videos via CREATE_VIDEO_POST. Same flow:
+        # page_id + url + description. Composio handles the multipart
+        # / URL-pull mode transparently.
+        return _result_envelope(await _exec(
+            db, org_id, user_id, "FACEBOOK_CREATE_VIDEO_POST",
+            {
+                "page_id": str(page_id),
+                "url": video,
+                "description": _text_for(post, "facebook") or post.get("text", ""),
+                "published": True,
+            },
+        ), tool="FACEBOOK_CREATE_VIDEO_POST")
     img = _image_url(post)
     if img:
         # FB has dedicated photo+video endpoints. CREATE_PHOTO_POST
@@ -426,15 +466,26 @@ async def _publish_instagram(db, org_id, user_id, post, conn) -> Dict[str, Any]:
         1. POST_IG_USER_MEDIA       → returns container_id
         2. POST_IG_USER_MEDIA_PUBLISH → publishes the container
 
+    Two cover types:
+      • Image post — pass `image_url` + optional `caption`
+      • Reels (video) — pass `media_type: "REELS"` + `video_url`
+                        + `caption`. IG holds the container in
+                        IN_PROGRESS until the video transcodes, so we
+                        poll the container status before calling
+                        PUBLISH. Polling capped at ~90s — beyond that
+                        Reels is almost certainly going to fail and
+                        the user can retry.
+
     Critical detail: step 1 REQUIRES the actual numeric IG Business
     Account ID — 'me' is NOT accepted (only the publish step accepts
     'me'). That was the silent-success bug. We cache the resolved ID
     on the connection row so subsequent publishes skip the lookup.
     """
-    img = _image_url(post)
-    if not img:
+    video = _video_url(post)
+    img = None if video else _image_url(post)
+    if not video and not img:
         return _result_payload(False, tool="INSTAGRAM_POST_IG_USER_MEDIA",
-                               error="Instagram requires an image — generate or attach one first.")
+                               error="Instagram requires an image or a video — generate or attach one first.")
     caption = _text_for(post, "instagram") or post.get("text", "")
     # Prefer the user-pinned IG Business Account (set via the Page picker
     # — see select_meta_target). Fall back to the legacy auto-resolve
@@ -454,9 +505,23 @@ async def _publish_instagram(db, org_id, user_id, post, conn) -> Dict[str, Any]:
                 "Page's access token — there's no IG-without-Page path."
             ),
         )
+
+    # ── Container creation ───────────────────────────────────────────
+    if video:
+        step1_args = {
+            "ig_user_id": str(ig_user_id),
+            "video_url": video,
+            "media_type": "REELS",
+            "caption": caption,
+        }
+    else:
+        step1_args = {
+            "ig_user_id": str(ig_user_id),
+            "image_url": img,
+            "caption": caption,
+        }
     step1 = await _exec(
-        db, org_id, user_id, "INSTAGRAM_POST_IG_USER_MEDIA",
-        {"ig_user_id": str(ig_user_id), "image_url": img, "caption": caption},
+        db, org_id, user_id, "INSTAGRAM_POST_IG_USER_MEDIA", step1_args,
     )
     if not step1.get("success"):
         return _result_payload(False, tool="INSTAGRAM_POST_IG_USER_MEDIA",
@@ -467,12 +532,88 @@ async def _publish_instagram(db, org_id, user_id, post, conn) -> Dict[str, Any]:
         return _result_payload(False, tool="INSTAGRAM_POST_IG_USER_MEDIA",
                                error="No container ID returned from Instagram",
                                response=step1.get("response"))
+
+    # ── Reels: wait for IG to finish transcoding before publishing ──
+    if video:
+        ok, status_payload = await _wait_for_instagram_reel(
+            db, org_id, user_id, container_id,
+        )
+        if not ok:
+            return _result_payload(
+                False, tool="INSTAGRAM_POST_IG_USER_MEDIA_PUBLISH",
+                error=(
+                    "Instagram is still transcoding the video. Try "
+                    "publishing again in ~30s, or shorten/re-encode the "
+                    "clip (Reels prefers 9:16 H.264 ≤ 90s)."
+                ),
+                response=status_payload,
+            )
+
     step2 = await _exec(
         db, org_id, user_id, "INSTAGRAM_POST_IG_USER_MEDIA_PUBLISH",
         {"ig_user_id": str(ig_user_id), "creation_id": str(container_id)},
     )
     return _result_envelope(step2, tool="INSTAGRAM_POST_IG_USER_MEDIA_PUBLISH",
-                             extra={"container_id": container_id})
+                             extra={"container_id": container_id,
+                                    "media_type": "REELS" if video else "IMAGE"})
+
+
+async def _wait_for_instagram_reel(
+    db, org_id: str, user_id: str, container_id: str,
+    *, max_seconds: int = 90, interval_s: int = 4,
+) -> tuple[bool, Optional[Dict[str, Any]]]:
+    """Poll the Reels container until IG flips status_code from
+    IN_PROGRESS → FINISHED. Returns (ok, last_response).
+
+    We use a generic GET-container tool slug; if Composio renamed it we
+    fall back to a "best effort" 8s wait so the publish attempt still
+    has a fighting chance. The publish call itself will surface a clear
+    Composio error if the container truly isn't ready, so the worst
+    case is a soft retry from the user.
+    """
+    import asyncio as _asyncio
+    elapsed = 0
+    last_response: Optional[Dict[str, Any]] = None
+    while elapsed < max_seconds:
+        try:
+            res = await _exec(
+                db, org_id, user_id, "INSTAGRAM_GET_MEDIA_CONTAINER_STATUS",
+                {"creation_id": str(container_id)},
+            )
+        except Exception:
+            await _asyncio.sleep(8)
+            return True, None  # best effort — let the publish call try
+        last_response = res.get("response") if isinstance(res, dict) else None
+        if not res.get("success"):
+            # Likely the slug doesn't exist on this Composio version —
+            # bail cleanly with a single wait so we don't infinite-loop.
+            await _asyncio.sleep(8)
+            return True, last_response
+        # Pull `status_code` out of the response defensively.
+        status = None
+        for path in (
+            ("response", "data", "status_code"),
+            ("response", "status_code"),
+            ("data", "status_code"),
+            ("status_code",),
+        ):
+            cursor: Any = res
+            for key in path:
+                if isinstance(cursor, dict):
+                    cursor = cursor.get(key)
+                else:
+                    cursor = None
+                    break
+            if cursor:
+                status = cursor
+                break
+        if status in ("FINISHED", "PUBLISHED"):
+            return True, last_response
+        if status in ("ERROR", "EXPIRED"):
+            return False, last_response
+        await _asyncio.sleep(interval_s)
+        elapsed += interval_s
+    return False, last_response
 
 
 async def _publish_reddit(db, org_id, user_id, post, conn) -> Dict[str, Any]:
@@ -492,14 +633,91 @@ async def _publish_reddit(db, org_id, user_id, post, conn) -> Dict[str, Any]:
 
 
 async def _publish_tiktok(db, org_id, user_id, post, conn) -> Dict[str, Any]:
+    """TikTok prefers video. The Composio toolkit exposes two paths:
+        • `TIKTOK_PUBLISH_VIDEO` — server pulls from a public URL (best
+          for our pipeline since the Kie.ai mp4 is already on a public
+          CDN).
+        • `TIKTOK_POST_PHOTO` — multi-image carousel (legacy path).
+
+    We pick whichever media the post has. Caption/title is clipped to
+    150 chars (TikTok's limit) and we keep the rest in the description
+    when the slug supports it.
+    """
+    video = _video_url(post)
+    if video:
+        caption = (_text_for(post, "tiktok") or post.get("text", "")).strip()
+        # TikTok caption hard-limit is 150 chars for the title; the rest
+        # lives in description on slugs that accept it. We pass both —
+        # Composio ignores fields the underlying tool doesn't take.
+        title = caption[:150]
+        return _result_envelope(await _exec(
+            db, org_id, user_id, "TIKTOK_PUBLISH_VIDEO",
+            {
+                "video_url": video,
+                "title": title,
+                "description": caption,
+                # Reasonable defaults — TikTok rejects video uploads when
+                # disclose flags are missing. False/empty is the standard
+                # "no branded content / no AI label" case.
+                "disable_comment": False,
+                "disable_duet": False,
+                "disable_stitch": False,
+            },
+        ), tool="TIKTOK_PUBLISH_VIDEO")
+
     img = _image_url(post)
     if not img:
-        return _result_payload(False, tool="TIKTOK_POST_PHOTO",
-                               error="TikTok requires a photo or video.")
+        return _result_payload(False, tool="TIKTOK_PUBLISH_VIDEO",
+                               error="TikTok requires a photo or video — attach one before publishing.")
     return _result_envelope(await _exec(
         db, org_id, user_id, "TIKTOK_POST_PHOTO",
         {"media_url": img, "title": _text_for(post, "tiktok") or post.get("text", "")[:150]},
     ), tool="TIKTOK_POST_PHOTO")
+
+
+async def _publish_youtube(db, org_id, user_id, post, conn) -> Dict[str, Any]:
+    """Upload to YouTube. Vertical 9:16 clips automatically register as
+    Shorts when ≤ 60s — same upload endpoint, the platform handles the
+    classification. Composio's `YOUTUBE_UPLOAD_VIDEO` accepts a public
+    URL + title + description + tags + privacy.
+
+    Title is the first non-empty line of post.text capped at 100 chars
+    (YouTube's limit). Description is the full post text. Tags come
+    from post.hashtags. Privacy defaults to `public`.
+    """
+    video = _video_url(post)
+    if not video:
+        return _result_payload(
+            False, tool="YOUTUBE_UPLOAD_VIDEO",
+            error="YouTube requires a video — attach one before publishing.",
+        )
+    text = (_text_for(post, "youtube") or post.get("text", "")).strip()
+    title = (text.splitlines()[0][:100] if text else "Untitled").strip()
+    description = text
+    tags = [h.lstrip("#") for h in (post.get("hashtags") or []) if h]
+    # Privacy can be customised per-platform via post.variants.youtube;
+    # default to `public` so the autopost flow doesn't silently land in
+    # a private bucket.
+    variants = post.get("variants") or {}
+    yv = variants.get("youtube") or {}
+    privacy = (yv.get("privacy") or "public").lower()
+    if privacy not in ("public", "private", "unlisted"):
+        privacy = "public"
+    return _result_envelope(await _exec(
+        db, org_id, user_id, "YOUTUBE_UPLOAD_VIDEO",
+        {
+            "video_url": video,
+            "title": title or "Untitled",
+            "description": description,
+            "tags": tags,
+            "privacy_status": privacy,
+            # Most uploads through us are user-facing content, not
+            # made-for-kids — Composio passes this through to the YT
+            # uploads API which gets cranky without it.
+            "made_for_kids": False,
+        },
+    ), tool="YOUTUBE_UPLOAD_VIDEO",
+       extra={"privacy": privacy, "is_short": (post.get("video_aspect_ratio") == "9:16")})
 
 
 _PUBLISHERS = {
@@ -508,6 +726,7 @@ _PUBLISHERS = {
     "instagram": _publish_instagram,
     "reddit":    _publish_reddit,
     "tiktok":    _publish_tiktok,
+    "youtube":   _publish_youtube,
 }
 
 

@@ -1979,11 +1979,19 @@ async def promote_due_drafts(*, db) -> int:
     Returns the count of posts processed in this tick.
     """
     now = datetime.now(timezone.utc)
+    # Only promote posts whose cover media has finished generating. A
+    # post with `image_status: "pending"` or `video_status: "pending"`
+    # would otherwise auto-publish without a cover (or with a broken
+    # mirror URL) — and we've seen this fail silently on IG Reels
+    # because the Kie.ai mp4 wasn't written to disk yet. We re-poll on
+    # the next tick (60s later) once the cover is ready.
     due = await db.social_posts.find(
         {
             "status": "queued",
             "scheduled_for": {"$lte": now},
             "ready_at": {"$exists": False},
+            "image_status": {"$nin": ["pending"]},
+            "video_status": {"$nin": ["pending"]},
         },
     ).to_list(200)
     if not due:

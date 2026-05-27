@@ -80,11 +80,15 @@ const PLATFORM_ORDER = [
 
 // Platforms where Mission-driven autoposting is supported (public web
 // composer available + kept in sync with backend SUPPORTED_AUTOPOST_PLATFORMS).
-// Instagram / TikTok / YouTube are NOT here — no public composer we can drive
-// reliably headlessly, and file-upload flows aren't wired yet.
+// Instagram / TikTok / YouTube now ride the Composio publish path (no
+// headless composer needed) — they're surfaced here so the autopost
+// scheduler fires them too. Instagram requires a linked FB Page +
+// IG Business/Creator account; TikTok and YouTube need their own
+// Composio OAuth connections.
 const AUTOPOST_PLATFORMS = [
   "twitter", "linkedin", "facebook",
   "threads", "bluesky", "mastodon", "reddit",
+  "instagram", "tiktok", "youtube",
 ];
 
 const joinPostText = (p) => {
