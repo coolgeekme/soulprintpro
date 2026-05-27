@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo, useState } from "react";
+import { createPortal } from "react-dom";
 import api, { BACKEND_URL, errorMessage } from "../lib/api";
 import { toast } from "sonner";
 import { Loader2, X, Wand2, Check, Image as ImageIcon } from "lucide-react";
@@ -93,7 +94,7 @@ export default function AssetPickerModal({ orgId, postId, onClose, onPicked }) {
     } finally { setBusy(""); }
   };
 
-  return (
+  return createPortal(
     <div
       className="fixed inset-0 z-[90] flex items-center justify-center p-4"
       style={{ background: "rgba(0,0,0,0.72)" }}
@@ -276,6 +277,7 @@ export default function AssetPickerModal({ orgId, postId, onClose, onPicked }) {
           )}
         </div>
       </div>
-    </div>
+    </div>,
+    document.body,
   );
 }
