@@ -2640,7 +2640,8 @@ def _should_cancel(conv_id: str, started_at: float) -> bool:
 
 def build_system_prompt(agent_id: str, team: dict, current_user_name: Optional[str] = None,
                         org_assets: Optional[List[dict]] = None,
-                        org: Optional[dict] = None) -> str:
+                        org: Optional[dict] = None,
+                        latest_user_text: Optional[str] = None) -> str:
     meta = AGENTS[agent_id]
     sp = team.get("soulprint") or {}
     lines = [meta["system"]]
@@ -2685,6 +2686,17 @@ def build_system_prompt(agent_id: str, team: dict, current_user_name: Optional[s
         lines.append("\n" + sg_block)
     if current_user_name:
         lines.append(f"\nThe person you're talking to is {current_user_name}.")
+    # Authoritative platform knowledge — only injected when the user
+    # is actually asking about Foundry-the-product. Zero token cost on
+    # every other turn (deterministic regex gate).
+    if latest_user_text:
+        try:
+            from platform_knowledge import get_foundry_context_block
+            fk_block = get_foundry_context_block(latest_user_text)
+            if fk_block:
+                lines.append("\n" + fk_block)
+        except Exception as exc:
+            logger.warning("platform_knowledge inject failed: %s", exc)
     user_ctx_block = _user_context_block()
     if user_ctx_block:
         lines.append("\n" + user_ctx_block)
@@ -4128,7 +4140,8 @@ async def generate_agent_reply(conv: dict, team: dict, agent_id: str,
         logger.warning("org load failed: %s", exc)
 
     system = build_system_prompt(agent_id, team, current_user_name=latest_user_name,
-                                 org_assets=org_assets_brief, org=org_doc)
+                                 org_assets=org_assets_brief, org=org_doc,
+                                 latest_user_text=latest_user_text)
     # Inject user-scoped memories (Phase 1). Empty string when the user
     # has no extracted/manual memories yet, so the prompt stays clean.
     # STRICT org isolation — only memories tagged with this org's id
@@ -6720,7 +6733,8 @@ async def _agent_review_attachment(
         pass
 
     system = build_system_prompt(agent_id, team, current_user_name=current_user_name,
-                                 org_assets=org_assets_brief, org=org_doc)
+                                 org_assets=org_assets_brief, org=org_doc,
+                                 latest_user_text=user_text)
     system += (
         "\n\nThe user has just attached a file for you to review. Open with a "
         "one-line confirmation of what you received, then deliver the analysis "
