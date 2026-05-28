@@ -1266,13 +1266,30 @@ export default function ConversationPage() {
       <main ref={scrollerRef} onScroll={onScrollerScroll} className="flex-1 overflow-y-auto relative">
         <div className="max-w-5xl mx-auto px-3 sm:px-6 pt-6 sm:pt-10 pb-3 flex flex-col gap-4" data-testid="messages-container">
           {messages.length === 0 && (
-            <div className="sp-glass rounded-2xl p-8 text-center">
+            <div className="sp-glass rounded-2xl p-8 text-center" data-testid="empty-chat-card">
               <div className="mb-1 text-lg">You're in.</div>
               <div className="text-base sp-subtle">
                 {isGroup
                   ? <>Type a message. {conv.auto_respond ? "Every agent will respond." : <>Use <span style={{ color: "var(--fg)" }}>@agent-name</span> to call an agent.</>}</>
                   : <>Ask {convAgents[0]?.name} anything. They already know your team.</>}
               </div>
+              <SuggestionChips
+                onPick={(prompt) => {
+                  setText(prompt);
+                  // Defer focus to next tick so the textarea has the
+                  // new value when the caret lands. Otherwise the user
+                  // sees the chip vanish before the prompt appears.
+                  setTimeout(() => {
+                    inputRef.current?.focus();
+                    try {
+                      const len = prompt.length;
+                      inputRef.current?.setSelectionRange(len, len);
+                    } catch { /* ignore — Safari old quirk */ }
+                  }, 0);
+                }}
+                agentName={convAgents[0]?.name}
+                isGroup={isGroup}
+              />
             </div>
           )}
           {/* Rolling AI summary card — shows for long threads so users
@@ -2366,6 +2383,92 @@ function RegenerateImageDialog({ editingImage, convId, onClose, onDone }) {
           </button>
         </div>
         <div className="text-[10px] sp-subtle mt-3 text-right">⌘/Ctrl + Enter to submit</div>
+      </div>
+    </div>
+  );
+}
+
+
+/**
+ * SuggestionChips — bite-sized "Try asking…" prompts shown in the
+ * empty-chat state so a brand-new user instantly sees what Foundry can
+ * do instead of staring at a blank textarea.
+ *
+ * Tapping a chip fills the composer with that prompt + focuses the
+ * input — the user can press Enter to send, edit it first, or tab off
+ * to grab a file. We deliberately don't auto-send; users like to
+ * tweak the wording, and silent auto-fire feels presumptuous.
+ *
+ * Categories deliberately mirror the four headline pillars in
+ * /app/backend/knowledge/foundry.md so the agent has authoritative
+ * context the moment it answers any of these.
+ */
+const SUGGESTION_GROUPS = [
+  {
+    label: "Discover",
+    prompts: [
+      "What is Foundry and what can it do for my business?",
+      "How do I get started with my first mission?",
+      "Show me the features I'm not using yet.",
+    ],
+  },
+  {
+    label: "Social content",
+    prompts: [
+      "Draft 7 Instagram posts about our brand for this week.",
+      "Create 3 LinkedIn posts about our launch — use the images in the asset library.",
+      "Generate 5 TikTok video covers about our spring drop with Veo 3.1.",
+    ],
+  },
+  {
+    label: "Research & audit",
+    prompts: [
+      "Audit my website and produce a one-page brief.",
+      "Research my top 5 competitors and write a teardown.",
+      "Find me 10 podcasts where I could be a guest, ranked by fit.",
+    ],
+  },
+  {
+    label: "Ops",
+    prompts: [
+      "What's on my calendar this week — and what should I prep for?",
+      "Draft a follow-up email to leads from last Tuesday's meeting.",
+      "Summarize the team Slack from yesterday into 5 bullets.",
+    ],
+  },
+];
+
+function SuggestionChips({ onPick, agentName, isGroup }) {
+  return (
+    <div
+      className="mt-5 text-left max-w-2xl mx-auto"
+      data-testid="empty-chat-suggestions"
+    >
+      <div className="text-[10px] uppercase tracking-widest sp-subtle mb-2 text-center">
+        Try asking{agentName && !isGroup ? ` ${agentName}` : ""}
+      </div>
+      <div className="flex flex-col gap-3">
+        {SUGGESTION_GROUPS.map((group) => (
+          <div key={group.label}>
+            <div className="text-[10px] uppercase tracking-wider sp-subtle mb-1.5 pl-1">
+              {group.label}
+            </div>
+            <div className="flex flex-wrap gap-1.5">
+              {group.prompts.map((p) => (
+                <button
+                  key={p}
+                  type="button"
+                  onClick={() => onPick(p)}
+                  className="sp-chip text-xs text-left hover:!bg-orange-500/15 hover:!border-orange-400/40 hover:!text-white transition-colors"
+                  data-testid={`suggestion-chip-${group.label.toLowerCase().replace(/\s+/g, "-")}-${p.slice(0, 20).replace(/\s+/g, "-")}`}
+                  title={p}
+                >
+                  {p.length > 80 ? `${p.slice(0, 78)}…` : p}
+                </button>
+              ))}
+            </div>
+          </div>
+        ))}
       </div>
     </div>
   );
