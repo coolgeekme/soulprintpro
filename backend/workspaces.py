@@ -85,33 +85,52 @@ class MemberOrgAccessPatch(BaseModel):
 # ── Helpers ──────────────────────────────────────────────────────────
 
 
+# Internal-deploy host suffixes that should NEVER appear in a public
+# OAuth redirect URI. When `_public_origin` sees one of these in
+# X-Forwarded-Host, it knows the fronting proxy (Cloudflare → emergent
+# ingress) didn't rewrite the chain correctly and falls through to the
+# next signal. This closes the GitHub OAuth callback-mismatch bug
+# where production leaked `emergent-wing.emergent.host` instead of
+# `foundryagents.ai`.
+_INTERNAL_HOST_SUFFIXES = (
+    ".emergent.host",
+    ".cluster.local",
+    ".preview.emergentagent.com",  # only valid for preview; prod sets PUBLIC_ORIGIN_OVERRIDE
+    ".svc",
+)
+
+
+def _is_internal_host(host: str) -> bool:
+    h = (host or "").lower().strip()
+    if not h:
+        return False
+    return any(h.endswith(sfx) for sfx in _INTERNAL_HOST_SUFFIXES)
+
+
 def _public_origin(request: Request) -> str:
     """Compute the correct public-facing origin (scheme://host) for
-    building share links in emails. We can't trust a hardcoded
-    `FRONTEND_URL` env var because the same backend image runs in
-    BOTH preview and production — a single env var would always be
-    wrong in one of them.
+    building share links in emails / OAuth redirect URIs. We can't
+    trust a hardcoded `FRONTEND_URL` env var because the same backend
+    image runs in BOTH preview and production — a single env var
+    would always be wrong in one of them.
 
     Priority:
-      1. ``X-Forwarded-Host`` + ``X-Forwarded-Proto`` (set by the
-         platform's ingress/Cloudflare → uvicorn). When the request
-         arrives at `foundryagents.ai`, these headers reflect
-         that origin and the resulting invite URL points at the right
-         deployment.
-      2. ``Origin`` request header — set by the browser's fetch from
-         the SPA. Useful when the platform layer doesn't forward host.
-      3. ``Host`` header (always present).
-      4. Final fallback: ``FRONTEND_URL`` env var (last-ditch).
+      1. ``PUBLIC_ORIGIN_OVERRIDE`` env var (operator escape hatch —
+         set on production so the inner-deploy hostname can never leak
+         into a redirect URI).
+      2. ``X-Forwarded-Host`` + ``X-Forwarded-Proto`` (set by the
+         platform's ingress/Cloudflare → uvicorn) — BUT we skip values
+         that match a known internal-deploy suffix because those mean
+         the proxy chain didn't get rewritten.
+      3. ``Origin`` request header — set by the browser's fetch from
+         the SPA.
+      4. ``Host`` header (always present) — again, skipped if it's an
+         internal suffix.
+      5. Final fallback: ``FRONTEND_URL`` env var (last-ditch).
 
     Returns a string like ``"https://foundryagents.ai"`` with no
     trailing slash. Always validates the scheme is http/https to avoid
     header-injection attacks producing ``javascript:`` links.
-
-    Operator escape hatch: setting ``PUBLIC_ORIGIN_OVERRIDE`` in env
-    pins the result regardless of headers — needed when a fronting
-    proxy (e.g. emergent.host → cloudflare → foundryagents.ai)
-    rewrites X-Forwarded-Host to the inner deploy URL so emails would
-    otherwise leak the wrong domain.
     """
     override = (os.environ.get("PUBLIC_ORIGIN_OVERRIDE") or "").strip().rstrip("/")
     if override.startswith("http://") or override.startswith("https://"):
@@ -119,18 +138,34 @@ def _public_origin(request: Request) -> str:
     fwd_host = (request.headers.get("x-forwarded-host") or "").strip()
     if fwd_host:
         # X-Forwarded-Host can be a comma-separated chain — first entry
-        # is the original client-facing hostname.
-        fwd_host = fwd_host.split(",")[0].strip()
+        # is the original client-facing hostname. We walk the chain in
+        # order, taking the FIRST non-internal hostname so an
+        # internal-deploy URL can't accidentally leak into a public
+        # OAuth redirect.
+        for candidate in fwd_host.split(","):
+            candidate = candidate.strip()
+            if candidate and not _is_internal_host(candidate):
+                fwd_host = candidate
+                break
+        else:
+            fwd_host = ""  # all entries were internal
     fwd_proto = (request.headers.get("x-forwarded-proto") or "").strip().split(",")[0].strip()
     if fwd_host:
         scheme = "https" if fwd_proto in {"https", ""} else fwd_proto
         if scheme in {"http", "https"}:
             return f"{scheme}://{fwd_host}"
     origin = (request.headers.get("origin") or "").strip().rstrip("/")
-    if origin.startswith("http://") or origin.startswith("https://"):
-        return origin
+    if (origin.startswith("http://") or origin.startswith("https://")):
+        # Strip a trailing path if any.
+        from urllib.parse import urlparse
+        try:
+            p = urlparse(origin)
+            if p.hostname and not _is_internal_host(p.hostname):
+                return f"{p.scheme}://{p.netloc}"
+        except Exception:
+            pass
     host = (request.headers.get("host") or "").strip()
-    if host:
+    if host and not _is_internal_host(host):
         return f"https://{host}"
     return (os.environ.get("FRONTEND_URL") or "").rstrip("/")
 

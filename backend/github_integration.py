@@ -250,6 +250,20 @@ def make_github_router(*, db, get_current_user, require_org_member,
         if not origin:
             origin = (os.environ.get("FRONTEND_URL") or "").rstrip("/")
         callback = f"{origin}/auth/github/callback"
+        # Log the resolved origin + callback so future GitHub OAuth
+        # callback-mismatch errors can be diagnosed from supervisor
+        # logs without a debugger. We also surface the headers that
+        # informed the decision so we can spot upstream proxy
+        # misconfiguration without redeploying.
+        logger.info(
+            "github_oauth_authorize: callback=%r origin=%r "
+            "x-forwarded-host=%r x-forwarded-proto=%r host=%r origin_hdr=%r",
+            callback, origin,
+            request.headers.get("x-forwarded-host") if request else None,
+            request.headers.get("x-forwarded-proto") if request else None,
+            request.headers.get("host") if request else None,
+            request.headers.get("origin") if request else None,
+        )
         from urllib.parse import urlencode
         qs = urlencode({
             "client_id": _client_id(),
