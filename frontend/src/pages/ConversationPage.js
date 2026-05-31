@@ -1227,37 +1227,47 @@ export default function ConversationPage() {
             </>
           )}
           {isGroup && (
-            <span className="sp-chip !bg-white/5">
-              <Users className="w-3 h-3" /> {conv.member_ids.length} people
+            <span className="hidden sm:contents">
+              <span className="sp-chip !bg-white/5">
+                <Users className="w-3 h-3" /> {conv.member_ids.length} people
+              </span>
             </span>
           )}
           {isGroup && (
-            <span className="sp-chip !bg-white/5">
-              {conv.auto_respond ? "Auto-respond ON" : "Respond on @mention"}
+            <span className="hidden sm:contents">
+              <span className="sp-chip !bg-white/5">
+                {conv.auto_respond ? "Auto-respond ON" : "Respond on @mention"}
+              </span>
             </span>
           )}
           {isGroup && conv.smart_expand && (
-            <span className="sp-chip !bg-white/5">Smart expand</span>
+            <span className="hidden sm:contents">
+              <span className="sp-chip !bg-white/5">Smart expand</span>
+            </span>
           )}
           {!isGroup && (
-            <button
-              onClick={() => setShowSwitch(true)}
-              className="sp-chip hover:!bg-white/15 hover:text-white inline-flex items-center gap-1"
-              data-testid="switch-agent-btn"
-              title="Hand off to another specialist"
-            >
-              <Repeat className="w-3 h-3" /> Switch agent
-            </button>
+            <span className="hidden sm:contents">
+              <button
+                onClick={() => setShowSwitch(true)}
+                className="sp-chip hover:!bg-white/15 hover:text-white items-center gap-1"
+                data-testid="switch-agent-btn"
+                title="Hand off to another specialist"
+              >
+                <Repeat className="w-3 h-3" /> Switch agent
+              </button>
+            </span>
           )}
           <button
             onClick={() => setShowAgents(true)}
-            className="sp-chip hover:!bg-white/15 hover:text-white inline-flex items-center gap-1"
+            className="sp-chip hover:!bg-white/15 hover:text-white inline-flex items-center gap-1 ml-auto sm:ml-0"
             data-testid="manage-agents-btn"
             title={isGroup
               ? "Add or remove specialists in this room"
               : "Add another specialist (turns this into a group chat)"}
           >
-            <UserPlus className="w-3 h-3" /> {isGroup ? "Manage agents" : "Add agent"}
+            <UserPlus className="w-3 h-3" />
+            {/* Verbose label only on sm+ to keep the mobile toolbar to ONE row. */}
+            <span className="hidden sm:inline">{isGroup ? "Manage agents" : "Add agent"}</span>
           </button>
         </div>
       </div>
@@ -2009,7 +2019,7 @@ export default function ConversationPage() {
               ))}
             </div>
           )}
-          <div className="flex items-end gap-2">
+          <div className="flex flex-col sm:flex-row sm:items-end gap-2">
             <input
               ref={fileInputRef}
               type="file"
@@ -2019,27 +2029,8 @@ export default function ConversationPage() {
               onChange={onFilesPicked}
               data-testid="file-input"
             />
-            <button
-              type="button"
-              onClick={() => fileInputRef.current?.click()}
-              disabled={uploading}
-              className="sp-btn sp-btn-ghost text-xs shrink-0 disabled:opacity-50"
-              title={uploading ? "Uploading…" : "Attach files (images, PDF, doc, audio, video — up to 25 MB each, 6 files)"}
-              data-testid="attach-file-btn"
-            >
-              <Paperclip className="w-3.5 h-3.5" />
-            </button>
-            {isGroup && (
-              <button
-                type="button"
-                onClick={() => setShowMentions(v => !v)}
-                className="sp-btn sp-btn-ghost text-xs shrink-0"
-                title="Mention an agent"
-                data-testid="mention-picker-btn"
-              >
-                <AtSign className="w-3.5 h-3.5" />
-              </button>
-            )}
+            {/* Textarea takes its OWN row on mobile so the placeholder
+                stays readable. On sm+ it sits inline with the buttons. */}
             <textarea
               ref={inputRef}
               data-testid="message-input"
@@ -2055,43 +2046,67 @@ export default function ConversationPage() {
                   ? "Message the room… use @name to ping an agent. Ask for an image or a video and they'll just make it."
                   : `Message ${convAgents[0]?.name || "your agent"} — ask for posts, logos, or videos and they'll just make them.`)}
               rows={1}
-              className="flex-1 sp-glass rounded-2xl px-4 py-3.5 text-[16px] leading-relaxed placeholder:opacity-50 focus:sp-focus resize-none"
+              className="order-1 sm:order-2 w-full sm:flex-1 sp-glass rounded-2xl px-4 py-3.5 text-[16px] leading-relaxed placeholder:opacity-50 focus:sp-focus resize-none"
               style={{ background: "var(--input-bg)", borderColor: "var(--input-border)", color: "var(--fg)", minHeight: "52px" }}
             />
-            <button
-              type="button"
-              onClick={async () => {
-                const goal = (text || "").trim();
-                if (!goal) { toast.error("Type the goal first, then click Run as mission"); return; }
-                const wasText = text;
-                setText("");
-                const ok = await runAsMission(goal);
-                if (!ok) setText(wasText);
-              }}
-              disabled={sending || uploading || !text.trim() || staged.length > 0}
-              className="sp-btn sp-btn-ghost text-xs shrink-0 disabled:opacity-40"
-              title={staged.length > 0
-                ? "Missions don't accept attachments yet — clear staged files first"
-                : "Run as mission — agent autonomously plans, browses, and ships deliverables"}
-              data-testid="run-as-mission-btn"
-            >
-              <Rocket className="w-3.5 h-3.5" />
-            </button>
-            <button
-              type={sending ? "button" : "submit"}
-              onClick={sending ? stopSending : undefined}
-              disabled={uploading || (!sending && !text.trim() && staged.length === 0)}
-              className={`sp-btn text-sm shrink-0 disabled:opacity-50 ${sending ? "" : "sp-btn-primary"}`}
-              data-testid={sending ? "stop-message-btn" : "send-message-btn"}
-              title={sending ? "Stop the agent reply" : "Send"}
-              style={sending ? {
-                background: "linear-gradient(180deg, #ef4444 0%, #b91c1c 100%)",
-                color: "#fff",
-                border: "1px solid rgba(220,38,38,0.55)",
-              } : undefined}
-            >
-              {sending ? <Square className="w-3.5 h-3.5 fill-current" /> : <Send className="w-3.5 h-3.5" />}
-            </button>
+            {/* Action row — sits below the textarea on mobile, inline on sm+. */}
+            <div className="order-2 sm:order-3 flex items-center gap-2 sm:contents">
+              <button
+                type="button"
+                onClick={() => fileInputRef.current?.click()}
+                disabled={uploading}
+                className="sp-btn sp-btn-ghost text-xs shrink-0 disabled:opacity-50 sm:order-1"
+                title={uploading ? "Uploading…" : "Attach files (images, PDF, doc, audio, video — up to 25 MB each, 6 files)"}
+                data-testid="attach-file-btn"
+              >
+                <Paperclip className="w-3.5 h-3.5" />
+              </button>
+              {isGroup && (
+                <button
+                  type="button"
+                  onClick={() => setShowMentions(v => !v)}
+                  className="sp-btn sp-btn-ghost text-xs shrink-0 sm:order-1"
+                  title="Mention an agent"
+                  data-testid="mention-picker-btn"
+                >
+                  <AtSign className="w-3.5 h-3.5" />
+                </button>
+              )}
+              <button
+                type="button"
+                onClick={async () => {
+                  const goal = (text || "").trim();
+                  if (!goal) { toast.error("Type the goal first, then click Run as mission"); return; }
+                  const wasText = text;
+                  setText("");
+                  const ok = await runAsMission(goal);
+                  if (!ok) setText(wasText);
+                }}
+                disabled={sending || uploading || !text.trim() || staged.length > 0}
+                className="sp-btn sp-btn-ghost text-xs shrink-0 disabled:opacity-40 ml-auto sm:ml-0 sm:order-3"
+                title={staged.length > 0
+                  ? "Missions don't accept attachments yet — clear staged files first"
+                  : "Run as mission — agent autonomously plans, browses, and ships deliverables"}
+                data-testid="run-as-mission-btn"
+              >
+                <Rocket className="w-3.5 h-3.5" />
+              </button>
+              <button
+                type={sending ? "button" : "submit"}
+                onClick={sending ? stopSending : undefined}
+                disabled={uploading || (!sending && !text.trim() && staged.length === 0)}
+                className={`sp-btn text-sm shrink-0 disabled:opacity-50 sm:order-3 ${sending ? "" : "sp-btn-primary"}`}
+                data-testid={sending ? "stop-message-btn" : "send-message-btn"}
+                title={sending ? "Stop the agent reply" : "Send"}
+                style={sending ? {
+                  background: "linear-gradient(180deg, #ef4444 0%, #b91c1c 100%)",
+                  color: "#fff",
+                  border: "1px solid rgba(220,38,38,0.55)",
+                } : undefined}
+              >
+                {sending ? <Square className="w-3.5 h-3.5 fill-current" /> : <Send className="w-3.5 h-3.5" />}
+              </button>
+            </div>
           </div>
         </form>
       </div>
