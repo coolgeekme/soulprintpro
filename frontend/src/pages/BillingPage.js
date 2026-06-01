@@ -1,26 +1,30 @@
 import React, { useCallback, useEffect, useMemo, useState } from "react";
 import { useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { toast } from "sonner";
+import { createPortal } from "react-dom";
 import {
   Loader2, Check, AlertTriangle, CreditCard, TrendingUp,
-  Receipt, UserPlus, Sparkles, ArrowUpRight,
+  Receipt, Sparkles, ArrowUpRight, ExternalLink, Mail,
+  Shield, X, Settings,
 } from "lucide-react";
 import api from "../lib/api";
 import TopBar from "../components/TopBar";
 
 /**
- * BillingPage — single dashboard for everything money in an org:
- *   • Current plan + paid-until banner
- *   • This-month LLM spend vs included budget (with a visual bar)
- *   • Projected overage with markup math made explicit
- *   • Outstanding overage invoice (settle in one click via Stripe)
- *   • Plan cards for upgrades (Spark / Temper / Refine)
- *   • Extra-seat purchase
- *   • Recent Stripe transactions (audit log)
+ * BillingPage — single dashboard for everything money in an org.
  *
- * The page also handles the Stripe redirect by polling
- * /api/billing/status/:session_id with backoff until paid|expired —
- * the same component that initiates checkout reconciles its result.
+ * Three flows live here:
+ *   1. **Subscribe** (Spark + Temper) — opens Stripe Checkout in
+ *      subscription mode after the user explicitly agrees to a
+ *      verbatim disclosure block (FTC ROSCA-style affirmative
+ *      consent). The disclosure text is persisted on the
+ *      payment_transactions row so we have evidence the user saw it.
+ *   2. **Contact sales** (Refine) — small modal form that POSTs to
+ *      `/api/orgs/{id}/billing/contact-sales`; the backend stores
+ *      the lead and (best-effort) emails `team@archeforge.com`.
+ *   3. **Manage subscription** — opens Stripe Customer Portal so the
+ *      user can cancel / update card / view invoices. Same URL we
+ *      use to bring them back here when they're done.
  */
 export default function BillingPage() {
   const { orgId } = useParams();
@@ -32,8 +36,12 @@ export default function BillingPage() {
   const [loading, setLoading] = useState(true);
   const [summary, setSummary] = useState(null);
   const [plans, setPlans] = useState([]);
-  const [busy, setBusy] = useState(""); // which CTA is mid-flight
+  const [busy, setBusy] = useState("");
   const [polling, setPolling] = useState(false);
+
+  // Modal state — subscribe-consent or contact-sales.
+  const [pendingPlan, setPendingPlan] = useState(null);
+  const [showSales, setShowSales] = useState(false);
 
   const refresh = useCallback(async () => {
     try {
@@ -58,58 +66,51 @@ export default function BillingPage() {
 
   useEffect(() => { refresh(); }, [refresh]);
 
-  // Stripe redirect — poll status with backoff until terminal.
+  // After Stripe redirects back, poll status until the subscription is paid.
   useEffect(() => {
     if (!sessionId) {
       if (cancelled) {
-        toast.info("Checkout cancelled.");
+        toast.info("Checkout cancelled — no charge was made.");
         setParams({}, { replace: true });
       }
       return;
     }
-    let cancelledLocal = false;
+    let alive = true;
     setPolling(true);
-    const attempts = [1500, 1500, 2000, 2500, 3000, 4000]; // ~14.5s
+    const waits = [1500, 1500, 2000, 2500, 3000, 4000]; // ~14.5s
 
     (async () => {
-      for (let i = 0; i < attempts.length; i++) {
-        if (cancelledLocal) return;
+      for (let i = 0; i < waits.length; i++) {
+        if (!alive) return;
         try {
           const { data } = await api.get(`/billing/status/${sessionId}`);
           if (data?.payment_status === "paid") {
-            toast.success(
-              data.kind === "plan" ? "Plan upgraded. Welcome aboard." :
-              data.kind === "seats" ? "Extra seats added to your plan." :
-              "Overage invoice settled. Thanks!"
-            );
+            toast.success("Subscription active. Welcome aboard.");
             await refresh();
             setPolling(false);
             setParams({}, { replace: true });
             return;
           }
           if (data?.status === "expired") {
-            toast.error("Checkout expired. Please try again.");
+            toast.error("Checkout expired — please try again.");
             setPolling(false);
             setParams({}, { replace: true });
             return;
           }
         } catch (err) {
-          // Status endpoint can 404 briefly for very-new sessions on
-          // the webhook path — keep polling.
+          // Status can 404 briefly for very-new sessions — keep polling.
         }
-        await new Promise(r => setTimeout(r, attempts[i]));
+        await new Promise(r => setTimeout(r, waits[i]));
       }
-      // Timed out — Stripe should fire the webhook eventually.
-      toast.info("Payment is still processing. We'll update once it clears.");
+      toast.info("Payment still processing — we'll update when it clears.");
       setPolling(false);
       setParams({}, { replace: true });
     })();
 
-    return () => { cancelledLocal = true; };
+    return () => { alive = false; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sessionId]);
 
-  // Memoize derived spend/overage math so the bar stays stable across renders.
   const meter = useMemo(() => {
     if (!summary) return null;
     const spent = summary.this_month_spend_usd || 0;
@@ -126,11 +127,17 @@ export default function BillingPage() {
     };
   }, [summary]);
 
-  const startCheckout = useCallback(async (route, body = {}, label = "") => {
-    setBusy(label);
+  const confirmSubscribe = useCallback(async () => {
+    if (!pendingPlan) return;
+    setBusy(`plan:${pendingPlan.id}`);
     try {
       const origin = window.location.origin;
-      const { data } = await api.post(route, { ...body, origin_url: origin });
+      const consentText = buildConsentText(pendingPlan);
+      const { data } = await api.post(`/orgs/${orgId}/billing/subscribe`, {
+        plan_id: pendingPlan.id,
+        origin_url: origin,
+        consent_text: consentText,
+      });
       if (data?.url) {
         window.location.href = data.url;
       } else {
@@ -140,22 +147,27 @@ export default function BillingPage() {
     } catch (err) {
       toast.error(err?.response?.data?.detail || "Could not start checkout.");
       setBusy("");
+      setPendingPlan(null);
     }
-  }, []);
+  }, [pendingPlan, orgId]);
 
-  const upgradeTo = (planId) => startCheckout(
-    `/orgs/${orgId}/billing/checkout/plan`,
-    { plan_id: planId },
-    `plan:${planId}`,
-  );
-  const buySeats = (quantity) => startCheckout(
-    `/orgs/${orgId}/billing/checkout/seats`,
-    { quantity },
-    `seats:${quantity}`,
-  );
-  const settleOverage = () => startCheckout(
-    `/orgs/${orgId}/billing/checkout/overage`, {}, "overage",
-  );
+  const openManagePortal = useCallback(async () => {
+    setBusy("portal");
+    try {
+      const { data } = await api.post(`/orgs/${orgId}/billing/portal`, {
+        origin_url: window.location.origin,
+      });
+      if (data?.url) {
+        window.location.href = data.url;
+      } else {
+        toast.error("Could not open the billing portal.");
+        setBusy("");
+      }
+    } catch (err) {
+      toast.error(err?.response?.data?.detail || "Could not open the billing portal.");
+      setBusy("");
+    }
+  }, [orgId]);
 
   if (loading) {
     return (
@@ -173,6 +185,9 @@ export default function BillingPage() {
   const paidUntil = summary?.plan_paid_until
     ? new Date(summary.plan_paid_until).toLocaleDateString()
     : null;
+  const isSubscribed = summary?.subscription_status === "active"
+    || summary?.subscription_status === "trialing";
+  const cancelling = !!summary?.cancel_at_period_end;
 
   return (
     <div className="min-h-screen">
@@ -182,7 +197,7 @@ export default function BillingPage() {
           <div className="text-[10px] uppercase tracking-widest sp-subtle">Billing</div>
           <h1 className="text-3xl sm:text-4xl font-medium tracking-tight">Plan &amp; usage</h1>
           <p className="text-sm sp-subtle mt-1">
-            Pay only for what your agents actually use. No annual lock-in, no hidden markup.
+            Subscribe monthly. Cancel anytime — no annual lock-in, no hidden markup.
           </p>
         </div>
 
@@ -196,7 +211,7 @@ export default function BillingPage() {
           </div>
         )}
 
-        {/* Current plan card */}
+        {/* Current plan + manage button */}
         <section className="sp-glass-strong rounded-2xl p-5 sm:p-6 mb-6" data-testid="current-plan-card">
           <div className="flex flex-wrap items-start justify-between gap-4">
             <div>
@@ -206,18 +221,32 @@ export default function BillingPage() {
               <h2 className="sp-display text-2xl mt-1">{currentPlan?.name || "Spark"}</h2>
               <div className="text-sm sp-subtle mt-1">{currentPlan?.tagline}</div>
               <div className="text-xs sp-subtle mt-2">
-                ${currentPlan?.monthly_usd?.toFixed(0)}/mo · {
-                  currentPlan?.seats_included >= 1000
-                    ? "Unlimited seats"
-                    : `${currentPlan?.seats_included} seat${currentPlan?.seats_included === 1 ? "" : "s"} included`
-                }
-                {(summary?.extra_seats_quantity || 0) > 0 && (
-                  <> · <span className="text-orange-300">+{summary.extra_seats_quantity} extra</span></>
-                )}
+                {currentPlan?.monthly_usd != null
+                  ? <>${currentPlan.monthly_usd.toFixed(0)}/mo · </>
+                  : null}
+                {currentPlan?.seats_included >= 1000
+                  ? "Unlimited seats"
+                  : `${currentPlan?.seats_included} seat${currentPlan?.seats_included === 1 ? "" : "s"} included`}
               </div>
             </div>
-            <div className="text-right">
-              <PlanStatusPill status={summary?.plan_status} paidUntil={paidUntil} />
+            <div className="flex flex-col items-end gap-2">
+              <PlanStatusPill
+                status={summary?.plan_status}
+                cancelling={cancelling}
+                paidUntil={paidUntil}
+              />
+              {isSubscribed && (
+                <button
+                  type="button"
+                  onClick={openManagePortal}
+                  disabled={busy === "portal"}
+                  className="sp-btn sp-btn-ghost text-xs"
+                  data-testid="manage-subscription-btn"
+                >
+                  {busy === "portal" ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Settings className="w-3.5 h-3.5" />}
+                  Manage subscription
+                </button>
+              )}
             </div>
           </div>
         </section>
@@ -274,84 +303,46 @@ export default function BillingPage() {
                 </div>
                 <div className="text-xs sp-subtle mt-1">
                   For {outstanding.period_key} · raw cost ${outstanding.raw_cost_usd?.toFixed(2)}
-                  {" "}vs included ${outstanding.included_usd?.toFixed(2)}.
+                  {" "}vs included ${outstanding.included_usd?.toFixed(2)}. We'll add this to your next invoice.
                 </div>
               </div>
-              <button
-                onClick={settleOverage}
-                disabled={busy === "overage"}
-                className="sp-btn sp-btn-primary text-sm"
-                data-testid="settle-overage-btn"
-              >
-                {busy === "overage" ? <Loader2 className="w-4 h-4 animate-spin" /> : <CreditCard className="w-4 h-4" />}
-                Pay invoice
-              </button>
             </div>
           </section>
         )}
 
         {/* Plan cards */}
         <section className="mb-6" data-testid="plan-cards">
-          <h3 className="text-sm uppercase tracking-widest sp-subtle mb-3">Change plan</h3>
+          <h3 className="text-sm uppercase tracking-widest sp-subtle mb-3">
+            {isSubscribed ? "Change plan" : "Choose a plan"}
+          </h3>
           <div className="grid md:grid-cols-3 gap-4">
             {plans.map(p => (
               <PlanCard
                 key={p.id}
                 plan={p}
-                current={currentPlan?.id === p.id}
+                current={currentPlan?.id === p.id && isSubscribed}
                 busy={busy === `plan:${p.id}`}
-                onSelect={() => upgradeTo(p.id)}
+                onSelect={() => {
+                  if (p.recurring) setPendingPlan(p);
+                  else setShowSales(true);
+                }}
               />
             ))}
           </div>
         </section>
 
-        {/* Extra seats */}
-        {currentPlan && currentPlan.extra_seat_usd > 0 && (
-          <section className="sp-glass-strong rounded-2xl p-5 sm:p-6 mb-6" data-testid="seats-card">
-            <div className="flex flex-wrap items-start justify-between gap-4">
-              <div>
-                <div className="text-xs uppercase tracking-widest sp-subtle flex items-center gap-2">
-                  <UserPlus className="w-3.5 h-3.5" /> Extra seats
-                </div>
-                <div className="text-sm mt-2">
-                  Add seats à-la-carte on top of your {currentPlan.name} plan —
-                  {" "}<span className="text-orange-300">${currentPlan.extra_seat_usd}/seat/mo</span>.
-                </div>
-                <div className="text-xs sp-subtle mt-1">
-                  Already added: {summary.extra_seats_quantity || 0} extra seat(s).
-                </div>
-              </div>
-              <div className="flex items-center gap-2">
-                {[1, 3, 5].map(q => (
-                  <button
-                    key={q}
-                    onClick={() => buySeats(q)}
-                    disabled={busy === `seats:${q}`}
-                    className="sp-btn sp-btn-ghost text-sm"
-                    data-testid={`buy-seats-${q}`}
-                  >
-                    {busy === `seats:${q}`
-                      ? <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                      : <>+{q} seat{q > 1 ? "s" : ""}</>}
-                  </button>
-                ))}
-              </div>
-            </div>
-          </section>
-        )}
-
         {/* Recent transactions */}
         <section className="sp-glass rounded-2xl p-5 sm:p-6" data-testid="transactions-card">
           <h3 className="text-xs uppercase tracking-widest sp-subtle mb-3 flex items-center gap-2">
-            <Receipt className="w-3.5 h-3.5" /> Recent transactions
+            <Receipt className="w-3.5 h-3.5" /> Recent charges
           </h3>
           {(summary?.recent_transactions || []).length === 0 ? (
             <div className="text-sm sp-subtle">No charges yet.</div>
           ) : (
             <ul className="divide-y divide-white/5">
               {summary.recent_transactions.map((t, idx) => (
-                <li key={t.session_id || idx} className="py-2 flex items-center justify-between text-sm">
+                <li key={t.session_id || t.invoice_id || idx}
+                    className="py-2 flex items-center justify-between text-sm">
                   <div>
                     <div className="capitalize">{t.kind}{t.plan_id ? ` · ${t.plan_id}` : ""}</div>
                     <div className="text-[11px] sp-subtle">
@@ -367,26 +358,66 @@ export default function BillingPage() {
             </ul>
           )}
         </section>
+
+        <FtcDisclosure />
       </main>
+
+      {pendingPlan && (
+        <ConsentModal
+          plan={pendingPlan}
+          busy={busy === `plan:${pendingPlan.id}`}
+          onCancel={() => setPendingPlan(null)}
+          onConfirm={confirmSubscribe}
+        />
+      )}
+      {showSales && (
+        <SalesContactModal
+          orgId={orgId}
+          onClose={() => setShowSales(false)}
+          onSubmitted={() => {
+            setShowSales(false);
+            toast.success("Thanks — our team will reach out shortly.");
+          }}
+        />
+      )}
     </div>
   );
 }
 
 // ─── Sub-components ─────────────────────────────────────────────────────
 
-function PlanStatusPill({ status, paidUntil }) {
-  if (status === "paid") {
+function buildConsentText(plan) {
+  return (
+    `I authorize Foundry to charge my payment method $${plan.monthly_usd.toFixed(2)}/mo ` +
+    `for the ${plan.name} plan on a recurring monthly basis. ` +
+    `My subscription will automatically renew each month until I cancel it ` +
+    `via the Manage subscription button on this page. Cancellations take effect ` +
+    `at the end of the current billing period.`
+  );
+}
+
+function PlanStatusPill({ status, cancelling, paidUntil }) {
+  if (cancelling) {
+    return (
+      <div className="inline-flex items-center gap-1.5 text-xs px-2 py-1 rounded-full bg-amber-500/15 text-amber-300"
+           data-testid="plan-status-cancelling">
+        <AlertTriangle className="w-3 h-3" />
+        Cancels on {paidUntil || "period end"}
+      </div>
+    );
+  }
+  if (status === "active") {
     return (
       <div className="inline-flex items-center gap-1.5 text-xs px-2 py-1 rounded-full bg-emerald-500/15 text-emerald-300"
-           data-testid="plan-status-paid">
+           data-testid="plan-status-active">
         <Check className="w-3 h-3" /> Active{paidUntil ? ` · renews ${paidUntil}` : ""}
       </div>
     );
   }
   return (
-    <div className="inline-flex items-center gap-1.5 text-xs px-2 py-1 rounded-full bg-orange-500/15 text-orange-300"
-         data-testid="plan-status-unpaid">
-      <AlertTriangle className="w-3 h-3" /> Unpaid
+    <div className="inline-flex items-center gap-1.5 text-xs px-2 py-1 rounded-full bg-white/10 sp-subtle"
+         data-testid="plan-status-none">
+      Not subscribed
     </div>
   );
 }
@@ -404,6 +435,13 @@ function TxnPill({ status }) {
 }
 
 function PlanCard({ plan, current, busy, onSelect }) {
+  const isRefine = !plan.recurring;
+  const cta = current
+    ? "Current plan"
+    : isRefine
+      ? "Contact sales"
+      : `Subscribe — $${plan.monthly_usd.toFixed(0)}/mo`;
+  const CtaIcon = current ? Check : isRefine ? Mail : ArrowUpRight;
   return (
     <div
       className={`sp-glass-strong rounded-2xl p-5 flex flex-col ${current ? "ring-1 ring-orange-300/40" : ""}`}
@@ -411,8 +449,9 @@ function PlanCard({ plan, current, busy, onSelect }) {
     >
       <div className="text-xs uppercase tracking-widest sp-subtle">{plan.name}</div>
       <div className="text-3xl font-medium mt-1">
-        ${plan.monthly_usd.toFixed(0)}
-        <span className="text-sm sp-subtle">/mo</span>
+        {plan.monthly_usd == null
+          ? <span className="text-2xl">Custom</span>
+          : <>${plan.monthly_usd.toFixed(0)}<span className="text-sm sp-subtle">/mo</span></>}
       </div>
       <div className="text-xs sp-subtle mt-1">{plan.tagline}</div>
       <ul className="text-sm space-y-1.5 mt-4 flex-1">
@@ -429,9 +468,213 @@ function PlanCard({ plan, current, busy, onSelect }) {
         className={`mt-5 sp-btn ${current ? "sp-btn-ghost" : "sp-btn-primary"} text-sm disabled:opacity-60 disabled:cursor-not-allowed`}
         data-testid={`plan-select-${plan.id}`}
       >
-        {busy ? <Loader2 className="w-4 h-4 animate-spin" /> : current ? <Check className="w-4 h-4" /> : <ArrowUpRight className="w-4 h-4" />}
-        {current ? "Current plan" : `Choose ${plan.name}`}
+        {busy ? <Loader2 className="w-4 h-4 animate-spin" /> : <CtaIcon className="w-4 h-4" />}
+        {cta}
       </button>
+      {!current && plan.recurring && (
+        <p className="text-[10px] sp-subtle mt-2 leading-relaxed">
+          Billed monthly. Cancel anytime.
+        </p>
+      )}
     </div>
   );
+}
+
+function FtcDisclosure() {
+  return (
+    <section
+      className="sp-glass rounded-2xl p-4 mt-6 text-[11px] sp-subtle leading-relaxed"
+      data-testid="ftc-disclosure"
+    >
+      <div className="flex items-start gap-2">
+        <Shield className="w-3.5 h-3.5 mt-0.5 flex-shrink-0" />
+        <div>
+          <strong className="text-white/80">How billing works:</strong>{" "}
+          Spark and Temper are recurring monthly subscriptions. Your card is
+          charged once on the day you subscribe and on the same date each month
+          thereafter, until you cancel via <em>Manage subscription</em>.
+          Cancellations take effect at the end of your current billing period —
+          you keep access until then, and you won't be charged again.
+          Refine is custom-priced — reach out for a quote.
+        </div>
+      </div>
+    </section>
+  );
+}
+
+function ConsentModal({ plan, busy, onCancel, onConfirm }) {
+  const [agreed, setAgreed] = useState(false);
+  const consentText = buildConsentText(plan);
+  const node = (
+    <div
+      className="fixed inset-0 z-[1000] flex items-center justify-center p-4"
+      style={{ background: "rgba(0,0,0,0.72)" }}
+      onClick={onCancel}
+      data-testid="consent-modal"
+    >
+      <div
+        className="sp-glass-strong rounded-2xl p-6 w-full max-w-lg"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="flex items-start justify-between mb-3">
+          <div>
+            <div className="text-xs uppercase tracking-widest sp-subtle">Confirm subscription</div>
+            <h3 className="sp-display text-xl mt-1">{plan.name} — ${plan.monthly_usd.toFixed(0)}/month</h3>
+          </div>
+          <button onClick={onCancel} className="sp-btn sp-btn-ghost !p-2" data-testid="consent-close">
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+
+        <p className="text-sm sp-subtle leading-relaxed mb-4">
+          You're about to start a recurring monthly subscription. Before we hand
+          you to Stripe to enter your card, please confirm you understand the
+          terms below.
+        </p>
+
+        <div className="sp-glass rounded-xl p-3 text-sm leading-relaxed mb-4"
+             data-testid="consent-text-block">
+          {consentText}
+        </div>
+
+        <label className="flex items-start gap-2 cursor-pointer text-sm">
+          <input
+            type="checkbox"
+            checked={agreed}
+            onChange={(e) => setAgreed(e.target.checked)}
+            className="mt-1 accent-orange-400"
+            data-testid="consent-checkbox"
+          />
+          <span>
+            I authorize this recurring charge and understand my subscription
+            auto-renews monthly until I cancel it from the Manage subscription
+            page.
+          </span>
+        </label>
+
+        <div className="flex items-center justify-end gap-2 mt-5">
+          <button
+            onClick={onCancel}
+            disabled={busy}
+            className="sp-btn sp-btn-ghost text-sm"
+            data-testid="consent-cancel"
+          >
+            Cancel
+          </button>
+          <button
+            onClick={onConfirm}
+            disabled={!agreed || busy}
+            className="sp-btn sp-btn-primary text-sm disabled:opacity-60 disabled:cursor-not-allowed"
+            data-testid="consent-confirm"
+          >
+            {busy ? <Loader2 className="w-4 h-4 animate-spin" /> : <ExternalLink className="w-4 h-4" />}
+            Continue to Stripe
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+  return createPortal(node, document.body);
+}
+
+function SalesContactModal({ orgId, onClose, onSubmitted }) {
+  const [name, setName] = useState("");
+  const [email, setEmail] = useState("");
+  const [company, setCompany] = useState("");
+  const [message, setMessage] = useState("");
+  const [submitting, setSubmitting] = useState(false);
+
+  const submit = async (e) => {
+    e.preventDefault();
+    if (!name.trim() || !email.trim()) {
+      toast.error("Name and email are required.");
+      return;
+    }
+    setSubmitting(true);
+    try {
+      await api.post(`/orgs/${orgId}/billing/contact-sales`, {
+        name: name.trim(), email: email.trim(),
+        company: company.trim(), message: message.trim(),
+      });
+      onSubmitted?.();
+    } catch (err) {
+      toast.error(err?.response?.data?.detail || "Could not submit your inquiry.");
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  const node = (
+    <div
+      className="fixed inset-0 z-[1000] flex items-center justify-center p-4"
+      style={{ background: "rgba(0,0,0,0.72)" }}
+      onClick={onClose}
+      data-testid="sales-modal"
+    >
+      <form
+        onSubmit={submit}
+        onClick={(e) => e.stopPropagation()}
+        className="sp-glass-strong rounded-2xl p-6 w-full max-w-lg"
+      >
+        <div className="flex items-start justify-between mb-3">
+          <div>
+            <div className="text-xs uppercase tracking-widest sp-subtle">Refine</div>
+            <h3 className="sp-display text-xl mt-1">Talk to our team</h3>
+          </div>
+          <button type="button" onClick={onClose} className="sp-btn sp-btn-ghost !p-2"
+                  data-testid="sales-close">
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+        <p className="text-sm sp-subtle leading-relaxed mb-4">
+          Refine is custom-priced based on the size of your team and how you'll
+          use the platform. Tell us a bit about you and we'll get back within
+          one business day.
+        </p>
+        <div className="space-y-3">
+          <input
+            value={name} onChange={(e) => setName(e.target.value)}
+            placeholder="Your name"
+            className="sp-input w-full text-sm"
+            data-testid="sales-name"
+            required
+          />
+          <input
+            type="email"
+            value={email} onChange={(e) => setEmail(e.target.value)}
+            placeholder="Work email"
+            className="sp-input w-full text-sm"
+            data-testid="sales-email"
+            required
+          />
+          <input
+            value={company} onChange={(e) => setCompany(e.target.value)}
+            placeholder="Company (optional)"
+            className="sp-input w-full text-sm"
+            data-testid="sales-company"
+          />
+          <textarea
+            value={message} onChange={(e) => setMessage(e.target.value)}
+            placeholder="What are you trying to do with Foundry? (optional)"
+            className="sp-input w-full text-sm min-h-[100px]"
+            data-testid="sales-message"
+          />
+        </div>
+        <div className="flex items-center justify-end gap-2 mt-5">
+          <button type="button" onClick={onClose} disabled={submitting}
+                  className="sp-btn sp-btn-ghost text-sm"
+                  data-testid="sales-cancel-btn">
+            Cancel
+          </button>
+          <button type="submit" disabled={submitting}
+                  className="sp-btn sp-btn-primary text-sm"
+                  data-testid="sales-submit-btn">
+            {submitting ? <Loader2 className="w-4 h-4 animate-spin" /> : <Mail className="w-4 h-4" />}
+            Send inquiry
+          </button>
+        </div>
+      </form>
+    </div>
+  );
+  return createPortal(node, document.body);
 }

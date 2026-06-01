@@ -9741,7 +9741,7 @@ async def startup():
     # idempotent (upserts by org_id + period_key), so duplicate firings
     # caused by pod restarts on the 1st are safe.
     try:
-        from billing import aggregate_overages_for_previous_month
+        from billing import aggregate_overages_for_previous_month, ensure_stripe_catalogue
 
         async def _run_overage_aggregation():
             try:
@@ -9756,6 +9756,15 @@ async def startup():
             id="billing:monthly-overage-aggregation",
             replace_existing=True,
         )
+
+        # Idempotently provision Stripe Products + recurring Prices for
+        # every plan in the catalogue. Safe to call on every boot.
+        try:
+            mapped = await ensure_stripe_catalogue()
+            if mapped:
+                logger.info("Stripe catalogue ready: %s", mapped)
+        except Exception:
+            logger.exception("Stripe catalogue provisioning failed (continuing).")
     except Exception:
         logger.exception("Could not register billing aggregation job")
     async for s in db.schedules.find({"active": True}):
