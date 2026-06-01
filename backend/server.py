@@ -2641,7 +2641,8 @@ def _should_cancel(conv_id: str, started_at: float) -> bool:
 def build_system_prompt(agent_id: str, team: dict, current_user_name: Optional[str] = None,
                         org_assets: Optional[List[dict]] = None,
                         org: Optional[dict] = None,
-                        latest_user_text: Optional[str] = None) -> str:
+                        latest_user_text: Optional[str] = None,
+                        org_notes: Optional[List[dict]] = None) -> str:
     meta = AGENTS[agent_id]
     sp = team.get("soulprint") or {}
     lines = [meta["system"]]
@@ -2697,6 +2698,18 @@ def build_system_prompt(agent_id: str, team: dict, current_user_name: Optional[s
                 lines.append("\n" + fk_block)
         except Exception as exc:
             logger.warning("platform_knowledge inject failed: %s", exc)
+    # Per-org Notes — captured user thoughts that agents should fold
+    # into their context. Only includes notes the viewer can see AND
+    # has `share_with_agents` enabled (default true; user can flip
+    # per-note). Empty when no notes exist.
+    if org_notes:
+        try:
+            from notes import format_notes_for_prompt
+            notes_block = format_notes_for_prompt(org_notes)
+            if notes_block:
+                lines.append("\n" + notes_block)
+        except Exception as exc:
+            logger.warning("org_notes inject failed: %s", exc)
     user_ctx_block = _user_context_block()
     if user_ctx_block:
         lines.append("\n" + user_ctx_block)
@@ -4139,9 +4152,20 @@ async def generate_agent_reply(conv: dict, team: dict, agent_id: str,
     except Exception as exc:
         logger.warning("org load failed: %s", exc)
 
+    # Pull agent-visible org notes (capped, share_with_agents=True only).
+    try:
+        from notes import get_agent_context_notes
+        org_notes = await get_agent_context_notes(
+            db, org_id=team.get("org_id", ""), viewer_user_id=u["id"],
+            team_id=team.get("id"),
+        )
+    except Exception as exc:
+        logger.warning("get_agent_context_notes failed: %s", exc)
+        org_notes = []
     system = build_system_prompt(agent_id, team, current_user_name=latest_user_name,
                                  org_assets=org_assets_brief, org=org_doc,
-                                 latest_user_text=latest_user_text)
+                                 latest_user_text=latest_user_text,
+                                 org_notes=org_notes)
     # Inject user-scoped memories (Phase 1). Empty string when the user
     # has no extracted/manual memories yet, so the prompt stays clean.
     # STRICT org isolation — only memories tagged with this org's id
@@ -8476,6 +8500,15 @@ social_r = make_social_router(
     save_remote_url_to_uploads=_save_remote_url_to_uploads,
 )
 app.include_router(social_r)
+
+# ── Per-org Notes — text + voice capture, agent context injection ────────
+from notes import make_notes_router  # noqa: E402
+notes_r = make_notes_router(
+    db=db,
+    require_org_member=require_org_member,
+    get_current_user=get_current_user,
+)
+app.include_router(notes_r)
 
 # ── Custom agents — user-defined agents per org (Temper+ feature) ─────────
 from custom_agents import (  # noqa: E402

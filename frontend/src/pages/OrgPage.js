@@ -5,6 +5,8 @@ import TopBar from "../components/TopBar";
 import { toast } from "sonner";
 import { Plus, Users, ArrowRight, Copy, UserPlus, FileText, Image as ImageIcon, FileBox, Trash2, UploadCloud, Download, File as FileIcon, MessageCircle, Pencil, Save, X as XIcon, RefreshCw, Megaphone, Paperclip, Send, Loader2, Rocket, Network, Minimize2, ChevronRight, BarChart3 } from "lucide-react";
 import BrandAssetsPanel from "../components/BrandAssetsPanel";
+import NotesPage from "./NotesPage";
+import GlobalNoteButton from "../components/GlobalNoteButton";
 import CustomAgentsPanel from "../components/CustomAgentsPanel";
 import ActivityOverview from "../components/ActivityOverview";
 import DocumentsPanel from "../components/DocumentsPanel";
@@ -408,6 +410,14 @@ export default function OrgPage() {
 
   return (
     <div className="min-h-screen">
+      <GlobalNoteButton orgId={orgId} onNavigateToNotes={() => {
+        // Scroll to the Notes section + open the editor by setting
+        // hash NotesPage will read on mount.
+        if (typeof document !== "undefined") {
+          document.getElementById("notes")?.scrollIntoView({ behavior: "smooth", block: "start" });
+        }
+        if (typeof window !== "undefined") window.location.hash = "#notes:new";
+      }} />
       <TopBar
         right={
           canInvite && (
@@ -989,6 +999,12 @@ export default function OrgPage() {
                   <SpendDashboard orgId={orgId} />
                 </div>
               )}
+
+              {/* Per-org Notes — text + voice capture with optional
+                  agent-context injection. */}
+              <div className="sp-glass-strong rounded-2xl p-6 mb-6" id="notes" data-testid="notes-section">
+                <NotesPage orgId={orgId} />
+              </div>
 
               {/* Connections — each member connects their own SaaS accounts
                   (Gmail, Slack, Notion, HubSpot, Calendar) via Composio's
