@@ -379,6 +379,10 @@ export default function SocialPage() {
       // "partial" rolls into the Published tab — at least some
       // platforms made it through.
       if (p.status === "partial") c.published += 1;
+      // "publishing" is the in-flight live-post state — rolls into
+      // Scheduled so the badge count doesn't blink down to 0 while a
+      // post is mid-publish.
+      else if (p.status === "publishing") c.queued += 1;
       else if (c[p.status] !== undefined) c[p.status] += 1;
     });
     return c;
@@ -398,11 +402,16 @@ export default function SocialPage() {
     ["failed", "Failed"],
   ];
   const visible = useMemo(
-    () => posts.filter((p) => (
-      tab === "published"
-        ? (p.status === "published" || p.status === "partial")
-        : p.status === tab
-    )),
+    () => posts.filter((p) => {
+      if (tab === "published") return p.status === "published" || p.status === "partial";
+      // `publishing` is the brief in-flight status while Composio fires
+      // the live post — keep those posts visible inside the Scheduled
+      // tab so the card doesn't VANISH for a few seconds (the previous
+      // behaviour was being misread as "image disappeared on schedule"
+      // since the entire row would briefly drop out of the queue).
+      if (tab === "queued")    return p.status === "queued" || p.status === "publishing";
+      return p.status === tab;
+    }),
     [posts, tab],
   );
 
