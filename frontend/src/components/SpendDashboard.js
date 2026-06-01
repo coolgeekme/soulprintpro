@@ -1,4 +1,5 @@
 import React, { useEffect, useState } from "react";
+import { Link } from "react-router-dom";
 import {
   Coins, Users, FileBarChart, Rocket, Loader2, ChevronDown, ChevronUp,
 } from "lucide-react";
@@ -92,7 +93,13 @@ export default function SpendDashboard({ orgId }) {
           </h3>
           <p className="text-[11px] sp-subtle mt-0.5">
             {isCurrent ? "This month, so far." : "Previous calendar month."}{" "}
-            Phase B (Stripe billing) targets June 1 — until then, this is for visibility only.
+            <Link
+              to={`/app/org/${orgId}/billing`}
+              className="text-orange-300 hover:underline"
+              data-testid="spend-manage-billing-link"
+            >
+              Manage plan &amp; billing →
+            </Link>
           </p>
         </div>
         <div className="flex gap-1 text-[11px]" role="tablist">

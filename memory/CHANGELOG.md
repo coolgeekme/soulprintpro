@@ -663,9 +663,10 @@ Backend reboots clean; existing pre-existing failures unrelated.
 | **May 5–7, 2026** | iPhone PWA notch fix, theme-aware logo wiring, anti-hallucination (auto-fetch user URLs as ground truth), brand assets owner-gating, bulletproof artifact rendering, GridFS-backed logo persistence |
 | **May 8–10, 2026** | Foundry rebrand (from SoulPrint Engine Pro), Pre-Launch Access Gate, Public Business Audits (`/get-audit`), Crucible (live remote browser + credential vault), pitch deck refresh, ArcheForge Studios pricing arm |
 | **May 11–12, 2026** | Custom Agents, Interactive App Artifacts (sandboxed iframe + share URL + ZIP export), unified `⌘K` Search with AI synthesis + access controls, In-App Audits with watchdog & retry, JWT secret persistence (no more re-login after deploys), Mission research-breadth gate, Pricing matrix + Add-ons strip, theme toggle on homepage |
+| **Jun 1, 2026** | **Billing Phase B + C** — Stripe Checkout for Spark/Temper/Refine plan upgrades, à-la-carte extra-seat purchases, and one-click "pay overage" flow. New per-org Billing dashboard at `/app/org/:id/billing` shows current plan, this-month compute spend vs included budget, projected overage with markup math, outstanding invoice, and recent transactions. Monthly APScheduler job aggregates the previous month's LLM cost into `billing_overage_invoices` (idempotent, paid invoices preserved). Notes editor modal now self-hosts via React Portal so the floating "+ New note" FAB works regardless of which OrgPage sections are collapsed. |
 
 _Roughly 3.5 weeks from blank repo to the platform that lives at `foundryagents.ai` today._
 
 ---
 
-_Last updated: May 12, 2026 — kept in `/app/memory/CHANGELOG.md`_
+_Last updated: Jun 1, 2026 — kept in `/app/memory/CHANGELOG.md`_

@@ -8510,6 +8510,15 @@ notes_r = make_notes_router(
 )
 app.include_router(notes_r)
 
+# ── Billing — Stripe Checkout for plan upgrades, seat add-ons, overage ───
+from billing import make_billing_router  # noqa: E402
+billing_r = make_billing_router(
+    db=db,
+    get_current_user=get_current_user,
+    require_org_member=require_org_member,
+)
+app.include_router(billing_r)
+
 # ── Custom agents — user-defined agents per org (Temper+ feature) ─────────
 from custom_agents import (  # noqa: E402
     router as _custom_agents_router,
@@ -9726,6 +9735,29 @@ async def startup():
         schedule_privacy_jobs(scheduler, db)
     except Exception:
         logger.exception("Failed to register privacy scheduler jobs")
+
+    # Monthly billing aggregation — run on day-1 02:00 UTC to close
+    # out the previous month and surface overage invoices. The job is
+    # idempotent (upserts by org_id + period_key), so duplicate firings
+    # caused by pod restarts on the 1st are safe.
+    try:
+        from billing import aggregate_overages_for_previous_month
+
+        async def _run_overage_aggregation():
+            try:
+                rows = await aggregate_overages_for_previous_month(db)
+                logger.info("Monthly overage aggregation closed %d invoice(s)", len(rows))
+            except Exception:
+                logger.exception("Monthly overage aggregation failed")
+
+        scheduler.add_job(
+            _run_overage_aggregation,
+            trigger=CronTrigger(day=1, hour=2, minute=0, timezone="UTC"),
+            id="billing:monthly-overage-aggregation",
+            replace_existing=True,
+        )
+    except Exception:
+        logger.exception("Could not register billing aggregation job")
     async for s in db.schedules.find({"active": True}):
         try:
             _scheduler_register(s)

@@ -221,8 +221,13 @@ function NoteRow({ note, onEdit, onDelete }) {
 /**
  * NoteEditor — modal-style sheet for create + edit. Surfaces a voice
  * recorder when supported, otherwise falls back to text-only.
+ *
+ * Exported (named) so the floating GlobalNoteButton can mount its own
+ * editor without depending on NotesPage being currently rendered (the
+ * NotesPage component is inside a CollapsibleSection on OrgPage that
+ * unmounts its children when collapsed).
  */
-function NoteEditor({ orgId, initial, onClose, onSaved }) {
+export function NoteEditor({ orgId, initial, onClose, onSaved }) {
   const isNew = !initial;
   const [title, setTitle] = useState(initial?.title || "");
   const [body, setBody] = useState(initial?.body || "");
@@ -327,9 +332,9 @@ function NoteEditor({ orgId, initial, onClose, onSaved }) {
     }
   };
 
-  return (
+  return createPortal(
     <div
-      className="fixed inset-0 z-[90] flex items-center justify-center p-4"
+      className="fixed inset-0 z-[1000] flex items-center justify-center p-4"
       style={{ background: "rgba(0,0,0,0.72)" }}
       onClick={onClose}
       data-testid="note-editor-modal"
@@ -467,6 +472,7 @@ function NoteEditor({ orgId, initial, onClose, onSaved }) {
           </button>
         </div>
       </form>
-    </div>
+    </div>,
+    document.body
   );
 }

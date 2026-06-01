@@ -37,6 +37,7 @@ import MockupHomeV2Page from "./pages/MockupHomeV2Page";
 import MockupPricingV2Page from "./pages/MockupPricingV2Page";
 import GitHubCallbackPage from "./pages/GitHubCallbackPage";
 import AccountPage from "./pages/AccountPage";
+import BillingPage from "./pages/BillingPage";
 import DeckPage from "./pages/DeckPage";
 import AdminDashboard from "./pages/AdminDashboard";
 import PublicAuditPage from "./pages/PublicAuditPage";
@@ -102,6 +103,7 @@ function App() {
                 <Route path="/app" element={<Protected><AppHome /></Protected>} />
                 <Route path="/app/account" element={<Protected><AccountPage /></Protected>} />
                 <Route path="/app/org/:orgId" element={<Protected><OrgPage /></Protected>} />
+                <Route path="/app/org/:orgId/billing" element={<Protected><BillingPage /></Protected>} />
                 <Route path="/app/ws/:wsId" element={<Protected><WorkspaceSettingsPage /></Protected>} />
                 <Route path="/app/org/:orgId/map" element={<Protected><OrgMapPage /></Protected>} />
                 <Route path="/app/org/:orgId/social" element={<Protected><SocialPage /></Protected>} />

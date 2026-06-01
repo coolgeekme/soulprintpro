@@ -1,47 +1,37 @@
 /**
- * GlobalNoteButton — floating FAB on every org screen. Opens the same
- * NoteEditor used inside NotesPage, but mounted at the document root
- * via React Portal so it isn't trapped by any sibling `sp-glass-strong`
- * stacking context (lesson from AssetPickerModal + VideoGenerationModal).
+ * GlobalNoteButton — floating "+ New note" FAB on every org screen.
  *
- * Use: <GlobalNoteButton orgId={orgId} /> dropped inside any org page
- * wrapper. The button sits bottom-right above mobile safe areas;
- * opens a NoteEditor modal that saves through the standard
- * /api/orgs/{id}/notes endpoints.
+ * Why this lives at the document root via React Portal:
+ *   • Parent containers use `backdrop-filter: blur` (the `sp-glass-strong`
+ *     class) which creates a strict CSS stacking context. Any absolutely
+ *     positioned descendant gets trapped *under* sibling glass cards.
+ *   • Mounting at `document.body` puts the FAB above every glass surface
+ *     without needing absurd z-index gymnastics on every parent.
+ *
+ * Why the editor lives inside this component (not delegated to NotesPage):
+ *   • NotesPage is rendered inside a CollapsibleSection on OrgPage that
+ *     UNMOUNTS its children when collapsed (which is the default state
+ *     for a fully-configured org). If we delegate via a URL hash, the
+ *     hash event has no listener and the modal never opens.
+ *   • Mounting the editor here makes the FAB self-sufficient: it works
+ *     on every screen, regardless of which sections are expanded.
  */
 import React, { useState } from "react";
 import { createPortal } from "react-dom";
 import { NotebookPen } from "lucide-react";
+import { NoteEditor } from "../pages/NotesPage";
+import { toast } from "sonner";
 
-// We re-use the editor that NotesPage exports. To avoid a circular
-// import we import the file directly — NotesPage exports its
-// internal `NoteEditor` via a named re-export at the bottom of this
-// file (kept here so callers don't need to know it's actually defined
-// inside NotesPage.js).
-
-import NotesPage from "../pages/NotesPage"; // eslint-disable-line no-unused-vars
-// NoteEditor isn't named-exported from NotesPage today; we duplicate
-// the trigger here and let NotesPage own the editor.  For the
-// floating button we just punch a small re-routing card that links to
-// the Notes tab + opens its "new note" flow via URL hash.
-
-export default function GlobalNoteButton({ orgId, onNavigateToNotes }) {
+export default function GlobalNoteButton({ orgId }) {
   const [hover, setHover] = useState(false);
+  const [open, setOpen] = useState(false);
+
   if (!orgId) return null;
-  const handleClick = () => {
-    // Delegate to parent if provided (org page knows how to switch
-    // tabs in place); otherwise navigate via hash so NotesPage can
-    // pick up the "open new note" intent from the URL.
-    if (onNavigateToNotes) {
-      onNavigateToNotes();
-    } else if (typeof window !== "undefined") {
-      window.location.hash = "#notes:new";
-    }
-  };
-  return createPortal(
+
+  const fab = createPortal(
     <button
       type="button"
-      onClick={handleClick}
+      onClick={() => setOpen(true)}
       onMouseEnter={() => setHover(true)}
       onMouseLeave={() => setHover(false)}
       className="sp-btn sp-btn-primary fixed z-[80] inline-flex items-center gap-2 shadow-xl"
@@ -67,5 +57,22 @@ export default function GlobalNoteButton({ orgId, onNavigateToNotes }) {
       </span>
     </button>,
     document.body,
+  );
+
+  return (
+    <>
+      {fab}
+      {open && (
+        <NoteEditor
+          orgId={orgId}
+          initial={null}
+          onClose={() => setOpen(false)}
+          onSaved={() => {
+            setOpen(false);
+            toast.success("Note saved");
+          }}
+        />
+      )}
+    </>
   );
 }
