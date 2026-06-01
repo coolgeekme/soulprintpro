@@ -9,6 +9,7 @@
  * screen so users can capture mid-thought without leaving context.
  */
 import React, { useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { Loader2, Mic, MicOff, Send, Trash2, Pencil, X, Search, NotebookPen, Users, Lock, Globe2, Bot, EyeOff } from "lucide-react";
 import { toast } from "sonner";
 import api from "../lib/api";
