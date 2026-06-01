@@ -101,7 +101,21 @@ export default function AppHome() {
       // card from there to start chatting.
       nav(`/app/org/${data.id}`);
     } catch (err) {
-      toast.error(err?.response?.data?.detail || "Failed to create");
+      const status = err?.response?.status;
+      const detail = err?.response?.data?.detail || "Failed to create";
+      if (status === 402) {
+        // Plan-limit hit — show an actionable toast that deep-links to
+        // the billing page so the user can upgrade in one click.
+        toast.error(detail, {
+          action: {
+            label: "Upgrade",
+            onClick: () => nav("/app/billing"),
+          },
+          duration: 10000,
+        });
+      } else {
+        toast.error(detail);
+      }
     } finally {
       setCreating(false);
     }

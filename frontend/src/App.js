@@ -103,7 +103,7 @@ function App() {
                 <Route path="/app" element={<Protected><AppHome /></Protected>} />
                 <Route path="/app/account" element={<Protected><AccountPage /></Protected>} />
                 <Route path="/app/org/:orgId" element={<Protected><OrgPage /></Protected>} />
-                <Route path="/app/org/:orgId/billing" element={<Protected><BillingPage /></Protected>} />
+                <Route path="/app/billing" element={<Protected><BillingPage /></Protected>} />
                 <Route path="/app/ws/:wsId" element={<Protected><WorkspaceSettingsPage /></Protected>} />
                 <Route path="/app/org/:orgId/map" element={<Protected><OrgMapPage /></Protected>} />
                 <Route path="/app/org/:orgId/social" element={<Protected><SocialPage /></Protected>} />

@@ -94,7 +94,7 @@ export default function SpendDashboard({ orgId }) {
           <p className="text-[11px] sp-subtle mt-0.5">
             {isCurrent ? "This month, so far." : "Previous calendar month."}{" "}
             <Link
-              to={`/app/org/${orgId}/billing`}
+              to={`/app/billing`}
               className="text-orange-300 hover:underline"
               data-testid="spend-manage-billing-link"
             >

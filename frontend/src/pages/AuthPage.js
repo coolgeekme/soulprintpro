@@ -53,9 +53,9 @@ export default function AuthPage() {
   }
 
   /** Land the user after a successful auth. If they came in with a
-   *  plan intent, fetch their orgs and deep-link to the billing page
-   *  with the consent modal already armed. Falls back to `/app` if we
-   *  can't resolve an org (very new users, before workspace seed). */
+   *  plan intent, deep-link to the user-level billing page with the
+   *  consent modal armed for that plan. Falls back to `/app` if no
+   *  intent is set. */
   const landAfterAuth = async () => {
     let plan = "";
     try { plan = window.localStorage.getItem("foundry:planIntent") || ""; } catch {}
@@ -64,15 +64,7 @@ export default function AuthPage() {
       return;
     }
     try { window.localStorage.removeItem("foundry:planIntent"); } catch {}
-    try {
-      const { data } = await api.get("/orgs");
-      const orgId = Array.isArray(data) && data[0]?.id;
-      if (orgId) {
-        navigate(`/app/org/${orgId}/billing?subscribe=${plan}`);
-        return;
-      }
-    } catch {/* fall-through to /app */}
-    navigate("/app");
+    navigate(`/app/billing?subscribe=${plan}`);
   };
 
   // Email/password submit. When Firebase is enabled we use it as the

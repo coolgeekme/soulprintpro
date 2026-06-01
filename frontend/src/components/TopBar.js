@@ -199,13 +199,7 @@ export default function TopBar({ children, right = null }) {
                   Account settings
                 </DropdownMenuItem>
                 <DropdownMenuItem
-                  onSelect={() => {
-                    // Route to the active org's billing page when we
-                    // have one cached, otherwise drop the user on the
-                    // account page so they can pick an org from there.
-                    if (activeOrgId) nav(`/app/org/${activeOrgId}/billing`);
-                    else nav("/app/account");
-                  }}
+                  onSelect={() => nav("/app/billing")}
                   data-testid="topbar-menu-billing"
                   className="cursor-pointer"
                 >

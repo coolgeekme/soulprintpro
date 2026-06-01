@@ -67,14 +67,15 @@ PLANS: Dict[str, Dict[str, Any]] = {
     "spark": {
         "id": "spark",
         "name": "Spark",
-        "tagline": "Solo operator. One seat, one workspace.",
+        "tagline": "Solo operator. One workspace, focused.",
         "monthly_usd": 80.0,
+        "orgs_included": 1,
         "seats_included": 1,
         "included_llm_budget_usd": 20.0,
         "recurring": True,
         "lookup_key": "foundry_spark_monthly_v1",
         "features": [
-            "1 seat included",
+            "1 workspace included",
             "$20/mo of agent compute included",
             "Unlimited org notes + asset library",
             "Pay-as-you-go for any overage",
@@ -83,14 +84,16 @@ PLANS: Dict[str, Dict[str, Any]] = {
     "temper": {
         "id": "temper",
         "name": "Temper",
-        "tagline": "Growing team. Five seats, shared agents.",
+        "tagline": "Growing team. Up to 3 workspaces.",
         "monthly_usd": 300.0,
+        "orgs_included": 3,
         "seats_included": 5,
         "included_llm_budget_usd": 100.0,
         "recurring": True,
         "lookup_key": "foundry_temper_monthly_v1",
         "features": [
-            "5 seats included",
+            "3 workspaces included",
+            "5 seats included (shared across workspaces)",
             "$100/mo of agent compute included",
             "Crucible (mission agents) unlocked",
             "Recurring scheduled missions",
@@ -99,13 +102,15 @@ PLANS: Dict[str, Dict[str, Any]] = {
     "refine": {
         "id": "refine",
         "name": "Refine",
-        "tagline": "Agency-scale. Unlimited seats, white-glove.",
+        "tagline": "Agency-scale. Unlimited workspaces, white-glove.",
         "monthly_usd": None,           # custom — sales-led
+        "orgs_included": 10_000,
         "seats_included": 10_000,
         "included_llm_budget_usd": 500.0,
         "recurring": False,
         "lookup_key": None,
         "features": [
+            "Unlimited workspaces",
             "Unlimited seats",
             "Generous agent-compute included (negotiated)",
             "White-label audit PDFs",
@@ -206,14 +211,52 @@ async def _org_doc(db, org_id: str) -> Optional[Dict[str, Any]]:
         return None
 
 
-async def _org_plan(db, org_id: str) -> str:
-    org = await _org_doc(db, org_id)
-    return (org or {}).get("plan") or "spark"
+async def _user_doc(db, user_id: str) -> Optional[Dict[str, Any]]:
+    try:
+        return await db.users.find_one({"_id": ObjectId(user_id)})
+    except Exception:
+        return None
 
 
-async def _outstanding_overage_invoice(db, org_id: str) -> Optional[Dict[str, Any]]:
+async def _user_plan(db, user_id: str) -> str:
+    """Current effective plan for the user. Defaults to spark when the
+    user has never subscribed."""
+    user = await _user_doc(db, user_id)
+    return (user or {}).get("plan") or "spark"
+
+
+async def _user_owned_org_count(db, user_id: str) -> int:
+    """How many orgs this user currently owns. Used by the plan-limit
+    gate on org creation."""
+    return await db.org_members.count_documents(
+        {"user_id": user_id, "role": "owner"},
+    )
+
+
+async def _user_llm_spend(db, user_id: str, start: datetime, end: datetime) -> float:
+    """Sum `llm_calls.cost_usd` across every org this user owns over the
+    window. Subscriptions are user-level so spend rolls up across all
+    their workspaces."""
+    org_ids = []
+    async for m in db.org_members.find(
+        {"user_id": user_id, "role": "owner"}, {"org_id": 1, "_id": 0},
+    ):
+        if m.get("org_id"):
+            org_ids.append(m["org_id"])
+    if not org_ids:
+        return 0.0
+    cur = db.llm_calls.aggregate([
+        {"$match": {"org_id": {"$in": org_ids}, "created_at": {"$gte": start, "$lt": end}}},
+        {"$group": {"_id": None, "cost_usd": {"$sum": "$cost_usd"}}},
+    ])
+    rows = await cur.to_list(1)
+    return float(rows[0]["cost_usd"]) if rows else 0.0
+
+
+async def _outstanding_overage_invoice(db, user_id: str) -> Optional[Dict[str, Any]]:
+    """Find the user's most recent unpaid overage invoice."""
     return await db.billing_overage_invoices.find_one(
-        {"org_id": org_id, "status": {"$in": ["open", "pending"]}},
+        {"user_id": user_id, "status": {"$in": ["open", "pending"]}},
         sort=[("period_end", -1)],
         projection={"_id": 0},
     )
@@ -321,67 +364,125 @@ async def _stripe_call(fn, *args, **kwargs):
 # ─── Stripe Customer per org ─────────────────────────────────────────────
 
 
-async def _get_or_create_customer(db, org_id: str, user: Dict[str, Any]) -> str:
-    """Return the Stripe Customer ID for the org, creating it if needed."""
-    org = await _org_doc(db, org_id)
-    if not org:
-        raise HTTPException(404, "Org not found.")
-    cust_id = org.get("stripe_customer_id")
+async def _get_or_create_customer(db, user: Dict[str, Any]) -> str:
+    """Return the Stripe Customer ID for the user, creating it on
+    first use. Subscriptions are user-level — one customer per user,
+    not per org."""
+    user_doc = await _user_doc(db, user["id"])
+    if not user_doc:
+        raise HTTPException(404, "User not found.")
+    cust_id = user_doc.get("stripe_customer_id")
     if cust_id:
         return cust_id
     _configure_stripe()
     customer = await _stripe_call(
         stripe.Customer.create,
         email=user.get("email"),
-        name=org.get("name") or "Foundry Org",
+        name=user.get("name") or user.get("email") or "Foundry User",
         metadata={
-            "org_id": org_id,
-            "org_name": org.get("name") or "",
-            "created_by_user_id": user.get("id") or "",
+            "user_id": user["id"],
+            "user_email": user.get("email") or "",
         },
     )
-    await db.organizations.update_one(
-        {"_id": org["_id"]},
+    await db.users.update_one(
+        {"_id": user_doc["_id"]},
         {"$set": {"stripe_customer_id": customer.id}},
     )
     return customer.id
+
+
+async def user_plan_limits(db, user_id: str, user_email: str | None = None) -> Dict[str, Any]:
+    """Resolve the effective plan + org limit for a user. Staff
+    members get Refine's limits regardless of subscription state.
+    Returns `{plan, plan_id, orgs_limit, is_staff}`.
+    """
+    from staff import is_staff_email
+    if is_staff_email(user_email or ""):
+        return {
+            "plan": PLANS["refine"], "plan_id": "refine",
+            "orgs_limit": PLANS["refine"]["orgs_included"], "is_staff": True,
+        }
+    plan_id = await _user_plan(db, user_id)
+    plan = PLANS.get(plan_id, PLANS["spark"])
+    return {
+        "plan": plan, "plan_id": plan_id,
+        "orgs_limit": plan["orgs_included"], "is_staff": False,
+    }
+
+
+async def enforce_org_creation_limit(db, user: Dict[str, Any]) -> None:
+    """Raise 402 if the user is at their plan's org limit. Called from
+    the server's org-creation endpoint right before insert."""
+    limits = await user_plan_limits(db, user["id"], user.get("email"))
+    if limits["is_staff"]:
+        return
+    owned = await _user_owned_org_count(db, user["id"])
+    if owned >= limits["orgs_limit"]:
+        raise HTTPException(
+            402,
+            f"Your {limits['plan']['name']} plan includes {limits['orgs_limit']} "
+            f"workspace{'s' if limits['orgs_limit'] != 1 else ''}. "
+            "Upgrade your plan to create more.",
+        )
 
 
 # ─── Phase C — monthly overage aggregation ────────────────────────────────
 
 
 async def aggregate_overages_for_previous_month(db) -> List[Dict[str, Any]]:
-    """Close out last month: for every org that exceeded its plan's
-    included LLM budget, write an invoice row. Idempotent — running
-    twice for the same month does not double-bill, and paid invoices
-    are never overwritten.
+    """Close out last month: for every USER whose pooled LLM spend
+    across all orgs they own exceeded their plan's included budget,
+    write an invoice row. Idempotent — running twice for the same
+    month does not double-bill, and paid invoices are never overwritten.
     """
+    from staff import is_staff_email
     prev_start, cur_start = _previous_month_window()
     period_key = prev_start.strftime("%Y-%m")
     invoices: List[Dict[str, Any]] = []
 
-    cur = db.llm_calls.aggregate([
+    # Roll spend up per user by joining llm_calls → org_members(owner).
+    pipeline = [
         {"$match": {"created_at": {"$gte": prev_start, "$lt": cur_start}}},
         {"$group": {"_id": "$org_id", "cost_usd": {"$sum": "$cost_usd"}}},
-    ])
-    rows = await cur.to_list(10_000)
+        {"$lookup": {
+            "from": "org_members",
+            "let": {"oid": "$_id"},
+            "pipeline": [
+                {"$match": {"$expr": {"$and": [
+                    {"$eq": ["$org_id", "$$oid"]},
+                    {"$eq": ["$role", "owner"]},
+                ]}}},
+                {"$project": {"_id": 0, "user_id": 1}},
+                {"$limit": 1},
+            ],
+            "as": "owner",
+        }},
+        {"$unwind": "$owner"},
+        {"$group": {"_id": "$owner.user_id", "cost_usd": {"$sum": "$cost_usd"}}},
+    ]
+    rows = await db.llm_calls.aggregate(pipeline).to_list(10_000)
     for r in rows:
-        org_id = r.get("_id")
-        if not org_id:
+        user_id = r.get("_id")
+        if not user_id:
             continue
         raw_cost = float(r.get("cost_usd") or 0.0)
-        plan = await _org_plan(db, org_id)
-        included = PLANS.get(plan, PLANS["spark"])["included_llm_budget_usd"]
+        user_doc = await _user_doc(db, user_id)
+        if not user_doc:
+            continue
+        if is_staff_email(user_doc.get("email")):
+            continue  # staff don't get overage invoices
+        plan_id = user_doc.get("plan") or "spark"
+        included = PLANS.get(plan_id, PLANS["spark"])["included_llm_budget_usd"]
         if raw_cost <= included:
             continue
         overage_raw = raw_cost - included
         billable = round(overage_raw * OVERAGE_MARKUP, 2)
         invoice = {
-            "org_id": org_id,
+            "user_id": user_id,
             "period_key": period_key,
             "period_start": prev_start,
             "period_end": cur_start,
-            "plan": plan,
+            "plan": plan_id,
             "raw_cost_usd": round(raw_cost, 4),
             "included_usd": included,
             "overage_raw_usd": round(overage_raw, 4),
@@ -391,7 +492,7 @@ async def aggregate_overages_for_previous_month(db) -> List[Dict[str, Any]]:
             "created_at": datetime.now(timezone.utc),
         }
         await db.billing_overage_invoices.update_one(
-            {"org_id": org_id, "period_key": period_key, "status": {"$ne": "paid"}},
+            {"user_id": user_id, "period_key": period_key, "status": {"$ne": "paid"}},
             {"$set": invoice, "$setOnInsert": {"first_seen_at": datetime.now(timezone.utc)}},
             upsert=True,
         )
@@ -462,32 +563,32 @@ async def _email_sales_lead(db, lead: Dict[str, Any]) -> bool:
 
 
 async def _apply_subscription_state(db, subscription: Dict[str, Any]) -> None:
-    """Mirror the Stripe Subscription state onto the org doc.
+    """Mirror the Stripe Subscription state onto the USER doc.
 
+    Subscriptions are user-level — one user, one subscription, N orgs.
     Single function called from every webhook event we care about so
-    the org's `plan` / `plan_paid_until` / `subscription_status` /
-    `cancel_at_period_end` always reflect Stripe's truth.
+    the user's `plan` / `plan_paid_until` / `subscription_status` /
+    `subscription_cancel_at_period_end` always reflect Stripe's truth.
     """
     customer_id = subscription.get("customer")
     if not customer_id:
         return
-    org = await db.organizations.find_one({"stripe_customer_id": customer_id})
-    if not org:
-        # Customer may also have been stamped via metadata only — fall back.
-        org_id = (subscription.get("metadata") or {}).get("org_id")
-        if org_id:
+    user = await db.users.find_one({"stripe_customer_id": customer_id})
+    if not user:
+        # Customer may also have been stamped via metadata — fall back.
+        user_id = (subscription.get("metadata") or {}).get("user_id")
+        if user_id:
             try:
-                org = await db.organizations.find_one({"_id": ObjectId(org_id)})
+                user = await db.users.find_one({"_id": ObjectId(user_id)})
             except Exception:
-                org = None
-    if not org:
-        logger.warning("Subscription %s has no matching org (customer=%s)",
+                user = None
+    if not user:
+        logger.warning("Subscription %s has no matching user (customer=%s)",
                        subscription.get("id"), customer_id)
         return
 
-    # Stripe v15 returns `items.data[0].price.lookup_key` — derive
-    # `plan` from that. Fall back to the metadata mirror we set at
-    # checkout-create time.
+    # Derive plan_id from price.lookup_key (Stripe v15). Fall back to
+    # the metadata mirror we set at checkout-create time.
     plan_id = None
     items = (subscription.get("items") or {}).get("data") or []
     if items:
@@ -501,7 +602,7 @@ async def _apply_subscription_state(db, subscription: Dict[str, Any]) -> None:
     if not plan_id:
         plan_id = (subscription.get("metadata") or {}).get("plan_id")
 
-    status = subscription.get("status")  # active | past_due | canceled | trialing | unpaid | incomplete
+    status = subscription.get("status")
     cancel_at_period_end = bool(subscription.get("cancel_at_period_end"))
     current_period_end = subscription.get("current_period_end")
     paid_until = (
@@ -516,26 +617,17 @@ async def _apply_subscription_state(db, subscription: Dict[str, Any]) -> None:
         "stripe_customer_id": customer_id,
         "subscription_synced_at": datetime.now(timezone.utc),
     }
-    # Only treat the plan as "active" while Stripe also says so. A
-    # canceled subscription that is past `current_period_end` should
-    # downgrade the org back to Spark (default plan).
     if status in ("active", "trialing", "past_due") and plan_id:
         update["plan"] = plan_id
         if paid_until:
             update["plan_paid_until"] = paid_until
     elif status in ("canceled", "unpaid", "incomplete_expired"):
-        # Subscription is dead — leave `plan_paid_until` in place so
-        # the user keeps access until the period actually expires.
-        # But mark the subscription gone so the UI shows "Cancelled".
         update["subscription_status"] = "canceled"
 
-    await db.organizations.update_one(
-        {"_id": org["_id"]},
-        {"$set": update},
-    )
+    await db.users.update_one({"_id": user["_id"]}, {"$set": update})
     logger.info(
-        "Synced subscription %s: org=%s plan=%s status=%s cancel_at_period_end=%s",
-        subscription.get("id"), str(org["_id"]), plan_id, status, cancel_at_period_end,
+        "Synced subscription %s: user=%s plan=%s status=%s cancel_at_period_end=%s",
+        subscription.get("id"), str(user["_id"]), plan_id, status, cancel_at_period_end,
     )
 
 
@@ -546,9 +638,15 @@ def make_billing_router(
     *,
     db,
     get_current_user,
-    require_org_member,
+    require_org_member=None,  # kept for backwards-compat with call sites
 ) -> APIRouter:
-    """Build the billing router. Mounted at /api."""
+    """Build the user-level billing router. Mounted at /api.
+
+    Subscriptions are scoped to the USER, not the org — one user has
+    one Stripe customer + one subscription that unlocks N orgs as
+    defined by the plan's `orgs_included` field.
+    """
+    del require_org_member  # not used post-refactor
     r = APIRouter(prefix="/api")
 
     # ── Catalogue (public) ────────────────────────────────────────────
@@ -562,23 +660,18 @@ def make_billing_router(
             "overage_markup": OVERAGE_MARKUP,
         }
 
-    # ── Per-org summary (owners/admins only) ─────────────────────────
-    @r.get("/orgs/{org_id}/billing/summary")
-    async def billing_summary(org_id: str, u: dict = Depends(get_current_user)):
-        ctx = await require_org_member(org_id, u["id"])
-        if ctx["member"]["role"] not in ("owner", "admin"):
-            raise HTTPException(403, "Only owners/admins can view billing.")
+    # ── Per-user billing summary ─────────────────────────────────────
+    @r.get("/billing/summary")
+    async def billing_summary(u: dict = Depends(get_current_user)):
+        """Single source of truth for the BillingPage. Plan / status /
+        spend / orgs_used vs orgs_limit / outstanding invoice / recent
+        transactions — all rolled up at the user level."""
+        from staff import is_staff_email
+        staff_access = is_staff_email(u.get("email"))
+        start, now = _month_window()
+        orgs_used = await _user_owned_org_count(db, u["id"])
 
-        # Staff override — anyone at @archeforge.com (or explicitly
-        # whitelisted) gets Refine-equivalent access without paying.
-        from staff import org_has_staff_owner, is_staff_email
-        staff_access = (
-            is_staff_email(u.get("email"))
-            or await org_has_staff_owner(db, org_id)
-        )
         if staff_access:
-            # Report the org as Refine + permanently active. Skip the
-            # rest of the summary path — staff don't see overage nags.
             refine = PLANS["refine"]
             return {
                 "plan": {k: v for k, v in refine.items() if k != "lookup_key"},
@@ -588,10 +681,12 @@ def make_billing_router(
                 "cancel_at_period_end": False,
                 "has_stripe_customer": False,
                 "is_staff": True,
-                "period_start": _month_window()[0].isoformat(),
-                "period_end": _month_window()[1].isoformat(),
+                "orgs_used": orgs_used,
+                "orgs_limit": refine["orgs_included"],
+                "period_start": start.isoformat(),
+                "period_end": now.isoformat(),
                 "this_month_spend_usd": round(
-                    await _org_llm_spend(db, org_id, *_month_window()), 4,
+                    await _user_llm_spend(db, u["id"], start, now), 4,
                 ),
                 "included_llm_budget_usd": refine["included_llm_budget_usd"],
                 "projected_overage_raw_usd": 0.0,
@@ -601,39 +696,36 @@ def make_billing_router(
                 "recent_transactions": [],
             }
 
-        plan_id = await _org_plan(db, org_id)
+        plan_id = await _user_plan(db, u["id"])
         plan = PLANS.get(plan_id, PLANS["spark"])
 
-        start, now = _month_window()
-        spend = await _org_llm_spend(db, org_id, start, now)
+        spend = await _user_llm_spend(db, u["id"], start, now)
         included = plan["included_llm_budget_usd"]
         overage_raw = max(0.0, spend - included)
         projected_overage_billable = round(overage_raw * OVERAGE_MARKUP, 2)
 
-        org = await _org_doc(db, org_id) or {}
-        paid_until = _aware(org.get("plan_paid_until"))
-        sub_status = org.get("subscription_status")  # may be None for legacy orgs
-        cancel_at_period_end = bool(org.get("subscription_cancel_at_period_end"))
+        user_doc = await _user_doc(db, u["id"]) or {}
+        paid_until = _aware(user_doc.get("plan_paid_until"))
+        sub_status = user_doc.get("subscription_status")
+        cancel_at_period_end = bool(user_doc.get("subscription_cancel_at_period_end"))
 
-        # `plan_status` is one of: active | cancelling | unpaid | none.
         if sub_status in ("active", "trialing") and not cancel_at_period_end:
             plan_status = "active"
         elif sub_status in ("active", "trialing") and cancel_at_period_end:
             plan_status = "cancelling"
         elif paid_until and paid_until > now:
-            # Legacy / non-recurring paid window still valid.
             plan_status = "active"
         else:
             plan_status = "none"
 
-        outstanding = await _outstanding_overage_invoice(db, org_id)
+        outstanding = await _outstanding_overage_invoice(db, u["id"])
         if outstanding:
             outstanding["period_start"] = outstanding["period_start"].isoformat()
             outstanding["period_end"] = outstanding["period_end"].isoformat()
             outstanding["created_at"] = outstanding["created_at"].isoformat()
 
         txn_rows = await db.payment_transactions.find(
-            {"org_id": org_id},
+            {"user_id": u["id"]},
             sort=[("created_at", -1)],
             projection={"_id": 0},
         ).to_list(10)
@@ -648,8 +740,10 @@ def make_billing_router(
             "plan_paid_until": paid_until.isoformat() if paid_until else None,
             "subscription_status": sub_status,
             "cancel_at_period_end": cancel_at_period_end,
-            "has_stripe_customer": bool(org.get("stripe_customer_id")),
+            "has_stripe_customer": bool(user_doc.get("stripe_customer_id")),
             "is_staff": False,
+            "orgs_used": orgs_used,
+            "orgs_limit": plan["orgs_included"],
             "period_start": start.isoformat(),
             "period_end": now.isoformat(),
             "this_month_spend_usd": round(spend, 4),
@@ -662,16 +756,12 @@ def make_billing_router(
         }
 
     # ── Subscribe (Spark / Temper) ──────────────────────────────────
-    @r.post("/orgs/{org_id}/billing/subscribe")
+    @r.post("/billing/subscribe")
     async def subscribe(
-        org_id: str,
         body: SubscribeBody,
         request: Request,
         u: dict = Depends(get_current_user),
     ):
-        ctx = await require_org_member(org_id, u["id"])
-        if ctx["member"]["role"] not in ("owner", "admin"):
-            raise HTTPException(403, "Only owners/admins can manage the subscription.")
         plan = PLANS.get(body.plan_id)
         if not plan or not plan.get("recurring"):
             raise HTTPException(
@@ -680,27 +770,24 @@ def make_billing_router(
         if not _stripe_configured():
             raise HTTPException(503, "Billing is not configured (STRIPE_API_KEY missing).")
 
-        # Ensure the Price exists in Stripe (idempotent — cheap).
         try:
             catalogue = await ensure_stripe_catalogue()
         except stripe.AuthenticationError:
             raise HTTPException(
-                503,
-                "Billing is not fully configured — please contact support.",
+                503, "Billing is not fully configured — please contact support.",
             )
         price_id = catalogue.get(plan["id"])
         if not price_id:
             raise HTTPException(
-                503,
-                "Billing is not fully configured for this plan yet. "
+                503, "Billing is not fully configured for this plan yet. "
                 "Please contact support.",
             )
 
-        customer_id = await _get_or_create_customer(db, org_id, u)
+        customer_id = await _get_or_create_customer(db, u)
 
         origin = body.origin_url.rstrip("/")
-        success_url = f"{origin}/app/org/{org_id}/billing?session_id={{CHECKOUT_SESSION_ID}}"
-        cancel_url = f"{origin}/app/org/{org_id}/billing?cancelled=1"
+        success_url = f"{origin}/app/billing?session_id={{CHECKOUT_SESSION_ID}}"
+        cancel_url = f"{origin}/app/billing?cancelled=1"
 
         _configure_stripe()
         session = await _stripe_call(
@@ -711,31 +798,23 @@ def make_billing_router(
             success_url=success_url,
             cancel_url=cancel_url,
             allow_promotion_codes=True,
-            # Stripe re-uses Customer-level address; no need to collect
-            # billing address every session.
             billing_address_collection="auto",
             metadata={
                 "kind": "subscription",
-                "org_id": org_id,
-                "plan_id": plan["id"],
                 "user_id": u["id"],
-                # Stripe truncates metadata values at 500 chars — our
-                # disclosure copy is well under that.
+                "plan_id": plan["id"],
                 "consent_text": body.consent_text[:500],
             },
             subscription_data={
                 "metadata": {
-                    "org_id": org_id,
+                    "user_id": u["id"],
                     "plan_id": plan["id"],
                 },
             },
-            # FTC-friendly: tell Stripe to default to "Subscribe" as
-            # the button copy on its hosted Checkout page.
             submit_type=None,
         )
         await db.payment_transactions.insert_one({
             "session_id": session.id,
-            "org_id": org_id,
             "user_id": u["id"],
             "kind": "subscription",
             "plan_id": plan["id"],
@@ -751,46 +830,34 @@ def make_billing_router(
         return {"url": session.url, "session_id": session.id}
 
     # ── Customer Portal (manage / cancel) ───────────────────────────
-    @r.post("/orgs/{org_id}/billing/portal")
+    @r.post("/billing/portal")
     async def billing_portal(
-        org_id: str,
         body: Dict[str, str],
         u: dict = Depends(get_current_user),
     ):
-        ctx = await require_org_member(org_id, u["id"])
-        if ctx["member"]["role"] not in ("owner", "admin"):
-            raise HTTPException(403, "Only owners/admins can manage the subscription.")
         if not _stripe_configured():
             raise HTTPException(503, "Billing is not configured (STRIPE_API_KEY missing).")
-        org = await _org_doc(db, org_id) or {}
-        customer_id = org.get("stripe_customer_id")
+        user_doc = await _user_doc(db, u["id"]) or {}
+        customer_id = user_doc.get("stripe_customer_id")
         if not customer_id:
             raise HTTPException(400, "No Stripe customer yet — subscribe first.")
         origin = (body.get("origin_url") or "").rstrip("/")
-        return_url = f"{origin}/app/org/{org_id}/billing"
+        return_url = f"{origin}/app/billing"
         _configure_stripe()
         session = await _stripe_call(
             stripe.billing_portal.Session.create,
-            customer=customer_id,
-            return_url=return_url,
+            customer=customer_id, return_url=return_url,
         )
         return {"url": session.url}
 
     # ── Status polling for the Stripe redirect ───────────────────────
     @r.get("/billing/status/{session_id}")
     async def checkout_status(session_id: str, u: dict = Depends(get_current_user)):
-        """After Stripe redirects the user back to /billing?session_id=...,
-        the frontend polls this endpoint until the subscription is
-        active. The webhook is the authoritative source of truth —
-        we just look up the Stripe Session and reflect it for the UI.
-        """
         txn = await db.payment_transactions.find_one({"session_id": session_id}, {"_id": 0})
         if not txn:
             raise HTTPException(404, "Unknown checkout session.")
-        try:
-            await require_org_member(txn["org_id"], u["id"])
-        except HTTPException:
-            raise HTTPException(403, "Not your org's checkout.")
+        if txn.get("user_id") != u["id"]:
+            raise HTTPException(403, "Not your checkout.")
         if not _stripe_configured():
             raise HTTPException(503, "Billing is not configured.")
         _configure_stripe()
@@ -805,8 +872,6 @@ def make_billing_router(
 
         applied = False
         if session.payment_status == "paid" and session.subscription:
-            # Subscription successful — apply state immediately so we
-            # don't depend on the webhook landing first.
             sub = session.subscription
             if isinstance(sub, str):
                 sub = await _stripe_call(stripe.Subscription.retrieve, sub)
@@ -841,21 +906,13 @@ def make_billing_router(
         }
 
     # ── Refine — contact-sales lead capture ─────────────────────────
-    @r.post("/orgs/{org_id}/billing/contact-sales")
+    @r.post("/billing/contact-sales")
     async def contact_sales(
-        org_id: str,
         body: SalesContactBody,
         request: Request,
         u: dict = Depends(get_current_user),
     ):
-        # Members can also submit (the form might originate from a
-        # team lead, not just the owner). We still require auth so
-        # we get a verified user_id on the row.
-        await require_org_member(org_id, u["id"])
-        org = await _org_doc(db, org_id) or {}
         lead = {
-            "org_id": org_id,
-            "org_name": org.get("name") or "",
             "user_id": u["id"],
             "name": body.name.strip(),
             "email": str(body.email),
@@ -868,11 +925,9 @@ def make_billing_router(
             "status": "new",
         }
         await db.sales_inquiries.insert_one(dict(lead))
-        # Stringify the datetime for the email body — Resend gets text.
         lead_for_email = {**lead, "submitted_at": lead["submitted_at"].isoformat()}
         emailed = await _email_sales_lead(db, lead_for_email)
         return {"ok": True, "emailed": emailed}
-
     # ── Webhook ─────────────────────────────────────────────────────
     @r.post("/webhook/stripe")
     async def stripe_webhook(request: Request):

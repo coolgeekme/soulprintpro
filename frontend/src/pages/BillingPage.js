@@ -1,34 +1,36 @@
 import React, { useCallback, useEffect, useMemo, useState } from "react";
-import { useNavigate, useParams, useSearchParams } from "react-router-dom";
+import { useSearchParams, Link } from "react-router-dom";
 import { toast } from "sonner";
 import { createPortal } from "react-dom";
 import {
   Loader2, Check, AlertTriangle, CreditCard, TrendingUp,
   Receipt, Sparkles, ArrowUpRight, ExternalLink, Mail,
-  Shield, X, Settings,
+  Shield, X, Settings, Layers,
 } from "lucide-react";
 import api from "../lib/api";
 import TopBar from "../components/TopBar";
 
 /**
- * BillingPage — single dashboard for everything money in an org.
+ * BillingPage — single user-level dashboard for subscription + usage.
+ *
+ * Subscriptions live on the USER, not the org. One subscription
+ * unlocks N workspaces (Spark=1, Temper=3, Refine=unlimited). The
+ * card shows: current plan, workspaces used vs limit, this-month
+ * pooled spend across all workspaces, outstanding invoice, plan
+ * picker, and the Refine "contact sales" form.
  *
  * Three flows live here:
  *   1. **Subscribe** (Spark + Temper) — opens Stripe Checkout in
  *      subscription mode after the user explicitly agrees to a
  *      verbatim disclosure block (FTC ROSCA-style affirmative
- *      consent). The disclosure text is persisted on the
- *      payment_transactions row so we have evidence the user saw it.
+ *      consent). Disclosure text is persisted on payment_transactions.
  *   2. **Contact sales** (Refine) — small modal form that POSTs to
- *      `/api/orgs/{id}/billing/contact-sales`; the backend stores
- *      the lead and (best-effort) emails `team@archeforge.com`.
+ *      `/api/billing/contact-sales`; backend stores the lead and
+ *      emails team@archeforge.com via Resend.
  *   3. **Manage subscription** — opens Stripe Customer Portal so the
- *      user can cancel / update card / view invoices. Same URL we
- *      use to bring them back here when they're done.
+ *      user can cancel / update card / view invoices.
  */
 export default function BillingPage() {
-  const { orgId } = useParams();
-  const navigate = useNavigate();
   const [params, setParams] = useSearchParams();
   const sessionId = params.get("session_id");
   const cancelled = params.get("cancelled");
@@ -40,51 +42,40 @@ export default function BillingPage() {
   const [busy, setBusy] = useState("");
   const [polling, setPolling] = useState(false);
 
-  // Modal state — subscribe-consent or contact-sales.
   const [pendingPlan, setPendingPlan] = useState(null);
   const [showSales, setShowSales] = useState(false);
 
   const refresh = useCallback(async () => {
     try {
       const [s, p] = await Promise.all([
-        api.get(`/orgs/${orgId}/billing/summary`),
+        api.get(`/billing/summary`),
         api.get(`/billing/plans`),
       ]);
       setSummary(s.data);
       setPlans(p.data?.plans || []);
     } catch (err) {
-      const code = err?.response?.status;
-      if (code === 403) {
-        toast.error("Only owners/admins can view billing.");
-        navigate(`/app/org/${orgId}`);
-      } else {
-        toast.error(err?.response?.data?.detail || "Could not load billing.");
-      }
+      toast.error(err?.response?.data?.detail || "Could not load billing.");
     } finally {
       setLoading(false);
     }
-  }, [orgId, navigate]);
+  }, []);
 
   useEffect(() => { refresh(); }, [refresh]);
 
-  // Honor the `?subscribe=spark|temper` deep-link from the pricing
-  // flow — the user clicked "Start with Spark" / "Choose Temper" on
-  // /pricing, completed auth, and was forwarded here. Open the
-  // consent modal automatically so they don't have to re-pick the
-  // tier they already chose two pages ago.
+  // Open the consent modal automatically when the user arrived from
+  // /pricing → /auth → here with a `?subscribe=spark|temper` hint.
   useEffect(() => {
     if (!subscribeIntent || !plans.length) return;
     const target = plans.find(p => p.id === subscribeIntent && p.recurring);
     if (!target) return;
     setPendingPlan(target);
-    // Strip the query so a refresh doesn't re-open the modal.
     const next = new URLSearchParams(params);
     next.delete("subscribe");
     setParams(next, { replace: true });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [subscribeIntent, plans.length]);
 
-  // After Stripe redirects back, poll status until the subscription is paid.
+  // After Stripe redirects back, poll status until paid.
   useEffect(() => {
     if (!sessionId) {
       if (cancelled) {
@@ -95,7 +86,7 @@ export default function BillingPage() {
     }
     let alive = true;
     setPolling(true);
-    const waits = [1500, 1500, 2000, 2500, 3000, 4000]; // ~14.5s
+    const waits = [1500, 1500, 2000, 2500, 3000, 4000];
 
     (async () => {
       for (let i = 0; i < waits.length; i++) {
@@ -115,9 +106,7 @@ export default function BillingPage() {
             setParams({}, { replace: true });
             return;
           }
-        } catch (err) {
-          // Status can 404 briefly for very-new sessions — keep polling.
-        }
+        } catch {/* keep polling */}
         await new Promise(r => setTimeout(r, waits[i]));
       }
       toast.info("Payment still processing — we'll update when it clears.");
@@ -151,7 +140,7 @@ export default function BillingPage() {
     try {
       const origin = window.location.origin;
       const consentText = buildConsentText(pendingPlan);
-      const { data } = await api.post(`/orgs/${orgId}/billing/subscribe`, {
+      const { data } = await api.post(`/billing/subscribe`, {
         plan_id: pendingPlan.id,
         origin_url: origin,
         consent_text: consentText,
@@ -167,12 +156,12 @@ export default function BillingPage() {
       setBusy("");
       setPendingPlan(null);
     }
-  }, [pendingPlan, orgId]);
+  }, [pendingPlan]);
 
   const openManagePortal = useCallback(async () => {
     setBusy("portal");
     try {
-      const { data } = await api.post(`/orgs/${orgId}/billing/portal`, {
+      const { data } = await api.post(`/billing/portal`, {
         origin_url: window.location.origin,
       });
       if (data?.url) {
@@ -185,7 +174,7 @@ export default function BillingPage() {
       toast.error(err?.response?.data?.detail || "Could not open the billing portal.");
       setBusy("");
     }
-  }, [orgId]);
+  }, []);
 
   if (loading) {
     return (
@@ -207,6 +196,9 @@ export default function BillingPage() {
   const isSubscribed = summary?.subscription_status === "active"
     || summary?.subscription_status === "trialing";
   const cancelling = !!summary?.cancel_at_period_end;
+  const orgsUsed = summary?.orgs_used ?? 0;
+  const orgsLimit = summary?.orgs_limit ?? 1;
+  const atOrgLimit = !isStaff && orgsUsed >= orgsLimit;
 
   return (
     <div className="min-h-screen">
@@ -217,6 +209,7 @@ export default function BillingPage() {
           <h1 className="text-3xl sm:text-4xl font-medium tracking-tight">Plan &amp; usage</h1>
           <p className="text-sm sp-subtle mt-1">
             Subscribe monthly. Cancel anytime — no annual lock-in, no hidden markup.
+            One subscription unlocks every workspace you own.
           </p>
         </div>
 
@@ -239,14 +232,6 @@ export default function BillingPage() {
               </div>
               <h2 className="sp-display text-2xl mt-1">{currentPlan?.name || "Spark"}</h2>
               <div className="text-sm sp-subtle mt-1">{currentPlan?.tagline}</div>
-              <div className="text-xs sp-subtle mt-2">
-                {currentPlan?.monthly_usd != null
-                  ? <>${currentPlan.monthly_usd.toFixed(0)}/mo · </>
-                  : null}
-                {currentPlan?.seats_included >= 1000
-                  ? "Unlimited seats"
-                  : `${currentPlan?.seats_included} seat${currentPlan?.seats_included === 1 ? "" : "s"} included`}
-              </div>
             </div>
             <div className="flex flex-col items-end gap-2">
               <PlanStatusPill
@@ -255,7 +240,7 @@ export default function BillingPage() {
                 paidUntil={paidUntil}
                 isStaff={isStaff}
               />
-              {isSubscribed && (
+              {(isSubscribed || summary?.has_stripe_customer) && (
                 <button
                   type="button"
                   onClick={openManagePortal}
@@ -269,6 +254,27 @@ export default function BillingPage() {
               )}
             </div>
           </div>
+
+          {/* Workspaces used vs limit */}
+          <div className="mt-5 pt-4 border-t border-white/5">
+            <div className="flex items-center justify-between gap-3 text-sm">
+              <div className="flex items-center gap-2">
+                <Layers className="w-3.5 h-3.5 sp-subtle" />
+                Workspaces
+              </div>
+              <div className={`text-sm font-medium ${atOrgLimit ? "text-orange-300" : ""}`}>
+                {orgsUsed}
+                {" "}/{" "}
+                {orgsLimit >= 1000 ? "Unlimited" : orgsLimit}
+              </div>
+            </div>
+            {atOrgLimit && (
+              <p className="text-[11px] text-orange-300 mt-2 leading-relaxed" data-testid="org-limit-warning">
+                You've used every workspace your {currentPlan?.name} plan includes.
+                {" "}Upgrade below to create another.
+              </p>
+            )}
+          </div>
         </section>
 
         {/* Usage meter */}
@@ -276,6 +282,9 @@ export default function BillingPage() {
           <section className="sp-glass-strong rounded-2xl p-5 sm:p-6 mb-6" data-testid="usage-meter-card">
             <div className="text-xs uppercase tracking-widest sp-subtle flex items-center gap-2 mb-3">
               <TrendingUp className="w-3.5 h-3.5" /> This month's agent compute
+              <span className="text-[10px] sp-subtle font-normal normal-case tracking-normal">
+                (across all your workspaces)
+              </span>
             </div>
             <div className="flex items-baseline justify-between mb-2">
               <div className="text-2xl font-medium">${meter.spent}</div>
@@ -313,24 +322,22 @@ export default function BillingPage() {
             className="sp-glass-strong rounded-2xl p-5 sm:p-6 mb-6 border border-orange-400/30"
             data-testid="outstanding-overage-card"
           >
-            <div className="flex flex-wrap items-start justify-between gap-4">
-              <div>
-                <div className="text-xs uppercase tracking-widest text-orange-300 flex items-center gap-2">
-                  <Receipt className="w-3.5 h-3.5" /> Outstanding invoice
-                </div>
-                <div className="text-2xl font-medium mt-1">
-                  ${outstanding.amount_due_usd?.toFixed(2)}
-                </div>
-                <div className="text-xs sp-subtle mt-1">
-                  For {outstanding.period_key} · raw cost ${outstanding.raw_cost_usd?.toFixed(2)}
-                  {" "}vs included ${outstanding.included_usd?.toFixed(2)}. We'll add this to your next invoice.
-                </div>
+            <div>
+              <div className="text-xs uppercase tracking-widest text-orange-300 flex items-center gap-2">
+                <Receipt className="w-3.5 h-3.5" /> Outstanding invoice
+              </div>
+              <div className="text-2xl font-medium mt-1">
+                ${outstanding.amount_due_usd?.toFixed(2)}
+              </div>
+              <div className="text-xs sp-subtle mt-1">
+                For {outstanding.period_key} · raw cost ${outstanding.raw_cost_usd?.toFixed(2)}
+                {" "}vs included ${outstanding.included_usd?.toFixed(2)}. We'll add this to your next invoice.
               </div>
             </div>
           </section>
         )}
 
-        {/* Plan cards — hidden for staff (they're already at Refine). */}
+        {/* Plan cards — hidden for staff */}
         {!isStaff && (
         <section className="mb-6" data-testid="plan-cards">
           <h3 className="text-sm uppercase tracking-widest sp-subtle mb-3">
@@ -341,7 +348,7 @@ export default function BillingPage() {
               <PlanCard
                 key={p.id}
                 plan={p}
-                current={currentPlan?.id === p.id && isSubscribed}
+                current={currentPlan?.id === p.id && (isSubscribed || isStaff)}
                 busy={busy === `plan:${p.id}`}
                 onSelect={() => {
                   if (p.recurring) setPendingPlan(p);
@@ -396,6 +403,10 @@ export default function BillingPage() {
         </section>
 
         <FtcDisclosure />
+
+        <div className="mt-6 text-xs sp-subtle">
+          <Link to="/app/account" className="hover:underline" data-testid="back-to-account">← Back to account settings</Link>
+        </div>
       </main>
 
       {pendingPlan && (
@@ -408,7 +419,6 @@ export default function BillingPage() {
       )}
       {showSales && (
         <SalesContactModal
-          orgId={orgId}
           onClose={() => setShowSales(false)}
           onSubmitted={() => {
             setShowSales(false);
@@ -423,9 +433,11 @@ export default function BillingPage() {
 // ─── Sub-components ─────────────────────────────────────────────────────
 
 function buildConsentText(plan) {
+  const orgs = plan.orgs_included >= 1000 ? "unlimited" : plan.orgs_included;
   return (
     `I authorize Foundry to charge my payment method $${plan.monthly_usd.toFixed(2)}/mo ` +
-    `for the ${plan.name} plan on a recurring monthly basis. ` +
+    `for the ${plan.name} plan on a recurring monthly basis. This subscription ` +
+    `unlocks ${orgs} workspace${plan.orgs_included === 1 ? "" : "s"}. ` +
     `My subscription will automatically renew each month until I cancel it ` +
     `via the Manage subscription button on this page. Cancellations take effect ` +
     `at the end of the current billing period.`
@@ -480,6 +492,9 @@ function TxnPill({ status }) {
 
 function PlanCard({ plan, current, busy, onSelect }) {
   const isRefine = !plan.recurring;
+  const orgsLabel = plan.orgs_included >= 1000
+    ? "Unlimited workspaces"
+    : `${plan.orgs_included} workspace${plan.orgs_included === 1 ? "" : "s"}`;
   const cta = current
     ? "Current plan"
     : isRefine
@@ -498,6 +513,9 @@ function PlanCard({ plan, current, busy, onSelect }) {
           : <>${plan.monthly_usd.toFixed(0)}<span className="text-sm sp-subtle">/mo</span></>}
       </div>
       <div className="text-xs sp-subtle mt-1">{plan.tagline}</div>
+      <div className="text-[11px] mt-2 inline-flex items-center gap-1 text-orange-300">
+        <Layers className="w-3 h-3" /> {orgsLabel}
+      </div>
       <ul className="text-sm space-y-1.5 mt-4 flex-1">
         {plan.features.map((f, i) => (
           <li key={i} className="flex items-start gap-2">
@@ -621,7 +639,7 @@ function ConsentModal({ plan, busy, onCancel, onConfirm }) {
   return createPortal(node, document.body);
 }
 
-function SalesContactModal({ orgId, onClose, onSubmitted }) {
+function SalesContactModal({ onClose, onSubmitted }) {
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
   const [company, setCompany] = useState("");
@@ -636,7 +654,7 @@ function SalesContactModal({ orgId, onClose, onSubmitted }) {
     }
     setSubmitting(true);
     try {
-      await api.post(`/orgs/${orgId}/billing/contact-sales`, {
+      await api.post(`/billing/contact-sales`, {
         name: name.trim(), email: email.trim(),
         company: company.trim(), message: message.trim(),
       });
@@ -676,33 +694,19 @@ function SalesContactModal({ orgId, onClose, onSubmitted }) {
           one business day.
         </p>
         <div className="space-y-3">
-          <input
-            value={name} onChange={(e) => setName(e.target.value)}
-            placeholder="Your name"
-            className="sp-input w-full text-sm"
-            data-testid="sales-name"
-            required
-          />
-          <input
-            type="email"
-            value={email} onChange={(e) => setEmail(e.target.value)}
-            placeholder="Work email"
-            className="sp-input w-full text-sm"
-            data-testid="sales-email"
-            required
-          />
-          <input
-            value={company} onChange={(e) => setCompany(e.target.value)}
-            placeholder="Company (optional)"
-            className="sp-input w-full text-sm"
-            data-testid="sales-company"
-          />
-          <textarea
-            value={message} onChange={(e) => setMessage(e.target.value)}
+          <input value={name} onChange={(e) => setName(e.target.value)}
+            placeholder="Your name" className="sp-input w-full text-sm"
+            data-testid="sales-name" required />
+          <input type="email" value={email} onChange={(e) => setEmail(e.target.value)}
+            placeholder="Work email" className="sp-input w-full text-sm"
+            data-testid="sales-email" required />
+          <input value={company} onChange={(e) => setCompany(e.target.value)}
+            placeholder="Company (optional)" className="sp-input w-full text-sm"
+            data-testid="sales-company" />
+          <textarea value={message} onChange={(e) => setMessage(e.target.value)}
             placeholder="What are you trying to do with Foundry? (optional)"
             className="sp-input w-full text-sm min-h-[100px]"
-            data-testid="sales-message"
-          />
+            data-testid="sales-message" />
         </div>
         <div className="flex items-center justify-end gap-2 mt-5">
           <button type="button" onClick={onClose} disabled={submitting}

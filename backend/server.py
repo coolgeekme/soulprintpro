@@ -1308,6 +1308,11 @@ async def _fetch_company_context(name: str, url: str) -> str:
 async def create_org(body: OrgCreateBody, u: dict = Depends(get_current_user)):
     if not body.name.strip():
         raise HTTPException(400, "Name required")
+    # Plan-limit gate — Spark allows 1 workspace, Temper allows 3,
+    # Refine + staff = unlimited. Raises 402 with a friendly upgrade
+    # message if the user has hit their cap.
+    from billing import enforce_org_creation_limit
+    await enforce_org_creation_limit(db, u)
     now = datetime.now(timezone.utc)
 
     # Step 1 — capture the company "Soul" (URL scrape → LLM, with optional manual hint).

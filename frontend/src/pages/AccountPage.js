@@ -196,56 +196,46 @@ export default function AccountPage() {
           </div>
         </form>
 
-        {/* Plan & billing — one row per org the user belongs to. Owners
-            and admins see "Manage" → /app/org/{id}/billing. Members
-            see a read-only label so they know what plan they're on. */}
+        {/* Plan & billing — one subscription unlocks every workspace.
+            Direct the user to the user-level Billing page where they
+            can subscribe, change plan, or open the Stripe Portal. */}
         <section className="sp-glass-strong rounded-2xl p-5 sm:p-6 mb-6" data-testid="billing-card">
           <h2 className="text-sm uppercase tracking-widest sp-subtle mb-4 flex items-center gap-2">
             <CreditCard className="w-3.5 h-3.5" /> Plan &amp; billing
           </h2>
           {orgsLoading ? (
             <div className="text-sm sp-subtle flex items-center gap-2">
-              <Loader2 className="w-3.5 h-3.5 animate-spin" /> Loading your workspaces…
-            </div>
-          ) : orgs.length === 0 ? (
-            <div className="text-sm sp-subtle">
-              You don't belong to any workspaces yet.
+              <Loader2 className="w-3.5 h-3.5 animate-spin" /> Loading…
             </div>
           ) : (
-            <ul className="divide-y divide-white/5">
-              {orgs.map(o => (
-                <li key={o.id} className="py-2 flex items-center justify-between gap-3">
-                  <div className="min-w-0">
-                    <div className="text-sm flex items-center gap-2">
-                      <Sparkles className="w-3.5 h-3.5 text-orange-300 flex-shrink-0" />
-                      <span className="truncate">{o.name}</span>
-                    </div>
-                    <div className="text-[11px] sp-subtle mt-0.5">
-                      {(o.plan || "spark").replace(/^./, c => c.toUpperCase())} plan
-                      {" "}· {(o.member_role || o.role || "member")}
-                    </div>
-                  </div>
-                  {(o.member_role === "owner" || o.member_role === "admin"
-                    || o.role === "owner" || o.role === "admin") ? (
-                    <Link
-                      to={`/app/org/${o.id}/billing`}
-                      className="sp-btn sp-btn-ghost text-xs whitespace-nowrap"
-                      data-testid={`account-billing-link-${o.id}`}
-                    >
-                      Manage
-                      <ArrowRight className="w-3.5 h-3.5 ml-1" />
-                    </Link>
-                  ) : (
-                    <span className="text-[11px] sp-subtle italic">View only</span>
-                  )}
-                </li>
-              ))}
-            </ul>
+            <>
+              <p className="text-sm sp-subtle leading-relaxed mb-4">
+                Your subscription is account-level — one plan unlocks every
+                workspace you own. Spark includes 1 workspace, Temper includes 3,
+                and Refine is unlimited.
+              </p>
+              {orgs.length > 0 && (
+                <ul className="divide-y divide-white/5 mb-4">
+                  {orgs
+                    .filter(o => o.member_role === "owner" || o.role === "owner")
+                    .map(o => (
+                      <li key={o.id} className="py-2 flex items-center gap-2 text-sm">
+                        <Sparkles className="w-3.5 h-3.5 text-orange-300 flex-shrink-0" />
+                        <span className="truncate">{o.name}</span>
+                      </li>
+                    ))}
+                </ul>
+              )}
+              <Link
+                to="/app/billing"
+                className="sp-btn sp-btn-primary text-sm"
+                data-testid="account-billing-link"
+              >
+                <ArrowRight className="w-3.5 h-3.5" />
+                Manage plan &amp; billing
+              </Link>
+            </>
           )}
-          <p className="text-[11px] sp-subtle mt-3 leading-relaxed">
-            Spark and Temper are monthly subscriptions. Refine is custom-priced —
-            contact our team from any workspace's billing page for a quote.
-          </p>
         </section>
 
         {/* Password */}
