@@ -82,14 +82,17 @@ async def send_resend_email(
 __all__ = ["send_resend_email", "send_welcome_email"]
 
 
-async def send_welcome_email(*, name: str, email: str) -> bool:
-    """Send a friendly welcome email to a newly registered user AND a
-    notification copy to the SoulPrint team. Best-effort + never raises
-    — the caller's registration flow MUST NOT break if the email
-    provider is having a bad day.
+async def send_welcome_email(*, name: str, email: str, notify_team: bool = True) -> bool:
+    """Send a friendly welcome email to a newly registered user AND
+    (when `notify_team=True`) a notification copy to the Foundry team.
+    Best-effort + never raises — the caller's registration flow MUST
+    NOT break if the email provider is having a bad day.
 
     The "team" address is configurable via `WELCOME_NOTIFY_EMAIL` and
     defaults to `team@archeforge.com` (the canonical owner inbox).
+
+    Pass `notify_team=False` when the new user is staff — there's no
+    point pinging the founders about their own accounts.
 
     Idempotency:
       - Sender enforces nothing — duplicates are caller's responsibility.
@@ -153,25 +156,27 @@ async def send_welcome_email(*, name: str, email: str) -> bool:
     )
 
     # Internal team notification — short, scannable, no marketing fluff.
-    team_html = (
-        f'<div style="font-family:Inter,Arial,sans-serif;font-size:14px;color:#1a1a22;">'
-        f'<p><strong>New user signed up</strong></p>'
-        f'<table style="border-collapse:collapse;font-size:14px;">'
-        f'<tr><td style="padding:4px 12px 4px 0;color:#888;">Name</td><td>{safe_name}</td></tr>'
-        f'<tr><td style="padding:4px 12px 4px 0;color:#888;">Email</td><td>{email}</td></tr>'
-        f'<tr><td style="padding:4px 12px 4px 0;color:#888;">Time (UTC)</td>'
-        f'<td>{datetime.now(timezone.utc).isoformat(timespec="seconds")}</td></tr>'
-        f'</table></div>'
-    )
-    team_text = (
-        f"New user signed up.\n"
-        f"Name: {safe_name}\nEmail: {email}\n"
-        f"Time (UTC): {datetime.now(timezone.utc).isoformat(timespec='seconds')}\n"
-    )
-    await send_resend_email(
-        to=team_addr,
-        subject=f"[Foundry] New signup — {safe_name} <{email}>",
-        html=team_html, text=team_text,
-    )
+    # Skipped when the new user is staff (`notify_team=False`).
+    if notify_team:
+        team_html = (
+            f'<div style="font-family:Inter,Arial,sans-serif;font-size:14px;color:#1a1a22;">'
+            f'<p><strong>New user signed up</strong></p>'
+            f'<table style="border-collapse:collapse;font-size:14px;">'
+            f'<tr><td style="padding:4px 12px 4px 0;color:#888;">Name</td><td>{safe_name}</td></tr>'
+            f'<tr><td style="padding:4px 12px 4px 0;color:#888;">Email</td><td>{email}</td></tr>'
+            f'<tr><td style="padding:4px 12px 4px 0;color:#888;">Time (UTC)</td>'
+            f'<td>{datetime.now(timezone.utc).isoformat(timespec="seconds")}</td></tr>'
+            f'</table></div>'
+        )
+        team_text = (
+            f"New user signed up.\n"
+            f"Name: {safe_name}\nEmail: {email}\n"
+            f"Time (UTC): {datetime.now(timezone.utc).isoformat(timespec='seconds')}\n"
+        )
+        await send_resend_email(
+            to=team_addr,
+            subject=f"[Foundry] New signup — {safe_name} <{email}>",
+            html=team_html, text=team_text,
+        )
 
     return bool(user_ok)

@@ -41,6 +41,40 @@ export default function AuthPage() {
 
   const isRegister = useMemo(() => mode === "register", [mode]);
 
+  // Optional `?plan=spark|temper` carried in from the pricing page —
+  // after auth completes we route to the user's first org's billing
+  // page with `?subscribe={plan}` so the consent modal opens
+  // automatically. Persisted to localStorage so a Firebase OAuth
+  // round-trip (which loses query params on the popup callback)
+  // still resumes correctly.
+  const planIntentParam = params.get("plan");
+  if (planIntentParam === "spark" || planIntentParam === "temper") {
+    try { window.localStorage.setItem("foundry:planIntent", planIntentParam); } catch {}
+  }
+
+  /** Land the user after a successful auth. If they came in with a
+   *  plan intent, fetch their orgs and deep-link to the billing page
+   *  with the consent modal already armed. Falls back to `/app` if we
+   *  can't resolve an org (very new users, before workspace seed). */
+  const landAfterAuth = async () => {
+    let plan = "";
+    try { plan = window.localStorage.getItem("foundry:planIntent") || ""; } catch {}
+    if (plan !== "spark" && plan !== "temper") {
+      navigate("/app");
+      return;
+    }
+    try { window.localStorage.removeItem("foundry:planIntent"); } catch {}
+    try {
+      const { data } = await api.get("/orgs");
+      const orgId = Array.isArray(data) && data[0]?.id;
+      if (orgId) {
+        navigate(`/app/org/${orgId}/billing?subscribe=${plan}`);
+        return;
+      }
+    } catch {/* fall-through to /app */}
+    navigate("/app");
+  };
+
   // Email/password submit. When Firebase is enabled we use it as the
   // primary credential layer (Firebase manages the password, we sync
   // the resulting identity into Mongo via /auth/me on first hit). We
@@ -92,7 +126,7 @@ export default function AuthPage() {
           } else {
             await loginWithFirebaseEmail(email, password);
           }
-          navigate("/app");
+          await landAfterAuth();
           return;
         } catch (err) {
           // Fall back to legacy bcrypt for existing users that pre-date
@@ -110,7 +144,7 @@ export default function AuthPage() {
       }
       if (isRegister) await register(name || email.split("@")[0], email, password, accessCode.trim());
       else await login(email, password);
-      navigate("/app");
+      await landAfterAuth();
     } catch (err) {
       toast.error(err?.response?.data?.detail || friendlyAuthError(err));
     } finally {
@@ -126,7 +160,7 @@ export default function AuthPage() {
     setBusy(true);
     try {
       await loginWithGoogle();
-      navigate("/app");
+      await landAfterAuth();
     } catch (err) {
       // Backend rejection (e.g. account disabled, token verification
       // failed) — surface its detail. Otherwise the Firebase popup error.

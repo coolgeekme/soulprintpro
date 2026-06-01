@@ -95,10 +95,25 @@ def test_summary_owner_payload(admin_creds):
     assert r.status_code == 200, r.text
     body = r.json()
     assert body["plan"]["id"] in ("spark", "temper", "refine")
-    assert body["plan_status"] in ("active", "cancelling", "unpaid", "none")
+    # `staff` is the override status for @archeforge.com + reggie@coolgeek.me.
+    assert body["plan_status"] in ("active", "cancelling", "unpaid", "none", "staff")
     assert "subscription_status" in body
     assert "cancel_at_period_end" in body
     assert isinstance(body["recent_transactions"], list)
+
+
+def test_summary_treats_reggie_as_staff(admin_creds):
+    """Sanity check: the superadmin (reggie@coolgeek.me) should be
+    treated as staff and get Refine-equivalent access automatically."""
+    r = requests.get(
+        f"{BASE_URL}/api/orgs/{admin_creds['org_id']}/billing/summary",
+        headers=_h(admin_creds["token"]), timeout=15,
+    )
+    assert r.status_code == 200
+    body = r.json()
+    assert body["is_staff"] is True
+    assert body["plan_status"] == "staff"
+    assert body["plan"]["id"] == "refine"
 
 
 def test_summary_blocks_unauthenticated():

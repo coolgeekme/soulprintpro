@@ -32,6 +32,7 @@ export default function BillingPage() {
   const [params, setParams] = useSearchParams();
   const sessionId = params.get("session_id");
   const cancelled = params.get("cancelled");
+  const subscribeIntent = params.get("subscribe"); // 'spark' | 'temper' from /auth?plan=…
 
   const [loading, setLoading] = useState(true);
   const [summary, setSummary] = useState(null);
@@ -65,6 +66,23 @@ export default function BillingPage() {
   }, [orgId, navigate]);
 
   useEffect(() => { refresh(); }, [refresh]);
+
+  // Honor the `?subscribe=spark|temper` deep-link from the pricing
+  // flow — the user clicked "Start with Spark" / "Choose Temper" on
+  // /pricing, completed auth, and was forwarded here. Open the
+  // consent modal automatically so they don't have to re-pick the
+  // tier they already chose two pages ago.
+  useEffect(() => {
+    if (!subscribeIntent || !plans.length) return;
+    const target = plans.find(p => p.id === subscribeIntent && p.recurring);
+    if (!target) return;
+    setPendingPlan(target);
+    // Strip the query so a refresh doesn't re-open the modal.
+    const next = new URLSearchParams(params);
+    next.delete("subscribe");
+    setParams(next, { replace: true });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [subscribeIntent, plans.length]);
 
   // After Stripe redirects back, poll status until the subscription is paid.
   useEffect(() => {
@@ -185,6 +203,7 @@ export default function BillingPage() {
   const paidUntil = summary?.plan_paid_until
     ? new Date(summary.plan_paid_until).toLocaleDateString()
     : null;
+  const isStaff = !!summary?.is_staff;
   const isSubscribed = summary?.subscription_status === "active"
     || summary?.subscription_status === "trialing";
   const cancelling = !!summary?.cancel_at_period_end;
@@ -234,6 +253,7 @@ export default function BillingPage() {
                 status={summary?.plan_status}
                 cancelling={cancelling}
                 paidUntil={paidUntil}
+                isStaff={isStaff}
               />
               {isSubscribed && (
                 <button
@@ -310,7 +330,8 @@ export default function BillingPage() {
           </section>
         )}
 
-        {/* Plan cards */}
+        {/* Plan cards — hidden for staff (they're already at Refine). */}
+        {!isStaff && (
         <section className="mb-6" data-testid="plan-cards">
           <h3 className="text-sm uppercase tracking-widest sp-subtle mb-3">
             {isSubscribed ? "Change plan" : "Choose a plan"}
@@ -330,6 +351,21 @@ export default function BillingPage() {
             ))}
           </div>
         </section>
+        )}
+
+        {isStaff && (
+          <section className="sp-glass-strong rounded-2xl p-5 sm:p-6 mb-6" data-testid="staff-banner">
+            <div className="flex items-start gap-3">
+              <Sparkles className="w-4 h-4 text-orange-300 mt-0.5 flex-shrink-0" />
+              <div className="text-sm leading-relaxed">
+                <strong>You have staff access.</strong> Every feature is unlocked
+                with no monthly charge or usage cap. This applies to anyone at
+                @archeforge.com and the founding team. Workspaces you create
+                inherit the same access automatically.
+              </div>
+            </div>
+          </section>
+        )}
 
         {/* Recent transactions */}
         <section className="sp-glass rounded-2xl p-5 sm:p-6" data-testid="transactions-card">
@@ -396,7 +432,15 @@ function buildConsentText(plan) {
   );
 }
 
-function PlanStatusPill({ status, cancelling, paidUntil }) {
+function PlanStatusPill({ status, cancelling, paidUntil, isStaff }) {
+  if (isStaff || status === "staff") {
+    return (
+      <div className="inline-flex items-center gap-1.5 text-xs px-2 py-1 rounded-full bg-orange-500/15 text-orange-300"
+           data-testid="plan-status-staff">
+        <Sparkles className="w-3 h-3" /> Staff · unlimited access
+      </div>
+    );
+  }
   if (cancelling) {
     return (
       <div className="inline-flex items-center gap-1.5 text-xs px-2 py-1 rounded-full bg-amber-500/15 text-amber-300"

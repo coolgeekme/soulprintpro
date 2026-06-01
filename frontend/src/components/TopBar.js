@@ -2,7 +2,7 @@ import React, { useState, useEffect } from "react";
 import { Link, useNavigate, useLocation } from "react-router-dom";
 import { useAuth } from "../context/AuthContext";
 import { useTheme } from "../context/ThemeContext";
-import { LogOut, Sun, Moon, MapPin, ChevronDown, HelpCircle, ShieldCheck, UserCog, Rocket, Search } from "lucide-react";
+import { LogOut, Sun, Moon, MapPin, ChevronDown, HelpCircle, ShieldCheck, UserCog, Rocket, Search, CreditCard } from "lucide-react";
 import Logo from "./Logo";
 import DynamicIntelligencePicker from "./DynamicIntelligencePicker";
 import SpotlightSearch from "./SpotlightSearch";
@@ -197,6 +197,20 @@ export default function TopBar({ children, right = null }) {
                 >
                   <UserCog className="w-4 h-4 mr-2" />
                   Account settings
+                </DropdownMenuItem>
+                <DropdownMenuItem
+                  onSelect={() => {
+                    // Route to the active org's billing page when we
+                    // have one cached, otherwise drop the user on the
+                    // account page so they can pick an org from there.
+                    if (activeOrgId) nav(`/app/org/${activeOrgId}/billing`);
+                    else nav("/app/account");
+                  }}
+                  data-testid="topbar-menu-billing"
+                  className="cursor-pointer"
+                >
+                  <CreditCard className="w-4 h-4 mr-2 text-orange-300" />
+                  Plan &amp; billing
                 </DropdownMenuItem>
                 <DropdownMenuItem
                   onSelect={() => nav("/app/audits")}

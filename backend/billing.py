@@ -569,6 +569,38 @@ def make_billing_router(
         if ctx["member"]["role"] not in ("owner", "admin"):
             raise HTTPException(403, "Only owners/admins can view billing.")
 
+        # Staff override — anyone at @archeforge.com (or explicitly
+        # whitelisted) gets Refine-equivalent access without paying.
+        from staff import org_has_staff_owner, is_staff_email
+        staff_access = (
+            is_staff_email(u.get("email"))
+            or await org_has_staff_owner(db, org_id)
+        )
+        if staff_access:
+            # Report the org as Refine + permanently active. Skip the
+            # rest of the summary path — staff don't see overage nags.
+            refine = PLANS["refine"]
+            return {
+                "plan": {k: v for k, v in refine.items() if k != "lookup_key"},
+                "plan_status": "staff",
+                "plan_paid_until": None,
+                "subscription_status": None,
+                "cancel_at_period_end": False,
+                "has_stripe_customer": False,
+                "is_staff": True,
+                "period_start": _month_window()[0].isoformat(),
+                "period_end": _month_window()[1].isoformat(),
+                "this_month_spend_usd": round(
+                    await _org_llm_spend(db, org_id, *_month_window()), 4,
+                ),
+                "included_llm_budget_usd": refine["included_llm_budget_usd"],
+                "projected_overage_raw_usd": 0.0,
+                "projected_overage_billable_usd": 0.0,
+                "overage_markup": OVERAGE_MARKUP,
+                "outstanding_overage": None,
+                "recent_transactions": [],
+            }
+
         plan_id = await _org_plan(db, org_id)
         plan = PLANS.get(plan_id, PLANS["spark"])
 
@@ -617,6 +649,7 @@ def make_billing_router(
             "subscription_status": sub_status,
             "cancel_at_period_end": cancel_at_period_end,
             "has_stripe_customer": bool(org.get("stripe_customer_id")),
+            "is_staff": False,
             "period_start": start.isoformat(),
             "period_end": now.isoformat(),
             "this_month_spend_usd": round(spend, 4),

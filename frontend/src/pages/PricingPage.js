@@ -30,7 +30,7 @@ const TIERS = [
     monthly: 80,
     annual: 66,
     cta: "Start with Spark",
-    href: "/auth?mode=register",
+    href: "/auth?mode=register&plan=spark",
     perks: [
       "1 user · 1 organization · 3 teams",
       "Full 150+ agent catalogue",
@@ -53,7 +53,7 @@ const TIERS = [
     monthly: 300,
     annual: 250,
     cta: "Choose Temper",
-    href: "/auth?mode=register",
+    href: "/auth?mode=register&plan=temper",
     highlight: true,
     seatsLabel: "5 seats included · $40/seat after (max 20)",
     perks: [

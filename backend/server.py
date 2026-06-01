@@ -747,12 +747,18 @@ async def register(body: RegisterBody, request: Request, resp: Response):
     set_access_cookie(resp, mint_device_cookie(code_id))
     token = create_access_token(uid, email)
     set_auth_cookies(resp, token)
-    # Welcome email — fire-and-forget so a Resend outage / missing API
-    # key never blocks the registration flow. The helper itself logs at
-    # warning level if delivery fails.
+    # Welcome email — also notifies team@archeforge.com per
+    # `email_service.send_welcome_email`. Fire-and-forget so a Resend
+    # outage / missing API key never blocks the registration flow.
+    # Internal team notification is skipped for staff emails so the
+    # founders don't get pinged when they create their own accounts.
     try:
         from email_service import send_welcome_email
-        asyncio.create_task(send_welcome_email(name=doc["name"], email=email))
+        from staff import is_staff_email
+        asyncio.create_task(send_welcome_email(
+            name=doc["name"], email=email,
+            notify_team=not is_staff_email(email),
+        ))
     except Exception:
         pass
     return {"id": uid, "name": doc["name"], "email": email,

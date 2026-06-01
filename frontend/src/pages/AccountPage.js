@@ -1,7 +1,9 @@
 import React, { useEffect, useState } from "react";
+import { Link } from "react-router-dom";
 import { toast } from "sonner";
 import {
   User, Mail, Phone, Globe2, Lock, Loader2, Save, Eye, EyeOff,
+  CreditCard, ArrowRight, Sparkles,
 } from "lucide-react";
 import api from "../lib/api";
 import TopBar from "../components/TopBar";
@@ -40,6 +42,27 @@ export default function AccountPage() {
   const [confirmPwd, setConfirmPwd] = useState("");
   const [savingPwd, setSavingPwd] = useState(false);
   const [showPwd, setShowPwd] = useState(false);
+
+  // Orgs the current user belongs to — used to render a "Plan &
+  // billing" card per org. Most users will only see one row here,
+  // but agency owners (multiple client orgs) get one card each.
+  const [orgs, setOrgs] = useState([]);
+  const [orgsLoading, setOrgsLoading] = useState(true);
+
+  useEffect(() => {
+    let alive = true;
+    (async () => {
+      try {
+        const { data } = await api.get("/orgs");
+        if (alive) setOrgs(Array.isArray(data) ? data : []);
+      } catch {
+        if (alive) setOrgs([]);
+      } finally {
+        if (alive) setOrgsLoading(false);
+      }
+    })();
+    return () => { alive = false; };
+  }, []);
 
   // Auth-method detection — Firebase users don't have a password to
   // change here. We infer this from `firebase_uid` on the user doc;
@@ -172,6 +195,58 @@ export default function AccountPage() {
             </button>
           </div>
         </form>
+
+        {/* Plan & billing — one row per org the user belongs to. Owners
+            and admins see "Manage" → /app/org/{id}/billing. Members
+            see a read-only label so they know what plan they're on. */}
+        <section className="sp-glass-strong rounded-2xl p-5 sm:p-6 mb-6" data-testid="billing-card">
+          <h2 className="text-sm uppercase tracking-widest sp-subtle mb-4 flex items-center gap-2">
+            <CreditCard className="w-3.5 h-3.5" /> Plan &amp; billing
+          </h2>
+          {orgsLoading ? (
+            <div className="text-sm sp-subtle flex items-center gap-2">
+              <Loader2 className="w-3.5 h-3.5 animate-spin" /> Loading your workspaces…
+            </div>
+          ) : orgs.length === 0 ? (
+            <div className="text-sm sp-subtle">
+              You don't belong to any workspaces yet.
+            </div>
+          ) : (
+            <ul className="divide-y divide-white/5">
+              {orgs.map(o => (
+                <li key={o.id} className="py-2 flex items-center justify-between gap-3">
+                  <div className="min-w-0">
+                    <div className="text-sm flex items-center gap-2">
+                      <Sparkles className="w-3.5 h-3.5 text-orange-300 flex-shrink-0" />
+                      <span className="truncate">{o.name}</span>
+                    </div>
+                    <div className="text-[11px] sp-subtle mt-0.5">
+                      {(o.plan || "spark").replace(/^./, c => c.toUpperCase())} plan
+                      {" "}· {(o.member_role || o.role || "member")}
+                    </div>
+                  </div>
+                  {(o.member_role === "owner" || o.member_role === "admin"
+                    || o.role === "owner" || o.role === "admin") ? (
+                    <Link
+                      to={`/app/org/${o.id}/billing`}
+                      className="sp-btn sp-btn-ghost text-xs whitespace-nowrap"
+                      data-testid={`account-billing-link-${o.id}`}
+                    >
+                      Manage
+                      <ArrowRight className="w-3.5 h-3.5 ml-1" />
+                    </Link>
+                  ) : (
+                    <span className="text-[11px] sp-subtle italic">View only</span>
+                  )}
+                </li>
+              ))}
+            </ul>
+          )}
+          <p className="text-[11px] sp-subtle mt-3 leading-relaxed">
+            Spark and Temper are monthly subscriptions. Refine is custom-priced —
+            contact our team from any workspace's billing page for a quote.
+          </p>
+        </section>
 
         {/* Password */}
         {isFirebaseOnly ? (
