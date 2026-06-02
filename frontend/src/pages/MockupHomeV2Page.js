@@ -2,6 +2,7 @@ import React from "react";
 import { Link } from "react-router-dom";
 import {
   ArrowRight, ShieldCheck, Network, Bot, Compass, Wrench, Cpu, Hexagon,
+  Users, Radio, Sparkles, Zap,
 } from "lucide-react";
 import "../styles/foundry-chrome.css";
 
@@ -128,6 +129,8 @@ export default function MockupHomeV2Page() {
         <Wordmark />
         <nav className="hidden md:flex items-center gap-8 text-sm chr-mute font-medium">
           <a href="#tiers" className="hover:text-white transition-colors">Tiers</a>
+          <a href="#why"   className="hover:text-white transition-colors">Why</a>
+          <a href="#crew"  className="hover:text-white transition-colors">Crew</a>
           <a href="#how"   className="hover:text-white transition-colors">How it works</a>
           <Link to="/mockup/pricing-v2" className="hover:text-white">Pricing</Link>
           <Link to="/mockup/home" className="hover:text-white">v1 mockup</Link>
@@ -273,6 +276,105 @@ export default function MockupHomeV2Page() {
           day-one-output proof back, prefer a small inline carousel of
           3-4 thumbnails instead of one full-bleed image. */}
 
+      {/* Why Foundry — 6 product-explainer cards. Ported from the v1
+          LandingPage and re-tinted to the chrome aesthetic. Sits between
+          Tiers (the offer) and How-it-works (the process) so the visitor
+          understands the *product* before the *steps*. */}
+      <section id="why" className="relative z-10 max-w-7xl mx-auto px-6 md:px-10 py-24">
+        <div className="text-center mb-12">
+          <div className="chr-eyebrow mb-3">Why Foundry</div>
+          <h2 className="chr-display text-4xl sm:text-5xl max-w-3xl mx-auto leading-tight">
+            <span className="chr-text">Not another chatbot. </span>
+            <span className="chr-text-copper">A crew </span>
+            <span className="chr-text">that understands your company.</span>
+          </h2>
+        </div>
+        <div className="grid md:grid-cols-3 gap-4">
+          {[
+            { i: Network, title: "One Soul, every agent",
+              body: "Define your mission, tone, audience, and values once — every agent on the team is briefed automatically before they say a word." },
+            { i: Users, title: "Group + direct conversations",
+              body: "Work 1:1 with an agent or pull multiple humans + agents into one thread. @mention to steer, or let the room respond." },
+            { i: Radio, title: "169 specialists. 14 divisions.",
+              body: "Engineers, strategists, copywriters, researchers, ops, finance, legal, product, XR, game dev — the full agency, tuned to you." },
+            { i: ShieldCheck, title: "Org-first architecture",
+              body: "Invite your company by link. Spin up teams per product, brand, or squad. Keep contexts clean and conversations private." },
+            { i: Sparkles, title: "Tuned, not templated",
+              body: "Your brief is woven into every system prompt, so output feels like it came from someone who actually works at your company." },
+            { i: Zap, title: "Ship in minutes",
+              body: "No configuration theatre. Create an org, draft your Soul, and you're in a working thread in under three minutes." },
+          ].map((f) => {
+            const Icon = f.i;
+            return (
+              <div key={f.title} className="chr-card">
+                <Icon className="w-5 h-5 text-blue-300 mb-3" />
+                <h4 className="chr-display-tight text-xl chr-text mb-2 leading-tight">
+                  {f.title}
+                </h4>
+                <p className="text-sm chr-mute leading-relaxed font-medium">{f.body}</p>
+              </div>
+            );
+          })}
+        </div>
+      </section>
+
+      <div className="max-w-7xl mx-auto px-6 md:px-10">
+        <div className="chr-rule" />
+      </div>
+
+      {/* The Crew — 14-division agent catalogue. Concrete proof of
+          depth that closes deals: "169 agents across 14 divisions"
+          lands harder than just "150+ specialists". The colored accent
+          bar on each card uses a desaturated chrome-friendly palette
+          (not the v1 LandingPage's bright neons) so the grid stays
+          on-brand with the rest of the chrome aesthetic. */}
+      <section id="crew" className="relative z-10 max-w-7xl mx-auto px-6 md:px-10 py-24">
+        <div className="text-center mb-12">
+          <div className="chr-eyebrow mb-3">The crew</div>
+          <h2 className="chr-display text-4xl sm:text-5xl max-w-3xl mx-auto leading-tight">
+            <span className="chr-text-steel">169 specialists.</span>{" "}
+            <span className="chr-text">14 divisions.</span><br />
+            <span className="chr-text-copper italic">One voice — yours.</span>
+          </h2>
+          <p className="chr-mute mt-4 max-w-2xl mx-auto font-medium">
+            Frontend wizards, brand guardians, deal coaches, privacy architects,
+            narrative designers — a full agency, tuned by your Soul and
+            grounded in your org's own assets.
+          </p>
+        </div>
+        <div className="grid sm:grid-cols-2 lg:grid-cols-4 gap-3">
+          {[
+            { name: "Engineering",        count: 29, c: "#5fa8d6" },
+            { name: "Marketing",          count: 30, c: "#e57b3a" },
+            { name: "Specialized",        count: 41, c: "#cc6633" },
+            { name: "Sales",              count: 8,  c: "#7fc2a3" },
+            { name: "Design",             count: 8,  c: "#c98069" },
+            { name: "Product",            count: 5,  c: "#6fa3c4" },
+            { name: "Finance",            count: 5,  c: "#c4a86b" },
+            { name: "Testing",            count: 8,  c: "#d68a5a" },
+            { name: "Paid Media",         count: 7,  c: "#9b8fc4" },
+            { name: "Project Mgmt",       count: 6,  c: "#7a9cc4" },
+            { name: "Support",            count: 6,  c: "#7fbab0" },
+            { name: "Spatial Computing",  count: 6,  c: "#b88fc4" },
+            { name: "Academic",           count: 5,  c: "#9bb87f" },
+            { name: "Game Development",   count: 5,  c: "#c47f99" },
+          ].map((d) => (
+            <div key={d.name} className="chr-card"
+                 data-testid={`mockup-v2-division-${d.name.toLowerCase().replace(/\s+/g, "-")}`}>
+              <div className="w-10 h-1 rounded-full mb-4"
+                   style={{
+                     background: `linear-gradient(90deg, ${d.c}, ${d.c}22)`,
+                     boxShadow: `0 0 12px ${d.c}66`,
+                   }} />
+              <div className="chr-display-tight text-base chr-text mb-1">{d.name}</div>
+              <div className="text-[10px] chr-mute uppercase tracking-widest font-semibold">
+                {d.count} agents
+              </div>
+            </div>
+          ))}
+        </div>
+      </section>
+
       {/* How it works */}
       <section id="how" className="relative z-10 max-w-7xl mx-auto px-6 md:px-10 py-20">
         <div className="text-center mb-12">
@@ -372,15 +474,27 @@ export default function MockupHomeV2Page() {
       </section>
 
       <footer className="relative z-10 max-w-7xl mx-auto px-6 md:px-10 py-10
-                         border-t border-white/5 flex flex-wrap items-center
-                         justify-between gap-3 text-xs chr-mute font-medium">
-        <span className="tracking-widest uppercase">
-          © {new Date().getFullYear()} Foundry · by Foundry
-        </span>
-        <span className="inline-flex items-center gap-2 tracking-widest uppercase">
-          <ShieldCheck className="w-3 h-3 text-blue-300" />
-          foundryagents.ai
-        </span>
+                         border-t border-white/5
+                         flex flex-col sm:flex-row items-start sm:items-center
+                         justify-between gap-4 text-xs chr-mute font-medium">
+        <div className="tracking-widest uppercase">
+          © {new Date().getFullYear()} ArcheForge, LLC · Foundry
+        </div>
+        <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
+          <Link to="/legal/privacy" className="hover:text-white transition-colors"
+                data-testid="mockup-v2-footer-privacy">Privacy</Link>
+          <Link to="/legal/terms" className="hover:text-white transition-colors"
+                data-testid="mockup-v2-footer-terms">Terms</Link>
+          <Link to="/legal/sub-processors" className="hover:text-white transition-colors"
+                data-testid="mockup-v2-footer-subprocessors">Sub-processors</Link>
+          <Link to="/security" className="hover:text-white transition-colors"
+                data-testid="mockup-v2-footer-security">Security</Link>
+          <span className="opacity-50">·</span>
+          <span className="inline-flex items-center gap-1.5 tracking-widest uppercase">
+            <ShieldCheck className="w-3 h-3 text-blue-300" />
+            foundryagents.ai
+          </span>
+        </div>
       </footer>
     </div>
   );
