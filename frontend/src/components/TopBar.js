@@ -6,6 +6,7 @@ import { LogOut, Sun, Moon, MapPin, ChevronDown, HelpCircle, ShieldCheck, UserCo
 import Logo from "./Logo";
 import DynamicIntelligencePicker from "./DynamicIntelligencePicker";
 import SpotlightSearch from "./SpotlightSearch";
+import { AccessStatusPill, RedeemCodeModal, useAccessState } from "./AccessStatusPanel";
 import api, { captureUserLocation, getCachedLocation, setCachedLocation } from "../lib/api";
 import { toast } from "sonner";
 import {
@@ -26,6 +27,10 @@ export default function TopBar({ children, right = null }) {
   const location = useLocation();
   const [loc, setLoc] = useState(getCachedLocation());
   const [searchOpen, setSearchOpen] = useState(false);
+  // Time-bounded access pill + modal. `useAccessState` is a no-op for
+  // perpetual / superadmin / >14-day users — they see nothing.
+  const { state: accessState, usage: accessUsage, refresh: refreshAccess } = useAccessState();
+  const [redeemOpen, setRedeemOpen] = useState(false);
   const [activeOrgId, setActiveOrgId] = useState(() => {
     try { return window.localStorage.getItem(ACTIVE_ORG_KEY) || ""; }
     catch { return ""; }
@@ -148,6 +153,10 @@ export default function TopBar({ children, right = null }) {
               <Search className="w-4 h-4" />
               <kbd className="hidden lg:inline text-[10px] sp-subtle font-mono">⌘K</kbd>
             </button>
+            {/* Access-window pill — only renders for users with a
+                limited window AND ≤14 days remaining (or in grace /
+                blocked). Click → opens the Redeem modal. */}
+            <AccessStatusPill state={accessState} usage={accessUsage} onOpen={() => setRedeemOpen(true)} />
             {/* Icon-only theme toggle — label removed to reclaim space. */}
             <button
               onClick={toggle}
@@ -278,6 +287,12 @@ export default function TopBar({ children, right = null }) {
         open={searchOpen}
         onClose={() => setSearchOpen(false)}
         orgId={activeOrgId}
+      />
+      <RedeemCodeModal
+        open={redeemOpen}
+        onClose={() => setRedeemOpen(false)}
+        onRedeemed={() => refreshAccess()}
+        currentState={accessState}
       />
     </header>
   );

@@ -125,19 +125,122 @@ def _user_has_access(user: dict) -> tuple[bool, str]:
     """Pure-function gate decision for a signed-in user. Returns
     (allowed, reason). Reasons are stable strings the frontend can
     branch on for copy:
-        "superadmin" / "private_code" / "trial" / "none"
+        "superadmin" / "private_code" / "trial" / "grace_period" /
+        "expired" / "none"
     """
     if not user:
         return False, "none"
     if user.get("is_superadmin"):
         return True, "superadmin"
-    if user.get("access_granted_at"):
-        return True, "private_code"
     # Active or even past-but-redeemed trial counts — once you've
     # touched the trial flow, we don't slam the door behind you.
     if user.get("trial_started_at"):
         return True, "trial"
-    return False, "none"
+    if not user.get("access_granted_at"):
+        return False, "none"
+    # Time-bounded access (Jun 2026): if the user redeemed a code that
+    # carried a duration, their access window expires at the stamped
+    # datetime. Grandfathered + perpetual users have no
+    # `access_expires_at` and stay green forever.
+    expires_at = user.get("access_expires_at")
+    if not isinstance(expires_at, datetime):
+        return True, "private_code"
+    if expires_at.tzinfo is None:
+        expires_at = expires_at.replace(tzinfo=timezone.utc)
+    now = _now()
+    if expires_at > now:
+        return True, "private_code"
+    grace_deadline = expires_at + timedelta(days=ACCESS_GRACE_DAYS)
+    if now <= grace_deadline:
+        return True, "grace_period"
+    return False, "expired"
+
+
+def access_state(user: dict) -> dict:
+    """Rich access-state object consumed by the TopBar pill, the
+    Billing page section, and the read-only banner. Frontend reads
+    `expires_at` / `days_remaining` / `mode` to decide what to show.
+
+    `mode` ∈ {"full", "readonly", "blocked"}:
+      • "full"     — user can perform every action
+      • "readonly" — within the 7-day grace period after expiry;
+                     reads pass, writes (draft / publish / mission)
+                     are refused with a 402 "extend access"
+      • "blocked"  — past grace; every request bounces to /access-expired
+    """
+    if not user:
+        return {"mode": "blocked", "reason": "none",
+                "expires_at": None, "days_remaining": None,
+                "in_grace": False, "grace_days_remaining": None,
+                "is_perpetual": False}
+    if user.get("is_superadmin"):
+        return {"mode": "full", "reason": "superadmin",
+                "expires_at": None, "days_remaining": None,
+                "in_grace": False, "grace_days_remaining": None,
+                "is_perpetual": True}
+    allowed, reason = _user_has_access(user)
+    expires_at = user.get("access_expires_at")
+    if isinstance(expires_at, datetime) and expires_at.tzinfo is None:
+        expires_at = expires_at.replace(tzinfo=timezone.utc)
+    now = _now()
+    iso_expiry = expires_at.isoformat() if isinstance(expires_at, datetime) else None
+    if not allowed:
+        return {"mode": "blocked", "reason": reason,
+                "expires_at": iso_expiry, "days_remaining": 0,
+                "in_grace": False, "grace_days_remaining": 0,
+                "is_perpetual": False}
+    if not isinstance(expires_at, datetime):
+        # Perpetual access (grandfathered, trial-only, or pre-duration code)
+        return {"mode": "full", "reason": reason,
+                "expires_at": None, "days_remaining": None,
+                "in_grace": False, "grace_days_remaining": None,
+                "is_perpetual": True}
+    delta_secs = (expires_at - now).total_seconds()
+    days_remaining = max(0, int(delta_secs // 86400))
+    if reason == "grace_period":
+        grace_deadline = expires_at + timedelta(days=ACCESS_GRACE_DAYS)
+        grace_secs = (grace_deadline - now).total_seconds()
+        return {"mode": "readonly", "reason": "grace_period",
+                "expires_at": iso_expiry, "days_remaining": 0,
+                "in_grace": True,
+                "grace_days_remaining": max(0, int(grace_secs // 86400)),
+                "is_perpetual": False}
+    return {"mode": "full", "reason": reason,
+            "expires_at": iso_expiry, "days_remaining": days_remaining,
+            "in_grace": False, "grace_days_remaining": None,
+            "is_perpetual": False}
+
+
+async def assert_full_access(db, user: dict) -> None:
+    """Raise 402 if the user is in the soft-block (grace) window.
+    Sprinkled into the cost-incurring write endpoints (draft / image
+    generation / publish / mission). Read endpoints never call this
+    so grace users can still BROWSE everything they built — they
+    just can't burn new credits.
+    """
+    # Re-hydrate to ensure we have the latest `access_expires_at`
+    # (the in-flight `user` dict may be lean / stale).
+    if user and user.get("id"):
+        try:
+            full = await db.users.find_one({"_id": ObjectId(user["id"])})
+            if full:
+                user = full
+        except Exception:
+            pass
+    st = access_state(user)
+    if st["mode"] == "full":
+        return
+    if st["mode"] == "readonly":
+        raise HTTPException(
+            402,
+            "Your access window has expired and you're in a 7-day "
+            "read-only period. Redeem a fresh access code (Billing → "
+            "Extend access) to keep drafting and publishing.",
+        )
+    raise HTTPException(
+        402,
+        "Your access has expired. Redeem an access code to continue.",
+    )
 
 
 async def device_cookie_grants_access(db, request: Request) -> bool:
@@ -256,13 +359,34 @@ async def redeem_code_for_user(db, raw_code: str, user_id: str) -> tuple[str, st
                     "$set": {"last_used_at": now},
                 },
             )
+        # Stacking math (Jun 2026): if the code carries a duration,
+        # extend `access_expires_at` by that many days. We stack from
+        # `max(current expiry, now)` so a user who still has 10 days
+        # left + redeems a 30-day code ends up with 40 days remaining
+        # (not 30). Perpetual users (no `grants_duration_days` on
+        # this code) keep their unlimited window.
+        user_updates: dict = {
+            "access_granted_at": now,
+            "access_code_used": code,
+            "access_code_id": str(row["_id"]),
+        }
+        duration_days = row.get("grants_duration_days")
+        if isinstance(duration_days, int) and duration_days > 0:
+            existing = await db.users.find_one(
+                {"_id": user_obj_id}, {"access_expires_at": 1}
+            ) or {}
+            current_expiry = existing.get("access_expires_at")
+            if isinstance(current_expiry, datetime):
+                if current_expiry.tzinfo is None:
+                    current_expiry = current_expiry.replace(tzinfo=timezone.utc)
+                base = max(current_expiry, now)
+            else:
+                base = now
+            user_updates["access_expires_at"] = base + timedelta(days=duration_days)
+            user_updates["access_extended_at"] = now
         await db.users.update_one(
             {"_id": user_obj_id},
-            {"$set": {
-                "access_granted_at": now,
-                "access_code_used": code,
-                "access_code_id": str(row["_id"]),
-            }},
+            {"$set": user_updates},
         )
         return "private_code", str(row["_id"])
     trial_row = await db.trial_codes.find_one({"code": code})
@@ -329,9 +453,26 @@ class CreateCodeBody(BaseModel):
     usage_type: str = Field("single", pattern="^(single|multi)$")
     # Only meaningful for multi-use codes. None = unlimited.
     max_uses: Optional[int] = Field(None, ge=1, le=100000)
-    # ISO datetime string. None = never expires.
+    # ISO datetime string. None = the CODE itself never goes stale
+    # (separate from `grants_duration_days` below which controls how
+    # long the *user* gets once they redeem).
     expires_at: Optional[str] = None
+    # How many days of platform access this code GRANTS to each
+    # redeemer. None = perpetual access (current behaviour — every
+    # code shipped before Jun 2026 grants forever). Integer = stacks
+    # onto the user's `access_expires_at` window per redemption
+    # (so a 30-day code redeemed when the user has 10 days left =
+    # 40 days remaining — the "extend my trial" use case).
+    grants_duration_days: Optional[int] = Field(None, ge=1, le=3650)
     note: Optional[str] = Field(None, max_length=240)
+
+
+# 7-day soft-block window after `access_expires_at` lapses. During
+# the grace period the frontend renders a read-only banner and the
+# backend lets read endpoints through but blocks cost-incurring
+# writes (draft / image-gen / publish / mission). After the grace
+# window the user is hard-cut and must redeem a fresh code.
+ACCESS_GRACE_DAYS = 7
 
 
 # ── Router factory ────────────────────────────────────────────────────────
@@ -388,6 +529,33 @@ def make_access_codes_router(*, db, get_current_user, get_user_or_none) -> APIRo
             "is_superadmin": bool(full.get("is_superadmin")),
         }
 
+    # ── Public: my access state ───────────────────────────────────────
+    @r.get("/api/access-codes/me")
+    async def my_access_state(u: dict = Depends(get_current_user)):
+        """Detailed view of the SIGNED-IN user's access window — used
+        by the TopBar pill, the Billing-page "Extend access" panel,
+        and the read-only banner. Returns:
+
+            {
+              "mode": "full" | "readonly" | "blocked",
+              "reason": str,
+              "expires_at": ISO | null,
+              "days_remaining": int | null,
+              "in_grace": bool,
+              "grace_days_remaining": int | null,
+              "is_perpetual": bool
+            }
+
+        Distinct from `/status` (which is a yes/no gate decision) —
+        this endpoint is only called once the gate has already opened
+        so it can assume the user is signed in.
+        """
+        try:
+            full = await db.users.find_one({"_id": ObjectId(u["id"])}) or u
+        except Exception:
+            full = u
+        return access_state(full)
+
     # ── Public: validate (no redeem) ──────────────────────────────────
     @r.post("/api/access-codes/validate")
     async def validate(body: RedeemBody):
@@ -430,13 +598,6 @@ def make_access_codes_router(*, db, get_current_user, get_user_or_none) -> APIRo
             raise HTTPException(400, "Invalid user")
         full = await db.users.find_one({"_id": user_obj_id}) or {}
 
-        # If they already have access, redeeming is a no-op success —
-        # avoids weird "you already used this" errors when the SPA
-        # re-posts on a stale gate render.
-        already_allowed, reason = _user_has_access(full)
-        if already_allowed:
-            return {"ok": True, "reason": reason, "already_granted": True}
-
         # ── Branch 1: admin-issued private code ──
         row = await db.access_codes.find_one({"code": code})
         if row:
@@ -448,37 +609,109 @@ def make_access_codes_router(*, db, get_current_user, get_user_or_none) -> APIRo
                     expires = expires.replace(tzinfo=timezone.utc)
                 if expires < now:
                     raise HTTPException(400, "That code has expired.")
-            # Per-user idempotency — if THIS user already redeemed
-            # the same code we just stamp them green again.
+            # Per-user idempotency: if THIS user already redeemed
+            # the SAME code, refuse the second redemption — without
+            # this guard a user could click "redeem" twice and stack
+            # the duration days for free.
             already_redeemed_by = row.get("redeemed_by_user_ids") or []
-            if str(user_obj_id) in already_redeemed_by:
-                pass  # idempotent — fall through to the granting block
-            else:
-                if row.get("usage_type") == "single":
-                    if (row.get("used_count") or 0) >= 1:
-                        raise HTTPException(400, "That code has already been used.")
-                else:  # multi
-                    cap = row.get("max_uses")
-                    if cap is not None and (row.get("used_count") or 0) >= cap:
-                        raise HTTPException(400, "That code has reached its usage limit.")
-                await db.access_codes.update_one(
-                    {"_id": row["_id"]},
-                    {
-                        "$inc": {"used_count": 1},
-                        "$addToSet": {"redeemed_by_user_ids": str(user_obj_id)},
-                        "$set": {"last_used_at": now},
-                    },
+            already_used_this_code = str(user_obj_id) in already_redeemed_by
+            duration_days = row.get("grants_duration_days")
+            has_duration = isinstance(duration_days, int) and duration_days > 0
+
+            # Already-allowed short-circuit: if the user is currently
+            # green AND the code is perpetual, redeeming would be a
+            # no-op — return the idempotent success that the SPA's
+            # stale-gate paths rely on. But if the code DOES carry
+            # a duration, fall through to the stacking branch so
+            # active users can legitimately extend their window.
+            already_allowed, reason = _user_has_access(full)
+            if already_allowed and not has_duration:
+                return {"ok": True, "reason": reason, "already_granted": True}
+
+            if already_used_this_code:
+                raise HTTPException(
+                    400,
+                    "You've already redeemed this code. Each code can "
+                    "only be applied to your account once — ask for a "
+                    "fresh one to extend further.",
                 )
+            # Cap checks for new redemptions.
+            if row.get("usage_type") == "single":
+                if (row.get("used_count") or 0) >= 1:
+                    raise HTTPException(400, "That code has already been used.")
+            else:  # multi
+                cap = row.get("max_uses")
+                if cap is not None and (row.get("used_count") or 0) >= cap:
+                    raise HTTPException(400, "That code has reached its usage limit.")
+            await db.access_codes.update_one(
+                {"_id": row["_id"]},
+                {
+                    "$inc": {"used_count": 1},
+                    "$addToSet": {"redeemed_by_user_ids": str(user_obj_id)},
+                    "$set": {"last_used_at": now},
+                },
+            )
+            # Stacking math — codes that carry `grants_duration_days`
+            # extend the user's window from `max(current_expiry, now)`;
+            # perpetual codes just stamp `access_granted_at`.
+            user_updates: dict = {
+                "access_granted_at": now,
+                "access_code_used": code,
+                "access_code_id": str(row["_id"]),
+            }
+            if has_duration:
+                current_expiry = full.get("access_expires_at")
+                if isinstance(current_expiry, datetime):
+                    if current_expiry.tzinfo is None:
+                        current_expiry = current_expiry.replace(tzinfo=timezone.utc)
+                    base = max(current_expiry, now)
+                else:
+                    # Perpetual users redeeming a duration-bearing code:
+                    # we DON'T clamp them down to a window — they keep
+                    # their perpetual access. This guards against the
+                    # "grandfathered user accidentally caps themselves
+                    # at 30 days" footgun.
+                    if already_allowed and not isinstance(current_expiry, datetime):
+                        # Perpetual user — record the redemption but
+                        # leave them perpetual.
+                        await db.users.update_one(
+                            {"_id": user_obj_id},
+                            {"$set": user_updates},
+                        )
+                        set_access_cookie(response, mint_device_cookie(str(row["_id"])))
+                        return {
+                            "ok": True,
+                            "reason": "private_code",
+                            "extended_days": duration_days,
+                            "new_expires_at": None,
+                            "kept_perpetual": True,
+                        }
+                    base = now
+                user_updates["access_expires_at"] = base + timedelta(days=duration_days)
+                user_updates["access_extended_at"] = now
             await db.users.update_one(
                 {"_id": user_obj_id},
-                {"$set": {
-                    "access_granted_at": now,
-                    "access_code_used": code,
-                    "access_code_id": str(row["_id"]),
-                }},
+                {"$set": user_updates},
             )
             set_access_cookie(response, mint_device_cookie(str(row["_id"])))
-            return {"ok": True, "reason": "private_code"}
+            new_expiry = user_updates.get("access_expires_at")
+            return {
+                "ok": True,
+                "reason": "private_code",
+                "extended_days": duration_days if has_duration else None,
+                "new_expires_at": new_expiry.isoformat() if isinstance(new_expiry, datetime) else None,
+            }
+
+        # If the code wasn't an access code AND the user already has
+        # access, surface a friendly "you're already green" message
+        # rather than the misleading "code not found".
+        already_allowed, reason = _user_has_access(full)
+        if already_allowed:
+            # Fall through to trial-code branch below — a user with
+            # active access might still want to redeem a trial code,
+            # but trial codes don't stack. So if we hit the trial
+            # branch and they're already allowed we just no-op.
+            pass
 
         # ── Branch 2: trial code (24h trial system) ──
         # We accept active, unredeemed trial codes here too so users
@@ -488,6 +721,16 @@ def make_access_codes_router(*, db, get_current_user, get_user_or_none) -> APIRo
         # post-hoc unlock).
         trial_row = await db.trial_codes.find_one({"code": code})
         if trial_row:
+            if already_allowed:
+                # User already has access — trial codes don't stack
+                # (24h flat). Refuse with a useful pointer to a real
+                # extension code.
+                raise HTTPException(
+                    400,
+                    "You already have active access — trial codes are "
+                    "for first-time activation only. Ask an admin for a "
+                    "duration-bearing access code to extend.",
+                )
             if trial_row.get("used_at"):
                 raise HTTPException(400, "That code has already been redeemed.")
             t_expires = trial_row.get("expires_at")
@@ -545,6 +788,7 @@ def make_access_codes_router(*, db, get_current_user, get_user_or_none) -> APIRo
                 "used_count": r_.get("used_count") or 0,
                 "is_active": bool(r_.get("is_active", True)),
                 "expires_at": expires.isoformat() if isinstance(expires, datetime) else None,
+                "grants_duration_days": r_.get("grants_duration_days"),
                 "created_at": r_["created_at"].isoformat()
                     if isinstance(r_.get("created_at"), datetime) else None,
                 "last_used_at": r_["last_used_at"].isoformat()
@@ -585,6 +829,7 @@ def make_access_codes_router(*, db, get_current_user, get_user_or_none) -> APIRo
             "used_count": 0,
             "is_active": True,
             "expires_at": expires_at,
+            "grants_duration_days": body.grants_duration_days,
             "note": (body.note or "").strip(),
             "created_at": now,
             "created_by": admin.get("id") or "",
@@ -599,6 +844,7 @@ def make_access_codes_router(*, db, get_current_user, get_user_or_none) -> APIRo
             "used_count": 0,
             "is_active": True,
             "expires_at": expires_at.isoformat() if expires_at else None,
+            "grants_duration_days": doc["grants_duration_days"],
             "created_at": now.isoformat(),
             "note": doc["note"],
         }
@@ -623,7 +869,8 @@ def make_access_codes_router(*, db, get_current_user, get_user_or_none) -> APIRo
 
 __all__ = ["make_access_codes_router", "_user_has_access",
            "device_cookie_grants_access",
-           "redeem_code_for_user", "validate_code_only",
+           "validate_code_only", "redeem_code_for_user",
            "grandfather_existing_users",
            "mint_device_cookie", "set_access_cookie",
-           "ACCESS_COOKIE_NAME", "ACCESS_COOKIE_MAX_AGE"]
+           "ACCESS_COOKIE_NAME", "ACCESS_COOKIE_MAX_AGE",
+           "access_state", "assert_full_access", "ACCESS_GRACE_DAYS"]

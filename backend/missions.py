@@ -3888,6 +3888,11 @@ def make_missions_router(
     async def start_mission(org_id: str, body: StartMissionBody,
                             u: dict = Depends(get_current_user)):
         await require_org_member(org_id, u["id"])
+        # Trial cap: missions are the most expensive op (long-running
+        # Playwright + multi-step LLM). Cap is intentionally low (2)
+        # so users feel the "wow" once or twice and convert.
+        from trial_caps import consume_or_raise as _consume
+        await _consume(db, u, "missions", amount=1)
         lead = body.lead_agent_id
         if not lead or lead not in AGENTS:
             # Default lead — an ops-minded agent. Project Shepherd is a good

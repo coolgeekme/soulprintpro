@@ -947,6 +947,14 @@ def make_social_router(*, db, AGENTS, EMERGENT_LLM_KEY, LlmChat, UserMessage,
             raise HTTPException(422, "Pick at least one supported platform")
         if not body.prompt.strip():
             raise HTTPException(422, "Prompt required")
+        # Trial-cap enforcement (Jun 2026): drafting N posts consumes
+        # N "messages" + 1 "images" (first draft auto-generates a
+        # cover image; subsequent posts only get images on explicit
+        # regenerate). Raises 402 if the user is on trial and over
+        # their allowance — paid / perpetual users bypass.
+        from trial_caps import consume_or_raise as _consume
+        await _consume(db, u, "messages", amount=body.count)
+        await _consume(db, u, "images", amount=1)
 
         # Decide which agent drafts. If caller passed an agent_id, honour it.
         # Otherwise smart-route — the "social media strategist" wins for most
@@ -1170,6 +1178,12 @@ def make_social_router(*, db, AGENTS, EMERGENT_LLM_KEY, LlmChat, UserMessage,
             raise HTTPException(404, "Post not found")
         if not post:
             raise HTTPException(404, "Post not found")
+        # Trial cap: each publish call consumes 1 "publishes" credit
+        # regardless of platform count (a multi-platform post still
+        # represents one user "send" intent). Raised before any
+        # Composio side-effects so a 402 is recoverable.
+        from trial_caps import consume_or_raise as _consume
+        await _consume(db, u, "publishes", amount=1)
         await require_org_member(post["org_id"], u["id"])
         if post.get("status") == "publishing":
             return {"status": "publishing", "message": "Already in flight"}
@@ -1350,6 +1364,9 @@ def make_social_router(*, db, AGENTS, EMERGENT_LLM_KEY, LlmChat, UserMessage,
         if not post:
             raise HTTPException(404, "Post not found")
         await require_org_member(post["org_id"], u["id"])
+        # Trial cap: each regenerate consumes one image.
+        from trial_caps import consume_or_raise as _consume
+        await _consume(db, u, "images", amount=1)
 
         override = (body.prompt or "").strip()
         # Persist the prompt synchronously so the post survives a

@@ -79,6 +79,11 @@ function CodeRow({ row, onRevoke }) {
       </td>
       <td className="py-3 pr-4 text-xs sp-subtle">{usageLabel}</td>
       <td className="py-3 pr-4 text-xs sp-subtle">
+        {row.grants_duration_days
+          ? `${row.grants_duration_days} days`
+          : "forever"}
+      </td>
+      <td className="py-3 pr-4 text-xs sp-subtle">
         {row.expires_at
           ? formatLocalDate(row.expires_at)
           : "never"}
@@ -114,6 +119,11 @@ function CreateCodeForm({ onCreated }) {
   const [expiresAt, setExpiresAt] = useState("");
   const [note, setNote] = useState("");
   const [customCode, setCustomCode] = useState("");
+  // Duration the redeemed code GRANTS to the user. "" = perpetual
+  // (current behaviour — no time-based access). "custom" lets the
+  // admin type any whole-day value 1..3650.
+  const [durationPreset, setDurationPreset] = useState("");
+  const [durationCustom, setDurationCustom] = useState("");
   const [busy, setBusy] = useState(false);
 
   const reset = () => {
@@ -122,6 +132,8 @@ function CreateCodeForm({ onCreated }) {
     setExpiresAt("");
     setNote("");
     setCustomCode("");
+    setDurationPreset("");
+    setDurationCustom("");
   };
 
   const submit = async (e) => {
@@ -141,6 +153,17 @@ function CreateCodeForm({ onCreated }) {
         // convert to ISO UTC.
         body.expires_at = new Date(expiresAt).toISOString();
       }
+      // Resolve the duration preset → number of days. Empty preset =
+      // perpetual access for legacy compat with all pre-launch invites.
+      let durationDays = null;
+      if (durationPreset === "custom") {
+        const n = Number(durationCustom);
+        if (n && n >= 1 && n <= 3650) durationDays = n;
+      } else if (durationPreset) {
+        durationDays = Number(durationPreset) || null;
+      }
+      if (durationDays) body.grants_duration_days = durationDays;
+
       const { data } = await api.post("/admin/access-codes", body);
       toast.success(`Code ${data.code} created.`);
       reset();
@@ -214,7 +237,46 @@ function CreateCodeForm({ onCreated }) {
             className="w-full mt-1 bg-white/[0.03] border border-white/10 rounded-xl px-3 py-2 text-sm text-white"
             data-testid="access-code-expires"
           />
+          <div className="text-[10px] sp-subtle mt-1">When the CODE stops being redeemable.</div>
         </div>
+
+        {/* Duration this code GRANTS to each redeemer. Empty = perpetual
+            (legacy behaviour for codes shipped before time-bounded
+            access existed). Otherwise stacks onto the user's
+            `access_expires_at` window per redemption. */}
+        <div>
+          <label className="text-xs sp-subtle uppercase tracking-widest">
+            Grants access for
+          </label>
+          <select
+            value={durationPreset}
+            onChange={(e) => setDurationPreset(e.target.value)}
+            className="w-full mt-1 bg-white/[0.03] border border-white/10 rounded-xl px-3 py-2 text-sm text-white"
+            data-testid="access-code-duration-preset"
+          >
+            <option value="">Forever (perpetual access)</option>
+            <option value="30">30 days</option>
+            <option value="60">60 days</option>
+            <option value="90">90 days</option>
+            <option value="180">180 days</option>
+            <option value="365">1 year</option>
+            <option value="custom">Custom…</option>
+          </select>
+          {durationPreset === "custom" && (
+            <input
+              type="number"
+              min={1}
+              max={3650}
+              value={durationCustom}
+              onChange={(e) => setDurationCustom(e.target.value)}
+              placeholder="Days (1–3650)"
+              className="w-full mt-2 bg-white/[0.03] border border-white/10 rounded-xl px-3 py-2 text-sm text-white"
+              data-testid="access-code-duration-custom"
+            />
+          )}
+          <div className="text-[10px] sp-subtle mt-1">Counter starts when the user redeems.</div>
+        </div>
+
         <div>
           <label className="text-xs sp-subtle uppercase tracking-widest">
             Custom code (optional)
@@ -333,6 +395,7 @@ export default function AdminAccessCodesPanel() {
               <tr className="text-left text-xs sp-subtle uppercase tracking-widest">
                 <th className="py-2 px-4">Code</th>
                 <th className="py-2 px-4">Usage</th>
+                <th className="py-2 px-4">Grants</th>
                 <th className="py-2 px-4">Expires</th>
                 <th className="py-2 px-4">Created</th>
                 <th className="py-2 px-4">Status</th>

@@ -5,10 +5,12 @@ import { createPortal } from "react-dom";
 import {
   Loader2, Check, AlertTriangle, CreditCard, TrendingUp,
   Receipt, Sparkles, ArrowUpRight, ExternalLink, Mail,
-  Shield, X, Settings, Layers,
+  Shield, X, Settings, Layers, KeyRound, Clock,
 } from "lucide-react";
 import api from "../lib/api";
 import TopBar from "../components/TopBar";
+import { useAccessState, RedeemCodeModal } from "../components/AccessStatusPanel";
+import { formatLocalDate } from "../lib/datetime";
 
 /**
  * BillingPage — single user-level dashboard for subscription + usage.
@@ -292,6 +294,9 @@ export default function BillingPage() {
             )}
           </div>
         </section>
+
+        <AccessWindowSection />
+        <TrialUsagePanel />
 
         {/* Usage meter */}
         {meter && (
@@ -804,4 +809,171 @@ function SalesContactModal({ onClose, onSubmitted }) {
     </div>
   );
   return createPortal(node, document.body);
+}
+
+
+/**
+ * Trial-tier usage panel. Renders a stacked progress-bar card per
+ * resource (messages / images / missions / publishes / voice / audits)
+ * so the user can see at-a-glance "how much of my trial budget have I
+ * burned?" — the explicit conversion-pressure surface.
+ *
+ * Hides entirely for non-trial users. The backend returns `tier`
+ * directly so the UI doesn't have to guess. Paid + perpetual +
+ * superadmin all see nothing here (their cost ceiling is the Stripe
+ * meter card above this).
+ */
+function TrialUsagePanel() {
+  const [usage, setUsage] = useState(null);
+  useEffect(() => {
+    let alive = true;
+    (async () => {
+      try {
+        const { data } = await api.get("/trial/usage");
+        if (alive) setUsage(data);
+      } catch (_) {
+        if (alive) setUsage(null);
+      }
+    })();
+    return () => { alive = false; };
+  }, []);
+
+  if (!usage || usage.tier !== "trial") return null;
+  const caps = usage.caps || {};
+  const keys = Object.keys(caps);
+  if (!keys.length) return null;
+
+  // Highlight the FIRST cap that's >= 75% used so the eye lands
+  // somewhere meaningful — research shows users skip past uniform
+  // progress bars but stop on red ones.
+  const anyHot = keys.some((k) => (caps[k].percent || 0) >= 75);
+
+  return (
+    <section
+      className="sp-glass-strong rounded-2xl p-5 sm:p-6 mb-6"
+      data-testid="trial-usage-panel"
+    >
+      <div className="flex items-baseline justify-between gap-3 mb-4">
+        <div>
+          <div className="text-xs uppercase tracking-widest sp-subtle flex items-center gap-2">
+            <TrendingUp className="w-3.5 h-3.5" /> Trial usage
+          </div>
+          <h2 className="sp-display text-2xl mt-1">What's left in your trial</h2>
+          <p className="text-xs sp-subtle mt-1">
+            Caps reset each time you redeem a fresh access code, or vanish entirely once you subscribe.
+          </p>
+        </div>
+        {anyHot && (
+          <span className="text-[10px] font-semibold uppercase tracking-widest text-amber-300 px-2 py-1 rounded-full border border-amber-500/40 bg-amber-500/10 inline-flex items-center gap-1">
+            <AlertTriangle className="w-3 h-3" /> Running low
+          </span>
+        )}
+      </div>
+
+      <div className="grid sm:grid-cols-2 gap-x-6 gap-y-4">
+        {keys.map((k) => {
+          const c = caps[k];
+          const pct = c.percent || 0;
+          let barColor = "bg-emerald-400/70";
+          if (pct >= 90) barColor = "bg-red-400/80";
+          else if (pct >= 75) barColor = "bg-amber-400/80";
+          else if (pct >= 50) barColor = "bg-sky-400/70";
+          return (
+            <div key={k} data-testid={`trial-cap-${k}`}>
+              <div className="flex items-baseline justify-between text-xs mb-1.5">
+                <span className="text-white font-medium">{c.label}</span>
+                <span className="sp-subtle font-mono">
+                  {c.used} / {c.limit}
+                </span>
+              </div>
+              <div className="h-1.5 rounded-full bg-white/[0.05] overflow-hidden">
+                <div
+                  className={`h-full ${barColor} transition-all`}
+                  style={{ width: `${Math.min(100, pct)}%` }}
+                />
+              </div>
+              <div className="text-[10px] sp-subtle mt-1">{c.blurb}</div>
+            </div>
+          );
+        })}
+      </div>
+    </section>
+  );
+}
+
+/**
+ * Access-window section on the Billing page. Renders the user's
+ * current `access_expires_at` window and a "Redeem access code"
+ * action. Hidden for perpetual users (grandfathered / pre-duration
+ * codes) because there's nothing actionable to show.
+ *
+ * Sibling to the subscription card — distinct concern: subscription
+ * controls WHAT you can do (plan limits), access window controls
+ * WHETHER you can do anything at all (pre-launch gate).
+ */
+function AccessWindowSection() {
+  const { state, refresh } = useAccessState();
+  const [redeemOpen, setRedeemOpen] = useState(false);
+  if (!state) return null;
+  // Don't show the section for perpetual / superadmin users —
+  // there's no actionable info there. They CAN still redeem a code,
+  // but they'd do it from another channel (admin invite link, etc.)
+  // and we don't want to clutter the Billing page.
+  if (state.is_perpetual) return null;
+
+  const expIso = state.expires_at;
+  const expLabel = expIso ? formatLocalDate(expIso) : "—";
+  const mode = state.mode;
+  const days = state.days_remaining ?? 0;
+  const grace = state.grace_days_remaining ?? 0;
+
+  let statusColor = "text-emerald-300";
+  let statusLabel = `Active · ${days} day${days === 1 ? "" : "s"} left`;
+  if (mode === "readonly") {
+    statusColor = "text-amber-300";
+    statusLabel = `Read-only · ${grace} grace day${grace === 1 ? "" : "s"} left`;
+  } else if (mode === "blocked") {
+    statusColor = "text-red-300";
+    statusLabel = "Expired — drafting & publishing disabled";
+  } else if (days <= 3) {
+    statusColor = "text-amber-300";
+    statusLabel = `Active · ${days} day${days === 1 ? "" : "s"} left — extend soon`;
+  }
+
+  return (
+    <section
+      className="sp-glass-strong rounded-2xl p-5 sm:p-6 mb-6"
+      data-testid="access-window-card"
+    >
+      <div className="flex flex-wrap items-start justify-between gap-4">
+        <div>
+          <div className="text-xs uppercase tracking-widest sp-subtle flex items-center gap-2">
+            <KeyRound className="w-3.5 h-3.5" /> Access window
+          </div>
+          <h2 className="sp-display text-2xl mt-1">Pre-launch access</h2>
+          <div className={`text-sm mt-1 ${statusColor}`}>{statusLabel}</div>
+          <div className="text-xs sp-subtle mt-2 flex items-center gap-1.5">
+            <Clock className="w-3 h-3" />
+            Expires: <span className="text-white">{expLabel}</span>
+          </div>
+        </div>
+        <button
+          type="button"
+          onClick={() => setRedeemOpen(true)}
+          className="sp-btn sp-btn-primary text-xs"
+          data-testid="extend-access-btn"
+        >
+          <KeyRound className="w-3.5 h-3.5" />
+          {mode === "blocked" ? "Restore access" : "Extend with a code"}
+        </button>
+      </div>
+
+      <RedeemCodeModal
+        open={redeemOpen}
+        onClose={() => setRedeemOpen(false)}
+        onRedeemed={() => refresh()}
+        currentState={state}
+      />
+    </section>
+  );
 }

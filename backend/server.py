@@ -8624,6 +8624,20 @@ app.include_router(make_trial_router(
     create_access_token=create_access_token,
     public_origin=_public_origin,
 ))
+
+# Trial caps — per-resource usage meter for users on the time-bounded
+# access window. Paid / perpetual / superadmin / staff bypass the caps
+# entirely; trial users get an actionable upgrade prompt when they
+# hit one.
+from trial_caps import get_trial_usage as _get_trial_usage  # noqa: E402
+
+@app.get("/api/trial/usage")
+async def trial_usage_endpoint(u: dict = Depends(get_current_user)):
+    """Reads the signed-in user's trial counters + caps. Frontend
+    Billing page renders progress bars from this. Returns a small
+    payload even for non-trial users (with empty `caps`) so the UI
+    can branch on `tier` rather than guessing."""
+    return await _get_trial_usage(db, u)
 # Workspace layer (NEW) — sits above Orgs. See workspaces.py.
 from workspaces import (  # noqa: E402
     make_workspaces_router,
