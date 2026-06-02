@@ -610,6 +610,7 @@ def make_social_router(*, db, AGENTS, EMERGENT_LLM_KEY, LlmChat, UserMessage,
                        compose_logo_on_image=None,
                        upload_dir=None,
                        recover_bytes_from_gridfs=None,
+                       persist_bytes=None,
                        kie_generate_video=None,
                        kie_submit_kie_task=None,
                        kie_wait_for_kie_task=None,
@@ -658,6 +659,33 @@ def make_social_router(*, db, AGENTS, EMERGENT_LLM_KEY, LlmChat, UserMessage,
         except Exception as exc:
             logger.warning("Failed to write rehydrated %s to disk: %s", filename, exc)
             return None
+
+    async def _mirror_composed_to_gridfs(composed_path: "_Path") -> None:
+        """Mirror a freshly-composited social cover to GridFS.
+
+        `compose_logo_on_image` writes only to disk; without this mirror,
+        a production pod restart wipes the composed file and the post's
+        `image.url` 404s forever (the raw un-composited bytes are mirrored
+        by `persist_bytes` inside the generator, but the composite is not).
+        Best-effort — never raises; the post is still usable from disk
+        until the next redeploy.
+        """
+        if persist_bytes is None or composed_path is None:
+            return
+        try:
+            if not composed_path.is_file():
+                return
+            content = composed_path.read_bytes()
+            await persist_bytes(
+                composed_path, content,
+                original_name=composed_path.name,
+                mime="image/png",
+            )
+        except Exception as exc:
+            logger.warning(
+                "Failed to mirror composed image %s to GridFS: %s",
+                composed_path.name, exc,
+            )
 
     async def _generate_post_image(post: dict, org_doc: dict, override_prompt: str = "") -> Optional[dict]:
         """Generate a cover image for a single post using Nano Banana, then
@@ -775,6 +803,11 @@ def make_social_router(*, db, AGENTS, EMERGENT_LLM_KEY, LlmChat, UserMessage,
                     )
                     final_filename = composed.name
                     with_logo = True
+                    # Mirror composed bytes to GridFS so the post survives
+                    # a production pod redeploy (raw was already mirrored
+                    # by `persist_bytes` inside the generator; composite is
+                    # not, hence the explicit call here).
+                    await _mirror_composed_to_gridfs(composed)
                     logger.info(
                         "Social image: composed logo onto %s → %s",
                         fname, final_filename,
@@ -1706,6 +1739,8 @@ def make_social_router(*, db, AGENTS, EMERGENT_LLM_KEY, LlmChat, UserMessage,
                     if composed:
                         final_filename = composed.name
                         with_logo = True
+                        # Mirror to GridFS — see `_generate_post_image` for why.
+                        await _mirror_composed_to_gridfs(composed)
             except Exception as exc:
                 logger.warning("Asset logo compose failed: %s", exc)
 

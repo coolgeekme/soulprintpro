@@ -7580,7 +7580,126 @@ async def serve_file(filename: str):
             pass
         from fastapi.responses import Response  # noqa: E402
         return Response(content=blob, media_type=mime or "application/octet-stream")
+
+    # Auto-heal social post composites (Jun 2026): if this filename is the
+    # composited cover of a social post and GridFS doesn't have it (drafts
+    # generated before composites were mirrored to GridFS), look up the
+    # post's `raw_filename`. If THAT is recoverable from GridFS, rehydrate
+    # the raw, re-composite the org's primary logo on the fly, persist the
+    # new composite, and rewrite the post so the URL stays stable. Without
+    # this, every Social Queue draft generated before the mirror fix dies
+    # after the production pod's first redeploy.
+    sp_doc = await db.social_posts.find_one({
+        "$or": [
+            {"image.filename": filename},
+            {"image.raw_filename": filename},
+        ]
+    })
+    if sp_doc:
+        try:
+            healed = await _heal_social_post_image(sp_doc, filename)
+            if healed:
+                healed_path, mime2 = healed
+                from fastapi.responses import Response  # noqa: E402
+                return Response(
+                    content=healed_path.read_bytes(),
+                    media_type=mime2 or "image/png",
+                )
+        except Exception as exc:
+            logger.warning("Social post image auto-heal failed for %s: %s", filename, exc)
+
     raise HTTPException(404, "File not found")
+
+
+async def _heal_social_post_image(
+    sp_doc: dict, requested_filename: str,
+) -> Optional[tuple[Path, str]]:
+    """Recover a vanished social-post cover by re-compositing from `raw_filename`.
+
+    Returns ``(local_path, mime)`` on success, ``None`` if the raw bytes
+    are gone too (genuinely lost — user needs to regenerate).
+    """
+    image = (sp_doc or {}).get("image") or {}
+    raw_name = image.get("raw_filename") or ""
+    composed_name = image.get("filename") or ""
+    if not raw_name:
+        return None
+    # Recover raw bytes from GridFS.
+    raw_blob, raw_mime, _ = await recover_bytes_from_gridfs(raw_name)
+    if not raw_blob:
+        return None
+    # Write raw back to disk so PIL can open it.
+    raw_path = UPLOAD_DIR / raw_name
+    try:
+        raw_path.parent.mkdir(parents=True, exist_ok=True)
+        raw_path.write_bytes(raw_blob)
+    except Exception as exc:
+        logger.warning("Could not write rehydrated raw %s: %s", raw_name, exc)
+        return None
+    # If the caller wanted the RAW filename and `with_logo=False` on the
+    # post, just serve the raw — no logo composite needed.
+    if requested_filename == raw_name:
+        return raw_path, raw_mime or "image/png"
+    # Otherwise re-composite the logo using the org's current primary logo.
+    from bson import ObjectId as _OID
+    try:
+        org = await db.organizations.find_one({"_id": _OID(sp_doc["org_id"])})
+    except Exception:
+        org = None
+    ba = (org or {}).get("brand_assets") or {}
+    primary = (ba.get("primary_logo") or {}) if ba else {}
+    logo_filename = (primary or {}).get("filename") or ""
+    if not logo_filename:
+        # No logo to apply — serve the raw bytes under the composed URL.
+        return raw_path, raw_mime or "image/png"
+    # Rehydrate the logo from GridFS if disk copy is gone too.
+    logo_path = UPLOAD_DIR / logo_filename
+    if not logo_path.is_file():
+        logo_blob, _, _ = await recover_bytes_from_gridfs(logo_filename)
+        if logo_blob:
+            try:
+                logo_path.write_bytes(logo_blob)
+            except Exception as exc:
+                logger.warning("Could not rehydrate logo %s: %s", logo_filename, exc)
+                return raw_path, raw_mime or "image/png"
+        else:
+            # Logo lost too — serve the raw.
+            return raw_path, raw_mime or "image/png"
+    # Compose. We honour the post's stored `logo_position`.
+    try:
+        composed_path = _compose_logo(
+            raw_path, logo_path,
+            position=sp_doc.get("logo_position") or "bottom-right",
+            out_dir=UPLOAD_DIR,
+        )
+    except Exception as exc:
+        logger.warning("Auto-heal compose failed for %s: %s", composed_name, exc)
+        return raw_path, raw_mime or "image/png"
+    # Mirror the freshly-composed file to GridFS AND update the post so
+    # next request hits the fast path.
+    try:
+        composed_bytes = composed_path.read_bytes()
+        await persist_bytes(
+            composed_path, composed_bytes,
+            original_name=composed_path.name, mime="image/png",
+        )
+        new_image = {
+            **image,
+            "filename": composed_path.name,
+            "url": f"/api/files/{composed_path.name}",
+            "with_logo": True,
+        }
+        await db.social_posts.update_one(
+            {"_id": sp_doc["_id"]},
+            {"$set": {"image": new_image, "image_healed_at": datetime.now(timezone.utc)}},
+        )
+        logger.info(
+            "Social post %s auto-healed: %s → %s",
+            sp_doc["_id"], composed_name, composed_path.name,
+        )
+    except Exception as exc:
+        logger.warning("Could not persist healed composite: %s", exc)
+    return composed_path, "image/png"
 
 # ── Schedules — cron-style automation for prompts/agents ───────────────────
 from apscheduler.schedulers.asyncio import AsyncIOScheduler  # noqa: E402
@@ -8557,6 +8676,7 @@ social_r = make_social_router(
     compose_logo_on_image=_compose_logo,
     upload_dir=UPLOAD_DIR,
     recover_bytes_from_gridfs=recover_bytes_from_gridfs,
+    persist_bytes=persist_bytes,
     kie_generate_video=_kie_generate_video,
     kie_submit_kie_task=_kie_submit_kie_task,
     kie_wait_for_kie_task=_kie_wait_for_kie_task,
