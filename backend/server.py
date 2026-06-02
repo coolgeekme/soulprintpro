@@ -2082,6 +2082,59 @@ async def get_org_spend(
 
 invite_r = APIRouter(prefix="/api/invites")
 
+
+class InvitePeekBody(BaseModel):
+    code: str
+
+
+@invite_r.post("/peek")
+async def peek_invite(body: InvitePeekBody):
+    """Public — no auth required. Lets the unauthenticated /invite/{code}
+    page show the invitee what they're being invited to BEFORE they
+    decide to sign up. Returns just enough to render an informative
+    preview (org name, inviter name, role, expiry) — no sensitive data.
+    """
+    code = (body.code or "").strip()
+    if not code:
+        raise HTTPException(400, "Invite code required.")
+    inv = await db.invites.find_one({"code": code, "used_by": None})
+    if not inv:
+        raise HTTPException(404, "Invite not found or already used.")
+    exp = inv.get("expires_at")
+    if isinstance(exp, datetime):
+        if exp.tzinfo is None:
+            exp = exp.replace(tzinfo=timezone.utc)
+        if exp < datetime.now(timezone.utc):
+            raise HTTPException(410, "Invite expired.")
+    org = None
+    try:
+        org = await db.organizations.find_one(
+            {"_id": ObjectId(inv["org_id"])}, {"name": 1},
+        )
+    except Exception:
+        pass
+    inviter = None
+    inviter_id = inv.get("created_by")
+    if inviter_id:
+        try:
+            inviter = await db.users.find_one(
+                {"_id": ObjectId(inviter_id)}, {"name": 1, "email": 1},
+            )
+        except Exception:
+            pass
+    inviter_name = ((inviter or {}).get("name") or "").strip()
+    if not inviter_name:
+        em = (inviter or {}).get("email") or ""
+        inviter_name = em.split("@", 1)[0] if em else "A teammate"
+    return {
+        "org_id": inv["org_id"],
+        "org_name": (org or {}).get("name") or "an organization",
+        "inviter_name": inviter_name,
+        "role": inv.get("role") or "member",
+        "expires_at": exp.isoformat() if isinstance(exp, datetime) else None,
+    }
+
+
 @invite_r.post("/accept")
 async def accept_invite(body: InviteAcceptBody, request: Request, u: dict = Depends(get_current_user)):
     invite_accept_limiter(request)  # raises 429 if abused

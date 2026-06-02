@@ -41,33 +41,67 @@ export default function AuthPage() {
 
   const isRegister = useMemo(() => mode === "register", [mode]);
 
-  // Optional `?plan=spark|temper|contact` carried in from the pricing
-  // page — after auth completes we route to the billing page with
-  // `?subscribe={plan}` (consent modal auto-opens) for Spark/Temper,
-  // or `?contact=1` (sales modal auto-opens) for Refine. Persisted to
-  // localStorage so a Firebase OAuth round-trip (which loses query
-  // params on the popup callback) still resumes correctly.
+  // Optional `?plan=spark|temper|contact` from /pricing → see landAfterAuth.
   const planIntentParam = params.get("plan");
   if (planIntentParam === "spark" || planIntentParam === "temper" || planIntentParam === "contact") {
     try { window.localStorage.setItem("foundry:planIntent", planIntentParam); } catch {}
   }
 
-  /** Land the user after a successful auth. If they came in with a
-   *  plan intent, deep-link to the user-level billing page with the
-   *  consent or sales modal armed. Falls back to `/app`. */
+  // Optional `?invite={code}` carried from /invite/{code} when the
+  // invitee wasn't logged in. We persist to localStorage so a
+  // Firebase OAuth round-trip (which loses query params) still
+  // resumes correctly, then auto-accept inside landAfterAuth.
+  const inviteParam = params.get("invite");
+  if (inviteParam) {
+    try { window.localStorage.setItem("foundry:inviteCode", inviteParam); } catch {}
+  }
+
+  /** Land the user after a successful auth. Priority order:
+   *    1. Invite code (auto-accept + drop into org)
+   *    2. Plan intent (deep-link to billing w/ consent modal armed)
+   *    3. Default /app
+   */
   const landAfterAuth = async () => {
+    let inviteCode = "";
     let plan = "";
-    try { plan = window.localStorage.getItem("foundry:planIntent") || ""; } catch {}
-    if (plan !== "spark" && plan !== "temper" && plan !== "contact") {
-      navigate("/app");
+    try {
+      inviteCode = window.localStorage.getItem("foundry:inviteCode") || "";
+      plan = window.localStorage.getItem("foundry:planIntent") || "";
+    } catch {}
+
+    if (inviteCode) {
+      try { window.localStorage.removeItem("foundry:inviteCode"); } catch {}
+      // Try workspace invite first (richer), fall back to legacy org invite.
+      let accepted = false;
+      try {
+        await api.post("/workspace-invites/accept", { code: inviteCode });
+        accepted = true;
+      } catch { /* not a workspace invite — try the legacy org path */ }
+      if (!accepted) {
+        try {
+          await api.post("/invites/accept", { code: inviteCode });
+          accepted = true;
+        } catch { /* invite was bad — fall through to /app */ }
+      }
+      if (accepted) {
+        // Don't burn the plan intent if there is one — they can still
+        // upgrade later from /app/billing.
+        navigate("/app");
+        return;
+      }
+    }
+
+    if (plan === "spark" || plan === "temper" || plan === "contact") {
+      try { window.localStorage.removeItem("foundry:planIntent"); } catch {}
+      if (plan === "contact") {
+        navigate(`/app/billing?contact=1`);
+      } else {
+        navigate(`/app/billing?subscribe=${plan}`);
+      }
       return;
     }
-    try { window.localStorage.removeItem("foundry:planIntent"); } catch {}
-    if (plan === "contact") {
-      navigate(`/app/billing?contact=1`);
-    } else {
-      navigate(`/app/billing?subscribe=${plan}`);
-    }
+
+    navigate("/app");
   };
 
   // Email/password submit. When Firebase is enabled we use it as the

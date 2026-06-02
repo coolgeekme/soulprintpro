@@ -99,7 +99,7 @@ function App() {
                 <Route path="/auth/github/callback" element={<Protected><GitHubCallbackPage /></Protected>} />
                 <Route path="/deck" element={<DeckPage />} />
                 <Route path="/auth" element={<PublicOnly><AuthPage /></PublicOnly>} />
-                <Route path="/invite/:code" element={<Protected><AcceptInvitePage /></Protected>} />
+                <Route path="/invite/:code" element={<AcceptInvitePage />} />
                 <Route path="/app" element={<Protected><AppHome /></Protected>} />
                 <Route path="/app/account" element={<Protected><AccountPage /></Protected>} />
                 <Route path="/app/org/:orgId" element={<Protected><OrgPage /></Protected>} />
