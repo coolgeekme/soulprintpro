@@ -74,7 +74,10 @@ PLANS: Dict[str, Dict[str, Any]] = {
         "seats_included": 1,
         "included_llm_budget_usd": 20.0,
         "recurring": True,
-        "lookup_key": "foundry_spark_monthly_v1",
+        "lookup_keys": {
+            "monthly": "foundry_spark_monthly_v1",
+            "annual": "foundry_spark_annual_v1",
+        },
         "features": [
             "1 user · 1 organization · 3 teams",
             "Full 150+ agent catalogue",
@@ -100,7 +103,10 @@ PLANS: Dict[str, Dict[str, Any]] = {
         "max_seats": 20,
         "included_llm_budget_usd": 100.0,
         "recurring": True,
-        "lookup_key": "foundry_temper_monthly_v1",
+        "lookup_keys": {
+            "monthly": "foundry_temper_monthly_v1",
+            "annual": "foundry_temper_annual_v1",
+        },
         "highlight": True,
         "features": [
             "5 seats · 3 orgs · unlimited teams",
@@ -121,12 +127,11 @@ PLANS: Dict[str, Dict[str, Any]] = {
         "name": "Refine",
         "tagline": "For agencies + enterprises running ON our platform",
         "monthly_usd": None,           # custom — sales-led
-        "starting_at_usd": 1500.0,
         "orgs_included": 10_000,
         "seats_included": 10_000,
         "included_llm_budget_usd": 500.0,
         "recurring": False,
-        "lookup_key": None,
+        "lookup_keys": None,
         "features": [
             "Unlimited seats · unlimited orgs · multi-workspace",
             "Custom agent personalities co-designed with our team",
@@ -162,13 +167,22 @@ class SubscribeBody(BaseModel):
 
     `consent_text` is the exact disclosure copy the user saw next to
     the "Subscribe" button — we persist it on the transaction row
-    so we can prove FTC-compliant affirmative consent later."""
+    so we can prove FTC-compliant affirmative consent later.
+
+    `cadence` picks between Stripe's monthly and annual prices. Both
+    are recurring; annual = `annual_usd × 12` billed once a year.
+    """
     plan_id: str = Field(..., description="One of: spark, temper")
     origin_url: str = Field(..., description="window.location.origin from the browser")
     consent_text: str = Field(
         ...,
         min_length=10,
         description="Verbatim copy of the disclosure the user agreed to",
+    )
+    cadence: str = Field(
+        "monthly",
+        pattern="^(monthly|annual)$",
+        description="Billing cadence — monthly or annual",
     )
 
 
@@ -289,91 +303,100 @@ async def _outstanding_overage_invoice(db, user_id: str) -> Optional[Dict[str, A
 # ─── Stripe Product / Price provisioning ─────────────────────────────────
 
 
-async def ensure_stripe_catalogue() -> Dict[str, str]:
+async def ensure_stripe_catalogue() -> Dict[str, Dict[str, str]]:
     """Idempotently create Stripe Products + Prices for every recurring
-    plan in `PLANS`. Returns `{plan_id: stripe_price_id}`.
+    plan in `PLANS`. Each plan has TWO recurring prices — a monthly
+    and an annual one — keyed by independent `lookup_keys`.
+
+    Returns `{plan_id: {"monthly": price_id, "annual": price_id}}`.
 
     Returns an empty dict if Stripe is not configured OR if the
     configured key is not a real Stripe key (Emergent's shadow
-    `sk_test_emergent` only works with the Emergent-payments library
-    and the real SDK rejects it). We log + continue so boot never
-    fails on the customer's behalf — endpoints requiring Stripe
-    will surface a clean 503 instead.
+    `sk_test_emergent` only works with the Emergent-payments library).
 
-    We key on `lookup_key` (which Stripe lets us treat as a unique
-    identifier) so re-running this on every boot does NOT spam
-    duplicate Prices into the dashboard.
+    Cheap to call on every boot — the underlying `Price.list` filter
+    by `lookup_key` is a single round-trip per price.
     """
     if not _stripe_configured():
         logger.info("Stripe not configured — skipping catalogue provisioning.")
         return {}
     _configure_stripe()
 
-    result: Dict[str, str] = {}
+    result: Dict[str, Dict[str, str]] = {}
     for plan_id, plan in PLANS.items():
-        if not plan.get("recurring") or not plan.get("lookup_key"):
+        if not plan.get("recurring") or not plan.get("lookup_keys"):
             continue
-        lookup_key = plan["lookup_key"]
-        amount_cents = int(round(float(plan["monthly_usd"]) * 100))
-
-        # 1. Look up existing Price by lookup_key. If present, reuse it.
-        try:
-            search = await _stripe_call(
-                stripe.Price.list, lookup_keys=[lookup_key], limit=1, active=True,
-            )
-        except stripe.AuthenticationError:
-            logger.warning(
-                "Stripe API key is invalid for the real SDK. "
-                "If you're on the Emergent shadow key `sk_test_emergent`, "
-                "swap to a real `sk_test_...` or `sk_live_...` to enable "
-                "subscriptions. Endpoints will return 503 until then."
-            )
-            return {}
-        except Exception as exc:
-            logger.exception("Stripe Price.list failed for %s: %s", lookup_key, exc)
-            continue
-        existing = (search.data or [None])[0]
-        if existing and existing.unit_amount == amount_cents and existing.recurring \
-                and existing.recurring.interval == "month":
-            result[plan_id] = existing.id
-            continue
-
-        # 2. Otherwise create a new Product + Price. If the price exists
-        #    but the amount changed, we leave the old one (Stripe will
-        #    let it stay attached to grandfathered subscriptions) and
-        #    mint a new active one with the same lookup_key. To do
-        #    that cleanly we first nudge the old Price's lookup_key
-        #    aside.
-        if existing:
+        plan_prices: Dict[str, str] = {}
+        # We provision both cadences. Annual is `unit_amount × 12`
+        # because Stripe wants the full per-period amount, not the
+        # monthly equivalent.
+        cadences = [
+            ("monthly", float(plan["monthly_usd"]), "month"),
+            ("annual", float(plan["annual_usd"]) * 12, "year"),
+        ]
+        # Reuse one Product per plan across both prices for clean dashboards.
+        product_id = None
+        for cadence, total_usd, interval in cadences:
+            lookup_key = plan["lookup_keys"][cadence]
+            amount_cents = int(round(total_usd * 100))
             try:
-                await _stripe_call(
-                    stripe.Price.modify, existing.id,
-                    lookup_key=f"{lookup_key}__retired_{int(datetime.now(timezone.utc).timestamp())}",
+                search = await _stripe_call(
+                    stripe.Price.list, lookup_keys=[lookup_key], limit=1, active=True,
                 )
-            except Exception:
-                logger.exception("Could not retire stale Price %s", existing.id)
-
-        try:
-            product = await _stripe_call(
-                stripe.Product.create,
-                name=f"Foundry {plan['name']}",
-                description=plan["tagline"],
-                metadata={"plan_id": plan_id},
-            )
-            price = await _stripe_call(
-                stripe.Price.create,
-                unit_amount=amount_cents,
-                currency="usd",
-                recurring={"interval": "month"},
-                product=product.id,
-                lookup_key=lookup_key,
-                metadata={"plan_id": plan_id},
-            )
-        except Exception as exc:
-            logger.exception("Stripe catalogue create failed for %s: %s", plan_id, exc)
-            continue
-        result[plan_id] = price.id
-        logger.info("Stripe catalogue: provisioned %s -> price %s", plan_id, price.id)
+            except stripe.AuthenticationError:
+                logger.warning(
+                    "Stripe API key invalid for the real SDK. Endpoints will "
+                    "return 503 until a real `sk_test_...` or `sk_live_...` "
+                    "is configured."
+                )
+                return {}
+            except Exception as exc:
+                logger.exception("Stripe Price.list failed for %s: %s", lookup_key, exc)
+                continue
+            existing = (search.data or [None])[0]
+            if (
+                existing
+                and existing.unit_amount == amount_cents
+                and existing.recurring
+                and existing.recurring.interval == interval
+            ):
+                plan_prices[cadence] = existing.id
+                product_id = existing.product
+                continue
+            # Retire stale price (different amount or interval) so we
+            # can mint a fresh one under the same lookup_key.
+            if existing:
+                try:
+                    await _stripe_call(
+                        stripe.Price.modify, existing.id,
+                        lookup_key=f"{lookup_key}__retired_{int(datetime.now(timezone.utc).timestamp())}",
+                    )
+                except Exception:
+                    logger.exception("Could not retire stale Price %s", existing.id)
+            try:
+                if not product_id:
+                    product = await _stripe_call(
+                        stripe.Product.create,
+                        name=f"Foundry {plan['name']}",
+                        description=plan["tagline"],
+                        metadata={"plan_id": plan_id},
+                    )
+                    product_id = product.id
+                price = await _stripe_call(
+                    stripe.Price.create,
+                    unit_amount=amount_cents,
+                    currency="usd",
+                    recurring={"interval": interval},
+                    product=product_id,
+                    lookup_key=lookup_key,
+                    metadata={"plan_id": plan_id, "cadence": cadence},
+                )
+                plan_prices[cadence] = price.id
+                logger.info("Stripe catalogue: %s/%s -> %s", plan_id, cadence, price.id)
+            except Exception as exc:
+                logger.exception("Stripe Price.create failed for %s/%s: %s", plan_id, cadence, exc)
+        if plan_prices:
+            result[plan_id] = plan_prices
     return result
 
 
@@ -611,20 +634,31 @@ async def _apply_subscription_state(db, subscription: Dict[str, Any]) -> None:
                        subscription.get("id"), customer_id)
         return
 
-    # Derive plan_id from price.lookup_key (Stripe v15). Fall back to
-    # the metadata mirror we set at checkout-create time.
+    # Derive plan_id from price.lookup_key (Stripe v15). The lookup
+    # key may belong to either the monthly or the annual cadence —
+    # check `lookup_keys` mapping. Fall back to the metadata mirror
+    # we set at checkout-create time.
     plan_id = None
+    cadence = None
     items = (subscription.get("items") or {}).get("data") or []
     if items:
         price = items[0].get("price") or {}
         lk = price.get("lookup_key")
         if lk:
             for pid, p in PLANS.items():
-                if p.get("lookup_key") == lk:
-                    plan_id = pid
+                lookup_keys = p.get("lookup_keys") or {}
+                for cad, key in lookup_keys.items():
+                    if key == lk:
+                        plan_id = pid
+                        cadence = cad
+                        break
+                if plan_id:
                     break
+    meta = subscription.get("metadata") or {}
     if not plan_id:
-        plan_id = (subscription.get("metadata") or {}).get("plan_id")
+        plan_id = meta.get("plan_id")
+    if not cadence:
+        cadence = meta.get("cadence")
 
     status = subscription.get("status")
     cancel_at_period_end = bool(subscription.get("cancel_at_period_end"))
@@ -638,6 +672,7 @@ async def _apply_subscription_state(db, subscription: Dict[str, Any]) -> None:
         "subscription_id": subscription.get("id"),
         "subscription_status": status,
         "subscription_cancel_at_period_end": cancel_at_period_end,
+        "subscription_cadence": cadence,
         "stripe_customer_id": customer_id,
         "subscription_synced_at": datetime.now(timezone.utc),
     }
@@ -678,7 +713,7 @@ def make_billing_router(
     async def list_plans():
         return {
             "plans": [
-                {k: v for k, v in p.items() if k != "lookup_key"}
+                {k: v for k, v in p.items() if k != "lookup_keys"}
                 for p in PLANS.values()
             ],
             "overage_markup": OVERAGE_MARKUP,
@@ -698,7 +733,7 @@ def make_billing_router(
         if staff_access:
             refine = PLANS["refine"]
             return {
-                "plan": {k: v for k, v in refine.items() if k != "lookup_key"},
+                "plan": {k: v for k, v in refine.items() if k != "lookup_keys"},
                 "plan_status": "staff",
                 "plan_paid_until": None,
                 "subscription_status": None,
@@ -759,7 +794,7 @@ def make_billing_router(
                     t[k] = t[k].isoformat()
 
         return {
-            "plan": {k: v for k, v in plan.items() if k != "lookup_key"},
+            "plan": {k: v for k, v in plan.items() if k != "lookup_keys"},
             "plan_status": plan_status,
             "plan_paid_until": paid_until.isoformat() if paid_until else None,
             "subscription_status": sub_status,
@@ -800,7 +835,8 @@ def make_billing_router(
             raise HTTPException(
                 503, "Billing is not fully configured — please contact support.",
             )
-        price_id = catalogue.get(plan["id"])
+        plan_prices = catalogue.get(plan["id"]) or {}
+        price_id = plan_prices.get(body.cadence)
         if not price_id:
             raise HTTPException(
                 503, "Billing is not fully configured for this plan yet. "
@@ -812,6 +848,9 @@ def make_billing_router(
         origin = body.origin_url.rstrip("/")
         success_url = f"{origin}/app/billing?session_id={{CHECKOUT_SESSION_ID}}"
         cancel_url = f"{origin}/app/billing?cancelled=1"
+
+        cadence_amount = float(plan["monthly_usd"]) if body.cadence == "monthly" \
+            else float(plan["annual_usd"]) * 12
 
         _configure_stripe()
         session = await _stripe_call(
@@ -827,12 +866,14 @@ def make_billing_router(
                 "kind": "subscription",
                 "user_id": u["id"],
                 "plan_id": plan["id"],
+                "cadence": body.cadence,
                 "consent_text": body.consent_text[:500],
             },
             subscription_data={
                 "metadata": {
                     "user_id": u["id"],
                     "plan_id": plan["id"],
+                    "cadence": body.cadence,
                 },
             },
             submit_type=None,
@@ -842,7 +883,8 @@ def make_billing_router(
             "user_id": u["id"],
             "kind": "subscription",
             "plan_id": plan["id"],
-            "amount_usd": float(plan["monthly_usd"]),
+            "cadence": body.cadence,
+            "amount_usd": cadence_amount,
             "currency": "usd",
             "consent_text": body.consent_text,
             "consent_ip": (request.client.host if request.client else None),

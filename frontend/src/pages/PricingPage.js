@@ -208,7 +208,7 @@ const COMPARE_MATRIX = [
   {
     group: "Plan basics",
     rows: [
-      { label: "Monthly price",         spark: "$80",            tempered: "$300",          refine: "Custom (from $1,500)" },
+      { label: "Monthly price",         spark: "$80",            tempered: "$300",          refine: "Custom" },
       { label: "Annual price (~17% off)", spark: "$66/mo",       tempered: "$250/mo",       refine: "Custom" },
       { label: "Seats included",        spark: "1",              tempered: "5 (then $40/seat, max 20)", refine: "Unlimited" },
       { label: "Organizations",         spark: "1",              tempered: "3",             refine: "Unlimited · multi-workspace" },
@@ -462,14 +462,9 @@ function TierCard({ tier }) {
             )}
           </>
         ) : (
-          <>
-            <div className="flex items-baseline gap-2">
-              <span className="sp-display text-3xl">Custom</span>
-            </div>
-            <p className="text-[11px] sp-subtle mt-1">
-              Starting at <Money value={tier.startingAt} />/mo
-            </p>
-          </>
+          <div className="flex items-baseline gap-2">
+            <span className="sp-display text-3xl">Custom</span>
+          </div>
         )}
       </div>
 

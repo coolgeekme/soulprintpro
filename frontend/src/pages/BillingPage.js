@@ -45,6 +45,9 @@ export default function BillingPage() {
 
   const [pendingPlan, setPendingPlan] = useState(null);
   const [showSales, setShowSales] = useState(false);
+  // Monthly/annual toggle — affects both the price label and the
+  // cadence we pass to /api/billing/subscribe.
+  const [cadence, setCadence] = useState("monthly");
 
   const refresh = useCallback(async () => {
     try {
@@ -151,11 +154,12 @@ export default function BillingPage() {
     setBusy(`plan:${pendingPlan.id}`);
     try {
       const origin = window.location.origin;
-      const consentText = buildConsentText(pendingPlan);
+      const consentText = buildConsentText(pendingPlan, cadence);
       const { data } = await api.post(`/billing/subscribe`, {
         plan_id: pendingPlan.id,
         origin_url: origin,
         consent_text: consentText,
+        cadence,
       });
       if (data?.url) {
         window.location.href = data.url;
@@ -168,7 +172,7 @@ export default function BillingPage() {
       setBusy("");
       setPendingPlan(null);
     }
-  }, [pendingPlan]);
+  }, [pendingPlan, cadence]);
 
   const openManagePortal = useCallback(async () => {
     setBusy("portal");
@@ -352,14 +356,18 @@ export default function BillingPage() {
         {/* Plan cards — hidden for staff */}
         {!isStaff && (
         <section className="mb-6" data-testid="plan-cards">
-          <h3 className="text-sm uppercase tracking-widest sp-subtle mb-3">
-            {isSubscribed ? "Change plan" : "Choose a plan"}
-          </h3>
+          <div className="flex items-center justify-between mb-3 flex-wrap gap-3">
+            <h3 className="text-sm uppercase tracking-widest sp-subtle">
+              {isSubscribed ? "Change plan" : "Choose a plan"}
+            </h3>
+            <CadenceToggle cadence={cadence} onChange={setCadence} />
+          </div>
           <div className="grid md:grid-cols-3 gap-4">
             {plans.map(p => (
               <PlanCard
                 key={p.id}
                 plan={p}
+                cadence={cadence}
                 current={currentPlan?.id === p.id && (isSubscribed || isStaff)}
                 busy={busy === `plan:${p.id}`}
                 onSelect={() => {
@@ -424,6 +432,7 @@ export default function BillingPage() {
       {pendingPlan && (
         <ConsentModal
           plan={pendingPlan}
+          cadence={cadence}
           busy={busy === `plan:${pendingPlan.id}`}
           onCancel={() => setPendingPlan(null)}
           onConfirm={confirmSubscribe}
@@ -444,8 +453,20 @@ export default function BillingPage() {
 
 // ─── Sub-components ─────────────────────────────────────────────────────
 
-function buildConsentText(plan) {
+function buildConsentText(plan, cadence = "monthly") {
   const orgs = plan.orgs_included >= 1000 ? "unlimited" : plan.orgs_included;
+  if (cadence === "annual") {
+    const monthly = plan.annual_usd.toFixed(2);
+    const total = (plan.annual_usd * 12).toFixed(2);
+    return (
+      `I authorize Foundry to charge my payment method $${total} once per year ` +
+      `(equivalent to $${monthly}/mo) for the ${plan.name} plan on a recurring ` +
+      `annual basis. This subscription unlocks ${orgs} organization${plan.orgs_included === 1 ? "" : "s"}. ` +
+      `My subscription will automatically renew each year until I cancel it ` +
+      `via the Manage subscription button on this page. Cancellations take ` +
+      `effect at the end of the current billing period.`
+    );
+  }
   return (
     `I authorize Foundry to charge my payment method $${plan.monthly_usd.toFixed(2)}/mo ` +
     `for the ${plan.name} plan on a recurring monthly basis. This subscription ` +
@@ -453,6 +474,33 @@ function buildConsentText(plan) {
     `My subscription will automatically renew each month until I cancel it ` +
     `via the Manage subscription button on this page. Cancellations take effect ` +
     `at the end of the current billing period.`
+  );
+}
+
+function CadenceToggle({ cadence, onChange }) {
+  return (
+    <div
+      className="inline-flex items-center rounded-full p-1 bg-white/5 text-xs"
+      data-testid="cadence-toggle"
+    >
+      <button
+        onClick={() => onChange("monthly")}
+        className={`px-3 py-1 rounded-full transition-colors ${cadence === "monthly" ? "bg-white/15 text-white" : "sp-subtle"}`}
+        data-testid="cadence-monthly"
+      >
+        Monthly
+      </button>
+      <button
+        onClick={() => onChange("annual")}
+        className={`px-3 py-1 rounded-full transition-colors flex items-center gap-1 ${cadence === "annual" ? "bg-white/15 text-white" : "sp-subtle"}`}
+        data-testid="cadence-annual"
+      >
+        Annual
+        <span className="text-[9px] uppercase tracking-widest text-orange-300 font-medium">
+          Save ~17%
+        </span>
+      </button>
+    </div>
   );
 }
 
@@ -502,16 +550,20 @@ function TxnPill({ status }) {
   );
 }
 
-function PlanCard({ plan, current, busy, onSelect }) {
+function PlanCard({ plan, cadence = "monthly", current, busy, onSelect }) {
   const isRefine = !plan.recurring;
   const orgsLabel = plan.orgs_included >= 1000
     ? "Unlimited organizations"
     : `${plan.orgs_included} organization${plan.orgs_included === 1 ? "" : "s"}`;
+  // Effective monthly price for the chosen cadence.
+  const monthlyEffective = cadence === "annual" ? plan.annual_usd : plan.monthly_usd;
   const cta = current
     ? "Current plan"
     : isRefine
       ? "Talk to us"
-      : `Subscribe — $${plan.monthly_usd.toFixed(0)}/mo`;
+      : cadence === "annual"
+        ? `Subscribe — $${(plan.annual_usd * 12).toFixed(0)}/yr`
+        : `Subscribe — $${plan.monthly_usd.toFixed(0)}/mo`;
   const CtaIcon = current ? Check : isRefine ? Mail : ArrowUpRight;
   return (
     <div
@@ -527,16 +579,11 @@ function PlanCard({ plan, current, busy, onSelect }) {
       <div className="text-3xl font-medium mt-1">
         {plan.monthly_usd == null
           ? <span className="text-2xl">Custom</span>
-          : <>${plan.monthly_usd.toFixed(0)}<span className="text-sm sp-subtle">/mo</span></>}
+          : <>${monthlyEffective.toFixed(0)}<span className="text-sm sp-subtle">/mo</span></>}
       </div>
-      {plan.annual_usd != null && (
+      {plan.annual_usd != null && cadence === "annual" && (
         <div className="text-[11px] sp-subtle mt-0.5">
-          or ${plan.annual_usd}/mo billed annually
-        </div>
-      )}
-      {plan.starting_at_usd != null && (
-        <div className="text-[11px] sp-subtle mt-0.5">
-          Starting at ${plan.starting_at_usd}/mo
+          ${(plan.annual_usd * 12).toFixed(0)} billed yearly
         </div>
       )}
       <div className="text-xs sp-subtle mt-1">{plan.tagline}</div>
@@ -567,7 +614,7 @@ function PlanCard({ plan, current, busy, onSelect }) {
       </button>
       {!current && plan.recurring && (
         <p className="text-[10px] sp-subtle mt-2 leading-relaxed">
-          Billed monthly. Cancel anytime.
+          Billed {cadence}. Cancel anytime.
         </p>
       )}
     </div>
