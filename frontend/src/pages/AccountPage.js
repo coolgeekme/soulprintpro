@@ -211,8 +211,8 @@ export default function AccountPage() {
             <>
               <p className="text-sm sp-subtle leading-relaxed mb-4">
                 Your subscription is account-level — one plan unlocks every
-                workspace you own. Spark includes 1 workspace, Temper includes 3,
-                and Refine is unlimited.
+                organization you create. Spark includes 1 organization, Temper
+                includes 3, and Refine is unlimited.
               </p>
               {orgs.length > 0 && (
                 <ul className="divide-y divide-white/5 mb-4">

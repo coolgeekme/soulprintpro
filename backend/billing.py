@@ -67,7 +67,7 @@ PLANS: Dict[str, Dict[str, Any]] = {
     "spark": {
         "id": "spark",
         "name": "Spark",
-        "tagline": "Solo operator. One workspace, focused.",
+        "tagline": "Solo operator. One organization, focused.",
         "monthly_usd": 80.0,
         "orgs_included": 1,
         "seats_included": 1,
@@ -75,16 +75,16 @@ PLANS: Dict[str, Dict[str, Any]] = {
         "recurring": True,
         "lookup_key": "foundry_spark_monthly_v1",
         "features": [
-            "1 workspace included",
+            "1 organization included",
             "$20/mo of agent compute included",
-            "Unlimited org notes + asset library",
+            "Unlimited notes + asset library",
             "Pay-as-you-go for any overage",
         ],
     },
     "temper": {
         "id": "temper",
         "name": "Temper",
-        "tagline": "Growing team. Up to 3 workspaces.",
+        "tagline": "Growing team. Up to 3 organizations.",
         "monthly_usd": 300.0,
         "orgs_included": 3,
         "seats_included": 5,
@@ -92,8 +92,8 @@ PLANS: Dict[str, Dict[str, Any]] = {
         "recurring": True,
         "lookup_key": "foundry_temper_monthly_v1",
         "features": [
-            "3 workspaces included",
-            "5 seats included (shared across workspaces)",
+            "Up to 3 organizations",
+            "5 seats included (shared across organizations)",
             "$100/mo of agent compute included",
             "Crucible (mission agents) unlocked",
             "Recurring scheduled missions",
@@ -102,7 +102,7 @@ PLANS: Dict[str, Dict[str, Any]] = {
     "refine": {
         "id": "refine",
         "name": "Refine",
-        "tagline": "Agency-scale. Unlimited workspaces, white-glove.",
+        "tagline": "Agency-scale. Unlimited organizations, white-glove.",
         "monthly_usd": None,           # custom — sales-led
         "orgs_included": 10_000,
         "seats_included": 10_000,
@@ -110,7 +110,7 @@ PLANS: Dict[str, Dict[str, Any]] = {
         "recurring": False,
         "lookup_key": None,
         "features": [
-            "Unlimited workspaces",
+            "Unlimited organizations",
             "Unlimited seats",
             "Generous agent-compute included (negotiated)",
             "White-label audit PDFs",
@@ -421,7 +421,7 @@ async def enforce_org_creation_limit(db, user: Dict[str, Any]) -> None:
         raise HTTPException(
             402,
             f"Your {limits['plan']['name']} plan includes {limits['orgs_limit']} "
-            f"workspace{'s' if limits['orgs_limit'] != 1 else ''}. "
+            f"organization{'s' if limits['orgs_limit'] != 1 else ''}. "
             "Upgrade your plan to create more.",
         )
 

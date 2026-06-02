@@ -80,7 +80,7 @@ const TIERS = [
     annual: null,
     startingAt: 1500,
     cta: "Talk to us",
-    href: "mailto:hello@foundryagents.ai?subject=Refine%20tier%20enquiry",
+    href: "/auth?mode=register&plan=contact",
     perks: [
       "Unlimited seats · unlimited orgs · multi-workspace",
       "Custom agent personalities co-designed with our team",

@@ -41,30 +41,33 @@ export default function AuthPage() {
 
   const isRegister = useMemo(() => mode === "register", [mode]);
 
-  // Optional `?plan=spark|temper` carried in from the pricing page —
-  // after auth completes we route to the user's first org's billing
-  // page with `?subscribe={plan}` so the consent modal opens
-  // automatically. Persisted to localStorage so a Firebase OAuth
-  // round-trip (which loses query params on the popup callback)
-  // still resumes correctly.
+  // Optional `?plan=spark|temper|contact` carried in from the pricing
+  // page — after auth completes we route to the billing page with
+  // `?subscribe={plan}` (consent modal auto-opens) for Spark/Temper,
+  // or `?contact=1` (sales modal auto-opens) for Refine. Persisted to
+  // localStorage so a Firebase OAuth round-trip (which loses query
+  // params on the popup callback) still resumes correctly.
   const planIntentParam = params.get("plan");
-  if (planIntentParam === "spark" || planIntentParam === "temper") {
+  if (planIntentParam === "spark" || planIntentParam === "temper" || planIntentParam === "contact") {
     try { window.localStorage.setItem("foundry:planIntent", planIntentParam); } catch {}
   }
 
   /** Land the user after a successful auth. If they came in with a
    *  plan intent, deep-link to the user-level billing page with the
-   *  consent modal armed for that plan. Falls back to `/app` if no
-   *  intent is set. */
+   *  consent or sales modal armed. Falls back to `/app`. */
   const landAfterAuth = async () => {
     let plan = "";
     try { plan = window.localStorage.getItem("foundry:planIntent") || ""; } catch {}
-    if (plan !== "spark" && plan !== "temper") {
+    if (plan !== "spark" && plan !== "temper" && plan !== "contact") {
       navigate("/app");
       return;
     }
     try { window.localStorage.removeItem("foundry:planIntent"); } catch {}
-    navigate(`/app/billing?subscribe=${plan}`);
+    if (plan === "contact") {
+      navigate(`/app/billing?contact=1`);
+    } else {
+      navigate(`/app/billing?subscribe=${plan}`);
+    }
   };
 
   // Email/password submit. When Firebase is enabled we use it as the

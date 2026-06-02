@@ -343,7 +343,7 @@ async def test_org_creation_limit_gate():
             await enforce_org_creation_limit(db, user)
         assert exc.value.status_code == 402
         assert "Spark" in exc.value.detail
-        assert "workspace" in exc.value.detail.lower()
+        assert "organization" in exc.value.detail.lower()
     finally:
         await db.org_members.delete_many({"user_id": fake_user_id})
         await db.organizations.delete_one({"_id": org_oid})

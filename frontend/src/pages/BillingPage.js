@@ -35,6 +35,7 @@ export default function BillingPage() {
   const sessionId = params.get("session_id");
   const cancelled = params.get("cancelled");
   const subscribeIntent = params.get("subscribe"); // 'spark' | 'temper' from /auth?plan=…
+  const contactIntent = params.get("contact"); // '1' from /pricing → Refine "Talk to us"
 
   const [loading, setLoading] = useState(true);
   const [summary, setSummary] = useState(null);
@@ -74,6 +75,17 @@ export default function BillingPage() {
     setParams(next, { replace: true });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [subscribeIntent, plans.length]);
+
+  // Open the Refine "contact sales" modal when the user arrived from
+  // /pricing → /auth → here with a `?contact=1` hint.
+  useEffect(() => {
+    if (!contactIntent) return;
+    setShowSales(true);
+    const next = new URLSearchParams(params);
+    next.delete("contact");
+    setParams(next, { replace: true });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [contactIntent]);
 
   // After Stripe redirects back, poll status until paid.
   useEffect(() => {
@@ -209,7 +221,7 @@ export default function BillingPage() {
           <h1 className="text-3xl sm:text-4xl font-medium tracking-tight">Plan &amp; usage</h1>
           <p className="text-sm sp-subtle mt-1">
             Subscribe monthly. Cancel anytime — no annual lock-in, no hidden markup.
-            One subscription unlocks every workspace you own.
+            One subscription unlocks every organization you create.
           </p>
         </div>
 
@@ -255,12 +267,12 @@ export default function BillingPage() {
             </div>
           </div>
 
-          {/* Workspaces used vs limit */}
+          {/* Organizations used vs limit */}
           <div className="mt-5 pt-4 border-t border-white/5">
             <div className="flex items-center justify-between gap-3 text-sm">
               <div className="flex items-center gap-2">
                 <Layers className="w-3.5 h-3.5 sp-subtle" />
-                Workspaces
+                Organizations
               </div>
               <div className={`text-sm font-medium ${atOrgLimit ? "text-orange-300" : ""}`}>
                 {orgsUsed}
@@ -270,7 +282,7 @@ export default function BillingPage() {
             </div>
             {atOrgLimit && (
               <p className="text-[11px] text-orange-300 mt-2 leading-relaxed" data-testid="org-limit-warning">
-                You've used every workspace your {currentPlan?.name} plan includes.
+                You've used every organization your {currentPlan?.name} plan includes.
                 {" "}Upgrade below to create another.
               </p>
             )}
@@ -283,7 +295,7 @@ export default function BillingPage() {
             <div className="text-xs uppercase tracking-widest sp-subtle flex items-center gap-2 mb-3">
               <TrendingUp className="w-3.5 h-3.5" /> This month's agent compute
               <span className="text-[10px] sp-subtle font-normal normal-case tracking-normal">
-                (across all your workspaces)
+                (across all your organizations)
               </span>
             </div>
             <div className="flex items-baseline justify-between mb-2">
@@ -367,7 +379,7 @@ export default function BillingPage() {
               <div className="text-sm leading-relaxed">
                 <strong>You have staff access.</strong> Every feature is unlocked
                 with no monthly charge or usage cap. This applies to anyone at
-                @archeforge.com and the founding team. Workspaces you create
+                @archeforge.com and the founding team. Organizations you create
                 inherit the same access automatically.
               </div>
             </div>
@@ -437,7 +449,7 @@ function buildConsentText(plan) {
   return (
     `I authorize Foundry to charge my payment method $${plan.monthly_usd.toFixed(2)}/mo ` +
     `for the ${plan.name} plan on a recurring monthly basis. This subscription ` +
-    `unlocks ${orgs} workspace${plan.orgs_included === 1 ? "" : "s"}. ` +
+    `unlocks ${orgs} organization${plan.orgs_included === 1 ? "" : "s"}. ` +
     `My subscription will automatically renew each month until I cancel it ` +
     `via the Manage subscription button on this page. Cancellations take effect ` +
     `at the end of the current billing period.`
@@ -493,8 +505,8 @@ function TxnPill({ status }) {
 function PlanCard({ plan, current, busy, onSelect }) {
   const isRefine = !plan.recurring;
   const orgsLabel = plan.orgs_included >= 1000
-    ? "Unlimited workspaces"
-    : `${plan.orgs_included} workspace${plan.orgs_included === 1 ? "" : "s"}`;
+    ? "Unlimited organizations"
+    : `${plan.orgs_included} organization${plan.orgs_included === 1 ? "" : "s"}`;
   const cta = current
     ? "Current plan"
     : isRefine
