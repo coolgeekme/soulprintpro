@@ -510,20 +510,35 @@ function PlanCard({ plan, current, busy, onSelect }) {
   const cta = current
     ? "Current plan"
     : isRefine
-      ? "Contact sales"
+      ? "Talk to us"
       : `Subscribe — $${plan.monthly_usd.toFixed(0)}/mo`;
   const CtaIcon = current ? Check : isRefine ? Mail : ArrowUpRight;
   return (
     <div
-      className={`sp-glass-strong rounded-2xl p-5 flex flex-col ${current ? "ring-1 ring-orange-300/40" : ""}`}
+      className={`sp-glass-strong rounded-2xl p-5 flex flex-col ${current ? "ring-1 ring-orange-300/40" : ""} ${plan.highlight ? "ring-1 ring-orange-300/60 relative" : ""}`}
       data-testid={`plan-card-${plan.id}`}
     >
+      {plan.highlight && !current && (
+        <div className="absolute -top-2 right-4 px-2 py-0.5 text-[10px] uppercase tracking-widest rounded-full bg-orange-400 text-black font-medium">
+          Most popular
+        </div>
+      )}
       <div className="text-xs uppercase tracking-widest sp-subtle">{plan.name}</div>
       <div className="text-3xl font-medium mt-1">
         {plan.monthly_usd == null
           ? <span className="text-2xl">Custom</span>
           : <>${plan.monthly_usd.toFixed(0)}<span className="text-sm sp-subtle">/mo</span></>}
       </div>
+      {plan.annual_usd != null && (
+        <div className="text-[11px] sp-subtle mt-0.5">
+          or ${plan.annual_usd}/mo billed annually
+        </div>
+      )}
+      {plan.starting_at_usd != null && (
+        <div className="text-[11px] sp-subtle mt-0.5">
+          Starting at ${plan.starting_at_usd}/mo
+        </div>
+      )}
       <div className="text-xs sp-subtle mt-1">{plan.tagline}</div>
       <div className="text-[11px] mt-2 inline-flex items-center gap-1 text-orange-300">
         <Layers className="w-3 h-3" /> {orgsLabel}
@@ -536,6 +551,11 @@ function PlanCard({ plan, current, busy, onSelect }) {
           </li>
         ))}
       </ul>
+      {plan.studio_perk && (
+        <div className="text-[11px] sp-subtle italic mt-3 pt-3 border-t border-white/5 leading-relaxed">
+          {plan.studio_perk}
+        </div>
+      )}
       <button
         onClick={onSelect}
         disabled={current || busy}
