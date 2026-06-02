@@ -18,8 +18,15 @@
   --chr-graphite:   #0f1115;
   --chr-graphite-2: #161a21;
   --chr-ink:        #e8edf3;
-  --chr-mute:       #7c8493;
-  --chr-mute-2:     #4d5360;
+  /* Bumped both mute tones for readability (Jun 2026): the original
+     #7c8493 / #4d5360 looked great on the design comps but failed
+     WCAG AA on actual screens — the secondary tone was effectively
+     invisible on pure black. New values keep the cool slate feel
+     but pass AA for body copy on a black surface.
+        --chr-mute  : ~10.4:1 contrast on #000 (was 5.5:1)
+        --chr-mute-2: ~6.7:1  contrast on #000 (was 3.1:1, AA FAIL) */
+  --chr-mute:       #a8b1c2;
+  --chr-mute-2:     #828a9c;
 
   /* Steel blue — primary accent. Cooler than v1's warm orange. */
   --chr-steel:      #5fa8d6;
@@ -30,13 +37,16 @@
   --chr-copper:     #e57b3a;
   --chr-copper-2:   #ff9c5a;
 
-  /* Chrome gradient — for headline text + wordmark. */
-  --chr-chrome:     linear-gradient(180deg, #f6f8fb 0%, #b9bfc7 35%,
-                    #6c727c 60%, #2a2d33 100%);
-  --chr-chrome-cool:linear-gradient(180deg, #e8eef5 0%, #87aac7 50%,
-                    #2c5d80 100%);
-  --chr-chrome-warm:linear-gradient(180deg, #ffd6b1 0%, #ff9c5a 45%,
-                    #b04a14 100%);
+  /* Chrome gradient — for headline text + wordmark.
+     The floor stop was bumped from #2a2d33 → #8d9298 because on the
+     pure black page the original dark floor made every letter look
+     half-erased. Mid-tones tweaked to keep the metallic sheen. */
+  --chr-chrome:     linear-gradient(180deg, #ffffff 0%, #e1e6ee 30%,
+                    #b6bcc6 60%, #8d9298 100%);
+  --chr-chrome-cool:linear-gradient(180deg, #ecf3fa 0%, #a3c4dd 50%,
+                    #5f9ac4 100%);
+  --chr-chrome-warm:linear-gradient(180deg, #ffe1c2 0%, #ffae73 45%,
+                    #e0773a 100%);
 
   --chr-glow-steel: 0 0 24px rgba(95, 168, 214, .25),
                     0 0 60px rgba(95, 168, 214, .12);
@@ -249,10 +259,12 @@
 }
 .chr-sub-wordmark {
   font-family: "Rajdhani", sans-serif;
-  /* 9px → 0.5625rem so the micro-wordmark tracks the ramp. */
-  font-size: 0.5625rem;
+  /* Bumped 9px → 10px (0.625rem) AND raised color from --chr-mute
+     to a brighter slate so the "POWERED BY SOULPRINT ENGINE" line
+     is actually legible at small sizes against the black coal. */
+  font-size: 0.625rem;
   letter-spacing: 0.32em;
-  color: var(--chr-mute);
+  color: #b8bfcc;
   text-transform: uppercase;
   margin-top: 4px;
 }
