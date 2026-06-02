@@ -141,6 +141,13 @@ class SocialDraftBody(BaseModel):
     count: int = Field(3, ge=1, le=10)
     agent_id: Optional[str] = None  # if omitted, smart-routed
     conversation_id: Optional[str] = None  # optional source thread
+    # Optional one-off visual-style override applied to every post drafted
+    # in this batch. When provided, REPLACES the brand-default visual style
+    # segments in the cover-image prompt (so a one-off infographic / 3D
+    # render / flat illustration request actually beats the brand default).
+    # Stays on each draft as `image_style_override` so later "Regenerate"
+    # calls keep the same look unless the user clears it.
+    style_override: str = Field("", max_length=1000)
 
 
 class SocialPostUpdateBody(BaseModel):
@@ -160,8 +167,17 @@ class GenerateImageBody(BaseModel):
     in the image prompt — so users can hand-author or tweak what the image
     depicts without changing the post copy. The org's Soul + visual style
     still get prepended automatically.
+
+    `style_override` is a separate, persistent override of the *visual
+    aesthetic* (e.g. "Flat infographic with bold typography, callout stats,
+    no people"). When set, REPLACES the org's brand-default visual-style
+    segments so a one-off infographic / 3D render / illustration actually
+    beats the brand default. Pass `clear_style_override: true` to drop
+    the per-post override and fall back to the brand default.
     """
     prompt: str = Field("", max_length=2000)
+    style_override: Optional[str] = Field(None, max_length=1000)
+    clear_style_override: bool = False
 
 
 # Video models we expose on the Social Queue UI. Subset of the Kie.ai
@@ -236,6 +252,11 @@ def serialize_social_post(p: dict) -> dict:
         # the user knows a cover is on the way after /draft returns.
         "image_status": p.get("image_status", "ready" if p.get("image") else "none"),
         "image_prompt": p.get("image_prompt", ""),  # user-authored override prompt
+        # User-authored visual-style override for THIS post only. When set,
+        # the image prompt swaps the brand-default `Visual style:` / `Synthesized
+        # visual style:` segments for this string — so a one-off infographic
+        # / 3D render request actually wins over the brand default.
+        "image_style_override": p.get("image_style_override", ""),
         "logo_position": p.get("logo_position") or "bottom-right",
         # ── Video cover (new) ────────────────────────────────────────
         # Independent from `image`: a post can have either, both, or
@@ -697,6 +718,13 @@ def make_social_router(*, db, AGENTS, EMERGENT_LLM_KEY, LlmChat, UserMessage,
         is provided (user hand-authored or edited the prompt), it REPLACES
         the post-text body while keeping the Soul + visual-style context
         so the image still matches the brand.
+
+        Per-post `image_style_override` (when set on the post doc) REPLACES
+        the brand-default ``Visual style:`` / ``Synthesized visual style:``
+        segments — letting a one-off infographic / 3D render / flat
+        illustration request actually beat the brand default. Everything
+        else (tone, audience, palette, logo) stays in place so the override
+        only flips the *aesthetic*, not the brand identity.
         """
         if not generate_image_via_nano_banana or not upload_dir:
             return None
@@ -714,17 +742,27 @@ def make_social_router(*, db, AGENTS, EMERGENT_LLM_KEY, LlmChat, UserMessage,
         colors = ba.get("brand_colors") or []
         if colors:
             soul_bits.append(f"Brand palette: {', '.join(colors[:4])}")
-        visual_style = (ba.get("visual_style") or "").strip()
-        if visual_style:
-            # User-authored visual direction — this overrides the model's
-            # default tendency toward generic stock imagery and keeps a
-            # consistent look across every post the org ever drafts.
-            soul_bits.append(f"Visual style: {visual_style[:400]}")
-        # Visual style synthesized from the org's social profiles (if any)
-        sg_guide = ((org_doc or {}).get("style_guide") or {}).get("guide") or {}
-        sg_visual = (sg_guide.get("image_video_style") or "").strip()
-        if sg_visual:
-            soul_bits.append(f"Synthesized visual style (match this): {sg_visual[:600]}")
+        # Per-post style override takes precedence over org defaults.
+        style_override = (post.get("image_style_override") or "").strip()
+        if style_override:
+            # Strong directive — tell the model this is a hard requirement
+            # so it doesn't quietly defer back to its training-data default
+            # (which is usually "tasteful photo" no matter what we ask for).
+            soul_bits.append(
+                f"Visual style (HARD OVERRIDE — match exactly, ignore brand defaults): {style_override[:800]}"
+            )
+        else:
+            visual_style = (ba.get("visual_style") or "").strip()
+            if visual_style:
+                # User-authored visual direction — this overrides the model's
+                # default tendency toward generic stock imagery and keeps a
+                # consistent look across every post the org ever drafts.
+                soul_bits.append(f"Visual style: {visual_style[:400]}")
+            # Visual style synthesized from the org's social profiles (if any)
+            sg_guide = ((org_doc or {}).get("style_guide") or {}).get("guide") or {}
+            sg_visual = (sg_guide.get("image_video_style") or "").strip()
+            if sg_visual:
+                soul_bits.append(f"Synthesized visual style (match this): {sg_visual[:600]}")
         sys_msg = (
             "You generate a single 1:1 social post cover image. The image must "
             "feel on-brand for the company described below. Avoid text inside "
@@ -1011,6 +1049,11 @@ def make_social_router(*, db, AGENTS, EMERGENT_LLM_KEY, LlmChat, UserMessage,
                 # Stamp the resolved body prompt up front so the editor
                 # has something to show even before the image lands.
                 "image_prompt": (p["text"] or "").strip()[:600] if idx == 0 else "",
+                # Per-post visual-style override — applied to EVERY post in
+                # this batch (so a single "make these infographics" request
+                # styles all 5 drafts the same way). User can edit per-post
+                # afterwards via the Edit Prompt modal.
+                "image_style_override": (body.style_override or "").strip(),
                 "logo_position": "bottom-right",
                 "scheduled_for": None,
                 "published_at": None,
@@ -1323,16 +1366,30 @@ def make_social_router(*, db, AGENTS, EMERGENT_LLM_KEY, LlmChat, UserMessage,
         }
         if resolved_body:
             pending_update["image_prompt"] = resolved_body
+        pending_unset: dict = {"image_error": ""}
+        # Per-post visual-style override handling. Three modes:
+        #   • clear_style_override=true → drop the override, fall back to brand default
+        #   • style_override is a non-empty string → persist as the new override
+        #   • style_override is None (omitted) → leave existing override untouched
+        if body.clear_style_override:
+            pending_unset["image_style_override"] = ""
+        elif body.style_override is not None:
+            pending_update["image_style_override"] = body.style_override.strip()
         await db.social_posts.update_one(
             {"_id": _OID(post_id)},
-            {"$set": pending_update, "$unset": {"image_error": ""}},
+            {"$set": pending_update, "$unset": pending_unset},
         )
 
         async def _run_generate_bg():
             try:
                 org = await db.organizations.find_one({"_id": _OID(post["org_id"])})
-                effective_prompt = override or (post.get("image_prompt") or "")
-                img = await _generate_post_image(post, org or {}, effective_prompt)
+                # Re-fetch the post so `image_style_override` reflects the
+                # just-applied $set/$unset above. Without this re-fetch the
+                # background task would use the pre-update snapshot and the
+                # override request silently no-ops on first regeneration.
+                fresh_post = await db.social_posts.find_one({"_id": _OID(post_id)}) or post
+                effective_prompt = override or (fresh_post.get("image_prompt") or "")
+                img = await _generate_post_image(fresh_post, org or {}, effective_prompt)
                 if not img:
                     raise RuntimeError("Nano Banana returned empty image")
                 update = {

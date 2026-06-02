@@ -5,7 +5,7 @@ import api, { BACKEND_URL } from "../lib/api";
 import TopBar from "../components/TopBar";
 import { toast } from "sonner";
 import {
-  Send, Wand2, Calendar, CheckCircle2, Trash2, Copy, ExternalLink, Download, Save, X, Loader2, Megaphone, Image as ImageIcon, Zap, KeyRound, AlertTriangle, Rocket, Pencil, UploadCloud, ShieldCheck, ChevronRight, Lightbulb, RefreshCcw, FolderOpen, Plug, Film, Play
+  Send, Wand2, Calendar, CheckCircle2, Trash2, Copy, ExternalLink, Download, Save, X, Loader2, Megaphone, Image as ImageIcon, Zap, KeyRound, AlertTriangle, Rocket, Pencil, UploadCloud, ShieldCheck, ChevronRight, Lightbulb, RefreshCcw, FolderOpen, Plug, Film, Play, Palette
 } from "lucide-react";
 import AssetPickerModal from "../components/AssetPickerModal";
 import WorkingIndicator from "../components/WorkingIndicator";
@@ -338,6 +338,13 @@ export default function SocialPage() {
   const [count, setCount] = useState(3);
   const [composePlatforms, setComposePlatforms] = useState(["twitter", "linkedin"]);
   const [composing, setComposing] = useState(false);
+  // Optional one-off visual-style override for the cover images in this
+  // draft batch. When non-empty, REPLACES the org's brand-default visual
+  // style (so a single "make these infographics" request actually beats
+  // the brand's photo aesthetic). Stays on each created draft as
+  // `image_style_override` for future Regenerate calls.
+  const [styleOverride, setStyleOverride] = useState("");
+  const [styleOverrideOpen, setStyleOverrideOpen] = useState(false);
   // Topic suggestions — "what should I post about?"-style helper. Cached in
   // local state so a user can scroll through the list without regenerating.
   const [topics, setTopics] = useState([]);
@@ -494,6 +501,7 @@ export default function SocialPage() {
           prompt: prompt.trim(),
           platforms: composePlatforms,
           count,
+          style_override: styleOverride.trim() || "",
         });
         return data;
       } catch (err) {
@@ -510,6 +518,10 @@ export default function SocialPage() {
       const fresh = data.posts || [];
       setPosts((prev) => [...fresh, ...prev]);
       setPrompt("");
+      // Leave styleOverride state alone — users often want to draft a few
+      // batches in the same visual style; clearing would force them to
+      // retype it every time. They can collapse the panel or wipe the
+      // field manually when they want to fall back to brand default.
       setTab("draft");
       // Friendlier copy: most users hit "Draft posts" expecting magic in
       // <10s. The text response now lands fast (~8s) but the cover image
@@ -651,6 +663,55 @@ export default function SocialPage() {
                 </button>
               );
             })}
+          </div>
+
+          {/* Optional one-off visual-style override. Collapsed by default
+              so the compose form stays tight; the user opts in only when
+              they want a specific aesthetic (infographic / 3D render /
+              illustration / etc) that should beat the brand default. */}
+          <div className="pt-1">
+            <button
+              type="button"
+              onClick={() => setStyleOverrideOpen((v) => !v)}
+              data-testid="compose-style-override-toggle"
+              className="text-xs sp-subtle hover:text-white flex items-center gap-1.5 transition-colors"
+              title="Override the org's default visual style for this batch only"
+            >
+              <Palette className="w-3.5 h-3.5" />
+              {styleOverrideOpen ? "Hide" : "Visual style override"}
+              {styleOverride.trim() ? (
+                <span className="ml-1 px-1.5 py-0.5 rounded-full text-[10px] bg-orange-500/20 border border-orange-400/40 text-orange-300">
+                  custom
+                </span>
+              ) : null}
+            </button>
+            {styleOverrideOpen && (
+              <div className="mt-2 space-y-1.5" data-testid="compose-style-override-panel">
+                <textarea
+                  data-testid="compose-style-override"
+                  value={styleOverride}
+                  onChange={(e) => setStyleOverride(e.target.value)}
+                  placeholder='e.g. "Flat infographic with bold typography, callout stats, no people"'
+                  rows={2}
+                  maxLength={1000}
+                  className="w-full rounded-xl px-3 py-2 text-xs resize-none focus:sp-focus"
+                  style={{ background: "var(--input-bg)", border: "1px solid var(--input-border)", color: "var(--fg)" }}
+                />
+                <div className="flex items-center justify-between text-[11px] sp-subtle">
+                  <span>Overrides brand default visual style for cover images in this batch.</span>
+                  {styleOverride && (
+                    <button
+                      type="button"
+                      onClick={() => setStyleOverride("")}
+                      data-testid="compose-style-override-clear"
+                      className="hover:text-white underline"
+                    >
+                      Reset to brand default
+                    </button>
+                  )}
+                </div>
+              </div>
+            )}
           </div>
           <div className="flex items-center gap-3 flex-wrap">
             <label className="flex items-center gap-2 text-xs sp-subtle">
@@ -1599,6 +1660,12 @@ function PostCoverImage({ post, orgId, onUpdate, onReplace }) {
     || (post.text || "").trim()
     || "";
   const [promptDraft, setPromptDraft] = useState(initialPrompt);
+  // Per-post visual-style override editor state. When the user types
+  // anything here, it overrides the org's default visual style for THIS
+  // post only — so a single infographic / 3D render request actually
+  // beats the brand default. Empty string = inherit brand default.
+  const initialStyleOverride = (post.image_style_override || "").trim();
+  const [styleOverrideDraft, setStyleOverrideDraft] = useState(initialStyleOverride);
 
   // Keep the local draft in sync if the parent re-fetches and the
   // persisted `image_prompt` on this post changes under us (e.g. another
@@ -1611,11 +1678,29 @@ function PostCoverImage({ post, orgId, onUpdate, onReplace }) {
     );
   }, [post.image_prompt, post.text]);
 
+  // Keep style override in sync too — same reasoning.
+  useEffect(() => {
+    setStyleOverrideDraft((post.image_style_override || "").trim());
+  }, [post.image_style_override]);
+
   const generate = async (customPrompt = null) => {
     if (generating) return;
     setGenerating(true);
     try {
       const body = customPrompt !== null ? { prompt: customPrompt } : {};
+      // Always send the current style-override state alongside the prompt
+      // so the user can edit either field (or both) in the same modal
+      // and one save call regenerates with both applied. Sending an
+      // empty string clears the override and falls back to brand default.
+      const currentOverride = styleOverrideDraft.trim();
+      const persistedOverride = (post.image_style_override || "").trim();
+      if (currentOverride !== persistedOverride) {
+        if (currentOverride === "") {
+          body.clear_style_override = true;
+        } else {
+          body.style_override = currentOverride;
+        }
+      }
       const { data } = await api.post(`/social/posts/${post.id}/generate-image`, body);
       Object.assign(post, data);
       // Backend now runs Nano Banana in a background task (so production
@@ -1753,6 +1838,9 @@ function PostCoverImage({ post, orgId, onUpdate, onReplace }) {
             onCancel={() => setShowPromptEditor(false)}
             generating={generating}
             postId={post.id}
+            styleOverride={styleOverrideDraft}
+            setStyleOverride={setStyleOverrideDraft}
+            defaultStyleOverride={post.image_style_override || ""}
           />
         )}
         {showAssetPicker && (
@@ -1904,6 +1992,9 @@ function PostCoverImage({ post, orgId, onUpdate, onReplace }) {
           onCancel={() => setShowPromptEditor(false)}
           generating={generating}
           postId={post.id}
+          styleOverride={styleOverrideDraft}
+          setStyleOverride={setStyleOverrideDraft}
+          defaultStyleOverride={post.image_style_override || ""}
         />
       )}
       {showAssetPicker && (
@@ -2267,12 +2358,15 @@ function VideoGenerationModal({ post, onClose, onStarted }) {
  * A visible "Reset to post copy" shortcut clears the override and falls
  * back to the auto-derived prompt ({Soul}+{post.text}).
  */
-function SocialPromptEditor({ initial, postText, onSubmit, onCancel, generating, postId }) {
+function SocialPromptEditor({ initial, postText, onSubmit, onCancel, generating, postId,
+                              styleOverride, setStyleOverride, defaultStyleOverride }) {
   const [draft, setDraft] = useState(initial || "");
   // Detect whether the draft has diverged from the auto-derived starting
   // point. If so, "Reset" puts us back to the post copy (which is the
   // backend's default body when no override was ever authored).
   const hasOverride = draft.trim() !== (postText || "").trim();
+  const styleEnabled = typeof setStyleOverride === "function";
+  const styleHasOverride = styleEnabled && (styleOverride || "").trim() !== "";
   return (
     <div className="mt-2 sp-glass rounded-xl p-3 border border-orange-500/20" data-testid={`social-prompt-editor-${postId}`}>
       <div className="flex items-center justify-between mb-2 gap-2">
@@ -2309,6 +2403,54 @@ function SocialPromptEditor({ initial, postText, onSubmit, onCancel, generating,
           </>
         )}
       </div>
+
+      {/* Per-post visual-style override. Overrides the org's brand-default
+          visual style for THIS post only — so a single infographic / 3D
+          render / illustration request actually beats the brand default.
+          Leave empty to inherit the brand default. */}
+      {styleEnabled && (
+        <div className="mt-3 pt-3 border-t border-white/5">
+          <div className="flex items-center justify-between mb-2 gap-2">
+            <div className="text-[11px] sp-subtle uppercase tracking-widest flex items-center gap-1.5">
+              <Palette className="w-3 h-3" />
+              Visual style override
+              {styleHasOverride && (
+                <span className="px-1.5 py-0.5 rounded-full text-[9px] bg-orange-500/20 border border-orange-400/40 text-orange-300 normal-case tracking-normal">
+                  custom
+                </span>
+              )}
+            </div>
+            {styleHasOverride && (
+              <button
+                type="button"
+                onClick={() => setStyleOverride("")}
+                className="text-[11px] sp-subtle hover:text-white shrink-0"
+                title="Drop the per-post override and fall back to the brand default visual style"
+                data-testid={`social-style-reset-${postId}`}
+              >
+                Reset to brand default
+              </button>
+            )}
+          </div>
+          <textarea
+            value={styleOverride || ""}
+            onChange={(e) => setStyleOverride(e.target.value)}
+            placeholder={
+              defaultStyleOverride
+                ? `Inherited: "${defaultStyleOverride.slice(0, 80)}${defaultStyleOverride.length > 80 ? "…" : ""}" — edit or clear`
+                : 'e.g. "Flat infographic with bold typography, callout stats, no people"'
+            }
+            rows={2}
+            maxLength={1000}
+            className="w-full rounded-lg bg-black/30 border border-white/10 px-3 py-2 text-sm resize-y focus:outline-none focus:border-orange-500/50"
+            data-testid={`social-style-textarea-${postId}`}
+          />
+          <div className="text-[11px] sp-subtle mt-1 leading-relaxed">
+            Replaces the org's default visual style for this post. Brand tone, audience, palette, and logo are kept.
+          </div>
+        </div>
+      )}
+
       <div className="flex items-center justify-end gap-2 mt-3">
         <button type="button" onClick={onCancel} disabled={generating}
                 className="sp-btn sp-btn-ghost text-xs disabled:opacity-50"
