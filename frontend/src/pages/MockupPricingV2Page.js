@@ -15,12 +15,22 @@ import "../styles/foundry-chrome.css";
  * three "states" stay visually fused to the source artwork.
  */
 
-const SIGIL_IMG = "/brand/foundry_intro.png";
-// "INTRODUCING: FOUNDRY" hero composition shown above the tier grid — re-uses
-// the same source as SIGIL_IMG so the tier emblems and the master mark
-// always feel forged from the same artwork.
-const HERO_INTRO_IMG = "/brand/foundry_intro.png";
+// "INTRODUCING: FOUNDRY" hero composition shown above the tier grid.
+// This is the v2 art (transparent background, individual sigils visible
+// at the bottom) — much cleaner than the v1 composite for the pricing
+// page since the user already sees the per-tier sigils in the cards
+// directly below.
+const HERO_INTRO_IMG = "/brand/foundry_intro_v2.png";
 const NAV_LOGO = "/brand/foundry_swirl.png";
+
+// Individual tier sigils — alpha-stripped PNGs from the v2 brand pack.
+// Each tier card now shows its OWN emblem rather than slicing the
+// composite via background-position. Crisper edges, better glow.
+const TIER_SIGILS = {
+  spark:  "/brand/spark_sigil.png",
+  temper: "/brand/temper_sigil.png",
+  refine: "/brand/refine_sigil.png",
+};
 
 const TIERS = [
   {
@@ -150,19 +160,16 @@ function Wordmark() {
 }
 
 
-function TierSigil({ offset = "50%" }) {
+function TierSigil({ tier = "spark" }) {
   return (
     <div className="chr-sigil-mount">
-      <div
-        className="w-32 h-32"
+      <img
+        src={TIER_SIGILS[tier] || TIER_SIGILS.spark}
+        alt={`Foundry ${tier} sigil`}
+        className="w-32 h-32 object-contain mx-auto"
+        loading="lazy"
         style={{
-          backgroundImage: `url('${SIGIL_IMG}')`,
-          backgroundRepeat: "no-repeat",
-          // Crop the lower band of the Foundry-intro composition where
-          // the three tier emblems live (Spark/Temper/Refine cards).
-          backgroundPosition: `${offset} 62%`,
-          backgroundSize: "300% auto",
-          filter: "drop-shadow(0 0 12px rgba(95,168,214,.25))",
+          filter: "drop-shadow(0 0 14px rgba(95,168,214,.25))",
         }}
       />
     </div>
@@ -188,7 +195,7 @@ function TierCard({ t }) {
           Most picked
         </span>
       )}
-      <TierSigil offset={t.sigilOffset} />
+      <TierSigil tier={t.id} />
       <div className="text-center mb-1">
         <div className="chr-eyebrow mb-1.5">{t.name}</div>
         <h3 className={`chr-display-tight text-2xl ${t.badgeClass} mb-2 leading-tight`}>
@@ -317,20 +324,21 @@ export default function MockupPricingV2Page() {
       </header>
 
       <section className="relative z-10 max-w-7xl mx-auto px-6 md:px-10 pt-12 pb-12 text-center">
-        {/* INTRODUCING:FOUNDRY hero composition — crop the top half so
-            only the master diamond + "FORGE YOUR EDGE" wordmark show;
-            the bottom-half tier cards are rendered properly-sized in
-            the TierCard sigils below this hero. */}
+        {/* INTRODUCING: FOUNDRY hero composition (v2). Already contains
+            the three tier cards along the bottom, which echoes nicely
+            with the per-tier sigils rendered below in TierCard. The
+            transparent-background PNG lets the page vignette show
+            through behind the metalwork. */}
         <div
           role="img"
           aria-label="Introducing Foundry — Forge your edge"
-          className="mx-auto mb-6 w-full max-w-[480px] aspect-[4/3]"
+          className="mx-auto mb-6 w-full max-w-[640px] aspect-square"
           style={{
             backgroundImage: `url('${HERO_INTRO_IMG}')`,
             backgroundRepeat: "no-repeat",
-            backgroundPosition: "center top",
-            backgroundSize: "100% auto",
-            filter: "drop-shadow(0 20px 60px rgba(95,168,214,.18))",
+            backgroundPosition: "center center",
+            backgroundSize: "contain",
+            filter: "drop-shadow(0 30px 80px rgba(229,123,58,.18))",
           }}
           data-testid="mockup-v2-pricing-hero-intro"
         />

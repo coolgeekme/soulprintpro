@@ -17,8 +17,8 @@ import "../styles/foundry-chrome.css";
  * separate sprites.
  */
 
-const SIGIL_IMG = "/brand/foundry_intro.png";
-const HERO_LOGO = "/brand/foundry_intro.png";
+const SIGIL_IMG = "/brand/foundry_agents.png";
+const HERO_LOGO = "/brand/foundry_agents.png";
 // Right-panel-only crop of the original side-by-side Spark marketing
 // banner — the left panel had garbled AI-generated copy that won't
 // pass a marketing read-through, so we ship only the clean right
@@ -28,6 +28,16 @@ const SPARK_SHOWCASE_IMG = "/brand/spark_panel.png";
 // transparent PNG so it sits cleanly on the dark page surface
 // without the original artwork's navy bezel.
 const NAV_LOGO = "/brand/foundry_swirl.png";
+
+// Individual tier sigils — alpha-stripped from the v2 brand pack so
+// each tier card gets its OWN crisp emblem instead of a slice of a
+// 3-up sheet. Way cleaner than the old `background-position` crop
+// approach (which softened the edges and clipped the outer fins).
+const TIER_SIGILS = {
+  spark:  "/brand/spark_sigil.png",
+  temper: "/brand/temper_sigil.png",
+  refine: "/brand/refine_sigil.png",
+};
 
 const TIERS = [
   {
@@ -92,28 +102,21 @@ function Wordmark() {
 
 
 /**
- * Tier sigil — pulls one third of the v2 sigil sheet using
- * background-position. Keeps the three emblems "fused" to the same
- * source artwork without exporting three files.
- *
- * The "Foundry intro" composition stacks the FOUNDRY mark on top and
- * three tier cards along the bottom half. We crop the bottom band
- * (vertical ~65%) and slide horizontally to pick each tier panel.
+ * Tier sigil — renders one of the alpha-stripped tier emblems
+ * (spark / temper / refine) at a consistent visual weight. Each
+ * sigil is its own PNG with transparent background so the page
+ * vignette + tier glow show through behind the metalwork.
  */
-function TierSigil({ offset = "50%" }) {
+function TierSigil({ tier = "spark" }) {
   return (
     <div className="chr-sigil-mount">
-      <div
-        className="w-40 h-40"
-        role="img"
-        aria-label="Foundry tier sigil"
+      <img
+        src={TIER_SIGILS[tier] || TIER_SIGILS.spark}
+        alt={`Foundry ${tier} sigil`}
+        className="w-40 h-40 object-contain mx-auto"
+        loading="lazy"
         style={{
-          backgroundImage: `url('${SIGIL_IMG}')`,
-          backgroundRepeat: "no-repeat",
-          // Crop the lower band where the three tier emblems live.
-          backgroundPosition: `${offset} 62%`,
-          backgroundSize: "300% auto",
-          filter: "drop-shadow(0 0 12px rgba(95,168,214,.25))",
+          filter: "drop-shadow(0 0 18px rgba(95,168,214,.25))",
         }}
       />
     </div>
@@ -197,10 +200,10 @@ export default function MockupHomeV2Page() {
                    "radial-gradient(circle at 50% 50%, rgba(95,168,214,.18), transparent 70%)",
                  filter: "blur(40px)",
                }} />
-          {/* Crop the TOP half of the Foundry-intro image — that's
-              where the master diamond + FOUNDRY wordmark live. The
-              bottom half (three tier cards) is repurposed below in
-              the tiers section via background-position. */}
+          {/* Hero artwork — the alpha-stripped Foundry marketing
+              composition (foundryagents.ai). Centered on the dark
+              vignette so the copper sigil + workshop frames glow
+              through without the source PNG's hard black border. */}
           <div
             role="img"
             aria-label="Foundry — Forge your edge"
@@ -208,9 +211,9 @@ export default function MockupHomeV2Page() {
             style={{
               backgroundImage: `url('${HERO_LOGO}')`,
               backgroundRepeat: "no-repeat",
-              backgroundPosition: "center top",
-              backgroundSize: "100% auto",
-              filter: "drop-shadow(0 30px 80px rgba(95,168,214,.18))",
+              backgroundPosition: "center center",
+              backgroundSize: "contain",
+              filter: "drop-shadow(0 30px 80px rgba(229,123,58,.18))",
             }}
           />
         </div>
@@ -243,7 +246,7 @@ export default function MockupHomeV2Page() {
                           flex flex-col gap-4 transition-transform hover:-translate-y-1`}
               data-testid={`mockup-v2-tier-${t.id}`}
             >
-              <TierSigil offset={t.sigilOffset} />
+              <TierSigil tier={t.id} />
               <div className="text-center">
                 <div className="chr-eyebrow mb-1.5">{t.name}</div>
                 <h3 className={`chr-display-tight text-2xl ${t.badgeClass} mb-3`}>
