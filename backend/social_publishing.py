@@ -249,6 +249,62 @@ def _extract_id(resp: Any) -> Optional[str]:
     return None
 
 
+def _extract_meta_error(resp: Any) -> Optional[str]:
+    """Pull a human-readable Meta Graph API error message out of a
+    Composio response that reported success but didn't contain the
+    expected resource id.
+
+    Meta returns 200 with an embedded ``{"error": {...}}`` body for a
+    surprising number of failure modes — unreachable media URL, IG
+    Business Account not eligible, aspect ratio rejected, caption too
+    long, etc. Composio sees the 200 and reports ``success=True``; the
+    user is left staring at our generic "No container ID returned"
+    message with no way to fix it. This helper surfaces Meta's actual
+    reason so the failure self-diagnoses.
+    """
+    if not isinstance(resp, dict):
+        return None
+    # Walk a few common shapes for {"error": {"message": "..."}}
+    for shape in (resp.get("data"), resp.get("response"), resp):
+        if not isinstance(shape, dict):
+            continue
+        err = shape.get("error")
+        if isinstance(err, dict):
+            msg = err.get("message") or err.get("error_user_msg") or err.get("error_user_title")
+            if isinstance(msg, str) and msg.strip():
+                return msg.strip()
+        # Some responses put the message at the top level.
+        for k in ("error_message", "message"):
+            v = shape.get(k)
+            if isinstance(v, str) and v.strip() and v.strip().lower() not in ("ok", "success"):
+                return v.strip()
+    return None
+
+
+async def _media_url_is_reachable(url: Optional[str]) -> tuple[bool, Optional[int]]:
+    """Best-effort pre-flight HEAD on a media URL before handing it to a
+    third-party publisher. Returns ``(reachable, status_code)``.
+
+    Why bother: Meta / TikTok will fetch the URL server-side and silently
+    fail with a generic error if our public URL 404s (e.g. the cover image
+    was lost in a pod redeploy before the GridFS-mirror fix). Catching that
+    here gives the user an actionable error ("Cover image isn't reachable —
+    tap Regenerate") instead of a cryptic platform message.
+    """
+    if not url:
+        return False, None
+    try:
+        import aiohttp
+        timeout = aiohttp.ClientTimeout(total=6, connect=3)
+        async with aiohttp.ClientSession(timeout=timeout) as session:
+            async with session.head(url, allow_redirects=True) as resp:
+                return (resp.status < 400), resp.status
+    except Exception as exc:
+        logger.warning("Pre-flight media reachability check failed for %s: %s", url, exc)
+        # Don't block on transient network errors — let the publisher try.
+        return True, None
+
+
 def _flatten_pages(resp: Any) -> List[Dict[str, Any]]:
     """Pull the list of {id,name,...} pages out of a Composio response."""
     if not isinstance(resp, dict):
@@ -506,6 +562,26 @@ async def _publish_instagram(db, org_id, user_id, post, conn) -> Dict[str, Any]:
             ),
         )
 
+    # Pre-flight: confirm Meta can actually fetch the media URL we're
+    # about to hand them. If our public URL 404s (most common cause:
+    # the cover image was lost in a pod redeploy before the GridFS-mirror
+    # fix landed), surface a specific, actionable error here instead of
+    # letting Meta come back with a generic "No container ID" 5 seconds
+    # later. We only block on HARD 404 / 410 — transient 5xx and timeouts
+    # fall through and let Meta retry / surface its own error.
+    media_url_for_check = video or img
+    reachable, status_code = await _media_url_is_reachable(media_url_for_check)
+    if not reachable and status_code in (404, 410):
+        return _result_payload(
+            False, tool="INSTAGRAM_POST_IG_USER_MEDIA",
+            error=(
+                f"The cover {'video' if video else 'image'} URL isn't reachable "
+                f"(HTTP {status_code}). Tap Regenerate on this post to produce a "
+                "fresh cover, then publish again. (This usually happens to drafts "
+                "whose images were generated before our GridFS mirror fix.)"
+            ),
+        )
+
     # ── Container creation ───────────────────────────────────────────
     if video:
         step1_args = {
@@ -529,9 +605,19 @@ async def _publish_instagram(db, org_id, user_id, post, conn) -> Dict[str, Any]:
                                response=step1.get("response"))
     container_id = _extract_id(step1.get("response") or {})
     if not container_id:
-        return _result_payload(False, tool="INSTAGRAM_POST_IG_USER_MEDIA",
-                               error="No container ID returned from Instagram",
-                               response=step1.get("response"))
+        # Meta usually embeds the real reason in the response body even
+        # when Composio reports success. Surface it so the user can act
+        # (regenerate cover / pick a different Page / shorten caption / etc).
+        meta_err = _extract_meta_error(step1.get("response") or {})
+        return _result_payload(
+            False, tool="INSTAGRAM_POST_IG_USER_MEDIA",
+            error=(
+                f"Instagram rejected the post: {meta_err}"
+                if meta_err
+                else "No container ID returned from Instagram (Meta gave no reason — try Regenerate on the cover, then publish again)."
+            ),
+            response=step1.get("response"),
+        )
 
     # ── Reels: wait for IG to finish transcoding before publishing ──
     if video:
