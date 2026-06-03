@@ -95,6 +95,29 @@ export default function OrgPage() {
   const [newTeamVisibility, setNewTeamVisibility] = useState("open");
   const [creating, setCreating] = useState(false);
   const [showInviteTools, setShowInviteTools] = useState(false);
+  // Ref to the invite panel so the TopBar "Invite" button can scroll
+  // it into view + flash a focus ring. Without this, clicking Invite
+  // from the bottom of a long org page toggled state silently because
+  // the panel lived hundreds of pixels above the viewport — looked
+  // like "nothing happens".
+  const inviteToolsRef = useRef(null);
+  const createInviteRef = useRef(null);
+  const openInviteTools = useCallback(() => {
+    setShowInviteTools(true);
+    // Auto-mint a first invite if none exist — same UX as the
+    // inline "Create invite" CTA, so the topbar action always
+    // produces a tangible result on first click.
+    if (Array.isArray(invites) && invites.length === 0) {
+      createInviteRef.current?.("member");
+    }
+    // Scroll on next paint so the panel is in the DOM. Use a small
+    // timeout instead of requestAnimationFrame because the panel may
+    // be mounted for the FIRST time on this click and React's render
+    // hasn't flushed yet on a single rAF.
+    setTimeout(() => {
+      inviteToolsRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+    }, 60);
+  }, [invites]);
   // Seat policy (soft enforcement) — fetched when the invite UI opens
   // and refreshed every time an invite is created. Drives the in-product
   // banner that nudges over-cap admins toward upgrading or buying seats.
@@ -347,6 +370,12 @@ export default function OrgPage() {
       toast.error(err?.response?.data?.detail || "Failed");
     }
   };
+  // Mirror `createInvite` into a ref so `openInviteTools` (declared
+  // earlier — React hook ordering forces it to live above this) can
+  // invoke the latest closure without a temporal-dead-zone error.
+  useEffect(() => {
+    createInviteRef.current = createInvite;
+  });
 
   const copy = (text) => {
     navigator.clipboard.writeText(text).then(() => toast.success("Copied"));
@@ -422,7 +451,7 @@ export default function OrgPage() {
         right={
           canInvite && (
             <button
-              onClick={() => setShowInviteTools((v) => !v)}
+              onClick={openInviteTools}
               className="sp-btn sp-btn-ghost text-xs"
               data-testid="toggle-invite-tools"
             >
@@ -850,7 +879,7 @@ export default function OrgPage() {
         )}
 
         {showInviteTools && canInvite && (
-          <div className="sp-glass-strong rounded-2xl p-6 mb-10" data-testid="invite-tools">
+          <div ref={inviteToolsRef} className="sp-glass-strong rounded-2xl p-6 mb-10" data-testid="invite-tools">
             {seatStatus && seatStatus.warning && (
               <SeatWarningBanner status={seatStatus} />
             )}
