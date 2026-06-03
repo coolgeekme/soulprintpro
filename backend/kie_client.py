@@ -99,37 +99,42 @@ async def wait_for_video(task_id: str, *, total_timeout: int = DEFAULT_TOTAL_TIM
     """Poll the Veo task until completion. Returns video URL or None on
     failure / timeout. Caller should treat None as a soft failure.
 
-    Like the generic marketplace polling loop, we honour BOTH status
-    conventions kie.ai serves:
-      • Newer string field: ``data.status`` = SUCCESS / *_FAILED / etc.
-      • Older numeric flag: ``data.successFlag`` = 1 success / 2,3 failed
-    Kie.ai migrated Veo to the string convention without bumping the
-    URL path, so prior to this fix the loop never saw a "done" signal
-    and timed out after 5 minutes → user got "Video generation failed
-    or timed out".
+    Per the official Veo3.1 docs (Jun 2026):
+      • ``data.successFlag`` is the canonical signal: 0=generating,
+        1=success, 2=failed (before completion), 3=generation_failed
+        (upstream provider failed).
+      • The result URL lives at ``data.response.resultUrls[0]``.
+    The string ``data.status`` is also honoured as a fallback in case
+    kie.ai migrates Veo to the Suno-style status convention later.
     """
     if not task_id:
         return None
     elapsed = 0.0
+    data: dict = {}
     while elapsed < total_timeout:
         data = await get_video_status(task_id)
-        # Newer string status — canonical when present.
-        status = (data.get("status") or "").upper() if isinstance(data.get("status"), str) else ""
+        # Newer string status — defensive fallback only.
+        raw_status = data.get("status")
+        status = raw_status.upper() if isinstance(raw_status, str) else ""
         if status == "SUCCESS":
             return _extract_video_url(data)
-        if "FAIL" in status:
-            log.warning("Kie video failed (status=%s): %s", status, data)
+        if status and status not in ("PENDING", "GENERATING", "PROCESSING", ""):
+            log.warning("Kie video failed (status=%s, errorCode=%s, msg=%s)",
+                        status, data.get("errorCode"), data.get("errorMessage"))
             return None
-        # Older numeric flag fallback.
+        # Canonical numeric flag.
         flag = data.get("successFlag")
         if flag == 1:
             return _extract_video_url(data)
         if flag in (2, 3):
-            log.warning("Kie video failed (flag=%s): %s", flag, data)
+            log.warning("Kie video failed (flag=%s, errorCode=%s, msg=%s)",
+                        flag, data.get("errorCode"), data.get("errorMessage"))
             return None
         await asyncio.sleep(poll_interval)
         elapsed += poll_interval
-    log.warning("Kie video timed out after %ss for task %s", total_timeout, task_id)
+    log.warning("Kie video timed out after %ss (task_id=%s, last_status=%s, last_flag=%s)",
+                total_timeout, task_id,
+                data.get("status"), data.get("successFlag"))
     return None
 
 
@@ -404,15 +409,25 @@ async def wait_for_kie_task(
     Empty list on failure / timeout.
 
     Kie.ai uses two parallel status conventions depending on model
-    family:
-      • Newer Suno API: ``data.status`` is a string —
-          ``PENDING`` / ``TEXT_SUCCESS`` / ``FIRST_SUCCESS`` (one take
-          ready, second still rendering) / ``SUCCESS`` /
-          ``CREATE_TASK_FAILED`` / ``GENERATE_AUDIO_FAILED``.
-      • Older numeric flag (image / video families): ``successFlag``
-          where 1=success, 2/3=failed.
-    We honour both so neither path goes stale when kie.ai updates one
-    family but not the other.
+    family (confirmed Jun 2026 against the live docs at
+    https://docs.kie.ai):
+      • **Suno** (music): ``data.status`` is a string. Documented
+        values:
+            ``PENDING``           - waiting to be processed
+            ``TEXT_SUCCESS``      - lyrics done, audio still rendering
+            ``FIRST_SUCCESS``     - first track ready, second still cooking
+            ``SUCCESS``           - all tracks ready (return URLs)
+            ``CREATE_TASK_FAILED`` - task submission failed
+            ``GENERATE_AUDIO_FAILED`` - render failed
+            ``CALLBACK_EXCEPTION`` - kie.ai callback machinery exploded
+            ``SENSITIVE_WORD_ERROR`` - prompt rejected by content filter
+        We treat *every* status that isn't SUCCESS / PENDING /
+        TEXT_SUCCESS / FIRST_SUCCESS as a terminal failure — important
+        because the original substring-match-on-"FAIL" missed
+        CALLBACK_EXCEPTION and SENSITIVE_WORD_ERROR, spinning to
+        timeout.
+      • **Veo + numeric families** (image / video): ``data.successFlag``
+        is 0 (generating) / 1 (success) / 2 or 3 (failed).
     """
     info = kie_provider_info(model_key)
     if not info or not task_id:
@@ -420,40 +435,50 @@ async def wait_for_kie_task(
     if total_timeout is None:
         total_timeout = KIE_TASK_TIMEOUTS.get(info["type"], 300)
     is_music = info.get("type") == "music"
+    SUNO_TERMINAL_OK = {"SUCCESS"}
+    SUNO_IN_PROGRESS = {"PENDING", "TEXT_SUCCESS", "FIRST_SUCCESS", ""}
     elapsed = 0.0
     while elapsed < total_timeout:
         data = await get_kie_task_status(model_key, task_id)
-        # Newer string status (Suno). The string is canonical when
-        # present — we don't second-guess it.
-        status = (data.get("status") or "").upper() if isinstance(data.get("status"), str) else ""
-        if status == "SUCCESS":
+        # Newer string status (canonical for Suno).
+        raw_status = data.get("status")
+        status = raw_status.upper() if isinstance(raw_status, str) else ""
+        if status in SUNO_TERMINAL_OK:
             return _extract_kie_urls(data)
-        if "FAIL" in status:
-            log.warning("Kie %s task failed (status=%s): %s",
-                        info["family"], status, data)
+        if status and status not in SUNO_IN_PROGRESS:
+            # Any non-SUCCESS / non-in-progress string is a terminal
+            # failure — covers FAILED, CALLBACK_EXCEPTION,
+            # SENSITIVE_WORD_ERROR, plus any future failure codes
+            # kie.ai adds without an SDK update.
+            log.warning("Kie %s task failed (status=%s, errorCode=%s, msg=%s)",
+                        info["family"], status,
+                        data.get("errorCode"), data.get("errorMessage"))
             return []
-        # Older numeric flag (image / video families).
+        # Older numeric flag (Veo / image families).
         flag = data.get("successFlag")
         if flag == 1:
             return _extract_kie_urls(data)
         if flag in (2, 3):
-            log.warning("Kie %s task failed (flag=%s): %s",
-                        info["family"], flag, data)
+            log.warning("Kie %s task failed (flag=%s, errorCode=%s, msg=%s)",
+                        info["family"], flag,
+                        data.get("errorCode"), data.get("errorMessage"))
             return []
-        # Fallback: NEITHER status nor flag is present (some kie
-        # families never expose either). For music, only accept URLs
-        # when ALL clips have the final `audioUrl` — never trust
-        # `streamAudioUrl` alone, that's the chunked-streaming
-        # endpoint and yields '0:00 / 0:00' in HTML5 audio. For
-        # image / video, URLs are always final when they appear.
+        # Fallback: NEITHER status string NOR numeric flag is present.
+        # For music, only accept URLs when ALL clips have the final
+        # `audioUrl` (never trust `streamAudioUrl` alone — that's the
+        # chunked-streaming endpoint and yields '0:00 / 0:00' in HTML5
+        # audio). For image / video, URLs are always final when they
+        # appear.
         if status == "" and flag is None:
             urls = _extract_kie_urls(data, require_complete=is_music)
             if urls:
                 return urls
         await asyncio.sleep(poll_interval)
         elapsed += poll_interval
-    log.warning("Kie %s task timed out after %ss (task_id=%s)",
-                info["family"], total_timeout, task_id)
+    log.warning("Kie %s task timed out after %ss (task_id=%s, last_status=%s, last_flag=%s)",
+                info["family"], total_timeout, task_id,
+                data.get("status") if 'data' in locals() else None,
+                data.get("successFlag") if 'data' in locals() else None)
     return []
 
 

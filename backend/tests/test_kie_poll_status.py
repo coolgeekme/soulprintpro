@@ -68,6 +68,35 @@ async def test_status_failed_aborts_with_empty() -> None:
 
 
 @pytest.mark.asyncio
+async def test_status_sensitive_word_error_aborts() -> None:
+    """SENSITIVE_WORD_ERROR doesn't contain 'FAIL' but IS a terminal
+    failure. Original code missed this and spun to timeout.
+    Documented status per https://docs.kie.ai/suno-api/get-music-details.
+    """
+    fail = {"status": "SENSITIVE_WORD_ERROR", "response": {}}
+    with patch.object(kie_client, "kie_provider_info", return_value=_suno_info()), \
+         patch.object(kie_client, "get_kie_task_status",
+                       new=AsyncMock(return_value=fail)):
+        urls = await kie_client.wait_for_kie_task("suno", "tid-2b",
+                                                   total_timeout=5,
+                                                   poll_interval=0.01)
+    assert urls == []
+
+
+@pytest.mark.asyncio
+async def test_status_callback_exception_aborts() -> None:
+    """CALLBACK_EXCEPTION — same issue as SENSITIVE_WORD_ERROR."""
+    fail = {"status": "CALLBACK_EXCEPTION", "response": {}}
+    with patch.object(kie_client, "kie_provider_info", return_value=_suno_info()), \
+         patch.object(kie_client, "get_kie_task_status",
+                       new=AsyncMock(return_value=fail)):
+        urls = await kie_client.wait_for_kie_task("suno", "tid-2c",
+                                                   total_timeout=5,
+                                                   poll_interval=0.01)
+    assert urls == []
+
+
+@pytest.mark.asyncio
 async def test_status_intermediate_keeps_polling_until_success() -> None:
     """FIRST_SUCCESS (one take ready, second still rendering) must
     NOT cause an early exit — we want both takes, not one."""
