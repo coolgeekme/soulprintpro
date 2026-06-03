@@ -311,7 +311,7 @@ async def get_kie_task_status(model_key: str, task_id: str) -> dict:
         return {}
 
 
-def _extract_kie_urls(data: dict) -> list[str]:
+def _extract_kie_urls(data: dict, *, require_complete: bool = False) -> list[str]:
     """Pull all usable result URLs from a kie.ai task payload. Image
     tasks may return multiple variants; we keep them all so the user can
     pick. Falls back to single-URL fields if `resultUrls` is missing.
@@ -321,6 +321,14 @@ def _extract_kie_urls(data: dict) -> list[str]:
       • Flux Kontext:       ``response.resultImageUrl = url`` (single)
       • Other image models: typically ``response.imageUrl`` or ``response.url``
     We probe all known shapes so callers never have to know which.
+
+    `require_complete=True` (set by the poll-loop early-exit for Suno):
+    refuses to return a clip's streaming URL as a final result. Suno
+    populates `streamAudioUrl` while the track is still being rendered
+    — that endpoint serves chunked audio with no Content-Length, so
+    HTML5 `<audio>` displays "0:00 / 0:00" and the user thinks the
+    track failed. The real, playable `audioUrl` lands a few seconds
+    later. Wait for it.
     """
     if not data:
         return []
@@ -337,13 +345,25 @@ def _extract_kie_urls(data: dict) -> list[str]:
         out = []
         for clip in suno_data:
             if isinstance(clip, dict):
-                u = (
-                    clip.get("audioUrl")
-                    or clip.get("streamAudioUrl")
-                    or clip.get("sourceAudioUrl")
-                )
-                if isinstance(u, str) and u:
-                    out.append(u)
+                # Prefer the FINAL `audioUrl` (a real .mp3 with
+                # Content-Length headers). Fall back to streamAudioUrl
+                # / sourceAudioUrl only when `require_complete=False`
+                # (e.g. final result-rendering, not poll-loop probing).
+                final_url = clip.get("audioUrl")
+                if isinstance(final_url, str) and final_url:
+                    out.append(final_url)
+                elif not require_complete:
+                    fallback = (
+                        clip.get("streamAudioUrl")
+                        or clip.get("sourceAudioUrl")
+                    )
+                    if isinstance(fallback, str) and fallback:
+                        out.append(fallback)
+        # If `require_complete=True` and ANY clip is still missing the
+        # final URL, return [] so the poll loop keeps waiting instead
+        # of returning a partial result.
+        if require_complete and len(out) < len(suno_data):
+            return []
         if out:
             return out
     # Single-URL forms used by various kie.ai providers
@@ -370,17 +390,26 @@ async def wait_for_kie_task(
         return []
     if total_timeout is None:
         total_timeout = KIE_TASK_TIMEOUTS.get(info["type"], 300)
+    # Music (Suno) populates streaming URLs mid-render — we must wait
+    # for the final `audioUrl` per clip before declaring success, or
+    # the user sees a "0:00 / 0:00" player. For image/video kie families
+    # the moment URLs appear they're playable, so we keep the original
+    # short-circuit there.
+    require_complete = info.get("type") == "music"
     elapsed = 0.0
     while elapsed < total_timeout:
         data = await get_kie_task_status(model_key, task_id)
         flag = data.get("successFlag")
-        # Some kie families (Suno) populate the result payload before
-        # setting `successFlag`, while others don't expose the flag at
-        # all. Treat "URLs are ready" as the universal success marker
-        # alongside the explicit flag, so we don't poll forever after
-        # the audio is already playable.
-        if flag == 1 or (flag is None and _extract_kie_urls(data)):
-            return _extract_kie_urls(data)
+        # `successFlag == 1` is the universal "done" signal. As a
+        # fallback for kie families that don't expose the flag, treat
+        # "URLs are ready" as done — but for music, demand the final
+        # audioUrl (see require_complete above).
+        if flag == 1:
+            return _extract_kie_urls(data, require_complete=False)
+        if flag is None:
+            urls = _extract_kie_urls(data, require_complete=require_complete)
+            if urls:
+                return urls
         if flag in (2, 3):
             log.warning("Kie %s task failed: %s", info["family"], data)
             return []
