@@ -384,35 +384,55 @@ async def wait_for_kie_task(
     poll_interval: float = POLL_INTERVAL,
 ) -> list[str]:
     """Poll the kie.ai task until done, returning a list of result URLs.
-    Empty list on failure / timeout."""
+    Empty list on failure / timeout.
+
+    Kie.ai uses two parallel status conventions depending on model
+    family:
+      • Newer Suno API: ``data.status`` is a string —
+          ``PENDING`` / ``TEXT_SUCCESS`` / ``FIRST_SUCCESS`` (one take
+          ready, second still rendering) / ``SUCCESS`` /
+          ``CREATE_TASK_FAILED`` / ``GENERATE_AUDIO_FAILED``.
+      • Older numeric flag (image / video families): ``successFlag``
+          where 1=success, 2/3=failed.
+    We honour both so neither path goes stale when kie.ai updates one
+    family but not the other.
+    """
     info = kie_provider_info(model_key)
     if not info or not task_id:
         return []
     if total_timeout is None:
         total_timeout = KIE_TASK_TIMEOUTS.get(info["type"], 300)
-    # Music (Suno) populates streaming URLs mid-render — we must wait
-    # for the final `audioUrl` per clip before declaring success, or
-    # the user sees a "0:00 / 0:00" player. For image/video kie families
-    # the moment URLs appear they're playable, so we keep the original
-    # short-circuit there.
-    require_complete = info.get("type") == "music"
+    is_music = info.get("type") == "music"
     elapsed = 0.0
     while elapsed < total_timeout:
         data = await get_kie_task_status(model_key, task_id)
+        # Newer string status (Suno). The string is canonical when
+        # present — we don't second-guess it.
+        status = (data.get("status") or "").upper() if isinstance(data.get("status"), str) else ""
+        if status == "SUCCESS":
+            return _extract_kie_urls(data)
+        if "FAIL" in status:
+            log.warning("Kie %s task failed (status=%s): %s",
+                        info["family"], status, data)
+            return []
+        # Older numeric flag (image / video families).
         flag = data.get("successFlag")
-        # `successFlag == 1` is the universal "done" signal. As a
-        # fallback for kie families that don't expose the flag, treat
-        # "URLs are ready" as done — but for music, demand the final
-        # audioUrl (see require_complete above).
         if flag == 1:
-            return _extract_kie_urls(data, require_complete=False)
-        if flag is None:
-            urls = _extract_kie_urls(data, require_complete=require_complete)
+            return _extract_kie_urls(data)
+        if flag in (2, 3):
+            log.warning("Kie %s task failed (flag=%s): %s",
+                        info["family"], flag, data)
+            return []
+        # Fallback: NEITHER status nor flag is present (some kie
+        # families never expose either). For music, only accept URLs
+        # when ALL clips have the final `audioUrl` — never trust
+        # `streamAudioUrl` alone, that's the chunked-streaming
+        # endpoint and yields '0:00 / 0:00' in HTML5 audio. For
+        # image / video, URLs are always final when they appear.
+        if status == "" and flag is None:
+            urls = _extract_kie_urls(data, require_complete=is_music)
             if urls:
                 return urls
-        if flag in (2, 3):
-            log.warning("Kie %s task failed: %s", info["family"], data)
-            return []
         await asyncio.sleep(poll_interval)
         elapsed += poll_interval
     log.warning("Kie %s task timed out after %ss (task_id=%s)",
