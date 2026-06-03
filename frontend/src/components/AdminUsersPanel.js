@@ -63,6 +63,10 @@ export default function AdminUsersPanel({ currentUserId }) {
   const [searchInput, setSearchInput] = useState("");
 
   const [showCreate, setShowCreate] = useState(false);
+  // Direct-grant-days modal — populated with the row the admin clicked
+  // "Gift days" on. Reuses the same audit-logged endpoint that mints
+  // an `admin_access_grants` row for traceability.
+  const [granting, setGranting] = useState(null);
   const [editing, setEditing] = useState(null);     // user object being edited or null
   const [deletingId, setDeletingId] = useState(""); // user.id mid-delete
 
@@ -162,17 +166,18 @@ export default function AdminUsersPanel({ currentUserId }) {
                 <th className="px-3 py-2">Name</th>
                 <th className="px-3 py-2 text-right">Orgs</th>
                 <th className="px-3 py-2">Provider</th>
+                <th className="px-3 py-2">Access</th>
                 <th className="px-3 py-2">Joined</th>
                 <th className="px-3 py-2 text-right">Actions</th>
               </tr>
             </thead>
             <tbody>
               {loading && rows.length === 0 ? (
-                <tr><td colSpan={6} className="text-center py-10 sp-subtle">
+                <tr><td colSpan={7} className="text-center py-10 sp-subtle">
                   <Loader2 className="w-4 h-4 animate-spin inline mr-2" />Loading users…
                 </td></tr>
               ) : rows.length === 0 ? (
-                <tr><td colSpan={6} className="text-center py-10 sp-subtle">
+                <tr><td colSpan={7} className="text-center py-10 sp-subtle">
                   <UsersIcon className="w-4 h-4 inline mr-2" />No users match this search.
                 </td></tr>
               ) : rows.map((u) => (
@@ -195,6 +200,31 @@ export default function AdminUsersPanel({ currentUserId }) {
                     {u.firebase_provider
                       ? u.firebase_provider.replace(".com", "")
                       : (u.firebase_uid ? "firebase" : "password")}
+                  </td>
+                  {/* Access window column — shows current expiry status
+                      so admins can spot trial users at a glance and
+                      decide if a gift extension is warranted. */}
+                  <td className="px-3 py-2 text-xs whitespace-nowrap" data-testid={`admin-user-access-${u.id}`}>
+                    {(() => {
+                      if (u.plan_status === "active") {
+                        return <span className="text-emerald-400">Paid · {u.plan_id || "—"}</span>;
+                      }
+                      if (!u.access_expires_at) {
+                        return <span className="sp-subtle">Perpetual</span>;
+                      }
+                      const expiry = new Date(u.access_expires_at);
+                      const now = new Date();
+                      const daysLeft = Math.floor((expiry - now) / 86400000);
+                      let cls = "text-emerald-400";
+                      if (daysLeft < 0) cls = "text-red-400";
+                      else if (daysLeft <= 3) cls = "text-amber-400";
+                      else if (daysLeft <= 14) cls = "text-sky-400";
+                      return (
+                        <span className={cls} title={formatLocalDateTime(u.access_expires_at)}>
+                          {daysLeft < 0 ? `Expired ${-daysLeft}d ago` : `${daysLeft}d left`}
+                        </span>
+                      );
+                    })()}
                   </td>
                   <td
                     className="px-3 py-2 text-xs sp-subtle whitespace-nowrap"
@@ -220,6 +250,15 @@ export default function AdminUsersPanel({ currentUserId }) {
                         data-testid={`admin-user-edit-${u.id}`}
                       >
                         <Pencil className="w-3 h-3" /> Edit
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setGranting(u)}
+                        className="sp-btn sp-btn-ghost text-[11px]"
+                        title="Gift trial-window days to this user"
+                        data-testid={`admin-user-grant-${u.id}`}
+                      >
+                        <KeyRound className="w-3 h-3" /> Gift days
                       </button>
                       <button
                         type="button"
@@ -292,6 +331,14 @@ export default function AdminUsersPanel({ currentUserId }) {
           isSelf={editing.id === currentUserId}
           onClose={() => setEditing(null)}
           onSaved={() => { setEditing(null); load(); }}
+        />
+      )}
+
+      {granting && (
+        <GrantAccessModal
+          user={granting}
+          onClose={() => setGranting(null)}
+          onSaved={() => { setGranting(null); load(); }}
         />
       )}
     </div>
@@ -450,3 +497,169 @@ function UserFormModal({ mode, user, isSelf = false, onClose, onSaved }) {
     </div>
   );
 }
+
+/**
+ * Direct-grant-days modal. Admins type a number of days (or pick a
+ * preset) and click "Gift". Backend stacks onto the user's existing
+ * window — never reduces, never clamps a perpetual user.
+ *
+ * The "Make perpetual" toggle drops the expiry entirely — useful for
+ * promoting a tester to "founding member" or compensating a high-value
+ * customer-service case.
+ *
+ * Every grant writes an `admin_access_grants` audit row server-side so
+ * support can reconstruct "why does this user have X days".
+ */
+function GrantAccessModal({ user, onClose, onSaved }) {
+  const [preset, setPreset] = useState("30");
+  const [custom, setCustom] = useState("");
+  const [makePerpetual, setMakePerpetual] = useState(false);
+  const [note, setNote] = useState("");
+  const [saving, setSaving] = useState(false);
+
+  // Current state snapshot for the inline summary line.
+  const expiry = user.access_expires_at ? new Date(user.access_expires_at) : null;
+  const daysLeft = expiry
+    ? Math.floor((expiry - new Date()) / 86400000)
+    : null;
+
+  const submit = async (e) => {
+    e?.preventDefault();
+    setSaving(true);
+    try {
+      const body = { make_perpetual: makePerpetual };
+      if (!makePerpetual) {
+        let days = 0;
+        if (preset === "custom") days = Number(custom) || 0;
+        else days = Number(preset) || 0;
+        if (days < 1 || days > 3650) {
+          toast.error("Days must be 1–3650.");
+          setSaving(false);
+          return;
+        }
+        body.days = days;
+      }
+      if (note.trim()) body.note = note.trim();
+      const { data } = await api.post(`/admin/users/${user.id}/grant-access`, body);
+      if (data.make_perpetual) {
+        toast.success(`${user.email} now has perpetual access.`);
+      } else {
+        const newExp = data.new_expires_at
+          ? formatLocalDateTime(data.new_expires_at)
+          : null;
+        toast.success(
+          newExp
+            ? `+${data.days_added} days — ${user.email} now expires ${newExp}.`
+            : `+${data.days_added} days granted to ${user.email}.`,
+        );
+      }
+      onSaved?.();
+    } catch (err) {
+      toast.error(errorMessage(err) || "Couldn't grant access.");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/60 backdrop-blur-sm p-4"
+         data-testid="admin-grant-access-modal"
+         onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}>
+      <form onSubmit={submit} className="w-full max-w-md sp-glass-strong rounded-2xl p-6 shadow-2xl">
+        <div className="flex items-center gap-3 mb-4">
+          <div className="w-9 h-9 rounded-lg bg-orange-500/20 border border-orange-400/40 flex items-center justify-center">
+            <KeyRound className="w-4 h-4 text-orange-300" />
+          </div>
+          <div className="min-w-0">
+            <h3 className="text-lg font-semibold leading-tight">Gift access</h3>
+            <p className="text-xs sp-subtle leading-tight truncate" title={user.email}>
+              {user.email}
+            </p>
+          </div>
+          <button type="button" onClick={onClose}
+                  className="ml-auto sp-btn sp-btn-ghost p-1.5"
+                  aria-label="Close" disabled={saving}>
+            <XIcon className="w-4 h-4" />
+          </button>
+        </div>
+
+        <div className="text-xs sp-subtle mb-4 flex items-center gap-2">
+          <Clock className="w-3 h-3" />
+          {expiry
+            ? <span>Currently: <span className="text-white">{daysLeft >= 0 ? `${daysLeft} days left` : `expired ${-daysLeft}d ago`}</span> (expires {formatLocalDateTime(user.access_expires_at)})</span>
+            : <span>Currently: <span className="text-white">Perpetual / no expiry</span></span>}
+        </div>
+
+        <div className={makePerpetual ? "opacity-40 pointer-events-none" : ""}>
+          <label className="text-xs sp-subtle uppercase tracking-widest">Add days</label>
+          <select
+            value={preset}
+            onChange={(e) => setPreset(e.target.value)}
+            className="w-full mt-1 bg-white/[0.03] border border-white/10 rounded-xl px-3 py-2 text-sm text-white"
+            data-testid="admin-grant-preset"
+          >
+            <option value="7">7 days</option>
+            <option value="14">14 days</option>
+            <option value="30">30 days</option>
+            <option value="60">60 days</option>
+            <option value="90">90 days</option>
+            <option value="180">180 days</option>
+            <option value="365">1 year</option>
+            <option value="custom">Custom…</option>
+          </select>
+          {preset === "custom" && (
+            <input
+              type="number"
+              min={1}
+              max={3650}
+              value={custom}
+              onChange={(e) => setCustom(e.target.value)}
+              placeholder="Days (1–3650)"
+              className="w-full mt-2 bg-white/[0.03] border border-white/10 rounded-xl px-3 py-2 text-sm text-white"
+              data-testid="admin-grant-custom"
+            />
+          )}
+        </div>
+
+        <label className="mt-4 flex items-center gap-2 text-xs">
+          <input
+            type="checkbox"
+            checked={makePerpetual}
+            onChange={(e) => setMakePerpetual(e.target.checked)}
+            data-testid="admin-grant-perpetual"
+          />
+          <span className="text-white">Make perpetual</span>
+          <span className="sp-subtle">— drop the expiry entirely (founding-member / VIP grant).</span>
+        </label>
+
+        <label className="block mt-4 text-xs sp-subtle uppercase tracking-widest">Note (optional)</label>
+        <input
+          value={note}
+          onChange={(e) => setNote(e.target.value)}
+          placeholder="e.g. compensated for IG publish outage"
+          maxLength={240}
+          className="w-full mt-1 bg-white/[0.03] border border-white/10 rounded-xl px-3 py-2 text-sm text-white"
+          data-testid="admin-grant-note"
+        />
+        <div className="text-[10px] sp-subtle mt-1">
+          Recorded in <code>admin_access_grants</code> for audit. The user is NOT notified — send your own email if you want them to know.
+        </div>
+
+        <div className="flex items-center justify-end gap-2 mt-5">
+          <button type="button" onClick={onClose} disabled={saving}
+                  className="sp-btn sp-btn-ghost text-xs disabled:opacity-50"
+                  data-testid="admin-grant-cancel">
+            Cancel
+          </button>
+          <button type="submit" disabled={saving}
+                  className="sp-btn sp-btn-primary text-xs disabled:opacity-50"
+                  data-testid="admin-grant-submit">
+            {saving ? <Loader2 className="w-3 h-3 animate-spin" /> : <Save className="w-3.5 h-3.5" />}
+            {saving ? "Granting…" : (makePerpetual ? "Make perpetual" : "Gift days")}
+          </button>
+        </div>
+      </form>
+    </div>
+  );
+}
+

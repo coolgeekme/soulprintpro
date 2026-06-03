@@ -21,7 +21,7 @@ from typing import Optional
 import bcrypt
 from bson import ObjectId
 from fastapi import APIRouter, Depends, HTTPException, Query
-from pydantic import BaseModel, EmailStr
+from pydantic import BaseModel, EmailStr, Field
 
 
 def _iso(d):
@@ -515,6 +515,13 @@ def make_admin_router(*, db, get_current_user) -> APIRouter:
                 "created_at": _iso(u.get("created_at")),
                 "last_active_at": _iso((last_msg or {}).get("timestamp")),
                 "org_count": org_count,
+                # Time-bounded access (Jun 2026) — surfaced so admins
+                # can see at-a-glance who's on trial and decide if a
+                # gift extension is warranted.
+                "access_granted_at": _iso(u.get("access_granted_at")),
+                "access_expires_at": _iso(u.get("access_expires_at")),
+                "plan_status": u.get("plan_status") or "",
+                "plan_id": u.get("plan_id") or "",
             })
         return {"page": page, "page_size": page_size, "total": total, "rows": rows}
 
@@ -622,6 +629,105 @@ def make_admin_router(*, db, get_current_user) -> APIRouter:
         await db.org_members.delete_many({"user_id": str(target["_id"])})
         await db.users.delete_one({"_id": target["_id"]})
         return {"ok": True, "deleted_id": str(target["_id"])}
+
+    class GrantAccessBody(BaseModel):
+        """Admin-only direct grant of access-window days to a user.
+        Bypasses the usual access-code mint→share→redeem dance for
+        VIP saves, customer support gifts, beta-tester thank-yous.
+
+        `days = 0` is rejected (use the DELETE / disable endpoints to
+        cut access). To make a user perpetual, use `make_perpetual=true`.
+        Stacking semantics match the `/access-codes/redeem` endpoint:
+        `new_expires_at = max(current_expiry, now) + days`.
+        """
+        days: int = Field(0, ge=0, le=3650)
+        make_perpetual: bool = False
+        note: Optional[str] = Field(None, max_length=240)
+
+    @r.post("/users/{user_id}/grant-access")
+    async def grant_access(
+        user_id: str,
+        body: GrantAccessBody,
+        admin: dict = Depends(require_superadmin),
+    ):
+        """Direct-grant trial-window days OR flip the user perpetual.
+
+        Returns the new `access_expires_at` (or null if perpetual)
+        so the admin UI can refresh in place. Also writes an audit
+        log entry to `admin_access_grants` for traceability — when
+        a customer asks "why do I have 90 days?", we can answer.
+        """
+        try:
+            target = await db.users.find_one({"_id": ObjectId(user_id)})
+        except Exception:
+            raise HTTPException(400, "Invalid user id")
+        if not target:
+            raise HTTPException(404, "User not found")
+        if not body.make_perpetual and body.days <= 0:
+            raise HTTPException(
+                400,
+                "Either provide `days > 0` or set `make_perpetual = true`.",
+            )
+        now = datetime.now(timezone.utc)
+        update: dict = {"access_granted_at": target.get("access_granted_at") or now}
+        unset: dict = {}
+        if body.make_perpetual:
+            # Drop the expiry entirely → perpetual access. We also clear
+            # any prior `access_extended_at` so the trial-cap counter
+            # window correctly recognises the change.
+            unset["access_expires_at"] = ""
+            unset["access_extended_at"] = ""
+        else:
+            # Stack from `max(current_expiry, now)` — same math as
+            # `/access-codes/redeem` (option 1a from the product spec).
+            current_expiry = target.get("access_expires_at")
+            if isinstance(current_expiry, datetime):
+                if current_expiry.tzinfo is None:
+                    current_expiry = current_expiry.replace(tzinfo=timezone.utc)
+                base = max(current_expiry, now)
+            else:
+                # User was perpetual or never granted — start the
+                # window from `now`. (Going from perpetual → bounded
+                # is unusual but supported: maybe an admin wants to
+                # convert a grandfathered tester to a paying trial.)
+                base = now
+            update["access_expires_at"] = base + timedelta(days=body.days)
+            update["access_extended_at"] = now
+
+        ops: dict = {"$set": update}
+        if unset:
+            ops["$unset"] = unset
+        await db.users.update_one({"_id": target["_id"]}, ops)
+
+        # Audit row — append-only, never mutated. Useful for support /
+        # billing reconciliation. Doesn't block on failure.
+        try:
+            await db.admin_access_grants.insert_one({
+                "user_id": str(target["_id"]),
+                "admin_id": admin.get("id") or "",
+                "admin_email": admin.get("email") or "",
+                "days": body.days,
+                "make_perpetual": bool(body.make_perpetual),
+                "note": (body.note or "").strip(),
+                "granted_at": now,
+                "previous_expiry": target.get("access_expires_at"),
+                "new_expiry": update.get("access_expires_at"),
+            })
+        except Exception:
+            pass
+
+        new_expiry = update.get("access_expires_at")
+        return {
+            "ok": True,
+            "user_id": str(target["_id"]),
+            "make_perpetual": bool(body.make_perpetual),
+            "days_added": 0 if body.make_perpetual else body.days,
+            "new_expires_at": (
+                new_expiry.isoformat()
+                if isinstance(new_expiry, datetime)
+                else None
+            ),
+        }
 
     # ── Recent missions ──────────────────────────────────────────────────
     @r.get("/missions")
