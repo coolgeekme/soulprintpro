@@ -97,18 +97,35 @@ def _extract_video_url(data: dict) -> Optional[str]:
 async def wait_for_video(task_id: str, *, total_timeout: int = DEFAULT_TOTAL_TIMEOUT,
                          poll_interval: float = POLL_INTERVAL) -> Optional[str]:
     """Poll the Veo task until completion. Returns video URL or None on
-    failure / timeout. Caller should treat None as a soft failure."""
+    failure / timeout. Caller should treat None as a soft failure.
+
+    Like the generic marketplace polling loop, we honour BOTH status
+    conventions kie.ai serves:
+      • Newer string field: ``data.status`` = SUCCESS / *_FAILED / etc.
+      • Older numeric flag: ``data.successFlag`` = 1 success / 2,3 failed
+    Kie.ai migrated Veo to the string convention without bumping the
+    URL path, so prior to this fix the loop never saw a "done" signal
+    and timed out after 5 minutes → user got "Video generation failed
+    or timed out".
+    """
     if not task_id:
         return None
     elapsed = 0.0
     while elapsed < total_timeout:
         data = await get_video_status(task_id)
-        # Status flags: successFlag 1 = success, 0 = pending, 2/3 = failed
+        # Newer string status — canonical when present.
+        status = (data.get("status") or "").upper() if isinstance(data.get("status"), str) else ""
+        if status == "SUCCESS":
+            return _extract_video_url(data)
+        if "FAIL" in status:
+            log.warning("Kie video failed (status=%s): %s", status, data)
+            return None
+        # Older numeric flag fallback.
         flag = data.get("successFlag")
         if flag == 1:
             return _extract_video_url(data)
         if flag in (2, 3):
-            log.warning("Kie video failed: %s", data)
+            log.warning("Kie video failed (flag=%s): %s", flag, data)
             return None
         await asyncio.sleep(poll_interval)
         elapsed += poll_interval
