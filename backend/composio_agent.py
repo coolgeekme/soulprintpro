@@ -107,6 +107,143 @@ async def is_agent_tools_enabled(db, org_id: str, agent_id: str) -> bool:
     return val is not False
 
 
+# Keyword → toolkit slug map for the "did the user just ask for a
+# toolkit that isn't connected?" diagnostic. We match conservatively
+# (substring on the user_prompt, case-insensitive) so a benign mention
+# of "email" or "calendar" surfaces actionable guidance instead of a
+# silent LlmChat fallback that incorrectly claims no access.
+_TOOLKIT_KEYWORDS: Dict[str, List[str]] = {
+    "gmail": ["gmail", "inbox", "email", "e-mail", "mailbox", "unread mail", "send a mail", "send mail"],
+    "googlecalendar": ["calendar", "schedule", "meeting", "agenda", "appointment"],
+    "googledocs": ["google doc", "docs file"],
+    "googledrive": ["google drive", "drive file"],
+    "googlesheets": ["spreadsheet", "google sheet"],
+    "slack": ["slack"],
+    "hubspot": ["hubspot", "crm contact"],
+    "salesforce": ["salesforce"],
+    "notion": ["notion"],
+    "linear": ["linear ticket", "linear issue"],
+    "github": ["github", "git pull request", "git pr ", " merge pr"],
+    "trello": ["trello"],
+    "jira": ["jira"],
+    "stripe": ["stripe"],
+    "shopify": ["shopify"],
+    "facebook": ["facebook post", "fb page", "facebook page"],
+    "instagram": ["instagram post", "ig post"],
+    "twitter": ["tweet ", "twitter post"],
+    "linkedin": ["linkedin post"],
+}
+
+
+def _likely_needed_toolkits(prompt: str) -> List[str]:
+    """Heuristic keyword match → which toolkits the user probably wants.
+    Conservative — we'd rather miss a hint than show the diagnostic for
+    every casual mention of 'email'.
+    """
+    if not prompt:
+        return []
+    p = f" {prompt.lower()} "
+    hits: List[str] = []
+    for slug, words in _TOOLKIT_KEYWORDS.items():
+        if any(w in p for w in words):
+            hits.append(slug)
+    return hits
+
+
+async def _diagnose_missing_tools(
+    db, org_id: str, user_id: str, user_prompt: str,
+) -> Optional[str]:
+    """Return a precise diagnostic when the user's message implies a
+    toolkit they don't have ACTIVELY connected in this org, but we can
+    see a stuck row here or an active row in another org.
+
+    Returns None when no helpful hint can be produced — in that case
+    the caller falls back to the regular LlmChat path, which will give
+    a generic "I can't access that" reply.
+    """
+    needed = _likely_needed_toolkits(user_prompt)
+    if not needed:
+        return None
+    # All rows for this user across every org. We separate (a) stuck-
+    # in-this-org rows from (b) ACTIVE-but-in-other-org rows so the
+    # remediation copy is precise.
+    user_rows = await db.composio_connections.find(
+        {"user_id": user_id, "toolkit": {"$in": needed}},
+        {"_id": 0, "toolkit": 1, "status": 1, "org_id": 1,
+         "nickname": 1, "account_label": 1, "composio_user_id": 1},
+    ).to_list(200)
+    if not user_rows:
+        return None
+    # Slot rows into buckets.
+    in_org_stuck: Dict[str, List[Dict[str, Any]]] = {}
+    other_org_active: Dict[str, List[Dict[str, Any]]] = {}
+    for r in user_rows:
+        slug = r.get("toolkit")
+        if not slug:
+            continue
+        status = r.get("status") or ""
+        if r.get("org_id") == org_id:
+            if status != "ACTIVE":
+                in_org_stuck.setdefault(slug, []).append(r)
+        else:
+            if status == "ACTIVE":
+                other_org_active.setdefault(slug, []).append(r)
+    if not in_org_stuck and not other_org_active:
+        return None
+    # Resolve org-name lookup for the cross-org bucket.
+    org_name_by_id: Dict[str, str] = {}
+    if other_org_active:
+        other_org_ids = {r.get("org_id") for slug_rows in other_org_active.values() for r in slug_rows if r.get("org_id")}
+        for oid in other_org_ids:
+            try:
+                org = await db.organizations.find_one(
+                    {"_id": ObjectId(oid)}, {"_id": 1, "name": 1},
+                )
+                if org:
+                    org_name_by_id[oid] = org.get("name") or "another workspace"
+            except Exception:
+                org_name_by_id[oid] = "another workspace"
+    # Compose human-readable message.
+    bits: List[str] = []
+    for slug, rows in in_org_stuck.items():
+        pretty = slug.capitalize()
+        statuses = sorted({r.get("status") or "PENDING" for r in rows})
+        bits.append(
+            f"I can see a **{pretty}** connection in this org but it's stuck at "
+            f"`{', '.join(statuses)}` — likely the OAuth popup closed before Composio "
+            f"finalised the grant. Open **Connections → {pretty}** in this org, click "
+            f"**Check** on the pending row (or **Disconnect → Connect** if it stays stuck)."
+        )
+    for slug, rows in other_org_active.items():
+        if slug in in_org_stuck:
+            continue  # already covered above
+        pretty = slug.capitalize()
+        other_names = sorted({org_name_by_id.get(r.get("org_id") or "", "another workspace") for r in rows})
+        labels: List[str] = []
+        for r in rows:
+            lab = r.get("nickname") or r.get("account_label")
+            if lab:
+                labels.append(str(lab))
+        label_hint = f" ({', '.join(sorted(set(labels)))})" if labels else ""
+        bits.append(
+            f"Your **{pretty}** account{label_hint} is connected to "
+            f"**{' & '.join(other_names)}**, not this org. Either switch to that "
+            f"workspace, or connect {pretty} here via **Connections → {pretty}**."
+        )
+    if not bits:
+        return None
+    intro = (
+        "Heads-up before I try anything: I checked the connections panel "
+        "and the toolkit you're asking about isn't actively wired into "
+        "this org right now.\n\n"
+    )
+    return intro + "\n\n".join(f"- {b}" for b in bits)
+
+
+# Import ObjectId at module load (used inside _diagnose_missing_tools).
+from bson import ObjectId  # noqa: E402
+
+
 async def _persist_tool_message(
     db,
     *,
@@ -198,6 +335,19 @@ async def run_with_tools(
         logger.warning("Composio tools fetch failed for agent loop: %s", exc)
         return None, []
     if not tools:
+        # No active tools — but if the user's message looks like it
+        # NEEDED a Composio toolkit (gmail/calendar/slack/hubspot/…)
+        # AND we can see a stuck-but-not-ACTIVE row in this org OR an
+        # ACTIVE row in a DIFFERENT org the user belongs to, return a
+        # precise diagnostic instead of falling back to LlmChat (which
+        # would lie about the connection state). Otherwise fall through.
+        try:
+            diag = await _diagnose_missing_tools(db, org_id, user_id, user_prompt)
+        except Exception as exc:
+            logger.warning("Composio diagnostic failed: %s", exc)
+            diag = None
+        if diag:
+            return diag, []
         return None, []
 
     # Tell the agent what accounts it has so it can name them in replies

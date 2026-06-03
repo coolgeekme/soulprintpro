@@ -775,6 +775,14 @@ async def get_tools_for_user(
     actively connected. If `toolkit_filter` is provided we narrow further.
 
     The returned list is ready to drop into `chat.completions.create(tools=...)`.
+
+    Side-effect (Feb 2026): if NO ACTIVE row is found but at least one
+    stale ``INITIATED`` row exists, we inline-refresh those rows (bounded
+    fan-out of 5) and re-query. Fixes the production bug where a Gmail
+    OAuth grant succeeded on Composio's side but our row was stuck at
+    INITIATED because the user never re-opened the Connections panel
+    after the popup closed — the in-chat Chief of Staff was reporting
+    "Gmail not connected" even though it really was.
     """
     if not is_available():
         return []
@@ -783,6 +791,44 @@ async def get_tools_for_user(
         {"composio_user_id": cu, "status": "ACTIVE"},
         {"_id": 0, "toolkit": 1},
     ).to_list(50)
+    if not active:
+        # Opportunistic refresh — same pattern as list_connections.
+        # Any INITIATED row older than _STALE_INITIATED_SECONDS gets
+        # one synchronous status pull before we give up. ACTIVE rows
+        # we already would've found above.
+        stale_rows = await db.composio_connections.find(
+            {
+                "composio_user_id": cu,
+                "status": {"$in": ["INITIATED", "INITIALIZING"]},
+            },
+            {"_id": 0, "connection_id": 1, "initiated_at": 1, "toolkit": 1},
+        ).to_list(20)
+        if stale_rows:
+            now = datetime.now(timezone.utc)
+            targets: List[str] = []
+            for r in stale_rows:
+                ini = _ensure_aware(r.get("initiated_at"))
+                if not isinstance(ini, datetime):
+                    # No timestamp → treat as definitely-stale (the row
+                    # has been around for at least one app boot, way
+                    # past the inline-refresh threshold).
+                    targets.append(r["connection_id"])
+                elif (now - ini).total_seconds() >= _STALE_INITIATED_SECONDS:
+                    targets.append(r["connection_id"])
+                if len(targets) >= 5:
+                    break
+            if targets:
+                async def _safe_refresh(cid: str):
+                    try:
+                        await refresh_connection_status(db, cid)
+                    except Exception as exc:
+                        logger.warning("inline refresh (agent path) failed for %s: %s", cid, exc)
+                await asyncio.gather(*[_safe_refresh(c) for c in targets])
+                # Re-query for ACTIVE rows; if any flipped we use them.
+                active = await db.composio_connections.find(
+                    {"composio_user_id": cu, "status": "ACTIVE"},
+                    {"_id": 0, "toolkit": 1},
+                ).to_list(50)
     if not active:
         return []
     connected_toolkits = list({r["toolkit"] for r in active})
