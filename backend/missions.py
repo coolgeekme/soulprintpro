@@ -75,6 +75,23 @@ _RESEARCH_GOAL_TERMS = (
 RESEARCH_MIN_DISTINCT_DOMAINS = 5
 
 
+def _public_origin() -> str:
+    """Resolve the externally-reachable origin for /api/files URLs.
+
+    Kie.ai's Kling Image-to-Video needs a publicly-fetchable image
+    URL — passing a `/api/files/...` path on its own would fail. We
+    prefer the explicit env vars used elsewhere in the app; trailing
+    slashes are stripped so callers can safely concatenate paths.
+    """
+    raw = (
+        os.environ.get("PUBLIC_BACKEND_URL")
+        or os.environ.get("REACT_APP_BACKEND_URL")
+        or os.environ.get("FRONTEND_BASE_URL")
+        or ""
+    )
+    return raw.rstrip("/")
+
+
 def _is_research_goal(goal: str) -> bool:
     """Heuristic: does this mission goal demand broad multi-source research?
     Liberal on purpose — false positives just trigger a soft enforcement
@@ -1811,6 +1828,144 @@ def build_tools(
         return {"ok": True, "produced": len(artifacts), "artifacts": artifacts,
                 "summary": f"Composed {len(artifacts)} track(s) with Suno."}
 
+    async def generate_music_video(ctx, args):
+        """Stitch a generated/uploaded song + a base image into a music
+        video. Uses Kling 2.1 Master Image-to-Video + ffmpeg.
+
+        Args (all optional; we resolve the best source available):
+          image_url:      external URL to the base image (jpg/png ≤10 MB)
+          image_attachment_id / image_document_id: pick from mission
+              attachments or prior mission artifacts
+          song_url:       external URL to an audio file (mp3/wav/etc.)
+          song_document_id: pick a prior mission artifact (typically from
+              `generate_music`)
+          song_prompt:    if provided AND no song_* source is set, we
+              first compose a Suno track with this prompt and use it
+          vibe_prompt:    cinematic direction for Kling (default: gentle
+              motion fits most songs)
+          max_seconds:    cap output length (default = full song)
+
+        Returns a mission artifact pointing to the saved mp4. Saves to
+        the Documents library so the user can download / repost.
+        """
+        from music_video import (
+            build_music_video_bytes,
+            MusicVideoError,
+            ffmpeg_available,
+            MAX_OUTPUT_SECONDS,
+        )
+        if not ffmpeg_available():
+            return {"error": "Server is missing ffmpeg — music_video unavailable."}
+
+        # ── Resolve the base image to a publicly fetchable URL ─────
+        image_url = (args.get("image_url") or "").strip()
+        att_id = (args.get("image_attachment_id") or "").strip()
+        doc_id = (args.get("image_document_id") or "").strip()
+        mission_id = ctx.get("mission_id") or ""
+
+        public_base = _public_origin()
+
+        if not image_url and att_id and mission_id:
+            mission = await db.missions.find_one(
+                {"id": mission_id}, {"_id": 0, "attachments": 1},
+            )
+            for a in (mission or {}).get("attachments") or []:
+                if a.get("id") == att_id:
+                    fname = a.get("filename") or ""
+                    if fname:
+                        image_url = f"{public_base}/api/files/{fname}"
+                    break
+        if not image_url and doc_id:
+            d = await db.documents.find_one({"id": doc_id, "org_id": ctx["org_id"]})
+            if d:
+                image_url = f"{public_base}/api/files/docs/{d['org_id']}/{d['filename']}"
+        if not image_url:
+            return {"error": (
+                "Need a base image. Pass `image_url` (external) or "
+                "`image_attachment_id` / `image_document_id`."
+            )}
+
+        # ── Resolve the song. If only `song_prompt` was given, mint a
+        #    Suno track first using the existing music tool path.
+        song_url = (args.get("song_url") or "").strip()
+        song_doc = (args.get("song_document_id") or "").strip()
+        song_prompt = (args.get("song_prompt") or "").strip()
+
+        if not song_url and song_doc:
+            d = await db.documents.find_one({"id": song_doc, "org_id": ctx["org_id"]})
+            if d:
+                song_url = f"{public_base}/api/files/docs/{d['org_id']}/{d['filename']}"
+        if not song_url and song_prompt:
+            # Compose first, then use the saved track.
+            from kie_client import generate_via_kie as _kie_generate
+            urls = await _kie_generate(model_key="suno", prompt=song_prompt)
+            if not urls:
+                return {"error": "Couldn't generate a song from `song_prompt` — try a different prompt or pass `song_url`."}
+            song_url = urls[0]
+        if not song_url:
+            return {"error": (
+                "Need a song. Pass `song_url` (external mp3), "
+                "`song_document_id` (a prior Suno artifact), or "
+                "`song_prompt` (we'll compose one first)."
+            )}
+
+        vibe = (args.get("vibe_prompt") or "").strip()
+        try:
+            max_seconds = float(args.get("max_seconds")) if args.get("max_seconds") else None
+        except (TypeError, ValueError):
+            max_seconds = None
+
+        try:
+            mp4_bytes = await build_music_video_bytes(
+                image_url=image_url, song_url=song_url,
+                vibe_prompt=vibe, max_seconds=max_seconds,
+            )
+        except MusicVideoError as exc:
+            return {"error": str(exc)[:400]}
+        except Exception as exc:  # pragma: no cover — defensive
+            logger.exception("generate_music_video crashed: %s", exc)
+            return {"error": "Music video assembly failed unexpectedly."}
+
+        # Persist as Documents artifact (mp4)
+        atts = await save_artifacts(
+            db, [{
+                "name": f"music-video-{uuid.uuid4().hex[:8]}.mp4",
+                "ext": "mp4", "mime": "video/mp4",
+                "title": f"Music video — {(vibe or song_prompt or 'composition')[:60]}",
+                "content": "", "_raw_bytes": mp4_bytes,
+            }],
+            docs_root=docs_root,
+            org_id=ctx["org_id"],
+            conversation_id=ctx.get("mission_id", ""),
+            message_id=ctx.get("mission_id", ""),
+            agent_id=ctx.get("lead_agent_id", ""),
+            agent_name=ctx.get("lead_agent_name", "Mission"),
+            created_by=ctx.get("created_by", ""),
+        )
+        if not atts:
+            return {"error": "Built the music video but couldn't save it."}
+        a = atts[0]
+        art = {
+            "kind": "video",
+            "filename": a.get("filename"),
+            "url": a.get("url"),
+            "mime": "video/mp4",
+            "original_name": a.get("original_name"),
+            "size": a.get("size"),
+            "title": f"Music video — {(vibe or song_prompt or 'composition')[:60]}",
+            "model": "kling-v21-master-i2v + ffmpeg",
+            "document_id": a.get("document_id"),
+        }
+        await db.missions.update_one(
+            {"id": ctx.get("mission_id")},
+            {"$push": {"artifacts": art}},
+        )
+        return {
+            "ok": True, "produced": 1, "artifacts": [art],
+            "summary": "Assembled a music video (Kling 2.1 Master + ffmpeg).",
+        }
+
+
     async def resize_image(ctx, args):
         """Resize ONE source image into MANY exact pixel sizes.
 
@@ -3412,6 +3567,10 @@ def build_tools(
              "Compose a music track via Suno and save it to the Documents library as MP3. Args: `prompt` (describe the song), optional `style` (e.g. 'cinematic', 'lo-fi hip hop'), optional `instrumental: true` for no vocals. Use for background music, jingles, podcast intros.",
              '{"prompt": "Upbeat 60s synthwave with female vocals about AI dreams", "style": "synthwave", "instrumental": false}',
              generate_music, side_effect=True),
+        Tool("generate_music_video",
+             "Stitch a base image + a song into a music video MP4 (Kling 2.1 Master Image-to-Video + ffmpeg loop). Pass `image_url` OR `image_attachment_id` OR `image_document_id` for the still, AND `song_url` OR `song_document_id` (typically from a prior `generate_music` call) OR `song_prompt` (we'll compose the song first via Suno). Optional `vibe_prompt` is the cinematic direction for Kling (e.g. 'slow camera drift, golden hour'). Output length matches the full song duration by default; cap it with `max_seconds`. Use this — NOT generate_video — whenever the user wants a video that lasts as long as a song.",
+             '{"image_attachment_id": "att_xxx", "song_document_id": "doc_yyy", "vibe_prompt": "Slow zoom on a sunlit cafe, dust motes drifting"}',
+             generate_music_video, side_effect=True),
         Tool("resize_image",
              "Resize a SINGLE source image (a user-uploaded attachment OR an artifact this mission already produced) into MANY exact pixel sizes. Use this — NOT generate_image — when the user asks for a hero image at multiple ad/banner slots like 'Wide Skyscraper 160x600, Rectangle 300x250, Leaderboard 728x90'. Always call read_attachment with no args first to discover available `attachment_id`s, then call resize_image once with the full `sizes` list. Modes: 'fit' (default — scale + pad with averaged edge colour, no cropping; best for ads), 'fill' (cover + center-crop), 'stretch' (distort to exact). Outputs are saved as individual PNGs in the Documents library and emitted as mission artifacts.",
              '{"attachment_id": "att_xxx", "base_name": "hero", "sizes": [{"label": "Wide Skyscraper", "width": 160, "height": 600}, {"label": "Rectangle", "width": 300, "height": 250}, {"label": "Mobile Leaderboard", "width": 320, "height": 50}, {"label": "Leaderboard", "width": 728, "height": 90}, {"label": "Half-Page", "width": 300, "height": 600}, {"label": "Billboard", "width": 970, "height": 250}]}',

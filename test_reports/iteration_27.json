@@ -1,0 +1,49 @@
+{
+  "summary": "Validated the new `generate_music_video` mission tool + Social Queue endpoints end-to-end. Re-ran the agent-authored unit suites (test_kie_jobs_api.py 7/7, test_music_video.py 4/4) and authored a new HTTP integration suite (test_music_video_endpoints.py, 10/10) that exercises: (a) missions.build_tools(...) registers `generate_music_video` with side_effect=True; (b) POST /api/social/posts/{id}/generate-music-video — 401 without auth, 404 on unknown post, 422 on no image, 422 on no song_url/song_prompt, 202 + music_video_status='pending' synchronous flip on accept (background task left to fail offline, not awaited); (c) DELETE /api/social/posts/{id}/music-video clears music_video / status / prompts + 404 on unknown; (d) serialize_social_post defaults music_video_status to 'none' when absent and 'ready' when a music_video doc exists, with empty-string defaults for music_video_error/song_prompt/vibe_prompt. Total: 21/21 pytest cases pass. No regressions found. The 503-when-KIE_API_KEY-missing branch is NOT exercised live (the env has KIE_API_KEY set in this pod) but the code path is in place at social_posts.py:1776 and visually inspected — drop-in raise HTTPException(503) before any DB work.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {
+        "endpoint": "POST /api/social/posts/{post_id}/generate-music-video",
+        "issue": "503-when-KIE_API_KEY-missing branch not regression-tested live (KIE_API_KEY is set in this pod). Code inspection confirms the early-return at social_posts.py:1776-1777 is correct. If you want full coverage, add an in-process FastAPI TestClient test that monkey-patches os.environ to drop the key."
+      },
+      {
+        "endpoint": "POST /api/social/posts/{post_id}/generate-music-video",
+        "issue": "The background asyncio task spawned via `asyncio.create_task(_run_mv_bg())` runs even when the inputs guarantee failure (bad song_url, .invalid domain, etc.) — there's no eager-validation step on the song URL reachability. Each rejected post still incurs an HTTPX timeout cost. Consider a quick HEAD probe in the foreground to reject obviously-broken URLs before flipping to 'pending'."
+      }
+    ]
+  },
+  "frontend_issues": {"ui_bugs": [], "integration_issues": [], "design_issues": []},
+  "test_report_links": [
+    "/app/backend/tests/test_music_video_endpoints.py",
+    "/app/backend/tests/test_kie_jobs_api.py",
+    "/app/backend/tests/test_music_video.py",
+    "/app/test_reports/pytest/iter27_full.xml"
+  ],
+  "action_items": [
+    "(Optional) Add an in-process FastAPI TestClient test that monkey-patches `os.environ['KIE_API_KEY']` away to lock in the 503 branch on POST /generate-music-video.",
+    "(Optional) Eager-validate `song_url` reachability (HEAD probe) before flipping `music_video_status` to 'pending', so obviously-broken URLs fail fast and don't churn a background task.",
+    "No code changes are required to ship this feature — both the new unit suites and the new HTTP integration suite pass."
+  ],
+  "critical_code_review_comments": [
+    "social_posts.py:1776 — KIE_API_KEY env gate runs BEFORE any DB work, good (avoids leaking 'post not found' on misconfigured deployments).",
+    "social_posts.py:1812-1820 — synchronous flip to music_video_status='pending' lands BEFORE asyncio.create_task(_run_mv_bg()), so the 202 response is consistent with what the UI poller will see. Correct ordering.",
+    "social_posts.py:1893-1912 — outer try/except around the background worker catches non-MusicVideoError exceptions and writes a sanitized message to music_video_error; user never sees a stack trace. Good defensive code.",
+    "social_posts.py:1931-1940 — DELETE clears music_video_pending_at too (via $unset) — important because a stuck 'pending' status would otherwise re-enter the spinner state after a refresh. Nice catch.",
+    "serializer @ social_posts.py:294-301 — defaulting music_video_status to 'ready' when music_video is present (but the status key wasn't written) is a useful migration shim for any posts created before this feature shipped that might get a music_video back-filled.",
+    "missions.py:3570-3573 — Tool('generate_music_video', ..., side_effect=True) is registered alongside the other side-effecting tools; the mission loop correctly treats it as an approval-required action.",
+    "music_video.py — `ffmpeg_available()` check at endpoint entry guards against the future-container-loses-ffmpeg case; clean 503 instead of opaque ffmpeg-not-found errors.",
+    "kie_client.py — `kling_v21_master_image_to_video` correctly clamps duration to Kling's hard cap (5s or 10s tiers); unit test verifies the clamp at 11s → 10s.",
+    "No `_id` ObjectIds leak through the serializer — verified via the GET /orgs/{id}/social/posts integration calls in TestSerializerDefaults (no JSON serialization errors)."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_music_video_endpoints.py (NEW — 10 tests, 100% pass)"
+  ],
+  "success_rate": {"backend": "100% (21/21 tests pass — 7 kie_jobs_api + 4 music_video unit + 10 new HTTP integration)", "frontend": "n/a (testing_type=backend only)"},
+  "test_credentials": "reggie@coolgeek.me / superadminpass123 (org 69f6a9f568b5974dfcc2fcf8). Login response shape is flat — `id`/`access_token` at top level, NOT nested under `user`.",
+  "seed_data_creation": "All test posts insert with _test_marker='TEST_music_video*' and are deleted in test-level try/finally. A teardown_module also nukes any stragglers matching ^TEST_music_video. Verified zero stale rows after the run.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "test_music_video_endpoints.py uses motor.AsyncIOMotorClient with a fresh AsyncIOMotorClient per call (same pattern as the rest of the suite — motor binds executors to the creating loop, can't be reused across asyncio.new_event_loop()). The standing reggie@coolgeek.me superadmin account is used because new-user registration now requires an access code (pre-existing change, unrelated to this feature). KIE_API_KEY is set in this pod's backend/.env, so the 503 branch isn't reachable over HTTP — if you need to lock that down add a TestClient-based in-process test that temporarily pops the env var. The happy-path test seeds a post with image, fires the POST, and asserts music_video_status='pending' synchronously — it does NOT wait for or assert on the background task's outcome (which will fail offline against example.invalid; that's by design and doesn't pollute downstream tests because the post is deleted in finally).",
+  "rca of the issue": "N/A — no bugs found in this iteration. All the agent-authored unit tests pass as expected, the new HTTP endpoints behave correctly for every requested error path, and the serializer fields match the spec. Only minor edits during test authoring: (1) login response shape is flat not nested under `user`, (2) build_tools(...) takes kwargs `db, docs_root, UPLOAD_DIR, AGENTS, brave_search, perplexity_web_search, perplexity_available, generate_image_for, save_artifacts` — not the org_id/user_id/conv_id/mission_id shape I initially guessed."
+}

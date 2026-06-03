@@ -5,7 +5,7 @@ import api, { BACKEND_URL } from "../lib/api";
 import TopBar from "../components/TopBar";
 import { toast } from "sonner";
 import {
-  Send, Wand2, Calendar, CheckCircle2, Trash2, Copy, ExternalLink, Download, Save, X, Loader2, Megaphone, Image as ImageIcon, Zap, KeyRound, AlertTriangle, Rocket, Pencil, UploadCloud, ShieldCheck, ChevronRight, Lightbulb, RefreshCcw, FolderOpen, Plug, Film, Play, Palette
+  Send, Wand2, Calendar, CheckCircle2, Trash2, Copy, ExternalLink, Download, Save, X, Loader2, Megaphone, Image as ImageIcon, Zap, KeyRound, AlertTriangle, Rocket, Pencil, UploadCloud, ShieldCheck, ChevronRight, Lightbulb, RefreshCcw, FolderOpen, Plug, Film, Play, Palette, Music
 } from "lucide-react";
 import AssetPickerModal from "../components/AssetPickerModal";
 import WorkingIndicator from "../components/WorkingIndicator";
@@ -422,19 +422,21 @@ export default function SocialPage() {
     [posts, tab],
   );
 
-  // Poll for any post whose cover image OR video is being generated in
-  // the background. Images land in ~6-30s (Nano Banana), videos in
-  // 60-240s (Kie.ai Veo / Kling / etc.). The polling cap is set to the
-  // longer of the two so video gen has time to finish.
+  // Poll for any post whose cover image OR video OR music video is being
+  // generated in the background. Images land in ~6-30s (Nano Banana),
+  // videos in 60-240s (Kie.ai Veo / Kling / etc.), and music videos in
+  // 60-300s (Kling 2.1 Master + ffmpeg). The polling cap is set to the
+  // longest of the three so music_video gen has time to finish.
   // Stops polling automatically once nothing is pending.
   useEffect(() => {
     const hasPendingImage = posts.some((p) => p.image_status === "pending");
     const hasPendingVideo = posts.some((p) => p.video_status === "pending");
-    if (!hasPendingImage && !hasPendingVideo) return undefined;
+    const hasPendingMV = posts.some((p) => p.music_video_status === "pending");
+    if (!hasPendingImage && !hasPendingVideo && !hasPendingMV) return undefined;
     let cancelled = false;
     let attempts = 0;
-    // 4s interval; videos can take ~240s so cap at 75 attempts (5 min).
-    const cap = hasPendingVideo ? 75 : 45;
+    // 4s interval; music-video gen can take ~300s so cap at 90 attempts (6 min).
+    const cap = hasPendingMV ? 90 : (hasPendingVideo ? 75 : 45);
     const interval = setInterval(async () => {
       attempts += 1;
       if (attempts > cap) {
@@ -447,7 +449,8 @@ export default function SocialPage() {
         setPosts(data);
         const stillImagePending = data.some((p) => p.image_status === "pending");
         const stillVideoPending = data.some((p) => p.video_status === "pending");
-        if (!stillImagePending && !stillVideoPending) {
+        const stillMVPending = data.some((p) => p.music_video_status === "pending");
+        if (!stillImagePending && !stillVideoPending && !stillMVPending) {
           clearInterval(interval);
           // Surface error toasts so users notice failures instead of
           // staring at a now-still card.
@@ -467,6 +470,14 @@ export default function SocialPage() {
                 : `${erroredVid.length} videos failed — pick a different model and retry.`,
             );
           }
+          const erroredMV = data.filter((p) => p.music_video_status === "error");
+          if (erroredMV.length) {
+            toast.error(
+              erroredMV.length === 1
+                ? erroredMV[0].music_video_error || "Music video failed — try a different song or vibe."
+                : `${erroredMV.length} music videos failed — check each post.`,
+            );
+          }
         }
       } catch { /* swallow — next tick will retry */ }
     }, 4000);
@@ -475,6 +486,7 @@ export default function SocialPage() {
   }, [
     posts.some((p) => p.image_status === "pending"),
     posts.some((p) => p.video_status === "pending"),
+    posts.some((p) => p.music_video_status === "pending"),
     orgId,
   ]);
 
@@ -1430,6 +1442,14 @@ function PostCard({ post, orgId, onUpdate, onReplace, onDelete, publishable, onA
             <PostCoverImage post={post} orgId={orgId} onUpdate={onUpdate} onReplace={onReplace} />
           )}
 
+          {/* Music video — when present (or being generated), render below
+              the cover so the user keeps the visual + animated/sound clip
+              side-by-side. Independent from `video` so a post can carry
+              both an image cover AND a music video. */}
+          {(post.music_video || post.music_video_status === "pending" || post.music_video_status === "error") && (
+            <PostMusicVideo post={post} onUpdate={onUpdate} />
+          )}
+
           <div className="flex flex-wrap items-center gap-2 pt-1">
             {post.platforms.map((id) => {
               const meta = PLATFORMS[id];
@@ -1650,6 +1670,7 @@ function PostCoverImage({ post, orgId, onUpdate, onReplace }) {
   const [showPromptEditor, setShowPromptEditor] = useState(false);
   const [showAssetPicker, setShowAssetPicker] = useState(false);
   const [showVideoPicker, setShowVideoPicker] = useState(false);
+  const [showMVPicker, setShowMVPicker] = useState(false);
   // The image prompt that was actually sent to Nano Banana for this post.
   // We prefer the persisted `image_prompt` (set on every successful
   // generation post-fix). For posts generated BEFORE the persistence
@@ -1964,6 +1985,12 @@ function PostCoverImage({ post, orgId, onUpdate, onReplace }) {
                 title="Replace this image with a video cover (Veo 3.1, Kling, Sora, etc.)">
           <Film className="w-3.5 h-3.5" /> Use video
         </button>
+        <button type="button" onClick={() => setShowMVPicker(true)} disabled={generating}
+                className="sp-btn sp-btn-ghost text-xs disabled:opacity-50"
+                data-testid={`generate-music-video-${post.id}`}
+                title="Turn this cover image + a song into a music video MP4 (Kling 2.1 Master + ffmpeg)">
+          <Music className="w-3.5 h-3.5" /> Music video
+        </button>
         <button type="button" onClick={() => setShowPromptEditor(true)} disabled={generating}
                 className="sp-btn sp-btn-ghost text-xs disabled:opacity-50"
                 data-testid={`edit-image-prompt-${post.id}`}
@@ -2009,6 +2036,13 @@ function PostCoverImage({ post, orgId, onUpdate, onReplace }) {
         <VideoGenerationModal
           post={post}
           onClose={() => setShowVideoPicker(false)}
+          onStarted={(data) => { Object.assign(post, data); onUpdate?.(post.id, { status: data.status }); }}
+        />
+      )}
+      {showMVPicker && (
+        <MusicVideoGenerationModal
+          post={post}
+          onClose={() => setShowMVPicker(false)}
           onStarted={(data) => { Object.assign(post, data); onUpdate?.(post.id, { status: data.status }); }}
         />
       )}
@@ -2348,6 +2382,307 @@ function VideoGenerationModal({ post, onClose, onStarted }) {
       </div>
     </div>,
     document.body,
+  );
+}
+
+/**
+ * MusicVideoGenerationModal — pairs the post's cover image with either a
+ * direct mp3 URL or a `song_prompt` (we mint a Suno track first) and
+ * fires the /generate-music-video endpoint. Kicks off Kling 2.1 Master
+ * Image-to-Video + ffmpeg muxing in the background; the card polls
+ * `music_video_status` until ``ready`` or ``error``.
+ */
+function MusicVideoGenerationModal({ post, onClose, onStarted }) {
+  const [songSource, setSongSource] = useState("prompt"); // "prompt" | "url"
+  const [songUrl, setSongUrl] = useState("");
+  const [songPrompt, setSongPrompt] = useState("");
+  const [vibePrompt, setVibePrompt] = useState("");
+  const [submitting, setSubmitting] = useState(false);
+
+  const submit = async () => {
+    if (submitting) return;
+    if (songSource === "url" && !songUrl.trim()) {
+      toast.error("Paste a song URL (mp3 / wav)."); return;
+    }
+    if (songSource === "prompt" && !songPrompt.trim()) {
+      toast.error("Describe the song you want."); return;
+    }
+    setSubmitting(true);
+    try {
+      const body = { vibe_prompt: vibePrompt.trim() };
+      if (songSource === "url") body.song_url = songUrl.trim();
+      else body.song_prompt = songPrompt.trim();
+      const { data } = await api.post(
+        `/social/posts/${post.id}/generate-music-video`, body,
+      );
+      onStarted?.(data);
+      toast.message(
+        songSource === "prompt"
+          ? "Composing the song first (Suno), then animating — usually 2-5 minutes."
+          : "Animating your cover and muxing the audio — usually 1-3 minutes.",
+      );
+      onClose?.();
+    } catch (err) {
+      toast.error(err?.response?.data?.detail || "Couldn't start the music video.");
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  return createPortal(
+    <div
+      className="fixed inset-0 z-[95] flex items-center justify-center p-4"
+      style={{ background: "rgba(0,0,0,0.72)" }}
+      onClick={onClose}
+      data-testid={`music-video-gen-modal-${post.id}`}
+    >
+      <div
+        className="sp-glass-strong rounded-2xl p-5 max-w-xl w-full max-h-[90vh] overflow-auto"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="flex items-center justify-between mb-4">
+          <div>
+            <h3 className="sp-display text-xl inline-flex items-center gap-2">
+              <Music className="w-5 h-5 text-orange-300" /> Make a music video
+            </h3>
+            <p className="text-xs sp-subtle mt-0.5">
+              We'll animate your cover with Kling 2.1 Master, loop it to the song length, and mux the audio. Typically 2-5 minutes.
+            </p>
+          </div>
+          <button type="button" onClick={onClose} className="sp-btn sp-btn-ghost !p-2"
+                  data-testid={`music-video-gen-close-${post.id}`}>
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+
+        <div className="space-y-4">
+          <div>
+            <label className="text-[10px] uppercase tracking-widest sp-subtle mb-1 block">
+              Audio source
+            </label>
+            <div className="inline-flex items-center gap-1 sp-glass rounded-full p-1 mb-2">
+              <button
+                type="button"
+                onClick={() => setSongSource("prompt")}
+                disabled={submitting}
+                data-testid={`mv-source-prompt-${post.id}`}
+                className={`px-3 py-1 rounded-full text-xs transition ${
+                  songSource === "prompt"
+                    ? "bg-orange-500/30 text-white"
+                    : "sp-subtle hover:text-white hover:bg-white/5"
+                }`}
+              >
+                Compose with Suno
+              </button>
+              <button
+                type="button"
+                onClick={() => setSongSource("url")}
+                disabled={submitting}
+                data-testid={`mv-source-url-${post.id}`}
+                className={`px-3 py-1 rounded-full text-xs transition ${
+                  songSource === "url"
+                    ? "bg-orange-500/30 text-white"
+                    : "sp-subtle hover:text-white hover:bg-white/5"
+                }`}
+              >
+                Paste a song URL
+              </button>
+            </div>
+            {songSource === "prompt" ? (
+              <textarea
+                value={songPrompt}
+                onChange={(e) => setSongPrompt(e.target.value)}
+                disabled={submitting}
+                placeholder="Describe the song — 'Upbeat synthwave with confident female vocals about reinvention'"
+                className="w-full min-h-[80px] rounded-lg bg-black/30 border border-white/10 px-3 py-2 text-sm resize-y focus:outline-none focus:border-orange-500/50"
+                data-testid={`mv-song-prompt-${post.id}`}
+              />
+            ) : (
+              <input
+                type="url"
+                value={songUrl}
+                onChange={(e) => setSongUrl(e.target.value)}
+                disabled={submitting}
+                placeholder="https://your-domain/track.mp3"
+                className="w-full rounded-lg bg-black/30 border border-white/10 px-3 py-2 text-sm focus:outline-none focus:border-orange-500/50"
+                data-testid={`mv-song-url-${post.id}`}
+              />
+            )}
+          </div>
+
+          <div>
+            <label className="text-[10px] uppercase tracking-widest sp-subtle mb-1 block">
+              Vibe prompt — cinematic direction for Kling (optional)
+            </label>
+            <textarea
+              value={vibePrompt}
+              onChange={(e) => setVibePrompt(e.target.value)}
+              disabled={submitting}
+              placeholder="e.g. 'Slow camera drift, golden-hour glow, dust motes drifting through the air'"
+              className="w-full min-h-[70px] rounded-lg bg-black/30 border border-white/10 px-3 py-2 text-sm resize-y focus:outline-none focus:border-orange-500/50"
+              data-testid={`mv-vibe-prompt-${post.id}`}
+            />
+            <div className="text-[11px] sp-subtle mt-1 leading-relaxed">
+              Literal direction works best — describe the camera move and the mood. Output matches your full song length.
+            </div>
+          </div>
+
+          <div className="flex items-center justify-end gap-2 pt-1">
+            <button type="button" onClick={onClose} disabled={submitting}
+                    className="sp-btn sp-btn-ghost text-xs disabled:opacity-50"
+                    data-testid={`mv-cancel-${post.id}`}>
+              Cancel
+            </button>
+            <button type="button" onClick={submit} disabled={submitting}
+                    className="sp-btn sp-btn-primary text-sm disabled:opacity-50"
+                    data-testid={`mv-submit-${post.id}`}>
+              {submitting ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Music className="w-3.5 h-3.5" />}
+              {submitting ? "Starting…" : "Make music video"}
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>,
+    document.body,
+  );
+}
+
+/**
+ * PostMusicVideo — renders the music-video block under the post (pending
+ * spinner, error chip, or final <video> player). Sibling to
+ * PostCoverImage / PostCoverVideo; can coexist with either.
+ */
+function PostMusicVideo({ post, onUpdate }) {
+  const [removing, setRemoving] = useState(false);
+  const [showPicker, setShowPicker] = useState(false);
+
+  const remove = async () => {
+    if (removing) return;
+    if (!window.confirm("Remove the music video from this post?")) return;
+    setRemoving(true);
+    try {
+      const { data } = await api.delete(`/social/posts/${post.id}/music-video`);
+      Object.assign(post, data);
+      onUpdate?.(post.id, { status: data.status });
+      toast.success("Music video removed");
+    } catch (err) {
+      toast.error(err?.response?.data?.detail || "Couldn't remove the music video");
+    } finally { setRemoving(false); }
+  };
+
+  if (post.music_video_status === "pending") {
+    return (
+      <div className="mt-2">
+        <div
+          className="rounded-xl overflow-hidden border border-orange-500/20 aspect-video max-w-[420px] flex flex-col items-center justify-center gap-3 relative bg-black/40"
+          data-testid={`post-music-video-pending-${post.id}`}
+        >
+          <span aria-hidden className="absolute inset-0 sp-shimmer pointer-events-none" />
+          <Music className="w-7 h-7 opacity-80 animate-pulse" />
+          <div className="text-xs sp-subtle px-3 text-center max-w-[280px] leading-relaxed">
+            Composing music video —<br />
+            Kling 2.1 Master + ffmpeg mux. Typically 2-5 minutes.
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  if (post.music_video_status === "error" || !post.music_video) {
+    return (
+      <div className="mt-2">
+        <div className="flex items-center justify-between sp-glass rounded-xl px-4 py-2.5 border border-red-500/20 gap-2 flex-wrap">
+          <div className="flex items-center gap-2 text-xs sp-subtle">
+            <AlertTriangle className="w-3.5 h-3.5 text-red-400" />
+            {post.music_video_error || "Music video failed."}
+          </div>
+          <div className="flex items-center gap-1.5 shrink-0 flex-wrap">
+            <button
+              type="button"
+              onClick={() => setShowPicker(true)}
+              className="sp-btn sp-btn-primary text-xs"
+              data-testid={`music-video-retry-${post.id}`}
+            >
+              <Music className="w-3.5 h-3.5" /> Try again
+            </button>
+            <button
+              type="button"
+              onClick={remove}
+              disabled={removing}
+              className="sp-btn sp-btn-ghost text-xs disabled:opacity-50"
+              data-testid={`music-video-dismiss-${post.id}`}
+            >
+              Dismiss
+            </button>
+          </div>
+        </div>
+        {showPicker && (
+          <MusicVideoGenerationModal
+            post={post}
+            onClose={() => setShowPicker(false)}
+            onStarted={(data) => { Object.assign(post, data); onUpdate?.(post.id, { status: data.status }); }}
+          />
+        )}
+      </div>
+    );
+  }
+
+  const url = post.music_video.url?.startsWith("http")
+    ? post.music_video.url
+    : `${BACKEND_URL}${post.music_video.url}`;
+
+  return (
+    <div className="mt-2 space-y-2">
+      <div
+        className="rounded-xl overflow-hidden border border-white/10 bg-black/40 max-w-[420px]"
+        data-testid={`post-music-video-${post.id}`}
+      >
+        <video
+          src={url}
+          controls
+          playsInline
+          preload="metadata"
+          className="w-full h-auto block"
+          data-testid={`post-music-video-player-${post.id}`}
+        />
+      </div>
+      <div className="flex flex-wrap items-center gap-1.5">
+        <span className="text-[10px] uppercase tracking-widest sp-subtle inline-flex items-center gap-1">
+          <Music className="w-3 h-3" /> Music video · {post.music_video.model || "kling-v21-master + ffmpeg"}
+        </span>
+        <a href={url} download target="_blank" rel="noreferrer"
+           className="sp-btn sp-btn-ghost text-xs ml-auto"
+           data-testid={`download-music-video-${post.id}`}>
+          <Download className="w-3.5 h-3.5" /> Download
+        </a>
+        <button
+          type="button"
+          onClick={() => setShowPicker(true)}
+          className="sp-btn sp-btn-ghost text-xs"
+          data-testid={`regen-music-video-${post.id}`}
+          title="Generate a fresh music video"
+        >
+          <RefreshCcw className="w-3.5 h-3.5" /> Regenerate
+        </button>
+        <button
+          type="button"
+          onClick={remove}
+          disabled={removing}
+          className="sp-btn sp-btn-ghost text-xs disabled:opacity-50 hover:!text-red-300"
+          data-testid={`remove-music-video-${post.id}`}
+        >
+          {removing ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <X className="w-3.5 h-3.5" />}
+          Remove
+        </button>
+      </div>
+      {showPicker && (
+        <MusicVideoGenerationModal
+          post={post}
+          onClose={() => setShowPicker(false)}
+          onStarted={(data) => { Object.assign(post, data); onUpdate?.(post.id, { status: data.status }); }}
+        />
+      )}
+    </div>
   );
 }
 

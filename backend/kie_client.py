@@ -534,12 +534,204 @@ async def generate_via_kie(
     return urls
 
 
+# ─────────────────────────────────────────────────────────────────────
+# KIE.AI UNIFIED JOBS API ("Market" models)
+# ─────────────────────────────────────────────────────────────────────
+# Newer kie.ai models (Kling V2.1 Master, Wan 2.7, Seedream 5, etc.)
+# expose a UNIFIED submit/poll surface at
+#   POST /api/v1/jobs/createTask
+#   GET  /api/v1/jobs/recordInfo?taskId=…
+# instead of the per-family /api/v1/<family>/generate path used above.
+#
+# Request body shape (Market):
+#   { "model": "kling/v2-1-master-image-to-video",
+#     "callBackUrl": "...",  # optional
+#     "input": { ...model-specific args... } }
+#
+# Response shape (recordInfo data field):
+#   { "taskId": "...", "model": "...",
+#     "state": "waiting"|"queuing"|"generating"|"success"|"fail",
+#     "resultJson": "{\"resultUrls\":[\"...\"]}",   # only on success
+#     "failCode": "...", "failMsg": "..." }
+#
+# We keep this surface separate from `submit_kie_task` because the
+# request/response shapes are genuinely different and conflating them
+# leads to silent failures.
+# ─────────────────────────────────────────────────────────────────────
+
+import json
+
+KIE_JOBS_SUBMIT_URL = f"{KIE_BASE}/api/v1/jobs/createTask"
+KIE_JOBS_STATUS_URL = f"{KIE_BASE}/api/v1/jobs/recordInfo"
+
+# Terminal-success / in-progress states for the Market jobs API.
+KIE_JOB_OK = {"success"}
+KIE_JOB_IN_PROGRESS = {"waiting", "queuing", "generating", ""}
+# Anything not in OK or IN_PROGRESS is a terminal failure
+# (canonical "fail", plus any future failure code kie.ai introduces).
+
+
+async def submit_kie_job(
+    *, model: str, input_params: dict,
+    callback_url: Optional[str] = None,
+) -> Optional[str]:
+    """Submit a Market-style task at /api/v1/jobs/createTask.
+
+    Returns ``taskId`` or None on failure. ``model`` is the literal
+    string kie.ai expects (e.g. ``"kling/v2-1-master-image-to-video"``).
+    ``input_params`` is the inner ``input`` object — caller is
+    responsible for the exact keys each model needs (the docs surface
+    differs per family).
+    """
+    key = _api_key()
+    if not key or not model or not isinstance(input_params, dict):
+        return None
+    headers = {"Authorization": f"Bearer {key}", "Content-Type": "application/json"}
+    body: dict = {"model": model, "input": input_params}
+    cb = callback_url or os.environ.get("KIE_JOBS_CALLBACK_URL")
+    if cb:
+        body["callBackUrl"] = cb
+    try:
+        async with httpx.AsyncClient(timeout=DEFAULT_TIMEOUT) as client:
+            resp = await client.post(KIE_JOBS_SUBMIT_URL, headers=headers, json=body)
+        if resp.status_code != 200:
+            log.warning("Kie jobs submit %s: %s", resp.status_code, resp.text[:400])
+            return None
+        data = resp.json() or {}
+    except (httpx.HTTPError, ValueError) as exc:
+        log.warning("Kie jobs submit error: %s", exc)
+        return None
+    if data.get("code") not in (200, "200", 0):
+        log.warning("Kie jobs submit non-OK body: %s", data)
+        return None
+    return ((data.get("data") or {}).get("taskId")
+            or (data.get("data") or {}).get("task_id")
+            or None)
+
+
+async def get_kie_job_state(task_id: str) -> dict:
+    """Return the ``data`` object from /jobs/recordInfo (or {})."""
+    key = _api_key()
+    if not key or not task_id:
+        return {}
+    headers = {"Authorization": f"Bearer {key}"}
+    try:
+        async with httpx.AsyncClient(timeout=DEFAULT_TIMEOUT) as client:
+            resp = await client.get(KIE_JOBS_STATUS_URL,
+                                    headers=headers,
+                                    params={"taskId": task_id})
+        if resp.status_code != 200:
+            log.warning("Kie jobs status %s: %s", resp.status_code, resp.text[:300])
+            return {}
+        return (resp.json() or {}).get("data") or {}
+    except (httpx.HTTPError, ValueError) as exc:
+        log.warning("Kie jobs status error: %s", exc)
+        return {}
+
+
+def _extract_jobs_urls(data: dict) -> list[str]:
+    """Parse ``resultJson`` (a JSON STRING) → list of result URLs.
+    The Market API serializes results as a string so the surface stays
+    polymorphic across image / video / audio. We tolerate missing /
+    malformed payloads silently — caller treats [] as failure."""
+    raw = data.get("resultJson")
+    if not raw or not isinstance(raw, str):
+        return []
+    try:
+        parsed = json.loads(raw)
+    except (ValueError, TypeError):
+        return []
+    urls = parsed.get("resultUrls") if isinstance(parsed, dict) else None
+    if isinstance(urls, list):
+        return [u for u in urls if isinstance(u, str) and u]
+    return []
+
+
+async def wait_for_kie_job(
+    task_id: str, *, total_timeout: int = 600,
+    poll_interval: float = POLL_INTERVAL,
+) -> list[str]:
+    """Poll /jobs/recordInfo until success/fail. Returns list of result
+    URLs (empty on failure / timeout). Pure-state-machine logic — no
+    backoff curve, kie.ai's poll quota is generous and a constant
+    4s tick is plenty."""
+    if not task_id:
+        return []
+    elapsed = 0.0
+    data: dict = {}
+    while elapsed < total_timeout:
+        data = await get_kie_job_state(task_id)
+        raw_state = data.get("state")
+        state = raw_state.lower() if isinstance(raw_state, str) else ""
+        if state in KIE_JOB_OK:
+            return _extract_jobs_urls(data)
+        if state and state not in KIE_JOB_IN_PROGRESS:
+            log.warning("Kie job failed (state=%s, failCode=%s, failMsg=%s)",
+                        state, data.get("failCode"), data.get("failMsg"))
+            return []
+        await asyncio.sleep(poll_interval)
+        elapsed += poll_interval
+    log.warning("Kie job timed out after %ss (task_id=%s, last_state=%s)",
+                total_timeout, task_id, data.get("state"))
+    return []
+
+
+async def kling_v21_master_image_to_video(
+    *, image_url: str, prompt: str, duration: str = "10",
+    negative_prompt: Optional[str] = None,
+    cfg_scale: Optional[float] = None,
+    total_timeout: int = 600,
+) -> Optional[str]:
+    """End-to-end: Kling 2.1 Master Image-to-Video → final mp4 URL.
+
+    `duration` must be one of "5" or "10" (kie.ai accepts only those
+    two values for the Master tier). Returns the mp4 URL or None.
+    """
+    if duration not in ("5", "10"):
+        duration = "10"
+    input_params: dict = {
+        "prompt": (prompt or "").strip()[:5000] or "smooth cinematic motion",
+        "image_url": image_url,
+        "duration": duration,
+    }
+    if negative_prompt:
+        input_params["negative_prompt"] = negative_prompt[:500]
+    if cfg_scale is not None:
+        try:
+            input_params["cfg_scale"] = max(0.0, min(1.0, float(cfg_scale)))
+        except (TypeError, ValueError):
+            pass
+    task_id = await submit_kie_job(
+        model="kling/v2-1-master-image-to-video",
+        input_params=input_params,
+    )
+    if not task_id:
+        return None
+    urls = await wait_for_kie_job(task_id, total_timeout=total_timeout)
+    # Per-call cost log (Kling 2.1 Master is the priciest tier)
+    try:
+        from external_api_costs import log_external_call_fire_and_forget
+        log_external_call_fire_and_forget(
+            provider="kie.kling-v21-master-i2v",
+            kind_label="kie:kling-v21-master-i2v",
+            calls=1, seconds=float(duration),
+            success=bool(urls),
+            extra={"task_id": task_id, "duration": duration},
+        )
+    except Exception:
+        pass
+    return urls[0] if urls else None
+
+
 __all__ = [
     # Original Veo helpers (kept for backward compat)
     "submit_video", "wait_for_video", "generate_video", "get_video_status",
     "VIDEO_MODELS", "DEFAULT_VIDEO_MODEL",
-    # New universal client
+    # Universal /<family>/ marketplace client
     "KIE_PROVIDERS", "KIE_TASK_TIMEOUTS", "kie_provider_info",
     "submit_kie_task", "get_kie_task_status", "wait_for_kie_task",
     "generate_via_kie",
+    # Unified /jobs/ API (Market models: Kling 2.1 Master, Wan 2.7, …)
+    "submit_kie_job", "get_kie_job_state", "wait_for_kie_job",
+    "kling_v21_master_image_to_video",
 ]

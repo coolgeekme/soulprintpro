@@ -210,6 +210,24 @@ class GenerateVideoBody(BaseModel):
     aspect_ratio: str = Field("Auto", max_length=8)
 
 
+class GenerateMusicVideoBody(BaseModel):
+    """Body for POST /social/posts/{id}/generate-music-video.
+
+    One of `song_url` / `song_prompt` is required (we need a song to
+    sync to). When `song_prompt` is set we mint a Suno track first and
+    use it as the audio bed. `vibe_prompt` shapes the Kling 2.1 Master
+    image-to-video clip. The post's existing cover `image.url` is used
+    as the visual seed — no separate field needed."""
+    song_url: str = Field("", max_length=2000)
+    song_prompt: str = Field("", max_length=1500)
+    vibe_prompt: str = Field("", max_length=1500)
+    # Optional override cap on the output length. Defaults to FULL
+    # song duration (user explicitly chose Option "no cap" — see the
+    # Feb 2026 handoff).
+    max_seconds: Optional[float] = Field(None, ge=3, le=900)
+
+
+
 class SuggestTopicsBody(BaseModel):
     """Body for POST /orgs/{id}/social/suggest-topics.
 
@@ -268,6 +286,19 @@ def serialize_social_post(p: dict) -> dict:
         "video_model": p.get("video_model", ""),
         "video_aspect_ratio": p.get("video_aspect_ratio", ""),
         "video_error": p.get("video_error", ""),
+        # ── Music video (Kling 2.1 Master + ffmpeg song-mux) ─────────
+        # Independent from `image` / `video` — a single post can in
+        # theory carry an image cover, a video cover AND a music
+        # video; UI currently surfaces just the music video player
+        # when present (it implies its own visual).
+        "music_video": p.get("music_video") or None,
+        "music_video_status": p.get(
+            "music_video_status",
+            "ready" if p.get("music_video") else "none",
+        ),
+        "music_video_error": p.get("music_video_error", ""),
+        "music_video_song_prompt": p.get("music_video_song_prompt", ""),
+        "music_video_vibe_prompt": p.get("music_video_vibe_prompt", ""),
         "scheduled_for": _iso(p.get("scheduled_for")),
         "published_at": _iso(p.get("published_at")),
         # Live-publishing telemetry (set by social_publishing.publish_post).
@@ -1720,6 +1751,196 @@ def make_social_router(*, db, AGENTS, EMERGENT_LLM_KEY, LlmChat, UserMessage,
         )
         fresh = await db.social_posts.find_one({"_id": _OID(post_id)})
         return serialize_social_post(fresh)
+
+    @r.post("/social/posts/{post_id}/generate-music-video", status_code=202)
+    async def generate_post_music_video(
+        post_id: str,
+        body: GenerateMusicVideoBody = Body(default_factory=GenerateMusicVideoBody),
+        u: dict = Depends(get_current_user),
+    ):
+        """Stitch the post's cover image + a song into a music-video
+        MP4 (Kling 2.1 Master Image-to-Video → ffmpeg-loop with audio
+        muxed on top). Fires in the background; flips
+        `music_video_status` to ``pending`` synchronously so the UI
+        renders a spinner immediately, then to ``ready`` /
+        ``error`` when the worker finishes.
+
+        Body fields:
+          • `song_url` — direct URL to mp3/wav (preferred — fastest)
+          • `song_prompt` — describe a song; we mint one with Suno first
+          • `vibe_prompt` — cinematic direction for Kling
+          • `max_seconds` — cap output (default = full song duration)
+
+        Requires the post to already have a cover image (`image.url`).
+        """
+        if not os.environ.get("KIE_API_KEY"):
+            raise HTTPException(503, "Music video generation isn't configured (KIE_API_KEY missing).")
+        try:
+            from music_video import ffmpeg_available  # noqa: WPS433 — local
+        except ImportError as exc:
+            raise HTTPException(503, "music_video module is unavailable.") from exc
+        if not ffmpeg_available():
+            raise HTTPException(503, "Server is missing ffmpeg — install ffmpeg/ffprobe to enable music videos.")
+        try:
+            post = await db.social_posts.find_one({"_id": _OID(post_id)})
+        except Exception as exc:
+            raise HTTPException(400, "Invalid post id") from exc
+        if not post:
+            raise HTTPException(404, "Post not found")
+        await require_org_member(post["org_id"], u["id"])
+
+        # Require an image cover on the post — the music video needs a
+        # visual seed and we don't want to silently fall back to generic.
+        image = post.get("image") or {}
+        image_path = image.get("url") or ""
+        if not image_path:
+            raise HTTPException(
+                422,
+                "Generate a cover image first — the music video needs a base visual.",
+            )
+
+        song_url = (body.song_url or "").strip()
+        song_prompt = (body.song_prompt or "").strip()
+        vibe = (body.vibe_prompt or "").strip()
+        if not song_url and not song_prompt:
+            raise HTTPException(
+                422,
+                "Pass `song_url` (direct mp3 link) or `song_prompt` (we'll compose one for you).",
+            )
+
+        now = datetime.now(timezone.utc)
+        await db.social_posts.update_one(
+            {"_id": _OID(post_id)},
+            {"$set": {
+                "music_video_status": "pending",
+                "music_video_pending_at": now,
+                "music_video_song_prompt": song_prompt[:600],
+                "music_video_vibe_prompt": vibe[:600],
+            }, "$unset": {"music_video_error": ""}},
+        )
+
+        # Resolve the cover image to a publicly fetchable URL — kie.ai
+        # downloads `image_url` server-side, so internal paths
+        # (/api/files/...) won't work.
+        public_base = (
+            (post.get("image") or {}).get("public_url")
+            or os.environ.get("PUBLIC_BACKEND_URL")
+            or os.environ.get("REACT_APP_BACKEND_URL")
+            or os.environ.get("FRONTEND_BASE_URL")
+            or ""
+        ).rstrip("/")
+        if image_path.startswith("http"):
+            public_image_url = image_path
+        else:
+            public_image_url = f"{public_base}{image_path}" if public_base else image_path
+
+        async def _run_mv_bg():
+            from music_video import build_music_video_bytes, MusicVideoError
+            from kie_client import generate_via_kie
+            try:
+                resolved_song_url = song_url
+                # Mint a Suno track if the caller only supplied a prompt.
+                if not resolved_song_url and song_prompt:
+                    suno_urls = await generate_via_kie(
+                        model_key="suno", prompt=song_prompt,
+                    )
+                    if not suno_urls:
+                        raise MusicVideoError(
+                            "Suno couldn't compose a track for that prompt — try again or pass `song_url`."
+                        )
+                    resolved_song_url = suno_urls[0]
+                mp4_bytes = await build_music_video_bytes(
+                    image_url=public_image_url,
+                    song_url=resolved_song_url,
+                    vibe_prompt=vibe,
+                    max_seconds=float(body.max_seconds) if body.max_seconds else None,
+                )
+                # Persist to disk (+ GridFS via persist_bytes).
+                if upload_dir is None or persist_bytes is None:
+                    raise MusicVideoError("Server file storage wasn't initialised.")
+                fname = f"music-video-{uuid.uuid4().hex[:12]}.mp4"
+                fp = upload_dir / fname
+                await persist_bytes(fp, mp4_bytes, original_name=fname, mime="video/mp4")
+                final_url = f"/api/files/{fname}"
+                music_video_obj = {
+                    "filename": fname,
+                    "url": final_url,
+                    "mime": "video/mp4",
+                    "size": len(mp4_bytes),
+                    "song_url": resolved_song_url,
+                    "vibe_prompt": vibe[:600],
+                    "song_prompt": song_prompt[:600],
+                    "model": "kling-v21-master-i2v + ffmpeg",
+                }
+                await db.social_posts.update_one(
+                    {"_id": _OID(post_id)},
+                    {"$set": {
+                        "music_video": music_video_obj,
+                        "music_video_status": "ready",
+                        "music_video_updated_at": datetime.now(timezone.utc),
+                    }, "$unset": {"music_video_error": "", "music_video_pending_at": ""}},
+                )
+            except MusicVideoError as exc:
+                logger.warning("Post music_video failed: %s", exc)
+                await db.social_posts.update_one(
+                    {"_id": _OID(post_id)},
+                    {"$set": {
+                        "music_video_status": "error",
+                        "music_video_error": str(exc)[:500],
+                    }, "$unset": {"music_video_pending_at": ""}},
+                )
+            except Exception as exc:  # pragma: no cover — defensive
+                logger.exception("Post music_video crashed: %s", exc)
+                try:
+                    from error_reporter import report_error_async as _report
+                    await _report(
+                        kind="music_video_generate",
+                        org_id=str(post.get("org_id") or ""),
+                        user_email=u.get("email"),
+                        user_id=u.get("id"),
+                        message=str(exc),
+                        exc=exc,
+                        extra={"post_id": str(post.get("_id") or "")},
+                    )
+                except Exception:
+                    pass
+                await db.social_posts.update_one(
+                    {"_id": _OID(post_id)},
+                    {"$set": {
+                        "music_video_status": "error",
+                        "music_video_error": "Music video assembly crashed — try again.",
+                    }, "$unset": {"music_video_pending_at": ""}},
+                )
+
+        asyncio.create_task(_run_mv_bg())
+        fresh = await db.social_posts.find_one({"_id": _OID(post_id)})
+        return serialize_social_post(fresh)
+
+    @r.delete("/social/posts/{post_id}/music-video")
+    async def remove_post_music_video(
+        post_id: str, u: dict = Depends(get_current_user),
+    ):
+        """Detach the music video from a post (mirrors remove_post_video)."""
+        try:
+            post = await db.social_posts.find_one({"_id": _OID(post_id)})
+        except Exception as exc:
+            raise HTTPException(400, "Invalid post id") from exc
+        if not post:
+            raise HTTPException(404, "Post not found")
+        await require_org_member(post["org_id"], u["id"])
+        await db.social_posts.update_one(
+            {"_id": _OID(post_id)},
+            {"$set": {"music_video_status": "none"},
+             "$unset": {
+                "music_video": "", "music_video_error": "",
+                "music_video_song_prompt": "",
+                "music_video_vibe_prompt": "",
+                "music_video_pending_at": "",
+             }},
+        )
+        fresh = await db.social_posts.find_one({"_id": _OID(post_id)})
+        return serialize_social_post(fresh)
+
 
     @r.post("/social/posts/{post_id}/use-asset")
     async def use_existing_asset_as_image(
