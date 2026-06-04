@@ -53,7 +53,7 @@ def test_billing_summary_includes_addons_and_catalogue() -> None:
         "extra_seats",
         "credit_messages",
         "credit_browser_minutes",
-        "credit_audits",
+        "credit_missions",
     }
     assert expected.issubset(set(body["addons"].keys())), body["addons"]
     assert "addons_catalogue" in body, "catalogue snapshot missing"

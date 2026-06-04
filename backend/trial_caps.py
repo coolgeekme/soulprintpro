@@ -301,9 +301,147 @@ async def get_trial_usage(db, user: Dict[str, Any]) -> Dict[str, Any]:
     return out
 
 
+# ─── Add-on credit accounting ────────────────────────────────────────────
+# Each one-time pack (Message / Browser / Mission) tops up a per-user
+# counter on the `users` row. We debit those counters BEFORE falling
+# back to plan-quota logic — so a user who topped up a message pack
+# isn't pointlessly rate-limited just because the trial quota would
+# normally fire.
+#
+# Maps add-on credit field → which `consume_or_raise` resource it
+# substitutes for. Used by `consume_credit_or_quota` to pick the right
+# fallback path when the credit balance hits zero.
+_CREDIT_TO_RESOURCE = {
+    "credit_messages": "messages",
+    "credit_missions": "missions",
+    # `credit_browser_minutes` doesn't map to a trial-cap resource;
+    # browser minutes aren't currently in TRIAL_CAPS. The helper
+    # short-circuits to "free" (no fallback) for that one — see below.
+}
+
+
+async def _debit_credit(db, user_id: str, credit_field: str, amount: int) -> int:
+    """Atomically debit ``credit_field`` by ``amount``, never going
+    below zero. Returns the number of units actually debited (≤ amount).
+
+    Uses a single conditional update so multiple concurrent requests
+    can't over-spend a credit balance. If the balance was less than
+    ``amount``, only the available portion is debited and the rest is
+    the caller's responsibility (falls back to plan quota).
+    """
+    if amount <= 0:
+        return 0
+    try:
+        user_oid = ObjectId(user_id)
+    except Exception:
+        return 0
+    # Step 1 — read current balance.
+    u = await db.users.find_one(
+        {"_id": user_oid}, {"_id": 0, credit_field: 1},
+    ) or {}
+    current = max(0, int(u.get(credit_field) or 0))
+    if current <= 0:
+        return 0
+    to_debit = min(current, amount)
+    # Step 2 — atomic conditional decrement. If another request just
+    # raced us we retry once with the fresh balance; after that we
+    # bail (caller falls back to quota for the remainder).
+    for _ in range(2):
+        res = await db.users.update_one(
+            {"_id": user_oid, credit_field: {"$gte": to_debit}},
+            {"$inc": {credit_field: -to_debit}},
+        )
+        if res.modified_count:
+            return to_debit
+        # Re-read and try again with the smaller available balance.
+        u = await db.users.find_one(
+            {"_id": user_oid}, {"_id": 0, credit_field: 1},
+        ) or {}
+        current = max(0, int(u.get(credit_field) or 0))
+        if current <= 0:
+            return 0
+        to_debit = min(current, amount)
+    return 0
+
+
+async def consume_credit_or_quota(
+    db, user: Dict[str, Any], credit_field: str, amount: int = 1,
+) -> None:
+    """Try to debit add-on credit first; on remainder, fall back to the
+    trial-quota path.
+
+    Call this at the START of any cost-incurring user action that maps
+    to a one-time pack. The function is idempotent w.r.t. partial
+    debits — e.g. 8 left in credit_messages + amount=10 → debits 8 + asks
+    quota for the remaining 2 + raises 402 if quota would also exceed.
+
+    For `credit_browser_minutes` there's no trial-cap fallback (the
+    user's primary access-control is the mission cap which is checked
+    elsewhere). We debit whatever's available and silently let any
+    overage through — same UX as today, just metered.
+    """
+    if not user or not user.get("id"):
+        return
+    fallback_resource = _CREDIT_TO_RESOURCE.get(credit_field)
+    debited = await _debit_credit(db, user["id"], credit_field, amount)
+    remaining = max(0, amount - debited)
+    if remaining <= 0:
+        return
+    if fallback_resource:
+        # Push the leftover through the existing quota path so trial
+        # users still get blocked once they exhaust everything.
+        await consume_or_raise(db, user, fallback_resource, amount=remaining)
+    # credit_browser_minutes path → silently allow overage (no quota).
+
+
+async def consume_credit_after_use(
+    db, user: Dict[str, Any], credit_field: str, amount: int,
+) -> int:
+    """Settle USAGE after the fact (e.g. mission browser minutes).
+    Returns the number of credits actually debited.
+
+    Use this for resources where we don't know the exact cost upfront
+    — start the mission cheaply, finish it, then call this with the
+    real elapsed minutes. Never raises; if the balance can't cover
+    the full amount we still drain it (the user got the value, no
+    point clawing back partial work).
+    """
+    if not user or not user.get("id") or amount <= 0:
+        return 0
+    return await _debit_credit(db, user["id"], credit_field, amount)
+
+
+async def get_addon_credit_balances(
+    db, user_id: str,
+) -> Dict[str, int]:
+    """Read-only fetch of all four credit balances. Powers the billing
+    page + admin views without hitting the user row twice."""
+    try:
+        user_oid = ObjectId(user_id)
+    except Exception:
+        return {"credit_messages": 0, "credit_missions": 0,
+                "credit_browser_minutes": 0, "extra_orgs": 0,
+                "extra_seats": 0}
+    u = await db.users.find_one(
+        {"_id": user_oid},
+        {"_id": 0, "credit_messages": 1, "credit_missions": 1,
+         "credit_browser_minutes": 1, "extra_orgs": 1, "extra_seats": 1},
+    ) or {}
+    return {
+        "credit_messages": int(u.get("credit_messages") or 0),
+        "credit_missions": int(u.get("credit_missions") or 0),
+        "credit_browser_minutes": int(u.get("credit_browser_minutes") or 0),
+        "extra_orgs": int(u.get("extra_orgs") or 0),
+        "extra_seats": int(u.get("extra_seats") or 0),
+    }
+
+
 __all__ = [
     "TRIAL_CAPS",
     "resolve_user_plan",
     "consume_or_raise",
+    "consume_credit_or_quota",
+    "consume_credit_after_use",
     "get_trial_usage",
+    "get_addon_credit_balances",
 ]

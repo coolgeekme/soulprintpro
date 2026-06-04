@@ -49,7 +49,7 @@ def test_plans_endpoint_exposes_all_five_addons() -> None:
     by_id = {a["id"]: a for a in body["addons"]}
     assert set(by_id) == {
         "extra_org", "extra_seat",
-        "message_pack", "browser_pack", "audit_pack",
+        "message_pack", "browser_pack", "mission_pack",
     }
 
 
@@ -72,7 +72,7 @@ def test_recurring_vs_one_time_cadence_matches_pricing_page() -> None:
     assert by_id["extra_seat"]["cadence"] == "recurring"
     assert by_id["message_pack"]["cadence"] == "one_time"
     assert by_id["browser_pack"]["cadence"] == "one_time"
-    assert by_id["audit_pack"]["cadence"] == "one_time"
+    assert by_id["mission_pack"]["cadence"] == "one_time"
 
 
 def test_addon_prices_exact_match() -> None:
@@ -83,7 +83,7 @@ def test_addon_prices_exact_match() -> None:
     assert by_id["extra_seat"]["price_usd"] == 30.0
     assert by_id["message_pack"]["price_usd"] == 15.0
     assert by_id["browser_pack"]["price_usd"] == 20.0
-    assert by_id["audit_pack"]["price_usd"] == 10.0
+    assert by_id["mission_pack"]["price_usd"] == 10.0
 
 
 # ── Checkout endpoint validation (no real Stripe calls) ──────────────
@@ -127,7 +127,7 @@ async def seeded_user(db):
         "extra_seats": 0,
         "credit_messages": 0,
         "credit_browser_minutes": 0,
-        "credit_audits": 0,
+        "credit_missions": 0,
     })
     return str(user_oid)
 
@@ -166,13 +166,13 @@ async def test_apply_browser_pack_credits_minutes(db, seeded_user) -> None:
 
 
 @pytest.mark.asyncio
-async def test_apply_audit_pack_credits_audits(db, seeded_user) -> None:
+async def test_apply_mission_pack_credits_missions(db, seeded_user) -> None:
     await billing._apply_addon_purchase(
-        db, user_id=seeded_user, addon_id="audit_pack", quantity=1,
-        stripe_ref="cs:test_audit_1", source="checkout",
+        db, user_id=seeded_user, addon_id="mission_pack", quantity=1,
+        stripe_ref="cs:test_mission_1", source="checkout",
     )
     user = await db.users.find_one({"_id": ObjectId(seeded_user)})
-    assert user["credit_audits"] == 10
+    assert user["credit_missions"] == 10
 
 
 @pytest.mark.asyncio
@@ -222,12 +222,12 @@ async def test_apply_unknown_addon_is_noop(db, seeded_user) -> None:
 
 
 @pytest.mark.asyncio
-async def test_apply_credit_audits_quantity_multiplier(db, seeded_user) -> None:
-    """Three audit packs in one purchase = 30 audits. We expose
+async def test_apply_credit_missions_quantity_multiplier(db, seeded_user) -> None:
+    """Three mission packs in one purchase = 30 missions. We expose
     quantity at the webhook layer for future buy-three-at-once flows."""
     await billing._apply_addon_purchase(
-        db, user_id=seeded_user, addon_id="audit_pack", quantity=3,
-        stripe_ref="cs:audit_3", source="checkout",
+        db, user_id=seeded_user, addon_id="mission_pack", quantity=3,
+        stripe_ref="cs:missions_3", source="checkout",
     )
     user = await db.users.find_one({"_id": ObjectId(seeded_user)})
-    assert user["credit_audits"] == 30
+    assert user["credit_missions"] == 30

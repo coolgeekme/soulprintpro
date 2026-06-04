@@ -1,0 +1,46 @@
+{
+  "summary": "Iter-29 verifies the audit_pack → mission_pack rename plus end-to-end wiring of all 5 add-on counters (extra_orgs into user_plan_limits, extra_seats into compute_seat_status, credit_messages/credit_missions into consumption sites, credit_browser_minutes into mission settlement). 11 NEW pytest cases (6 resolver + 5 consumption) added — all PASS. Full existing add-on suite (test_addons.py + test_addons_endpoint_validation.py + test_addon_credits.py) also PASSES (37 green). Live /api/billing/plans + /api/billing/summary confirm the schema. Frontend /pricing renders 'Mission pack' / $10 / 10 missions; /app/billing exposes data-testid='addon-card-mission_pack' with no audit_pack remnants.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_iter29_resolvers.py",
+    "/app/backend/tests/test_iter29_consumption.py",
+    "/app/test_reports/pytest/iter29_resolvers.xml",
+    "/app/test_reports/pytest/iter29_consumption.xml",
+    "/app/test_reports/pytest/iter29_credits.xml"
+  ],
+  "action_items": [
+    "(Pre-existing, NOT in iter-29 scope) tests/test_seat_policy.py::test_spark_org_no_boost_warns still fails — assertion looks for 'Upgrade to Temper' but actual copy is lowercase 'upgrade to Temper for $300/mo'. Either lowercase the test substring or capitalize the warning in seat_policy.warning_for_status. Confirmed unrelated to add-on credit work by review-request note."
+  ],
+  "critical_code_review_comments": [
+    "billing.py is now 1643 lines (still over the 700-line guideline). Refactor opportunity: split ADDONS catalogue + apply helpers into billing/addons.py and webhook into billing/webhooks.py.",
+    "missions.py:1408 _settle_browser_minutes runs inside a try/except in the finally block at mission termination — good belt-and-suspenders, but the log line on failure should include user/org id so prod debugging is easier.",
+    "server.py:5106 — credit check correctly runs BEFORE the db.messages.insert_one(user_doc) call. This satisfies the critical spec requirement that a 402 must NOT leave an orphan user message in Mongo with no agent reply.",
+    "seat_policy.py extra_seat lift correctly stacks AFTER the access-code boost (so a Spark+code-boosted org gets temper_base + extra_seats). The effective_plan_for_addon_lift helper correctly returns 'temper' for code-boosted orgs so Refine-equivalent orgs don't double-dip.",
+    "trial_caps.consume_credit_or_quota correctly returns early when credit fully satisfies the request, so expired-plan users who topped up a Message pack can still send — proven by test_consume_credit_or_quota_credit_skips_quota_check.",
+    "_debit_credit uses an atomic findOneAndUpdate with the {$gte: amount} guard, which is why the concurrent-debits test holds (combined ≤ available).",
+    "billing.user_plan_limits explicitly skips extra_orgs read for refine — matches spec ('Refine is unlimited, no lift'). Verified by test_user_plan_limits_refine_ignores_extra_orgs.",
+    "_settle_browser_minutes correctly debits the OWNER (via org_members role='owner') rather than the invoker. Verified by test_settle_browser_minutes_ceil_and_owner_charge."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_iter29_resolvers.py (new — 6 tests)",
+    "/app/backend/tests/test_iter29_consumption.py (new — 5 tests)"
+  ],
+  "success_rate": {
+    "backend": "100% on iter-29 scope (37/37 add-on related tests pass; the 1 pre-existing seat-policy copy mismatch is unrelated)",
+    "frontend": "100% — PricingPage + BillingPage both surface the rename correctly"
+  },
+  "test_credentials": "reggie@coolgeek.me / superadminpass123 (used only for the live /billing/summary HTTP check and the BillingPage UI screenshot; unit tests use ephemeral Mongo dbs)",
+  "seed_data_creation": "None — ephemeral per-test mongo databases (auto-dropped) and a transient login token. No persistent test state.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "The credit-pack wiring is fully verified at both helper and surface level. /api/billing/plans returns mission_pack only (no audit_pack). /api/billing/summary['addons'] contains credit_missions, no credit_audits. user_plan_limits + compute_seat_status correctly stack add-on counters. Mission settlement debits the OWNER's credit_browser_minutes idempotently. The Stripe live-checkout round-trip still 503s (preview shadow STRIPE_API_KEY) — that's expected and untestable without a real key. If retesting, run: pytest tests/test_addon_credits.py tests/test_addons.py tests/test_addons_endpoint_validation.py tests/test_iter29_resolvers.py tests/test_iter29_consumption.py — should be 37/37.",
+  "rca of the issue": "N/A — all features behave to spec. Single pre-existing failure (test_spark_org_no_boost_warns) is a documentation/copy substring mismatch in the test, not a regression introduced by this iteration."
+}

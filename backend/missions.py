@@ -1390,10 +1390,79 @@ async def run_mission_loop(
             await purge_mission_state(db, mission_id=mission_id)
         except Exception:
             pass
+        # Settle browser-minute credit (Browser automation pack). Runs
+        # in the finally block so it fires regardless of how the mission
+        # terminated (finished / cancelled / failed / crashed). Best-
+        # effort — settlement failures must not affect mission state.
+        try:
+            await _settle_browser_minutes(db, mission_id)
+        except Exception as exc:
+            logger.warning("mission %s browser-minute settlement failed: %s",
+                           mission_id, exc)
         try:
             reset_call_context(_ctx_token)
         except Exception:
             pass
+
+
+async def _settle_browser_minutes(db, mission_id: str) -> None:
+    """Reconcile the user's `credit_browser_minutes` balance against the
+    wall-clock duration of this mission. Idempotent — we stamp the
+    mission row with `browser_minutes_settled` so retries don't
+    double-debit.
+
+    Math: ceil(wall_clock_seconds / 60). Rounded UP so a 31-second
+    mission still costs 1 minute (matches how Stripe / AWS bill
+    minutes). Missions that never started (no `started_at`) cost 0.
+
+    We charge the OWNER of the org, not the user who invoked it — that
+    matches who actually pays for the add-on subscriptions.
+    """
+    import math
+    mission = await db.missions.find_one(
+        {"id": mission_id},
+        {"_id": 0, "started_at": 1, "finished_at": 1,
+         "org_id": 1, "browser_minutes_settled": 1},
+    )
+    if not mission:
+        return
+    if mission.get("browser_minutes_settled"):
+        return
+    started = mission.get("started_at")
+    finished = mission.get("finished_at") or datetime.now(timezone.utc)
+    if not isinstance(started, datetime):
+        return
+    elapsed_sec = max(0.0, (finished - started).total_seconds())
+    minutes = int(math.ceil(elapsed_sec / 60.0))
+    if minutes <= 0:
+        await db.missions.update_one(
+            {"id": mission_id},
+            {"$set": {"browser_minutes_settled": True,
+                      "browser_minutes_used": 0}},
+        )
+        return
+    # Find the owning user — charge them, not the invoker.
+    org_id = mission.get("org_id")
+    owner_id = None
+    if org_id:
+        owner = await db.org_members.find_one(
+            {"org_id": org_id, "role": "owner"}, {"_id": 0, "user_id": 1},
+        )
+        owner_id = (owner or {}).get("user_id")
+    debited = 0
+    if owner_id:
+        from trial_caps import consume_credit_after_use
+        debited = await consume_credit_after_use(
+            db, {"id": owner_id}, "credit_browser_minutes", amount=minutes,
+        )
+    await db.missions.update_one(
+        {"id": mission_id},
+        {"$set": {
+            "browser_minutes_settled": True,
+            "browser_minutes_used": minutes,
+            "browser_minutes_debited_from_credit": debited,
+        }},
+    )
 
 
 async def _fail_mission(db, mission_id: str, err: str) -> None:
@@ -4050,8 +4119,14 @@ def make_missions_router(
         # Trial cap: missions are the most expensive op (long-running
         # Playwright + multi-step LLM). Cap is intentionally low (2)
         # so users feel the "wow" once or twice and convert.
-        from trial_caps import consume_or_raise as _consume
-        await _consume(db, u, "missions", amount=1)
+        #
+        # Order of operations:
+        #  1. Debit one `credit_missions` if the user has any left
+        #     (Mission pack add-on).
+        #  2. If they had no credit, fall back to the existing
+        #     trial-quota path (which raises 402 once exhausted).
+        from trial_caps import consume_credit_or_quota as _consume_credit
+        await _consume_credit(db, u, "credit_missions", amount=1)
         lead = body.lead_agent_id
         if not lead or lead not in AGENTS:
             # Default lead — an ops-minded agent. Project Shepherd is a good

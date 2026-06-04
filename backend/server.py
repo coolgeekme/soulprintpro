@@ -5093,6 +5093,19 @@ async def send_message(conv_id: str, body: SendMessageBody, u: dict = Depends(ge
         kind_label="agent_reply",
     )
 
+    # Meter the user → agent turn against the user's Message-pack
+    # credit first, then the trial quota. We charge ONE message
+    # per send_message call regardless of how many agents reply —
+    # the meaningful unit from the user's POV is "I sent a message",
+    # not "five agents fanned out". This keeps the math intuitive
+    # and matches the /pricing "500 messages" copy. Staff + Refine
+    # users blow past the quota fallback automatically.
+    # IMPORTANT: this runs BEFORE the user message is inserted so a
+    # quota-exhausted user gets a clean 402 instead of seeing a
+    # half-state where their message is in the DB but no agent replied.
+    from trial_caps import consume_credit_or_quota as _consume_credit
+    await _consume_credit(db, u, "credit_messages", amount=1)
+
     now = datetime.now(timezone.utc)
     user_doc = {
         "id": str(uuid.uuid4()),

@@ -663,8 +663,8 @@ function describeAddonState(addon, state) {
       return state.credit_messages > 0 ? `${state.credit_messages.toLocaleString()} bonus messages remaining` : "";
     case "browser_pack":
       return state.credit_browser_minutes > 0 ? `${state.credit_browser_minutes.toLocaleString()} bonus minutes remaining` : "";
-    case "audit_pack":
-      return state.credit_audits > 0 ? `${state.credit_audits.toLocaleString()} bonus audits remaining` : "";
+    case "mission_pack":
+      return state.credit_missions > 0 ? `${state.credit_missions.toLocaleString()} bonus missions remaining` : "";
     default:
       return "";
   }

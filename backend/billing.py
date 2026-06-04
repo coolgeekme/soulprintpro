@@ -218,15 +218,15 @@ ADDONS: Dict[str, Dict[str, Any]] = {
         "apply_kind": "credit_browser_minutes",
         "credit_units": 200,
     },
-    "audit_pack": {
-        "id": "audit_pack",
-        "name": "Signal Audit pack",
-        "blurb": "10 extra Signal Audits for client prospecting. Reuses saved templates.",
+    "mission_pack": {
+        "id": "mission_pack",
+        "name": "Mission pack",
+        "blurb": "10 extra Foundry missions for deep research, lead-hunting, or scraping. No expiry.",
         "price_usd": 10.0,
-        "unit": "/ 10 audits",
+        "unit": "/ 10 missions",
         "cadence": "one_time",
-        "lookup_key": "foundry_addon_audit_pack_v1",
-        "apply_kind": "credit_audits",
+        "lookup_key": "foundry_addon_mission_pack_v1",
+        "apply_kind": "credit_missions",
         "credit_units": 10,
     },
 }
@@ -631,19 +631,32 @@ async def _get_or_create_customer(db, user: Dict[str, Any]) -> str:
 async def user_plan_limits(db, user_id: str, user_email: str | None = None) -> Dict[str, Any]:
     """Resolve the effective plan + org limit for a user. Staff
     members get Refine's limits regardless of subscription state.
-    Returns `{plan, plan_id, orgs_limit, is_staff}`.
+    Returns `{plan, plan_id, orgs_limit, is_staff, extra_orgs}`.
+
+    ``orgs_limit`` already incorporates any active `extra_org` add-on
+    subscriptions (purchased via /billing/addons/checkout). Callers
+    SHOULD NOT add `extra_orgs` themselves — the resolver does it.
     """
     from staff import is_staff_email
     if is_staff_email(user_email or ""):
         return {
             "plan": PLANS["refine"], "plan_id": "refine",
             "orgs_limit": PLANS["refine"]["orgs_included"], "is_staff": True,
+            "extra_orgs": 0,
         }
     plan_id = await _user_plan(db, user_id)
     plan = PLANS.get(plan_id, PLANS["spark"])
+    # Pull add-on counter off the user row. Refine is unlimited already
+    # — don't bother stacking extras, the number would be misleading.
+    extra_orgs = 0
+    if plan_id != "refine":
+        u = await _user_doc(db, user_id) or {}
+        extra_orgs = max(0, int(u.get("extra_orgs") or 0))
     return {
         "plan": plan, "plan_id": plan_id,
-        "orgs_limit": plan["orgs_included"], "is_staff": False,
+        "orgs_limit": plan["orgs_included"] + extra_orgs,
+        "is_staff": False,
+        "extra_orgs": extra_orgs,
     }
 
 
@@ -929,7 +942,9 @@ async def _apply_addon_purchase(
     if apply_kind in ("extra_orgs", "extra_seats"):
         # Replace semantics for recurring add-ons — Stripe is truth.
         update[apply_kind] = max(0, int(quantity))
-    elif apply_kind in ("credit_messages", "credit_browser_minutes", "credit_audits"):
+    elif apply_kind in (
+        "credit_messages", "credit_browser_minutes", "credit_missions",
+    ):
         # Increment semantics for one-time packs.
         delta = int((addon.get("credit_units") or 0) * int(quantity))
         if delta <= 0:
@@ -1031,7 +1046,7 @@ def make_billing_router(
                 "addons": {
                     "extra_orgs": 0, "extra_seats": 0,
                     "credit_messages": 0, "credit_browser_minutes": 0,
-                    "credit_audits": 0,
+                    "credit_missions": 0,
                 },
                 "addons_catalogue": _public_addons(),
             }
@@ -1084,7 +1099,7 @@ def make_billing_router(
             "extra_seats": int(user_doc.get("extra_seats") or 0),
             "credit_messages": int(user_doc.get("credit_messages") or 0),
             "credit_browser_minutes": int(user_doc.get("credit_browser_minutes") or 0),
-            "credit_audits": int(user_doc.get("credit_audits") or 0),
+            "credit_missions": int(user_doc.get("credit_missions") or 0),
         }
 
         return {

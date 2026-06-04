@@ -150,6 +150,19 @@ async def compute_seat_status(db, org_id: str) -> Dict[str, Any]:
     )
     seats_used = members + pending
 
+    # Add-on extra_seat lift: owner-purchased `extra_seat` subscriptions
+    # add to this org's allowance. We read off the owner's user row and
+    # bolt it on AFTER the access-code boost so both stack. Refine is
+    # already unlimited so no need to top it up.
+    extra_seats = 0
+    if owner_uid and effective_plan_for_addon_lift(plan, boost_source) != "refine":
+        owner_doc = await db.users.find_one(
+            {"_id": ObjectId(owner_uid)} if ObjectId.is_valid(owner_uid) else {"id": owner_uid},
+            {"_id": 0, "extra_seats": 1},
+        ) or {}
+        extra_seats = max(0, int(owner_doc.get("extra_seats") or 0))
+    seats_included += extra_seats
+
     effective_plan = "temper" if boost_source else plan
 
     return {
@@ -165,7 +178,19 @@ async def compute_seat_status(db, org_id: str) -> Dict[str, Any]:
         "boost_expires_at": (
             boost_expires_at.isoformat() if boost_expires_at else None
         ),
+        "extra_seats": extra_seats,
     }
+
+
+def effective_plan_for_addon_lift(plan: str, boost_source: Optional[str]) -> str:
+    """Helper: returns 'refine' if the org effectively has Refine-tier
+    capacity (either natively or via a not-yet-implemented future boost
+    that mirrors Refine). Today this is just identity unless boost is
+    set; kept as a function so future plan/boost types don't require
+    touching the add-on lift logic."""
+    if boost_source == "access_code":
+        return "temper"  # access-code boost lifts to Temper, not Refine
+    return plan
 
 
 def warning_for_status(status: Dict[str, Any]) -> Optional[str]:
