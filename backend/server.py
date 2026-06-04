@@ -3496,6 +3496,31 @@ _IMAGE_KEYWORDS_RE = re.compile(
     r")\b",
     re.IGNORECASE,
 )
+# Hard veto: messages that look like a transcript paste (Plaud / Otter /
+# Granola / fireflies all dump bracketed pause markers like `[...0.6s]`,
+# `[silence 2s]`, `[2.5s]`). Three or more such markers in a single
+# message is a near-certain transcript — and the user is virtually
+# always asking us to summarize / extract action items, NOT to generate
+# a video. Without this guard, the bare `s` in `[...0.6s]` matches the
+# duration form below and we route the whole transcript to Kie.ai.
+_TRANSCRIPT_TIMESTAMP_RE = re.compile(
+    r"\[\s*(?:\.{3,}|silence|pause)?\s*\d+(?:\.\d+)?\s*(?:s|sec|secs|seconds?|m|min|mins?|h|hr|hrs?)\s*\]",
+    re.IGNORECASE,
+)
+_TRANSCRIPT_MIN_MARKERS = 3
+
+
+def _looks_like_transcript_paste(text: str) -> bool:
+    """True iff ``text`` carries enough bracketed pause/timestamp markers
+    to be a transcript dump. We use a count rather than a single hit so
+    a casual mention like 'I added a [silence 2s] gap' doesn't veto
+    legitimate video requests."""
+    if not text:
+        return False
+    n = len(_TRANSCRIPT_TIMESTAMP_RE.findall(text))
+    return n >= _TRANSCRIPT_MIN_MARKERS
+
+
 _VIDEO_KEYWORDS_RE = re.compile(
     r"\b("
     r"video|videos|clip|clips|reel|reels|"
@@ -3503,7 +3528,12 @@ _VIDEO_KEYWORDS_RE = re.compile(
     r"motion|movie|film|trailer|teaser|"
     r"commercial|ad\s*spot|tv\s*spot|"
     r"cinematic|cinemagraph|"
-    r"\d+\s*[-]?\s*(second|sec|s)\s*(video|clip|spot|ad)?|"
+    # Duration form — the trailing noun is REQUIRED so bare timestamp
+    # markers like `0.6s` or `[...2.5s]` (Plaud / Otter / Granola
+    # transcripts) don't false-positive into a video-gen request.
+    # Match either the abbreviated unit forms (`s`, `sec`) OR the full
+    # `second(s)` word — both must be followed by a video noun.
+    r"\d+\s*[-]?\s*(?:second|seconds|sec|s)\s*(?:video|videos|clip|clips|spot|spots|ad|ads|reel|reels|short|shorts|teaser|trailer)|"
     r"(youtube|tiktok|instagram|reels|shorts)\s*video|"
     r"b[-]?roll"
     r")\b",
@@ -3560,6 +3590,11 @@ _DOC_INTENT_RE = re.compile(
 def _quick_image_intent(text: str) -> Optional[bool]:
     """Cheap deterministic pre-classifier. Returns True/False if confident,
     None if we should ask the LLM. Saves a roundtrip on the obvious cases."""
+    # Transcript pastes (`[...0.6s]`, `[2.5s]`, …) are almost always a
+    # "summarize this" request — defer to the LLM classifier so we
+    # don't shortcut into image / video generation.
+    if _looks_like_transcript_paste(text):
+        return False
     if _VIDEO_KEYWORDS_RE.search(text):
         return False  # video request — don't shortcut to image
     # Document requests ALWAYS win — "write a PDF brief" mentions "brief"
@@ -3610,6 +3645,13 @@ def detect_image_count(text: str) -> int:
     return max(1, min(n, MAX_BULK_IMAGES))
 
 def _quick_video_intent(text: str) -> Optional[bool]:
+    # Hard veto: transcript pastes carry many bracketed pause markers
+    # like `[...0.6s]` and almost always mean "summarize this", not
+    # "make a video about this". Defer to the slow LLM classifier so
+    # ambiguous cases still get a careful decision instead of routing
+    # the whole transcript to Kie.ai.
+    if _looks_like_transcript_paste(text):
+        return False
     if _VIDEO_KEYWORDS_RE.search(text) and _VERB_HINTS_RE.search(text):
         return True
     return None
@@ -3809,6 +3851,10 @@ async def detect_image_intent(message: str) -> bool:
     """
     if not message.strip():
         return False
+    # Transcript pastes (`[...0.6s]`, `[2.5s]`, …) are summarize requests
+    # virtually 100% of the time. Bail before any further classification.
+    if _looks_like_transcript_paste(message):
+        return False
     # Long pasted bodies (transcripts, briefs) blow up LLM classifier
     # latency without affecting the answer. The intent is virtually always
     # determined by the first ~1KB ("summarize this transcript:"). Clip
@@ -3858,6 +3904,12 @@ async def detect_video_intent(message: str) -> bool:
     / cinematic / 5-second/10-second video asks. Lean NO for stills.
     """
     if not message.strip():
+        return False
+    # Transcript pastes (Plaud / Otter / Granola / fireflies) carry many
+    # bracketed pause/timestamp markers and are virtually always a
+    # summarize request. Bail before any further classification so
+    # bracketed `[...0.6s]` markers can never trip downstream regex.
+    if _looks_like_transcript_paste(message):
         return False
     # Clip very long inputs so the classifier doesn't time out on
     # transcript-length bodies — the head + tail captures the intent.
