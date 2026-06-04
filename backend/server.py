@@ -45,7 +45,12 @@ from perplexity_client import (
     perplexity_web_search,
     is_available as _perplexity_available,
 )
-from kie_client import generate_video as kie_generate_video, submit_video as kie_submit_video, wait_for_video as kie_wait_for_video
+from kie_client import (
+    generate_video as kie_generate_video,
+    submit_video as kie_submit_video,
+    wait_for_video as kie_wait_for_video,
+    DEFAULT_VIDEO_MODEL as DEFAULT_VIDEO_MODEL_LOCAL,
+)
 import asyncio
 import httpx
 from assets import (
@@ -6458,21 +6463,34 @@ def parse_video_aspect_ratio(text: str) -> str:
         return "16:9"
     return "16:9"
 
-async def _poll_and_save_video(message_id: str, prompt: str, aspect_ratio: str = "16:9") -> None:
-    """Background coroutine: call Kie.ai, then update the placeholder message.
+async def _poll_and_save_video(
+    message_id: str, prompt: str, aspect_ratio: str = "16:9",
+    *, task_id: Optional[str] = None, model: str = DEFAULT_VIDEO_MODEL_LOCAL,
+) -> None:
+    """Background coroutine: poll Kie.ai for a video task, then update the
+    placeholder message in-place. If `task_id` is given (the normal path
+    AND the rehydration path), we just poll. If not, we fall back to the
+    legacy submit+poll behaviour for callers that didn't get a chance to
+    submit synchronously.
 
-    The agent message is created with `media_status="pending"` immediately so
-    the UI can render a spinner. When polling resolves we DOWNLOAD the video
-    (via `_save_remote_url_to_uploads` → persistent GridFS mirror) and patch
-    the message with a `/api/files/<local>` URL.
+    The agent message is created with `media_status="pending"` immediately
+    so the UI can render a spinner. When polling resolves we DOWNLOAD the
+    video (via `_save_remote_url_to_uploads` → persistent GridFS mirror)
+    and patch the message with a `/api/files/<local>` URL.
 
-    Before Feb 2026 we stored the raw Kie.ai CDN URL which silently expired
-    after a few days — producing exactly the "broken video link" symptom
-    the user reported. The local file is always served by our own
-    capability-URL route, so it can never expire unless manually deleted.
+    Pod-restart resilience (Feb 2026): the message now persists the
+    `kie_task_id` BEFORE we hand off to the background loop, so a pod
+    restart can rehydrate the poll instead of leaving the user staring
+    at a spinner forever.
     """
+    url: Optional[str] = None
     try:
-        url = await kie_generate_video(prompt, aspect_ratio=aspect_ratio)
+        if not task_id:
+            # Legacy path: submit + poll in one shot.
+            url = await kie_generate_video(prompt, aspect_ratio=aspect_ratio)
+        else:
+            # New path: task already submitted — just poll.
+            url = await kie_wait_for_video(task_id)
     except Exception as exc:
         logger.exception("Kie polling crash: %s", exc)
         url = None
@@ -6502,25 +6520,69 @@ async def _poll_and_save_video(message_id: str, prompt: str, aspect_ratio: str =
 
 async def _kick_off_video(conv_id: str, agent_id: str, prompt: str, aspect_ratio: str = "16:9") -> dict:
     """Persist a placeholder agent message and fire off the Kie polling task.
-    Returns the message dict (sans _id) for the API response."""
+    Returns the message dict (sans _id) for the API response.
+
+    We submit the Kie task synchronously BEFORE returning so the
+    `kie_task_id` is persisted on the message. That way, if the pod
+    dies mid-poll (deploy / autoscale / OOM), the startup rehydrator
+    can resume polling on the new pod instead of leaving the user
+    with a "Generating…" bubble that never resolves.
+    """
     if aspect_ratio not in ("16:9", "9:16", "Auto"):
         aspect_ratio = "16:9"
-    msg = {
+    # Submit the Kie task synchronously so we can stamp the task_id
+    # on the message. If submission fails outright, fail fast with a
+    # clear error message instead of a forever-pending bubble.
+    task_id: Optional[str] = None
+    try:
+        task_id = await kie_submit_video(
+            prompt, model=DEFAULT_VIDEO_MODEL_LOCAL, aspect_ratio=aspect_ratio,
+        )
+    except Exception as exc:
+        logger.warning("Kie submit failed in _kick_off_video: %s", exc)
+        task_id = None
+    now = datetime.now(timezone.utc)
+    base_msg = {
         "id": str(uuid.uuid4()),
         "conversation_id": conv_id,
         "sender_type": "agent",
         "sender_id": agent_id,
         "sender_name": AGENTS[agent_id]["name"],
         "agent_id": agent_id,
-        "text": "Generating your video — this usually takes 60–180s.",
         "media_type": "video",
-        "media_status": "pending",
         "media_prompt": prompt[:500],
         "aspect_ratio": aspect_ratio,
-        "timestamp": datetime.now(timezone.utc),
+        "timestamp": now,
+    }
+    if not task_id:
+        # Submission itself failed (Kie 4xx, missing key, network) — no
+        # point holding the user on a spinner that will never resolve.
+        msg = {
+            **base_msg,
+            "text": (
+                "I couldn't start that video — the generation service "
+                "rejected the request. Try a different prompt or run it "
+                "again."
+            ),
+            "media_status": "failed",
+            "ready_at": now,
+        }
+        await db.messages.insert_one({**msg})
+        return {k: v for k, v in msg.items() if k != "_id"}
+    msg = {
+        **base_msg,
+        "text": "Generating your video — this usually takes 60–180s.",
+        "media_status": "pending",
+        "kie_task_id": task_id,
+        "kie_model": DEFAULT_VIDEO_MODEL_LOCAL,
     }
     await db.messages.insert_one({**msg})
-    asyncio.create_task(_poll_and_save_video(msg["id"], prompt, aspect_ratio))
+    asyncio.create_task(
+        _poll_and_save_video(
+            msg["id"], prompt, aspect_ratio,
+            task_id=task_id, model=DEFAULT_VIDEO_MODEL_LOCAL,
+        )
+    )
     return {k: v for k, v in msg.items() if k != "_id"}
 
 @conv_r.post("/conversations/{conv_id}/generate-video")
@@ -6654,14 +6716,22 @@ async def _save_remote_url_to_uploads(url: str, *, suffix: str = "") -> Optional
 async def _poll_and_save_kie_media(
     message_id: str, *, model: str, prompt: str, media_type: str,
     image_url: Optional[str] = None, extra: Optional[dict] = None,
+    task_id: Optional[str] = None,
 ) -> None:
     """Background coroutine — submit + poll a kie.ai task, download the
-    result(s), patch the placeholder agent message with attachments."""
+    result(s), patch the placeholder agent message with attachments.
+
+    Pod-restart resilience: if `task_id` is provided (the normal path
+    AND the rehydration path), we skip submission and just poll. The
+    submitting caller persists `kie_task_id` on the placeholder message
+    BEFORE invoking us, so the startup rehydrator can resume polling
+    on a fresh pod after a crash / deploy."""
     try:
-        task_id = await _kie_submit_any(
-            model_key=model, prompt=prompt,
-            image_url=image_url, extra=extra,
-        )
+        if not task_id:
+            task_id = await _kie_submit_any(
+                model_key=model, prompt=prompt,
+                image_url=image_url, extra=extra,
+            )
         if not task_id:
             urls: list[str] = []
         else:
@@ -6811,6 +6881,41 @@ async def generate_media_endpoint(
         "video": "Generating your video — this usually takes 60–180s.",
         "music": "Composing your track — usually 30–120 seconds.",
     }
+    # Submit the kie.ai task SYNCHRONOUSLY so we can stamp `kie_task_id`
+    # on the message. That's what lets the startup rehydrator pick up
+    # the poll if the pod dies mid-generation (deploy / OOM / scale).
+    try:
+        task_id = await _kie_submit_any(
+            model_key=body.model, prompt=body.prompt,
+            image_url=body.image_url, extra=body.extra,
+        )
+    except Exception as exc:
+        logger.warning("Kie %s submit failed: %s", body.model, exc)
+        task_id = None
+    now_ts = datetime.now(timezone.utc)
+    if not task_id:
+        failed = {
+            "id": str(uuid.uuid4()),
+            "conversation_id": conv_id,
+            "sender_type": "agent",
+            "sender_id": agent_id,
+            "sender_name": agent["name"],
+            "agent_id": agent_id,
+            "text": (
+                f"I couldn't start that {media_type} with **{body.model}** — "
+                "the generation service rejected the request. Try a "
+                "different model or run it again."
+            ),
+            "media_type": media_type,
+            "media_status": "failed",
+            "media_prompt": body.prompt[:500],
+            "media_model": body.model,
+            "aspect_ratio": body.aspect_ratio,
+            "timestamp": now_ts,
+            "ready_at": now_ts,
+        }
+        await db.messages.insert_one({**failed})
+        return {k: v for k, v in failed.items() if k != "_id"}
     placeholder = {
         "id": str(uuid.uuid4()),
         "conversation_id": conv_id,
@@ -6824,7 +6929,11 @@ async def generate_media_endpoint(
         "media_prompt": body.prompt[:500],
         "media_model": body.model,
         "aspect_ratio": body.aspect_ratio,
-        "timestamp": datetime.now(timezone.utc),
+        "kie_task_id": task_id,
+        "kie_model": body.model,
+        "kie_image_url": body.image_url,
+        "kie_extra": body.extra,
+        "timestamp": now_ts,
     }
     await db.messages.insert_one({**placeholder})
     asyncio.create_task(_poll_and_save_kie_media(
@@ -6834,6 +6943,7 @@ async def generate_media_endpoint(
         media_type=media_type,
         image_url=body.image_url,
         extra=body.extra,
+        task_id=task_id,
     ))
     return {k: v for k, v in placeholder.items() if k != "_id"}
 
@@ -10000,6 +10110,138 @@ async def startup():
         stuck_count += 1
     if stuck_count:
         logger.info("Reconciled %d stuck mission(s) on startup", stuck_count)
+    # ── Pending-media rehydration ────────────────────────────────────
+    # Chat-message media (video / image / music) generated via Kie.ai
+    # is fired off as a background asyncio task. If the pod dies during
+    # generation (deploy / OOM / autoscale), the task vanishes but the
+    # placeholder message stays `media_status="pending"` forever — the
+    # user sees "Generating your video — 60-180s" indefinitely.
+    #
+    # Fix: re-spawn the poll for any pending message that still has a
+    # `kie_task_id` and is younger than the per-type timeout. Anything
+    # older (or missing a task_id, which is the legacy case) gets
+    # cleanly failed with a retry-friendly message.
+    try:
+        from kie_client import KIE_TASK_TIMEOUTS as _KIE_TIMEOUTS
+        now_dt = datetime.now(timezone.utc)
+        # Generous safety margin so a long Sora/Kling generation
+        # (already mid-poll on the dying pod) isn't pre-empted.
+        resume_cutoff = {
+            "image": now_dt - timedelta(minutes=10),
+            "video": now_dt - timedelta(minutes=20),
+            "music": now_dt - timedelta(minutes=15),
+        }
+        rehydrated_media = 0
+        failed_media = 0
+        async for stale in db.messages.find(
+            {"media_status": "pending"},
+            {"id": 1, "media_type": 1, "media_prompt": 1, "kie_task_id": 1,
+             "kie_model": 1, "kie_image_url": 1, "kie_extra": 1,
+             "aspect_ratio": 1, "timestamp": 1},
+        ):
+            mid = stale.get("id")
+            mtype = stale.get("media_type") or "image"
+            task_id = stale.get("kie_task_id")
+            created = stale.get("timestamp") or now_dt
+            if created.tzinfo is None:
+                created = created.replace(tzinfo=timezone.utc)
+            cutoff = resume_cutoff.get(mtype, now_dt - timedelta(minutes=15))
+            if task_id and created > cutoff:
+                # Still inside the per-type timeout window — restart the
+                # background poll.
+                if mtype == "video" and (stale.get("kie_model") or "") in (
+                    "veo3_fast", "veo3", "veo3_lite"
+                ):
+                    asyncio.create_task(_poll_and_save_video(
+                        mid,
+                        stale.get("media_prompt") or "",
+                        stale.get("aspect_ratio") or "16:9",
+                        task_id=task_id,
+                        model=stale.get("kie_model") or DEFAULT_VIDEO_MODEL_LOCAL,
+                    ))
+                else:
+                    asyncio.create_task(_poll_and_save_kie_media(
+                        mid,
+                        model=stale.get("kie_model") or "veo3_fast",
+                        prompt=stale.get("media_prompt") or "",
+                        media_type=mtype,
+                        image_url=stale.get("kie_image_url"),
+                        extra=stale.get("kie_extra"),
+                        task_id=task_id,
+                    ))
+                rehydrated_media += 1
+            else:
+                # Either no task_id (legacy / submission crashed) or
+                # the window is closed — fail cleanly so the user can
+                # retry instead of staring at a spinner forever.
+                await db.messages.update_one(
+                    {"id": mid, "media_status": "pending"},
+                    {"$set": {
+                        "media_status": "failed",
+                        "text": (
+                            f"I couldn't finish that {mtype} — the server "
+                            "restarted while it was generating. Just run "
+                            "the request again."
+                        ),
+                        "ready_at": now_dt,
+                    }},
+                )
+                failed_media += 1
+        if rehydrated_media or failed_media:
+            logger.info(
+                "Pending-media rehydration: %d resumed, %d failed",
+                rehydrated_media, failed_media,
+            )
+    except Exception as exc:
+        logger.warning("Pending-media rehydration sweep failed: %s", exc)
+
+    # ── Social-post pending video / music_video reconciliation ──────
+    # Same pod-restart-kills-background-task problem as chat media,
+    # but social posts go through a multi-stage pipeline (Suno → Kling
+    # → ffmpeg mux) we can't trivially resume from the middle. Mark
+    # anything older than 20 min as errored so the UI surfaces a
+    # retry button instead of leaving the user stuck on a spinner.
+    try:
+        social_video_cutoff = datetime.now(timezone.utc) - timedelta(minutes=20)
+        v_res = await db.social_posts.update_many(
+            {
+                "video_status": "pending",
+                "$or": [
+                    {"video_pending_at": {"$lt": social_video_cutoff}},
+                    {"video_pending_at": {"$exists": False}},
+                ],
+            },
+            {"$set": {
+                "video_status": "error",
+                "video_error": (
+                    "Video generation was interrupted by a server "
+                    "restart — click Generate Video again to retry."
+                ),
+            }, "$unset": {"video_pending_at": ""}},
+        )
+        mv_res = await db.social_posts.update_many(
+            {
+                "music_video_status": "pending",
+                "$or": [
+                    {"music_video_pending_at": {"$lt": social_video_cutoff}},
+                    {"music_video_pending_at": {"$exists": False}},
+                ],
+            },
+            {"$set": {
+                "music_video_status": "error",
+                "music_video_error": (
+                    "Music video generation was interrupted by a "
+                    "server restart — click Generate again to retry."
+                ),
+            }, "$unset": {"music_video_pending_at": ""}},
+        )
+        if v_res.modified_count or mv_res.modified_count:
+            logger.info(
+                "Social-post media reconciliation: failed %d video(s), %d music-video(s)",
+                v_res.modified_count, mv_res.modified_count,
+            )
+    except Exception as exc:
+        logger.warning("Social-post media reconciliation failed: %s", exc)
     # Boot the in-process scheduler and rehydrate persisted jobs
     if not scheduler.running:
         scheduler.start()
