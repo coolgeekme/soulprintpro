@@ -1635,29 +1635,41 @@ async def update_org(org_id: str, body: OrgUpdateBody, u: dict = Depends(get_cur
 
 @org_r.delete("/{org_id}")
 async def delete_org(org_id: str, u: dict = Depends(get_current_user)):
+    """Delete an organization and every byte associated with it.
+
+    Cascade is delegated to ``org_cleanup.purge_org_data`` — the single
+    source of truth shared with the privacy hard-delete flow. The cascade
+    covers metadata rows (documents, missions, audits, social posts,
+    composio connections, org_notes, soul_suggestions, etc.), the
+    underlying file bytes on disk AND in GridFS, and revokes upstream
+    Composio OAuth tokens before clearing local rows.
+
+    Stripe billing rows (``payment_transactions``) are RETAINED for tax
+    compliance — they sit on the user, not the org. Auth audit logs
+    older than 12 months are similarly retained per the retention policy.
+    """
     ctx = await require_org_member(org_id, u["id"])
     if ctx["member"]["role"] != "owner":
         raise HTTPException(403, "Only the org owner can delete this organization")
-    # Cascade: gather all teams, conversations, messages, invites, members, assets, schedules
-    teams = await db.teams.find({"org_id": org_id}, {"_id": 1}).to_list(1000)
-    team_ids = [str(t["_id"]) for t in teams]
-    convs = await db.conversations.find({"team_id": {"$in": team_ids}}, {"_id": 1}).to_list(5000) if team_ids else []
-    conv_ids = [str(c["_id"]) for c in convs]
-    if conv_ids:
-        await db.messages.delete_many({"conversation_id": {"$in": conv_ids}})
-        await db.conversations.delete_many({"_id": {"$in": [ObjectId(c) for c in conv_ids]}})
-    if team_ids:
-        await db.teams.delete_many({"_id": {"$in": [ObjectId(t) for t in team_ids]}})
-    await db.invites.delete_many({"org_id": org_id})
-    await db.org_members.delete_many({"org_id": org_id})
-    await db.assets.delete_many({"org_id": org_id})
-    # Schedules cascade via the in-process scheduler unregister
-    schedules = await db.schedules.find({"org_id": org_id}).to_list(1000)
-    for s in schedules:
-        _scheduler_unregister(str(s["_id"]))
-    await db.schedules.delete_many({"org_id": org_id})
-    await db.organizations.delete_one({"_id": ObjectId(org_id)})
-    return {"ok": True}
+    from org_cleanup import purge_org_data
+    stats = await purge_org_data(
+        db, org_id,
+        upload_dir=UPLOAD_DIR,
+        assets_dir=ASSETS_DIR,
+        docs_dir=DOCS_DIR,
+        conv_upload_dir=CONV_UPLOAD_DIR,
+        revoke_composio=True,
+    )
+    # purge_org_data stashes schedule_ids for us to unregister from
+    # the in-process APScheduler instance (it can't import the
+    # scheduler safely from inside the cleanup module).
+    for sid in stats.pop("_schedule_ids", []) or []:
+        try:
+            _scheduler_unregister(sid)
+        except Exception:
+            pass
+    logger.info("delete_org cleanup stats for org=%s: %s", org_id, stats)
+    return {"ok": True, "stats": stats}
 
 
 # ── Brand assets ───────────────────────────────────────────────────────────

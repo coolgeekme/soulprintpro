@@ -500,8 +500,12 @@ async def _hard_delete_user(db, user_id: str) -> None:
     """Execute the full hard delete. Steps in order:
       1. Revoke every Composio connection the user owns (best-effort).
       2. Cascade-delete every solo-owned org (sole member or no other
-         owners + user opted-in via the wizard).
-      3. Hard-delete private conversations + their messages.
+         owners + user opted-in via the wizard) via the shared
+         ``org_cleanup.purge_org_data`` helper — that takes care of
+         disk + GridFS byte cleanup, all metadata collections, and
+         upstream Composio revocation.
+      3. Hard-delete private conversations + their messages + the
+         per-conversation upload directories.
       4. Anonymise the user's messages in team-visible threads.
       5. Delete user_memory.
       6. Delete the user's org_members rows + any pending invites.
@@ -510,18 +514,19 @@ async def _hard_delete_user(db, user_id: str) -> None:
          retention window; keep the rest (security-investigations basis).
       9. Delete the users row itself.
     """
-    # 1. Revoke Composio.
+    # 1. Revoke any USER-scoped Composio connections (e.g. Telegram
+    #    Bot tokens) that aren't tied to a specific org. Org-scoped
+    #    connections are handled by purge_org_data in step 2.
     try:
-        from composio_integration import composio_user_id, get_client  # type: ignore
-        client = get_client() if "get_client" in dir() else None
+        from composio_integration import is_available, get_client  # type: ignore
+        client = get_client() if is_available() else None
         conns_cur = db.composio_connections.find({
             "composio_user_id": {"$regex": f"-{user_id}$"},
         })
         async for c in conns_cur:
             try:
                 if client and c.get("connection_id"):
-                    # composio v3 disconnects via `client.connected_accounts.delete`
-                    await client.connected_accounts.delete(c["connection_id"])
+                    client.connected_accounts.delete(c["connection_id"])
             except Exception as exc:
                 logger.warning("Composio revoke failed for %s: %s", c.get("connection_id"), exc)
         await db.composio_connections.delete_many({
@@ -530,39 +535,41 @@ async def _hard_delete_user(db, user_id: str) -> None:
     except Exception as exc:
         logger.warning("Composio revoke phase failed (continuing): %s", exc)
 
-    # 2. Cascade-delete solo-owned orgs (where the user is the sole
-    # member or where they explicitly opted to delete on the way out).
+    # 2. Cascade-delete solo-owned orgs via the shared purge helper.
+    from org_cleanup import purge_org_data
+    upload_dir = _upload_dir_from_env()
+    assets_dir = _assets_dir_from_env()
+    docs_dir = _docs_dir_from_env()
+    conv_upload_dir = _conv_upload_dir_from_env()
     owned_cur = db.org_members.find({"user_id": user_id, "role": "owner"})
     async for m in owned_cur:
         org_id = m["org_id"]
         total = await db.org_members.count_documents({"org_id": org_id})
         if total > 1:
-            # An active ownership transfer should have happened first.
-            # If we're here it means the user kicked off deletion AFTER
-            # promoting another owner — fine, this org has another
-            # owner and we just leave it.
+            # Ownership transfer should have happened during the wizard.
+            # If another owner already exists at this point the org has
+            # continuity — skip the cascade and just leave it.
             continue
-        # Cascade: teams → conversations → messages → documents → audits → missions
-        teams_cur = db.teams.find({"org_id": org_id})
-        team_ids: List[str] = []
-        async for t in teams_cur:
-            team_ids.append(str(t["_id"]))
-        if team_ids:
-            convs_cur = db.conversations.find({"team_id": {"$in": team_ids}})
-            conv_ids: List[str] = []
-            async for c in convs_cur:
-                conv_ids.append(c.get("id") or str(c.get("_id")))
-            if conv_ids:
-                await db.messages.delete_many({"conversation_id": {"$in": conv_ids}})
-            await db.conversations.delete_many({"team_id": {"$in": team_ids}})
-        await db.teams.delete_many({"org_id": org_id})
-        await db.documents.delete_many({"org_id": org_id})
-        await db.missions.delete_many({"org_id": org_id})
-        await db.audits.delete_many({"org_id": org_id})
-        await db.social_posts.delete_many({"org_id": org_id})
-        await db.organizations.delete_one({"_id": ObjectId(org_id)})
+        try:
+            stats = await purge_org_data(
+                db, org_id,
+                upload_dir=upload_dir,
+                assets_dir=assets_dir,
+                docs_dir=docs_dir,
+                conv_upload_dir=conv_upload_dir,
+                # Org-scoped Composio rows are revoked by the helper.
+                revoke_composio=True,
+            )
+            logger.info("Privacy purge for org=%s (user=%s): %s",
+                        org_id, user_id, stats)
+        except Exception as exc:
+            logger.error(
+                "Privacy purge of solo-owned org %s for user %s failed: %s",
+                org_id, user_id, exc,
+            )
 
-    # 3. Hard-delete private conversations (DMs + private CoS).
+    # 3. Hard-delete private conversations + their messages + their
+    #    per-conversation upload subdirectories.
     own_convs_cur = db.conversations.find({"owner_user_id": user_id})
     own_conv_ids: List[str] = []
     async for c in own_convs_cur:
@@ -570,6 +577,18 @@ async def _hard_delete_user(db, user_id: str) -> None:
     if own_conv_ids:
         await db.messages.delete_many({"conversation_id": {"$in": own_conv_ids}})
         await db.conversations.delete_many({"owner_user_id": user_id})
+        # Per-conversation upload directories (user-attached images,
+        # PDFs, audio notes). Each conversation owns its own subfolder.
+        if conv_upload_dir and conv_upload_dir.exists():
+            for cid in own_conv_ids:
+                if not cid:
+                    continue
+                sub = conv_upload_dir / cid
+                if sub.exists() and sub.is_dir():
+                    try:
+                        shutil.rmtree(sub, ignore_errors=True)
+                    except Exception:
+                        pass
 
     # 4. Anonymise team-thread messages.
     await db.messages.update_many(
@@ -583,6 +602,10 @@ async def _hard_delete_user(db, user_id: str) -> None:
 
     # 5. user_memory.
     await db.user_memory.delete_many({"user_id": user_id})
+    try:
+        await db.user_memories.delete_many({"user_id": user_id})
+    except Exception:
+        pass
 
     # 6. org_members + invites.
     await db.org_members.delete_many({"user_id": user_id})
@@ -611,6 +634,26 @@ async def _hard_delete_user(db, user_id: str) -> None:
 
     # 9. The users row itself.
     await db.users.delete_one({"_id": ObjectId(user_id)})
+
+
+def _upload_dir_from_env() -> Path:
+    """Resolve the UPLOAD_DIR the rest of the app uses. We mirror the
+    same single source — server.py — so the cleanup hits the same
+    paths the writes used. Falls back to the conventional location."""
+    root = Path(os.environ.get("BACKEND_ROOT", "/app/backend"))
+    return root / "uploads"
+
+
+def _assets_dir_from_env() -> Path:
+    return _upload_dir_from_env() / "assets"
+
+
+def _docs_dir_from_env() -> Path:
+    return _upload_dir_from_env() / "docs"
+
+
+def _conv_upload_dir_from_env() -> Path:
+    return _upload_dir_from_env() / "conv"
 
 
 # ── Router ──────────────────────────────────────────────────────────────────
