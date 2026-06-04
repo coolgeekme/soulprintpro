@@ -5,7 +5,7 @@ import { createPortal } from "react-dom";
 import {
   Loader2, Check, AlertTriangle, CreditCard, TrendingUp,
   Receipt, Sparkles, ArrowUpRight, ExternalLink, Mail,
-  Shield, X, Settings, Layers, KeyRound, Clock,
+  Shield, X, Settings, Layers, KeyRound, Clock, RefreshCw,
 } from "lucide-react";
 import api from "../lib/api";
 import TopBar from "../components/TopBar";
@@ -417,6 +417,9 @@ export default function BillingPage() {
         {/* Add-ons — same five cards from /pricing, now buyable. */}
         <AddonsSection summary={summary} />
 
+        {/* Active recurring add-on subscriptions — per-sub cancel/resume. */}
+        <ActiveAddonsPanel />
+
         {/* Recent transactions */}
         <section className="sp-glass rounded-2xl p-5 sm:p-6" data-testid="transactions-card">
           <h3 className="text-xs uppercase tracking-widest sp-subtle mb-3 flex items-center gap-2">
@@ -499,6 +502,187 @@ function buildConsentText(plan, cadence = "monthly") {
     `at the end of the current billing period.`
   );
 }
+
+/**
+ * ActiveAddonsPanel — lists the user's active recurring add-on subs
+ * (extra_org / extra_seat) one row per Stripe subscription, with a
+ * cancel-at-period-end button per row. Resume button re-enables a
+ * subscription that the user just canceled.
+ *
+ * Sourced from /billing/addons/subscriptions which queries Stripe
+ * directly so the state (cancel_at_period_end, current_period_end,
+ * status) is always current. We don't trust the local DB for this —
+ * Stripe is authoritative on billing lifecycle.
+ */
+function ActiveAddonsPanel() {
+  const [subs, setSubs] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [busy, setBusy] = useState("");
+
+  const load = async () => {
+    setLoading(true);
+    try {
+      const { data } = await api.get("/billing/addons/subscriptions");
+      setSubs(data?.subscriptions || []);
+    } catch {
+      setSubs([]);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => { load(); }, []);
+
+  const cancel = async (sub) => {
+    if (busy) return;
+    const ok = window.confirm(
+      `Cancel "${sub.name}" at the end of the current billing period? ` +
+      "You'll keep access until then. You can resume anytime before it ends."
+    );
+    if (!ok) return;
+    setBusy(sub.subscription_id);
+    try {
+      const { data } = await api.post(`/billing/addons/${sub.subscription_id}/cancel`);
+      toast.success(data?.message || "Cancellation scheduled.");
+      await load();
+    } catch (err) {
+      toast.error(err?.response?.data?.detail || "Couldn't schedule the cancellation.");
+    } finally {
+      setBusy("");
+    }
+  };
+
+  const resume = async (sub) => {
+    if (busy) return;
+    setBusy(sub.subscription_id);
+    try {
+      const { data } = await api.post(`/billing/addons/${sub.subscription_id}/resume`);
+      toast.success(data?.message || "Renewal turned back on.");
+      await load();
+    } catch (err) {
+      toast.error(err?.response?.data?.detail || "Couldn't resume the subscription.");
+    } finally {
+      setBusy("");
+    }
+  };
+
+  // Hide entirely when the user has nothing — keeps the page tidy.
+  if (loading) {
+    return (
+      <section
+        className="sp-glass-strong rounded-2xl p-5 sm:p-6 mb-6"
+        data-testid="active-addons-loading"
+      >
+        <div className="text-xs sp-subtle flex items-center gap-2">
+          <Loader2 className="w-3 h-3 animate-spin" /> Loading active add-ons…
+        </div>
+      </section>
+    );
+  }
+  if (!subs || subs.length === 0) return null;
+
+  return (
+    <section
+      className="sp-glass-strong rounded-2xl p-5 sm:p-6 mb-6"
+      data-testid="active-addons-panel"
+    >
+      <div className="mb-4 flex items-baseline justify-between gap-4">
+        <div>
+          <h3 className="text-base font-medium">Manage add-on subscriptions</h3>
+          <p className="text-xs sp-subtle mt-1 leading-relaxed">
+            Each recurring add-on is its own subscription — cancel one without affecting your main plan.
+          </p>
+        </div>
+        <button
+          type="button"
+          onClick={load}
+          className="sp-btn sp-btn-ghost text-xs disabled:opacity-50"
+          data-testid="active-addons-refresh"
+          disabled={loading}
+        >
+          <RefreshCw className="w-3 h-3" /> Refresh
+        </button>
+      </div>
+
+      <ul className="divide-y divide-white/8">
+        {subs.map((sub) => {
+          const ending = sub.cancel_at_period_end;
+          const periodEnd = sub.current_period_end
+            ? new Date(sub.current_period_end).toLocaleDateString(undefined, {
+                month: "short", day: "numeric", year: "numeric",
+              })
+            : null;
+          return (
+            <li
+              key={sub.subscription_id}
+              className="py-3 flex items-start sm:items-center justify-between gap-3 flex-wrap"
+              data-testid={`active-addon-row-${sub.subscription_id}`}
+            >
+              <div className="flex-1 min-w-[200px]">
+                <div className="text-sm font-medium">
+                  {sub.name}
+                  {sub.quantity > 1 && (
+                    <span className="ml-2 text-xs sp-subtle">× {sub.quantity}</span>
+                  )}
+                </div>
+                <div className="text-xs sp-subtle mt-1 leading-relaxed">
+                  ${(sub.price_usd * (sub.quantity || 1)).toFixed(2)}{" "}{sub.unit} ·{" "}
+                  {ending ? (
+                    <span className="text-orange-300">
+                      Cancels {periodEnd ? `on ${periodEnd}` : "at period end"}
+                    </span>
+                  ) : (
+                    <span>
+                      Renews {periodEnd ? `on ${periodEnd}` : "monthly"}
+                    </span>
+                  )}
+                  {sub.status === "past_due" && (
+                    <span className="ml-2 text-red-300">· Card declined</span>
+                  )}
+                </div>
+              </div>
+              <div className="flex items-center gap-2">
+                {ending ? (
+                  <button
+                    type="button"
+                    onClick={() => resume(sub)}
+                    disabled={busy === sub.subscription_id}
+                    className="sp-btn sp-btn-primary text-xs disabled:opacity-50"
+                    data-testid={`active-addon-resume-${sub.subscription_id}`}
+                  >
+                    {busy === sub.subscription_id ? (
+                      <Loader2 className="w-3 h-3 animate-spin" />
+                    ) : null}
+                    Resume renewal
+                  </button>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={() => cancel(sub)}
+                    disabled={busy === sub.subscription_id}
+                    className="sp-btn sp-btn-ghost text-xs disabled:opacity-50 hover:!text-red-300"
+                    data-testid={`active-addon-cancel-${sub.subscription_id}`}
+                  >
+                    {busy === sub.subscription_id ? (
+                      <Loader2 className="w-3 h-3 animate-spin" />
+                    ) : null}
+                    Cancel at period end
+                  </button>
+                )}
+              </div>
+            </li>
+          );
+        })}
+      </ul>
+
+      <div className="mt-4 pt-3 border-t border-white/8 text-[11px] sp-subtle">
+        Need to update your payment method or download invoices?{" "}
+        Use the "Manage subscription" button at the top of this page — it opens the Stripe customer portal.
+      </div>
+    </section>
+  );
+}
+
 
 /**
  * AddonsSection — surfaces the five add-ons from /pricing on the in-app

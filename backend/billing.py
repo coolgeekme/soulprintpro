@@ -1421,7 +1421,193 @@ def make_billing_router(
         )
         return {"url": session.url}
 
-    # ── Status polling for the Stripe redirect ───────────────────────
+    # ── Active add-on subscriptions ──────────────────────────────────
+    # Recurring add-ons (extra_org, extra_seat) are stored as SEPARATE
+    # Stripe subscriptions on the user's customer — not bundled into
+    # the main plan sub. This endpoint surfaces them so the UI can
+    # show each line item with its own cancel button.
+
+    @r.get("/billing/addons/subscriptions")
+    async def list_addon_subscriptions(
+        u: dict = Depends(get_current_user),
+    ):
+        """Return the user's active recurring add-on subscriptions.
+
+        We list directly off Stripe rather than our local DB because
+        Stripe is authoritative on cancellation timing (proration,
+        `cancel_at_period_end`, etc.). The local `payment_transactions`
+        table only sees the INITIATED row, not the live state."""
+        if not _stripe_configured():
+            return {"subscriptions": []}
+        user_doc = await _user_doc(db, u["id"]) or {}
+        customer_id = user_doc.get("stripe_customer_id")
+        if not customer_id:
+            return {"subscriptions": []}
+        _configure_stripe()
+        try:
+            subs = await _stripe_call(
+                stripe.Subscription.list,
+                customer=customer_id,
+                status="all",
+                limit=100,
+                expand=["data.items.data.price"],
+            )
+        except Exception as exc:
+            logger.warning("Stripe sub list failed for %s: %s", customer_id, exc)
+            return {"subscriptions": []}
+
+        catalogue = await ensure_stripe_addon_catalogue()
+        price_to_addon = {v: k for k, v in catalogue.items()}
+        out: List[Dict[str, Any]] = []
+        for sub in (subs.data or []):
+            sub_meta = (sub.metadata or {})
+            if sub_meta.get("kind") != "addon":
+                continue
+            # Only surface live subs — canceled ones are noise.
+            if sub.status in ("canceled", "incomplete_expired", "unpaid"):
+                continue
+            items = (sub.items.data if sub.items else []) or []
+            if not items:
+                continue
+            first = items[0]
+            price = first.price
+            addon_id = sub_meta.get("addon_id") or price_to_addon.get(price.id)
+            addon = ADDONS.get(addon_id) if addon_id else None
+            if not addon:
+                continue
+            period_end = getattr(sub, "current_period_end", None)
+            out.append({
+                "subscription_id": sub.id,
+                "addon_id": addon_id,
+                "name": addon["name"],
+                "unit": addon["unit"],
+                "price_usd": float(addon["price_usd"]),
+                "quantity": int(first.quantity or 1),
+                "status": sub.status,
+                "cancel_at_period_end": bool(getattr(sub, "cancel_at_period_end", False)),
+                "current_period_end": (
+                    datetime.fromtimestamp(period_end, tz=timezone.utc).isoformat()
+                    if period_end else None
+                ),
+                "created_at": (
+                    datetime.fromtimestamp(sub.created, tz=timezone.utc).isoformat()
+                    if getattr(sub, "created", None) else None
+                ),
+            })
+        # Newest first — matches how the UI lists them.
+        out.sort(key=lambda s: s.get("created_at") or "", reverse=True)
+        return {"subscriptions": out}
+
+    @r.post("/billing/addons/{subscription_id}/cancel")
+    async def cancel_addon_subscription(
+        subscription_id: str,
+        u: dict = Depends(get_current_user),
+    ):
+        """Cancel a single recurring add-on at the end of the current
+        billing period. Customer keeps access until then (no proration
+        clawback), matching how Spark / Temper itself cancels.
+
+        Auth-guarded: we refuse to cancel a sub that isn't on this
+        user's customer or isn't tagged as an add-on — protects
+        against URL-tampering trying to nuke a paying customer's main
+        plan sub via this endpoint."""
+        if not _stripe_configured():
+            raise HTTPException(503, "Billing is not configured.")
+        user_doc = await _user_doc(db, u["id"]) or {}
+        customer_id = user_doc.get("stripe_customer_id")
+        if not customer_id:
+            raise HTTPException(400, "No Stripe customer for this user.")
+        _configure_stripe()
+        try:
+            sub = await _stripe_call(stripe.Subscription.retrieve, subscription_id)
+        except Exception:
+            raise HTTPException(404, "Subscription not found.")
+        if sub.customer != customer_id:
+            raise HTTPException(403, "This subscription belongs to a different account.")
+        if (sub.metadata or {}).get("kind") != "addon":
+            raise HTTPException(
+                400,
+                "Use the customer portal to cancel your main plan — "
+                "this endpoint only manages add-on subscriptions.",
+            )
+        if getattr(sub, "cancel_at_period_end", False) or sub.status == "canceled":
+            return {"ok": True, "status": sub.status,
+                    "cancel_at_period_end": True,
+                    "message": "Already scheduled for cancellation."}
+        try:
+            updated = await _stripe_call(
+                stripe.Subscription.modify, subscription_id,
+                cancel_at_period_end=True,
+                metadata={**(sub.metadata or {}), "canceled_by_user": "true"},
+            )
+        except Exception as exc:
+            logger.warning("Cancel add-on %s failed: %s", subscription_id, exc)
+            raise HTTPException(502, "Couldn't schedule cancellation. Try again.")
+        # Record the user-initiated cancel for audit. The actual counter
+        # zero-out fires when Stripe sends customer.subscription.deleted
+        # at period end — the user keeps access until then, which is the
+        # correct UX.
+        await db.payment_transactions.insert_one({
+            "kind": "addon_cancel_scheduled",
+            "user_id": u["id"],
+            "subscription_id": subscription_id,
+            "addon_id": (sub.metadata or {}).get("addon_id"),
+            "status": "scheduled",
+            "created_at": datetime.now(timezone.utc),
+        })
+        period_end = getattr(updated, "current_period_end", None)
+        return {
+            "ok": True,
+            "status": updated.status,
+            "cancel_at_period_end": True,
+            "current_period_end": (
+                datetime.fromtimestamp(period_end, tz=timezone.utc).isoformat()
+                if period_end else None
+            ),
+            "message": "Cancellation scheduled — you keep access until the period ends.",
+        }
+
+    @r.post("/billing/addons/{subscription_id}/resume")
+    async def resume_addon_subscription(
+        subscription_id: str,
+        u: dict = Depends(get_current_user),
+    ):
+        """Undo a 'cancel at period end' so the add-on renews normally.
+        Same auth guards as cancel."""
+        if not _stripe_configured():
+            raise HTTPException(503, "Billing is not configured.")
+        user_doc = await _user_doc(db, u["id"]) or {}
+        customer_id = user_doc.get("stripe_customer_id")
+        if not customer_id:
+            raise HTTPException(400, "No Stripe customer for this user.")
+        _configure_stripe()
+        try:
+            sub = await _stripe_call(stripe.Subscription.retrieve, subscription_id)
+        except Exception:
+            raise HTTPException(404, "Subscription not found.")
+        if sub.customer != customer_id:
+            raise HTTPException(403, "This subscription belongs to a different account.")
+        if (sub.metadata or {}).get("kind") != "addon":
+            raise HTTPException(400, "This endpoint only manages add-on subscriptions.")
+        if sub.status == "canceled":
+            raise HTTPException(
+                400, "This subscription has already ended — purchase it again.",
+            )
+        try:
+            updated = await _stripe_call(
+                stripe.Subscription.modify, subscription_id,
+                cancel_at_period_end=False,
+            )
+        except Exception as exc:
+            logger.warning("Resume add-on %s failed: %s", subscription_id, exc)
+            raise HTTPException(502, "Couldn't resume the subscription. Try again.")
+        return {
+            "ok": True,
+            "status": updated.status,
+            "cancel_at_period_end": False,
+            "message": "Renewal turned back on.",
+        }
+
     @r.get("/billing/status/{session_id}")
     async def checkout_status(session_id: str, u: dict = Depends(get_current_user)):
         txn = await db.payment_transactions.find_one({"session_id": session_id}, {"_id": 0})
