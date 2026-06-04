@@ -151,6 +151,15 @@ export default function BillingPage() {
     };
   }, [summary]);
 
+  // ── Compute / overage UI is hidden in production until real metered
+  // billing ships. The data is still collected server-side for ops
+  // visibility; we just don't surface it (or the projected-overage
+  // copy) to customers so they aren't shown numbers we can't actually
+  // bill on. Flip `REACT_APP_SHOW_COMPUTE_METER=1` to re-enable.
+  const showComputeMeter = String(
+    process.env.REACT_APP_SHOW_COMPUTE_METER || "",
+  ) === "1";
+
   const confirmSubscribe = useCallback(async () => {
     if (!pendingPlan) return;
     setBusy(`plan:${pendingPlan.id}`);
@@ -298,8 +307,11 @@ export default function BillingPage() {
         <AccessWindowSection />
         <TrialUsagePanel />
 
-        {/* Usage meter */}
-        {meter && (
+        {/* Usage meter — gated by REACT_APP_SHOW_COMPUTE_METER flag.
+            We collect the data server-side regardless (for ops/admin
+            visibility), but we don't show customers a billable number
+            until metered billing is wired into Stripe end-to-end. */}
+        {showComputeMeter && meter && (
           <section className="sp-glass-strong rounded-2xl p-5 sm:p-6 mb-6" data-testid="usage-meter-card">
             <div className="text-xs uppercase tracking-widest sp-subtle flex items-center gap-2 mb-3">
               <TrendingUp className="w-3.5 h-3.5" /> This month's agent compute
@@ -337,8 +349,11 @@ export default function BillingPage() {
           </section>
         )}
 
-        {/* Outstanding overage */}
-        {outstanding && (
+        {/* Outstanding overage — gated behind the same compute-meter
+            flag. We never charge for these today (the row gets written
+            by the monthly cron but is not pushed to Stripe), so the
+            UI shouldn't promise a bill is coming. */}
+        {showComputeMeter && outstanding && (
           <section
             className="sp-glass-strong rounded-2xl p-5 sm:p-6 mb-6 border border-orange-400/30"
             data-testid="outstanding-overage-card"
@@ -398,6 +413,9 @@ export default function BillingPage() {
             </div>
           </section>
         )}
+
+        {/* Add-ons — same five cards from /pricing, now buyable. */}
+        <AddonsSection summary={summary} />
 
         {/* Recent transactions */}
         <section className="sp-glass rounded-2xl p-5 sm:p-6" data-testid="transactions-card">
@@ -481,6 +499,178 @@ function buildConsentText(plan, cadence = "monthly") {
     `at the end of the current billing period.`
   );
 }
+
+/**
+ * AddonsSection — surfaces the five add-ons from /pricing on the in-app
+ * billing page so users can actually purchase them. Each card mirrors
+ * the marketing copy + price; the CTA differs by cadence:
+ *   • recurring      → Stripe Checkout in subscription mode (separate sub)
+ *   • one_time + sub → Invoice item on next recurring invoice (no redirect)
+ *   • one_time + no sub → One-shot Stripe Checkout in payment mode
+ * Backend resolves which path; we just call /billing/addons/checkout
+ * and either redirect to the URL it returns or show a toast for the
+ * invoice-item path.
+ */
+function AddonsSection({ summary }) {
+  const catalogue = summary?.addons_catalogue || [];
+  const state = summary?.addons || {};
+  const plan = summary?.plan;
+  const hasActiveSub = summary?.subscription_status === "active"
+                       || summary?.subscription_status === "trialing"
+                       || summary?.subscription_status === "past_due";
+  const [busy, setBusy] = useState("");
+
+  if (!catalogue.length) return null;
+
+  const buyAddon = async (addon) => {
+    if (busy) return;
+    // Enforce plan restriction client-side too so the button doesn't
+    // look like it'll work when the backend will 400 anyway.
+    if (addon.plan_restrictions && !addon.plan_restrictions.includes(plan?.id)) {
+      toast.error(
+        `${addon.name} is only available on the ${addon.plan_restrictions.join(", ")} plan.`,
+      );
+      return;
+    }
+    setBusy(addon.id);
+    try {
+      const consentText =
+        addon.cadence === "recurring"
+          ? `I authorize Foundry to charge $${addon.price_usd.toFixed(2)} ${addon.unit} ` +
+            `for ${addon.name}, billed monthly until I cancel from the manage-subscription page.`
+          : `I authorize a one-time charge of $${addon.price_usd.toFixed(2)} for ${addon.name}` +
+            (hasActiveSub
+              ? ` to be added to my next Foundry invoice.`
+              : ` via the Stripe checkout that follows.`);
+      const { data } = await api.post("/billing/addons/checkout", {
+        addon_id: addon.id,
+        origin_url: window.location.origin,
+        consent_text: consentText,
+        quantity: 1,
+      });
+      if (data?.mode === "checkout" && data?.url) {
+        window.location.href = data.url;
+      } else if (data?.mode === "invoice_item") {
+        toast.success(
+          data?.message
+          || `${addon.name} added to your next invoice — refresh in a few minutes.`,
+        );
+        setBusy("");
+        // Soft refresh after a tick so the user sees the invoice line.
+        setTimeout(() => window.location.reload(), 1200);
+      } else {
+        toast.error("Couldn't start the purchase. Please try again.");
+        setBusy("");
+      }
+    } catch (err) {
+      toast.error(err?.response?.data?.detail || "Couldn't start the purchase.");
+      setBusy("");
+    }
+  };
+
+  return (
+    <section
+      className="sp-glass-strong rounded-2xl p-5 sm:p-6 mb-6"
+      data-testid="addons-section"
+    >
+      <div className="mb-4">
+        <h3 className="text-base font-medium flex items-center gap-2">
+          Add-ons
+          <span className="text-[10px] uppercase tracking-widest sp-subtle font-normal">
+            Top up anytime
+          </span>
+        </h3>
+        <p className="text-xs sp-subtle mt-1 leading-relaxed">
+          Need more headroom than your plan includes? Buy individual add-ons —
+          recurring ones bill monthly, packs are one-time top-ups that never expire.
+        </p>
+      </div>
+
+      <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-3">
+        {catalogue.map((addon) => {
+          const lockedByPlan =
+            addon.plan_restrictions
+            && !addon.plan_restrictions.includes(plan?.id);
+          const stateLine = describeAddonState(addon, state);
+          return (
+            <div
+              key={addon.id}
+              className="rounded-xl border border-white/8 bg-black/20 p-4 flex flex-col"
+              data-testid={`addon-card-${addon.id}`}
+            >
+              <div className="flex items-baseline justify-between gap-2">
+                <div className="text-sm font-medium">{addon.name}</div>
+                <div className="text-xs sp-subtle">
+                  <span className="text-white">${addon.price_usd.toFixed(2)}</span>
+                  {" "}{addon.unit}
+                </div>
+              </div>
+              <div className="text-xs sp-subtle mt-2 leading-relaxed flex-1">
+                {addon.blurb}
+              </div>
+              {stateLine && (
+                <div className="text-[11px] text-emerald-300 mt-2"
+                     data-testid={`addon-state-${addon.id}`}>
+                  {stateLine}
+                </div>
+              )}
+              {lockedByPlan ? (
+                <div className="mt-3 text-[11px] text-orange-300 leading-relaxed"
+                     data-testid={`addon-locked-${addon.id}`}>
+                  Available on {addon.plan_restrictions.join(", ")} only.
+                  {" "}<span className="sp-subtle">Switch plans to unlock.</span>
+                </div>
+              ) : (
+                <button
+                  type="button"
+                  onClick={() => buyAddon(addon)}
+                  disabled={busy === addon.id}
+                  className="sp-btn sp-btn-primary mt-3 text-xs justify-center disabled:opacity-50"
+                  data-testid={`addon-buy-${addon.id}`}
+                >
+                  {busy === addon.id ? (
+                    <Loader2 className="w-3 h-3 animate-spin" />
+                  ) : null}
+                  {busy === addon.id
+                    ? "Starting…"
+                    : addon.cadence === "recurring"
+                      ? "Subscribe"
+                      : hasActiveSub
+                        ? "Add to next invoice"
+                        : "Buy pack"}
+                </button>
+              )}
+            </div>
+          );
+        })}
+      </div>
+    </section>
+  );
+}
+
+/**
+ * Describe what the user currently owns for this add-on — recurring
+ * counters show "N active", credit packs show "X remaining".
+ */
+function describeAddonState(addon, state) {
+  if (!state) return "";
+  switch (addon.id) {
+    case "extra_org":
+      return state.extra_orgs > 0 ? `${state.extra_orgs} extra org${state.extra_orgs === 1 ? "" : "s"} active` : "";
+    case "extra_seat":
+      return state.extra_seats > 0 ? `${state.extra_seats} extra seat${state.extra_seats === 1 ? "" : "s"} active` : "";
+    case "message_pack":
+      return state.credit_messages > 0 ? `${state.credit_messages.toLocaleString()} bonus messages remaining` : "";
+    case "browser_pack":
+      return state.credit_browser_minutes > 0 ? `${state.credit_browser_minutes.toLocaleString()} bonus minutes remaining` : "";
+    case "audit_pack":
+      return state.credit_audits > 0 ? `${state.credit_audits.toLocaleString()} bonus audits remaining` : "";
+    default:
+      return "";
+  }
+}
+
+
 
 function CadenceToggle({ cadence, onChange }) {
   return (

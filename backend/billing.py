@@ -152,6 +152,103 @@ PLANS: Dict[str, Dict[str, Any]] = {
 # customer's month. Conservative (2×) so customers don't feel gouged.
 OVERAGE_MARKUP = float(os.environ.get("FOUNDRY_OVERAGE_MARKUP", "2.0"))
 
+# ─── Add-on catalogue ─────────────────────────────────────────────────────
+#
+# Mirrors the "Need more headroom? Add it on." section on /pricing. Three
+# kinds:
+#   • cadence="recurring" → Stripe Subscription line; mutates user-level
+#     `extra_orgs` / `extra_seats` counters which the seat-policy + org-
+#     cap resolvers ADD to the plan's baseline.
+#   • cadence="one_time" → either (a) a one-time Stripe Checkout when the
+#     user has no active sub, or (b) an Invoice Item bolted onto the next
+#     recurring invoice when they do. Either way, on successful payment
+#     we top up a credit balance the consumer (messages / browser min /
+#     audits) decrements before falling back to plan limits.
+#
+# Each add-on owns its own Stripe lookup_key so the dashboard groups
+# clean line items. Versioned `_v1` so we can retire if economics shift.
+
+ADDONS: Dict[str, Dict[str, Any]] = {
+    "extra_org": {
+        "id": "extra_org",
+        "name": "Extra organization",
+        "blurb": "Spin up another org with its own teams, agents, and brand soul.",
+        "price_usd": 20.0,
+        "unit": "/org / mo",
+        "cadence": "recurring",
+        "lookup_key": "foundry_addon_extra_org_v1",
+        # When applied → mutates `users.extra_orgs` += quantity.
+        "apply_kind": "extra_orgs",
+        "credit_units": None,
+    },
+    "extra_seat": {
+        "id": "extra_seat",
+        "name": "Extra seat (Spark)",
+        "blurb": "Invite another teammate to your Spark org. Shared usage pool.",
+        "price_usd": 30.0,
+        "unit": "/seat / mo",
+        "cadence": "recurring",
+        "lookup_key": "foundry_addon_extra_seat_v1",
+        # Only Spark sells per-seat add-ons; Temper includes 5 already +
+        # has its own extra-seat at $40/mo via the plan upgrade path.
+        # We refuse purchase on Temper at checkout time.
+        "plan_restrictions": ["spark"],
+        "apply_kind": "extra_seats",
+        "credit_units": None,
+    },
+    "message_pack": {
+        "id": "message_pack",
+        "name": "Message pack",
+        "blurb": "Top up 500 extra agent messages whenever you spike. No expiry.",
+        "price_usd": 15.0,
+        "unit": "/ 500 msgs",
+        "cadence": "one_time",
+        "lookup_key": "foundry_addon_message_pack_v1",
+        "apply_kind": "credit_messages",
+        "credit_units": 500,
+    },
+    "browser_pack": {
+        "id": "browser_pack",
+        "name": "Browser automation pack",
+        "blurb": "Add 200 extra minutes for Crucible + Mission browser work.",
+        "price_usd": 20.0,
+        "unit": "/ 200 min",
+        "cadence": "one_time",
+        "lookup_key": "foundry_addon_browser_pack_v1",
+        "apply_kind": "credit_browser_minutes",
+        "credit_units": 200,
+    },
+    "audit_pack": {
+        "id": "audit_pack",
+        "name": "Signal Audit pack",
+        "blurb": "10 extra Signal Audits for client prospecting. Reuses saved templates.",
+        "price_usd": 10.0,
+        "unit": "/ 10 audits",
+        "cadence": "one_time",
+        "lookup_key": "foundry_addon_audit_pack_v1",
+        "apply_kind": "credit_audits",
+        "credit_units": 10,
+    },
+}
+
+
+def _addon_or_404(addon_id: str) -> Dict[str, Any]:
+    """Resolve an add-on id → catalogue entry or raise HTTPException(404).
+    Centralised so the same error shape comes back from every endpoint."""
+    a = ADDONS.get(addon_id)
+    if not a:
+        raise HTTPException(404, f"Unknown add-on: {addon_id}")
+    return a
+
+
+def _public_addons() -> List[Dict[str, Any]]:
+    """Catalogue scrubbed for /billing/plans (no internal-only keys)."""
+    out = []
+    for a in ADDONS.values():
+        out.append({k: v for k, v in a.items()
+                    if k not in {"lookup_key", "apply_kind"}})
+    return out
+
 # Where Refine "contact sales" leads are emailed. Comma-separated for
 # multiple recipients ("team@archeforge.com,reggie@coolgeek.me").
 SALES_CONTACT_EMAIL = os.environ.get(
@@ -192,6 +289,23 @@ class SalesContactBody(BaseModel):
     email: EmailStr
     company: str = Field("", max_length=200)
     message: str = Field("", max_length=2000)
+
+
+class AddonCheckoutBody(BaseModel):
+    """Frontend → backend payload for purchasing an add-on.
+
+    ``quantity`` only applies to recurring add-ons (extra_org / extra_seat).
+    One-time packs always provision exactly one pack's worth of credit
+    units per purchase — quantity is ignored.
+
+    ``consent_text`` is the verbatim disclosure the user saw next to the
+    "Buy" button, persisted on payment_transactions for FTC ROSCA
+    compliance (same pattern as plan subscribe).
+    """
+    addon_id: str = Field(..., description="One of ADDONS keys")
+    origin_url: str = Field(..., description="window.location.origin")
+    consent_text: str = Field(..., min_length=10)
+    quantity: int = Field(1, ge=1, le=50)
 
 
 # ─── Helpers ──────────────────────────────────────────────────────────────
@@ -397,6 +511,82 @@ async def ensure_stripe_catalogue() -> Dict[str, Dict[str, str]]:
                 logger.exception("Stripe Price.create failed for %s/%s: %s", plan_id, cadence, exc)
         if plan_prices:
             result[plan_id] = plan_prices
+    return result
+
+
+async def ensure_stripe_addon_catalogue() -> Dict[str, str]:
+    """Idempotently provision a Stripe Product + Price for every add-on
+    in ``ADDONS``. Returns ``{addon_id: price_id}``.
+
+    Recurring add-ons get a recurring Price (interval=month). One-time
+    add-ons get a one-shot Price (no recurring block) which we attach
+    either to a one-time Checkout or to an Invoice Item depending on
+    the customer's current state.
+
+    Same shape as ``ensure_stripe_catalogue`` so the boot path can call
+    both. Cheap — one Price.list per add-on, no-op if pricing hasn't
+    drifted."""
+    if not _stripe_configured():
+        logger.info("Stripe not configured — skipping add-on catalogue.")
+        return {}
+    _configure_stripe()
+    result: Dict[str, str] = {}
+    for addon_id, a in ADDONS.items():
+        lookup_key = a["lookup_key"]
+        amount_cents = int(round(float(a["price_usd"]) * 100))
+        try:
+            search = await _stripe_call(
+                stripe.Price.list, lookup_keys=[lookup_key], limit=1, active=True,
+            )
+        except stripe.AuthenticationError:
+            logger.warning("Stripe API key invalid — skipping add-on catalogue.")
+            return {}
+        except Exception as exc:
+            logger.exception("Stripe Price.list failed for %s: %s", lookup_key, exc)
+            continue
+        existing = (search.data or [None])[0]
+        is_recurring = (a["cadence"] == "recurring")
+        match_recurring = bool(existing and existing.recurring) == is_recurring
+        if (
+            existing and existing.unit_amount == amount_cents
+            and match_recurring
+            and (not is_recurring or (existing.recurring and existing.recurring.interval == "month"))
+        ):
+            result[addon_id] = existing.id
+            continue
+        # Retire stale price so we can mint fresh under the same lookup_key.
+        if existing:
+            try:
+                await _stripe_call(
+                    stripe.Price.modify, existing.id,
+                    lookup_key=f"{lookup_key}__retired_{int(datetime.now(timezone.utc).timestamp())}",
+                )
+            except Exception:
+                logger.exception("Could not retire stale add-on Price %s", existing.id)
+        # Create fresh Product + Price.
+        try:
+            product = await _stripe_call(
+                stripe.Product.create,
+                name=f"Foundry · {a['name']}",
+                description=a["blurb"],
+                metadata={"addon_id": addon_id, "kind": "addon"},
+            )
+            price_kwargs: Dict[str, Any] = dict(
+                unit_amount=amount_cents,
+                currency="usd",
+                product=product.id,
+                lookup_key=lookup_key,
+                metadata={"addon_id": addon_id,
+                          "apply_kind": a["apply_kind"],
+                          "credit_units": str(a.get("credit_units") or "")},
+            )
+            if is_recurring:
+                price_kwargs["recurring"] = {"interval": "month"}
+            price = await _stripe_call(stripe.Price.create, **price_kwargs)
+            result[addon_id] = price.id
+            logger.info("Stripe add-on catalogue: %s -> %s", addon_id, price.id)
+        except Exception as exc:
+            logger.exception("Stripe Price.create failed for add-on %s: %s", addon_id, exc)
     return result
 
 
@@ -690,6 +880,90 @@ async def _apply_subscription_state(db, subscription: Dict[str, Any]) -> None:
     )
 
 
+async def _apply_addon_purchase(
+    db, *, user_id: str, addon_id: str, quantity: int,
+    stripe_ref: str, source: str,
+) -> None:
+    """Settle a completed add-on purchase.
+
+    Decides what to mutate on the user row based on ``addon.apply_kind``:
+
+      • ``extra_orgs`` / ``extra_seats`` — recurring add-ons; we set the
+        counter to ``quantity`` (replace, not add) because Stripe's
+        ``subscription.updated`` events are the source of truth and may
+        replay. The seat / org policy resolvers later ADD this to the
+        plan's baseline.
+      • ``credit_messages`` / ``credit_browser_minutes`` / ``credit_audits``
+        — one-time packs; we INCREMENT the credit balance by
+        ``credit_units × quantity``. Replay-safety comes from the
+        idempotency table (``addon_purchases``) — we never apply the
+        same stripe_ref twice.
+
+    ``source`` is one of "checkout" / "invoice" / "subscription" so the
+    audit row records the trigger surface.
+    """
+    addon = ADDONS.get(addon_id)
+    if not addon:
+        logger.warning("Unknown addon_id from Stripe webhook: %s", addon_id)
+        return
+
+    # Idempotency: skip if we've already applied this exact event.
+    existing = await db.addon_purchases.find_one({"stripe_ref": stripe_ref})
+    if existing and existing.get("applied"):
+        return
+
+    try:
+        user_oid = ObjectId(user_id)
+    except Exception:
+        logger.warning("Bad user_id on addon application: %r", user_id)
+        return
+    user = await db.users.find_one({"_id": user_oid})
+    if not user:
+        logger.warning("Addon purchase user %s vanished before apply", user_id)
+        return
+
+    apply_kind = addon["apply_kind"]
+    now = datetime.now(timezone.utc)
+    update: Dict[str, Any] = {"updated_at": now}
+
+    if apply_kind in ("extra_orgs", "extra_seats"):
+        # Replace semantics for recurring add-ons — Stripe is truth.
+        update[apply_kind] = max(0, int(quantity))
+    elif apply_kind in ("credit_messages", "credit_browser_minutes", "credit_audits"):
+        # Increment semantics for one-time packs.
+        delta = int((addon.get("credit_units") or 0) * int(quantity))
+        if delta <= 0:
+            logger.warning("Add-on %s has no credit_units; skipping", addon_id)
+            return
+        await db.users.update_one(
+            {"_id": user_oid},
+            {"$inc": {apply_kind: delta}, "$set": {"updated_at": now}},
+        )
+        update = {}  # already wrote the $inc
+    else:
+        logger.warning("Unknown apply_kind %s on add-on %s", apply_kind, addon_id)
+        return
+
+    if update:
+        await db.users.update_one({"_id": user_oid}, {"$set": update})
+
+    await db.addon_purchases.update_one(
+        {"stripe_ref": stripe_ref},
+        {"$set": {
+            "stripe_ref": stripe_ref, "user_id": user_id, "addon_id": addon_id,
+            "quantity": int(quantity), "apply_kind": apply_kind,
+            "credit_units_added": int((addon.get("credit_units") or 0) * int(quantity))
+                                    if apply_kind.startswith("credit_") else 0,
+            "source": source, "applied": True, "applied_at": now,
+        }},
+        upsert=True,
+    )
+    logger.info(
+        "Applied add-on %s × %d for user=%s via %s (ref=%s)",
+        addon_id, quantity, user_id, source, stripe_ref,
+    )
+
+
 # ─── Router factory ───────────────────────────────────────────────────────
 
 
@@ -716,6 +990,7 @@ def make_billing_router(
                 {k: v for k, v in p.items() if k != "lookup_keys"}
                 for p in PLANS.values()
             ],
+            "addons": _public_addons(),
             "overage_markup": OVERAGE_MARKUP,
         }
 
@@ -753,6 +1028,12 @@ def make_billing_router(
                 "overage_markup": OVERAGE_MARKUP,
                 "outstanding_overage": None,
                 "recent_transactions": [],
+                "addons": {
+                    "extra_orgs": 0, "extra_seats": 0,
+                    "credit_messages": 0, "credit_browser_minutes": 0,
+                    "credit_audits": 0,
+                },
+                "addons_catalogue": _public_addons(),
             }
 
         plan_id = await _user_plan(db, u["id"])
@@ -789,9 +1070,22 @@ def make_billing_router(
             projection={"_id": 0},
         ).to_list(10)
         for t in txn_rows:
-            for k in ("created_at", "updated_at", "applied_at"):
+            for k in ("created_at", "updated_at", "applied_at", "consent_at"):
                 if isinstance(t.get(k), datetime):
                     t[k] = t[k].isoformat()
+
+        # ── Active add-ons + credit balances ───────────────────────
+        # `extra_orgs` / `extra_seats` are recurring; the user-doc fields
+        # are kept in sync by webhook handlers (subscription.* events).
+        # `credit_*` are one-time pack balances — incremented on
+        # successful purchase, decremented as the user consumes them.
+        addons_state = {
+            "extra_orgs": int(user_doc.get("extra_orgs") or 0),
+            "extra_seats": int(user_doc.get("extra_seats") or 0),
+            "credit_messages": int(user_doc.get("credit_messages") or 0),
+            "credit_browser_minutes": int(user_doc.get("credit_browser_minutes") or 0),
+            "credit_audits": int(user_doc.get("credit_audits") or 0),
+        }
 
         return {
             "plan": {k: v for k, v in plan.items() if k != "lookup_keys"},
@@ -802,7 +1096,7 @@ def make_billing_router(
             "has_stripe_customer": bool(user_doc.get("stripe_customer_id")),
             "is_staff": False,
             "orgs_used": orgs_used,
-            "orgs_limit": plan["orgs_included"],
+            "orgs_limit": plan["orgs_included"] + addons_state["extra_orgs"],
             "period_start": start.isoformat(),
             "period_end": now.isoformat(),
             "this_month_spend_usd": round(spend, 4),
@@ -812,6 +1106,8 @@ def make_billing_router(
             "overage_markup": OVERAGE_MARKUP,
             "outstanding_overage": outstanding,
             "recent_transactions": txn_rows,
+            "addons": addons_state,
+            "addons_catalogue": _public_addons(),
         }
 
     # ── Subscribe (Spark / Temper) ──────────────────────────────────
@@ -895,7 +1191,201 @@ def make_billing_router(
         })
         return {"url": session.url, "session_id": session.id}
 
-    # ── Customer Portal (manage / cancel) ───────────────────────────
+    # ── Add-on purchase (recurring OR hybrid one-time/invoice-item) ──
+    @r.post("/billing/addons/checkout", status_code=200)
+    async def addon_checkout(
+        body: AddonCheckoutBody,
+        request: Request,
+        u: dict = Depends(get_current_user),
+    ):
+        """Buy an add-on. Three execution paths depending on the add-on's
+        cadence + the user's subscription state:
+
+          1. ``cadence=recurring`` → Stripe Checkout in subscription mode.
+             A separate subscription is created for the add-on so each
+             line item appears clean on the invoice; quantity is honored
+             so a user can buy N extra orgs / seats in one click.
+          2. ``cadence=one_time`` + user has active subscription →
+             Invoice Item on the next recurring invoice. NO checkout
+             redirect; the credit is provisionally added and finalised
+             when invoice.paid lands. Cleaner UX for paying customers.
+          3. ``cadence=one_time`` + user has no active subscription →
+             Stripe Checkout in payment mode. One-time card form.
+
+        Path 2's "provisional" credit is gated on the invoice paying —
+        we set ``provisional_until_invoice=<invoice_id>`` and apply
+        only when invoice.paid fires. If the invoice voids, the
+        credit is never added.
+        """
+        addon = _addon_or_404(body.addon_id)
+        if not _stripe_configured():
+            raise HTTPException(503, "Billing is not configured (STRIPE_API_KEY missing).")
+
+        # Enforce plan restrictions (e.g. extra_seat is Spark-only).
+        restrictions = addon.get("plan_restrictions") or []
+        if restrictions:
+            user_doc = await _user_doc(db, u["id"]) or {}
+            current_plan = user_doc.get("plan")
+            if current_plan not in restrictions:
+                raise HTTPException(
+                    400,
+                    f"This add-on is only available on {', '.join(restrictions)}. "
+                    "Switch plans first or contact support.",
+                )
+
+        try:
+            catalogue = await ensure_stripe_addon_catalogue()
+        except stripe.AuthenticationError:
+            raise HTTPException(
+                503, "Billing is not fully configured — please contact support.",
+            )
+        price_id = catalogue.get(addon["id"])
+        if not price_id:
+            raise HTTPException(
+                503, "Add-on is not configured in Stripe yet — please contact support.",
+            )
+
+        customer_id = await _get_or_create_customer(db, u)
+        qty = max(1, int(body.quantity))
+        # One-time packs always provision exactly one pack per "purchase"
+        # so the credit-unit math stays predictable. Quantity-on-pack
+        # would be ambiguous (10 audits × 3? or 3 packs?).
+        if addon["cadence"] == "one_time":
+            qty = 1
+        origin = body.origin_url.rstrip("/")
+        success_url = f"{origin}/app/billing?addon={addon['id']}&session_id={{CHECKOUT_SESSION_ID}}"
+        cancel_url = f"{origin}/app/billing?addon_cancelled={addon['id']}"
+        unit_amount = float(addon["price_usd"])
+        consent_ip = request.client.host if request.client else None
+        consent_at = datetime.now(timezone.utc)
+        common_meta = {
+            "kind": "addon",
+            "user_id": u["id"],
+            "addon_id": addon["id"],
+            "apply_kind": addon["apply_kind"],
+            "quantity": str(qty),
+            "consent_text": body.consent_text[:500],
+        }
+
+        # ── Path 1: recurring add-on → subscription Checkout ─────────
+        if addon["cadence"] == "recurring":
+            _configure_stripe()
+            session = await _stripe_call(
+                stripe.checkout.Session.create,
+                mode="subscription",
+                customer=customer_id,
+                line_items=[{"price": price_id, "quantity": qty}],
+                success_url=success_url,
+                cancel_url=cancel_url,
+                allow_promotion_codes=False,
+                billing_address_collection="auto",
+                metadata=common_meta,
+                subscription_data={"metadata": common_meta},
+            )
+            await db.payment_transactions.insert_one({
+                "session_id": session.id,
+                "user_id": u["id"],
+                "kind": "addon",
+                "addon_id": addon["id"],
+                "cadence": "recurring",
+                "quantity": qty,
+                "amount_usd": unit_amount * qty,
+                "currency": "usd",
+                "consent_text": body.consent_text,
+                "consent_ip": consent_ip,
+                "consent_at": consent_at,
+                "payment_status": "initiated",
+                "status": "pending",
+                "created_at": consent_at,
+            })
+            return {"mode": "checkout", "url": session.url, "session_id": session.id}
+
+        # ── One-time pack: pick path 2 or path 3 ────────────────────
+        # Hybrid logic: if the user has a CURRENT subscription, add an
+        # invoice item to their next recurring invoice (path 2).
+        # Otherwise fall back to a one-time Checkout (path 3).
+        user_doc = await _user_doc(db, u["id"]) or {}
+        sub_id = user_doc.get("subscription_id")
+        sub_status = user_doc.get("subscription_status")
+        has_active_sub = bool(
+            sub_id and sub_status in ("active", "trialing", "past_due")
+        )
+
+        if has_active_sub:
+            _configure_stripe()
+            try:
+                inv_item = await _stripe_call(
+                    stripe.InvoiceItem.create,
+                    customer=customer_id,
+                    price=price_id,
+                    quantity=1,
+                    subscription=sub_id,
+                    metadata=common_meta,
+                    description=f"Foundry · {addon['name']}",
+                )
+            except Exception as exc:
+                logger.exception("InvoiceItem.create failed: %s", exc)
+                raise HTTPException(
+                    502, "Couldn't attach the add-on to your invoice — try again.",
+                )
+            await db.payment_transactions.insert_one({
+                "invoice_item_id": inv_item.id,
+                "user_id": u["id"],
+                "kind": "addon",
+                "addon_id": addon["id"],
+                "cadence": "one_time_on_invoice",
+                "quantity": qty,
+                "amount_usd": unit_amount,
+                "currency": "usd",
+                "consent_text": body.consent_text,
+                "consent_ip": consent_ip,
+                "consent_at": consent_at,
+                "payment_status": "scheduled_on_next_invoice",
+                "status": "pending",
+                "subscription_id": sub_id,
+                "created_at": consent_at,
+            })
+            return {
+                "mode": "invoice_item",
+                "invoice_item_id": inv_item.id,
+                "message": (
+                    f"{addon['name']} added to your next invoice. "
+                    f"You'll be charged ${unit_amount:.2f} when it's issued."
+                ),
+            }
+
+        # Path 3 — no active subscription, one-time Checkout.
+        _configure_stripe()
+        session = await _stripe_call(
+            stripe.checkout.Session.create,
+            mode="payment",
+            customer=customer_id,
+            line_items=[{"price": price_id, "quantity": 1}],
+            success_url=success_url,
+            cancel_url=cancel_url,
+            allow_promotion_codes=False,
+            billing_address_collection="auto",
+            metadata=common_meta,
+            payment_intent_data={"metadata": common_meta},
+        )
+        await db.payment_transactions.insert_one({
+            "session_id": session.id,
+            "user_id": u["id"],
+            "kind": "addon",
+            "addon_id": addon["id"],
+            "cadence": "one_time_checkout",
+            "quantity": 1,
+            "amount_usd": unit_amount,
+            "currency": "usd",
+            "consent_text": body.consent_text,
+            "consent_ip": consent_ip,
+            "consent_at": consent_at,
+            "payment_status": "initiated",
+            "status": "pending",
+            "created_at": consent_at,
+        })
+        return {"mode": "checkout", "url": session.url, "session_id": session.id}
+
     @r.post("/billing/portal")
     async def billing_portal(
         body: Dict[str, str],
@@ -1033,8 +1523,77 @@ def make_billing_router(
             "customer.subscription.deleted",
             "customer.subscription.trial_will_end",
         ):
-            await _apply_subscription_state(db, data_object)
+            # Recurring add-ons live on their OWN subscriptions and are
+            # tagged with metadata.kind=addon. They don't represent a
+            # plan change so route them away from _apply_subscription_state
+            # (which would clobber the user's main plan_id).
+            meta = data_object.get("metadata") or {}
+            if meta.get("kind") == "addon":
+                addon_id = meta.get("addon_id")
+                user_id = meta.get("user_id")
+                items = (data_object.get("items") or {}).get("data") or []
+                qty = int((items[0].get("quantity") if items else 1) or 1)
+                if event_type == "customer.subscription.deleted" or \
+                        data_object.get("status") in ("canceled", "incomplete_expired", "unpaid"):
+                    qty = 0
+                if addon_id and user_id:
+                    await _apply_addon_purchase(
+                        db, user_id=user_id, addon_id=addon_id, quantity=qty,
+                        stripe_ref=f"sub:{data_object.get('id')}:{event_type}",
+                        source="subscription",
+                    )
+            else:
+                await _apply_subscription_state(db, data_object)
+        elif event_type == "checkout.session.completed":
+            # One-time pack purchase via Path 3 (no active sub at the time
+            # of purchase). Path 1 (recurring add-on Checkout) flips the
+            # subscription event above; we don't need to handle it here.
+            meta = data_object.get("metadata") or {}
+            if (
+                meta.get("kind") == "addon"
+                and data_object.get("mode") == "payment"
+                and data_object.get("payment_status") == "paid"
+            ):
+                addon_id = meta.get("addon_id")
+                user_id = meta.get("user_id")
+                qty = int(meta.get("quantity") or 1)
+                if addon_id and user_id:
+                    await _apply_addon_purchase(
+                        db, user_id=user_id, addon_id=addon_id, quantity=qty,
+                        stripe_ref=f"cs:{data_object.get('id')}",
+                        source="checkout",
+                    )
+                    await db.payment_transactions.update_one(
+                        {"session_id": data_object.get("id")},
+                        {"$set": {"status": "complete", "payment_status": "paid",
+                                  "applied_at": datetime.now(timezone.utc)}},
+                    )
         elif event_type in ("invoice.paid", "invoice.payment_failed"):
+            # On invoice.paid, apply any add-on InvoiceItems on this invoice
+            # (Path 2 — pack added to existing subscriber's next invoice).
+            if event_type == "invoice.paid":
+                lines = (data_object.get("lines") or {}).get("data") or []
+                for line in lines:
+                    line_meta = line.get("metadata") or {}
+                    if line_meta.get("kind") != "addon":
+                        continue
+                    addon_id = line_meta.get("addon_id")
+                    user_id = line_meta.get("user_id")
+                    qty = int(line_meta.get("quantity") or 1)
+                    if not (addon_id and user_id):
+                        continue
+                    await _apply_addon_purchase(
+                        db, user_id=user_id, addon_id=addon_id, quantity=qty,
+                        stripe_ref=f"inv:{data_object.get('id')}:{line.get('id')}",
+                        source="invoice",
+                    )
+                    await db.payment_transactions.update_one(
+                        {"invoice_item_id": line.get("invoice_item")
+                                              or (line.get("parent") or {}).get("invoice_item_details", {}).get("invoice_item")},
+                        {"$set": {"status": "complete", "payment_status": "paid",
+                                  "applied_at": datetime.now(timezone.utc),
+                                  "invoice_id": data_object.get("id")}},
+                    )
             # On every invoice settlement Stripe also fires
             # subscription.updated — but we still log the invoice for
             # the customer-facing transaction list.
@@ -1042,7 +1601,10 @@ def make_billing_router(
             if sub_id:
                 try:
                     sub = await _stripe_call(stripe.Subscription.retrieve, sub_id)
-                    await _apply_subscription_state(db, sub.to_dict())
+                    sub_dict = sub.to_dict()
+                    sub_meta = sub_dict.get("metadata") or {}
+                    if sub_meta.get("kind") != "addon":
+                        await _apply_subscription_state(db, sub_dict)
                 except Exception:
                     logger.exception("Couldn't retrieve subscription %s for invoice event", sub_id)
             await db.payment_transactions.insert_one({

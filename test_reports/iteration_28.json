@@ -1,0 +1,46 @@
+{
+  "summary": "End-to-end testing of the new add-ons purchase flow (catalogue, checkout endpoint validation, webhook semantics, and BillingPage UI). 33/33 backend tests green (14 pre-existing billing + 13 unit add-on tests + 6 new integration validation tests). Frontend: AddonsSection renders all 5 cards, compute meter is correctly hidden, message_pack click surfaces 503 as a friendly toast without crashing.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [
+      {
+        "component": "AddonsSection > extra_seat card",
+        "issue": "data-testid='addon-buy-extra_seat' is NOT rendered for non-Spark users — the UI replaces the buy button with the copy 'Available on spark only. Switch plans to unlock.' Functionally correct (the endpoint would 400 anyway) and arguably better UX, but deviates from the review-request spec which states all 5 cards should expose `data-testid=addon-buy-<id>`. Consider rendering the button as disabled with the same data-testid so automated tests can locate it uniformly.",
+        "selector": "[data-testid='addon-buy-extra_seat']",
+        "priority": "LOW"
+      }
+    ],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_addons.py",
+    "/app/backend/tests/test_addons_endpoint_validation.py",
+    "/app/test_reports/pytest/iter28_addons.xml",
+    "/app/test_reports/pytest/iter28_addons_validation.xml",
+    "/app/test_reports/pytest/iter28_full_billing.xml"
+  ],
+  "action_items": [
+    "(Optional / Low) Render addon-buy-extra_seat as a disabled button with the same data-testid so the UI is consistent for automated locators, instead of swapping it out entirely for the 'Switch plans to unlock' copy."
+  ],
+  "critical_code_review_comments": [
+    "billing.py is 1628 lines — exceeds the 700-line guideline. Consider splitting ADDONS catalogue + apply helpers into billing/addons.py and the Stripe webhook handler into billing/webhooks.py for maintainability.",
+    "Add-on catalogue strip in _public_addons() correctly omits lookup_key + apply_kind (verified at /api/billing/plans). Good defensive serialization.",
+    "Idempotency on _apply_addon_purchase uses (user_id, stripe_ref) — verified to prevent double-credit on Stripe webhook retries.",
+    "extra_orgs uses REPLACE semantics (not increment) — verified to correctly handle subscription.* webhook replay (sub recreated each billing cycle).",
+    "Endpoint correctly returns 503 with user-facing copy when STRIPE_API_KEY is the Emergent shadow value — toast pipeline on BillingPage forwards detail string verbatim, which is desirable here."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_addons_endpoint_validation.py (new — 6 integration tests covering summary schema + checkout validation paths)"
+  ],
+  "success_rate": {"backend": "100% (33/33)", "frontend": "100% on the critical flow; 1 minor data-testid deviation noted"},
+  "test_credentials": "reggie@coolgeek.me / superadminpass123 (superadmin, staff branch of /billing/summary)",
+  "seed_data_creation": "None — used standing superadmin. Test users in unit tests use ephemeral Mongo databases that are torn down.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Add-ons backend + UI are fully working in preview. The only validation that requires a real Stripe key is the live checkout round-trip (not testable in preview due to shadow STRIPE_API_KEY). All validation paths (auth gate, body validation, plan restrictions, 503 fallback, friendly toast) are covered by the two test files above. If retesting after a fix to the extra_seat data-testid, just check that [data-testid='addon-buy-extra_seat'] resolves on the billing page for a non-Spark user.",
+  "rca of the issue": "N/A — all features behave as specified. The single noted UI inconsistency (extra_seat buy button replaced by plan-gate copy) is a deliberate UX choice in BillingPage.js but deviates from the literal spec language. Recommend either updating the spec or rendering a disabled button with the data-testid."
+}

@@ -10003,7 +10003,11 @@ async def startup():
     # idempotent (upserts by org_id + period_key), so duplicate firings
     # caused by pod restarts on the 1st are safe.
     try:
-        from billing import aggregate_overages_for_previous_month, ensure_stripe_catalogue
+        from billing import (
+            aggregate_overages_for_previous_month,
+            ensure_stripe_catalogue,
+            ensure_stripe_addon_catalogue,
+        )
 
         async def _run_overage_aggregation():
             try:
@@ -10025,6 +10029,9 @@ async def startup():
             mapped = await ensure_stripe_catalogue()
             if mapped:
                 logger.info("Stripe catalogue ready: %s", mapped)
+            addon_mapped = await ensure_stripe_addon_catalogue()
+            if addon_mapped:
+                logger.info("Stripe add-on catalogue ready: %s", addon_mapped)
         except Exception:
             logger.exception("Stripe catalogue provisioning failed (continuing).")
     except Exception:
