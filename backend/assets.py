@@ -124,7 +124,17 @@ def format_assets_for_prompt(assets: Iterable[dict]) -> str:
         meta_bits = [a.get("kind", "file")]
         if a.get("description"):
             meta_bits.append(a["description"])
-        lines.append(f"- `{a['original_name']}` ({' · '.join(meta_bits)})")
+        # External links carry a `link_url` we surface so agents can
+        # reference the actual document the user shared (Google Drive,
+        # Notion, Figma, Dropbox, etc.).
+        if a.get("kind") == "link" and a.get("link_url"):
+            provider = a.get("link_provider") or "link"
+            meta_bits.append(provider)
+            lines.append(
+                f"- `{a['original_name']}` ({' · '.join(meta_bits)}) → {a['link_url']}"
+            )
+        else:
+            lines.append(f"- `{a['original_name']}` ({' · '.join(meta_bits)})")
         if a.get("preview"):
             lines.append(f"    excerpt: {a['preview']}")
     return "\n".join(lines)

@@ -3,7 +3,7 @@ import { useParams, Link, useNavigate, useLocation } from "react-router-dom";
 import api, { BACKEND_URL } from "../lib/api";
 import TopBar from "../components/TopBar";
 import { toast } from "sonner";
-import { Plus, Users, ArrowRight, Copy, UserPlus, FileText, Image as ImageIcon, FileBox, Trash2, UploadCloud, Download, File as FileIcon, MessageCircle, Pencil, Save, X as XIcon, RefreshCw, Megaphone, Paperclip, Send, Loader2, Rocket, Network, Minimize2, ChevronRight, BarChart3 } from "lucide-react";
+import { Plus, Users, ArrowRight, Copy, UserPlus, FileText, Image as ImageIcon, FileBox, Trash2, UploadCloud, Download, File as FileIcon, MessageCircle, Pencil, Save, X as XIcon, RefreshCw, Megaphone, Paperclip, Send, Loader2, Rocket, Network, Minimize2, ChevronRight, BarChart3, Link as LinkIcon, ExternalLink } from "lucide-react";
 import BrandAssetsPanel from "../components/BrandAssetsPanel";
 import NotesPage from "./NotesPage";
 import GlobalNoteButton from "../components/GlobalNoteButton";
@@ -29,7 +29,7 @@ const formatBytes = (n) => {
   if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
   return `${(n / (1024 * 1024)).toFixed(1)} MB`;
 };
-const KIND_ICONS = { image: ImageIcon, pdf: FileText, doc: FileText, text: FileText, audio: FileBox, video: FileBox, file: FileIcon };
+const KIND_ICONS = { image: ImageIcon, pdf: FileText, doc: FileText, text: FileText, audio: FileBox, video: FileBox, file: FileIcon, link: LinkIcon };
 
 export default function OrgPage() {
   const { orgId } = useParams();
@@ -127,6 +127,10 @@ export default function OrgPage() {
   const [uploadCategory, setUploadCategory] = useState(""); // product|lifestyle|team|venue|logo_variant|other
   const [dragActive, setDragActive] = useState(false);
   const fileRef = useRef(null);
+  // External link adder (Google Drive / Dropbox / Notion / Figma …)
+  const [linkUrl, setLinkUrl] = useState("");
+  const [linkName, setLinkName] = useState("");
+  const [linkBusy, setLinkBusy] = useState(false);
 
   // Edit-org state (owner/admin only)
   const [editOpen, setEditOpen] = useState(false);
@@ -431,6 +435,34 @@ export default function OrgPage() {
     } catch (err) {
       toast.error(err?.response?.data?.detail || "Failed");
     }
+  };
+
+  // Save an external URL (Google Drive / Dropbox / Notion / Figma /
+  // generic) into the Asset Library. Provider is auto-detected on the
+  // backend from the URL host so the user doesn't need to pick one.
+  const addAssetLink = async (e) => {
+    e?.preventDefault?.();
+    const url = linkUrl.trim();
+    if (!url || linkBusy) return;
+    if (!/^https?:\/\//i.test(url)) {
+      toast.error("URL must start with http:// or https://");
+      return;
+    }
+    setLinkBusy(true);
+    try {
+      const { data } = await api.post(`/orgs/${orgId}/asset-links`, {
+        url,
+        name: linkName.trim(),
+        description: uploadDesc.trim(),
+        category: uploadCategory.trim(),
+      });
+      setAssets((prev) => [data, ...prev]);
+      setLinkUrl("");
+      setLinkName("");
+      toast.success(`Saved ${data.link_provider || "link"} to library`);
+    } catch (err) {
+      toast.error(err?.response?.data?.detail || "Couldn't save link");
+    } finally { setLinkBusy(false); }
   };
 
   if (loading) {
@@ -1137,6 +1169,47 @@ export default function OrgPage() {
                   {uploading && <div className="text-xs sp-subtle">Uploading…</div>}
                 </div>
 
+                {/* External link adder — Google Drive / Dropbox / Notion /
+                    Figma / etc. Any org member can add. Auto-detects the
+                    provider on the backend so users don't need to pick one. */}
+                <form
+                  onSubmit={addAssetLink}
+                  className="sp-glass rounded-xl p-4 mt-4 flex flex-col sm:flex-row gap-2"
+                  data-testid="asset-link-form"
+                >
+                  <div className="flex items-center gap-2 shrink-0">
+                    <LinkIcon className="w-4 h-4 sp-subtle" />
+                    <span className="text-xs uppercase tracking-widest sp-subtle hidden sm:inline">Add a link</span>
+                  </div>
+                  <input
+                    type="text"
+                    inputMode="url"
+                    value={linkUrl}
+                    onChange={(e) => setLinkUrl(e.target.value)}
+                    placeholder="Paste a Google Drive, Dropbox, Notion, Figma, etc. URL"
+                    className="flex-1 rounded-lg px-3 py-2 text-sm focus:sp-focus"
+                    style={{ background: "var(--input-bg)", border: "1px solid var(--input-border)", color: "var(--fg)" }}
+                    data-testid="asset-link-url"
+                  />
+                  <input
+                    type="text"
+                    value={linkName}
+                    onChange={(e) => setLinkName(e.target.value)}
+                    placeholder="Label (optional)"
+                    className="sm:w-48 rounded-lg px-3 py-2 text-sm focus:sp-focus"
+                    style={{ background: "var(--input-bg)", border: "1px solid var(--input-border)", color: "var(--fg)" }}
+                    data-testid="asset-link-name"
+                  />
+                  <button
+                    type="submit"
+                    disabled={!linkUrl.trim() || linkBusy}
+                    className="sp-btn sp-btn-primary text-xs disabled:opacity-50"
+                    data-testid="asset-link-submit"
+                  >
+                    {linkBusy ? "Saving…" : <>Add link</>}
+                  </button>
+                </form>
+
                 {assets.length > 0 && (() => {
                   const visible = assetsExpanded ? assets : assets.slice(0, ASSETS_INITIAL_LIMIT);
                   const hidden = assets.length - visible.length;
@@ -1146,7 +1219,11 @@ export default function OrgPage() {
                         {visible.map((a) => {
                           const Icon = KIND_ICONS[a.kind] || FileIcon;
                           const isImg = a.kind === "image";
-                          const url = `${BACKEND_URL}${a.url}`;
+                          const isLink = a.kind === "link";
+                          // For uploaded files the served URL is relative
+                          // to the backend; link assets store the full
+                          // external URL directly in `a.url`.
+                          const url = isLink ? a.url : `${BACKEND_URL}${a.url}`;
                           return (
                             <div key={a.id} className="sp-glass rounded-xl p-3 flex flex-col gap-2" data-testid={`asset-card-${a.id}`}>
                               <div className="flex items-start gap-2">
@@ -1155,8 +1232,15 @@ export default function OrgPage() {
                                 </div>
                                 <div className="min-w-0 flex-1">
                                   <div className="text-sm font-medium truncate" title={a.original_name}>{a.original_name}</div>
-                                  <div className="text-[11px] sp-subtle">
-                                    {a.kind} · {formatBytes(a.size)} · by {a.uploaded_by_name}
+                                  <div className="text-[11px] sp-subtle flex items-center gap-1.5 flex-wrap">
+                                    {isLink ? (
+                                      <>
+                                        <span className="sp-chip !py-0 !px-1.5 text-[10px]" data-testid={`asset-link-provider-${a.id}`}>{a.link_provider || "Link"}</span>
+                                        <span>· by {a.uploaded_by_name}</span>
+                                      </>
+                                    ) : (
+                                      <>{a.kind} · {formatBytes(a.size)} · by {a.uploaded_by_name}</>
+                                    )}
                                   </div>
                                 </div>
                               </div>
@@ -1166,10 +1250,27 @@ export default function OrgPage() {
                                   <img src={url} alt={a.original_name} loading="lazy" className="w-full max-h-32 object-cover" />
                                 </a>
                               )}
+                              {isLink && (
+                                <div className="text-[11px] sp-subtle truncate" title={a.link_url}>
+                                  {a.link_url}
+                                </div>
+                              )}
                               <div className="flex items-center justify-end gap-1 mt-auto">
-                                <a href={url} target="_blank" rel="noreferrer" className="sp-btn sp-btn-ghost text-xs" download>
-                                  <Download className="w-3 h-3" /> Open
-                                </a>
+                                {isLink ? (
+                                  <a
+                                    href={url}
+                                    target="_blank"
+                                    rel="noreferrer"
+                                    className="sp-btn sp-btn-ghost text-xs"
+                                    data-testid={`asset-link-open-${a.id}`}
+                                  >
+                                    <ExternalLink className="w-3 h-3" /> Open
+                                  </a>
+                                ) : (
+                                  <a href={url} target="_blank" rel="noreferrer" className="sp-btn sp-btn-ghost text-xs" download>
+                                    <Download className="w-3 h-3" /> Open
+                                  </a>
+                                )}
                                 <button onClick={() => removeAsset(a.id)} className="sp-btn sp-btn-ghost text-xs" data-testid={`asset-delete-${a.id}`}>
                                   <Trash2 className="w-3 h-3" />
                                 </button>
@@ -1610,20 +1711,19 @@ function GeneralChatCard({ orgId, teamId, convId }) {
         await api.post(`/conversations/${convId}/upload`, fd, {
           headers: { "Content-Type": "multipart/form-data" },
         });
-        const n = staged.length;
         staged.forEach((s) => s.previewUrl && URL.revokeObjectURL(s.previewUrl));
         setStaged([]);
         setText("");
-        toast.success(`Sent ${n} file${n > 1 ? "s" : ""} to Chief of Staff`, {
-          action: { label: "Open chat", onClick: () => nav(`/app/team/${teamId}/c/${convId}`) },
-        });
+        // Take the user straight into the live conversation. The Chief
+        // of Staff reply will stream into the chat on the next page
+        // load (initial fetch picks up both the user message and the
+        // agent's reply).
+        nav(`/app/team/${teamId}/c/${convId}`);
       } else {
         // Text-only — post a normal chat message and let agents respond.
         await api.post(`/conversations/${convId}/messages`, { text: trimmed });
         setText("");
-        toast.success("Message sent to Chief of Staff", {
-          action: { label: "Open chat", onClick: () => nav(`/app/team/${teamId}/c/${convId}`) },
-        });
+        nav(`/app/team/${teamId}/c/${convId}`);
       }
     } catch (err) {
       toast.error(err?.response?.data?.detail || "Send failed");

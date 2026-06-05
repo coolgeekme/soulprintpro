@@ -2850,12 +2850,17 @@ async def load_assets_brief(org_id: str, max_items: int = 30) -> List[dict]:
     out: List[dict] = []
     async for a in cur:
         excerpt = a.get("text_excerpt") or ""
-        out.append({
+        row = {
             "original_name": a.get("original_name", ""),
             "kind": a.get("kind", "file"),
             "description": a.get("description", ""),
             "preview": (excerpt[:240] + ("…" if len(excerpt) > 240 else "")) if excerpt else "",
-        })
+        }
+        # Surface external links so agents can cite the URL.
+        if a.get("kind") == "link" and a.get("link_url"):
+            row["link_url"] = a["link_url"]
+            row["link_provider"] = a.get("link_provider", "")
+        out.append(row)
     return out
 
 @conv_r.post("/teams/{team_id}/conversations")
@@ -5127,6 +5132,58 @@ async def send_message(conv_id: str, body: SendMessageBody, u: dict = Depends(ge
     # Decide which agents respond
     if conv["type"] == "direct":
         responders = conv["agent_ids"][:1]
+        # Smart-expand on a direct chat: if a different specialist is a
+        # better fit for this message AND the user enabled smart_expand
+        # (default for forked private chats), pull them in. The convo
+        # is PROMOTED to type=group so the new agent stays in the room
+        # for follow-up turns (user picked option B).
+        if conv.get("smart_expand"):
+            try:
+                best = await route_best_agent(
+                    team, body.text, exclude_ids=None, transcript="",
+                )
+            except Exception as exc:
+                logger.warning("smart_expand (direct) router error: %s", exc)
+                best = None
+            current_aids = list(conv.get("agent_ids") or [])
+            if (
+                best
+                and best in AGENTS
+                and best not in current_aids
+            ):
+                new_aids = current_aids + [best]
+                await db.conversations.update_one(
+                    {"_id": ObjectId(conv_id)},
+                    {"$set": {
+                        "type": "group",
+                        "agent_ids": new_aids,
+                        # Keep the chat 1:1-ish by NOT enabling
+                        # auto_respond — only the mentioned / picked
+                        # agents speak per turn. User can flip
+                        # auto_respond via the chip if they want a
+                        # broader room.
+                    }},
+                )
+                conv["type"] = "group"
+                conv["agent_ids"] = new_aids
+                # Route this turn to the newly-added specialist —
+                # they're the better fit per the router. The original
+                # agent stays in the room for next time.
+                responders = [best]
+                try:
+                    await db.messages.insert_one({
+                        "id": str(uuid.uuid4()),
+                        "conversation_id": conv_id,
+                        "sender_type": "system",
+                        "sender_id": "system",
+                        "sender_name": "System",
+                        "agent_id": None,
+                        "text": f"{AGENTS[best]['name']} joined the room — better fit for this thread.",
+                        "intent": "smart_expand_join",
+                        "timestamp": datetime.now(timezone.utc),
+                    })
+                except Exception:
+                    pass
     else:
         mentioned = detect_mentions(body.text, conv["agent_ids"])
         if mentioned:
@@ -5645,6 +5702,108 @@ async def smart_start(team_id: str, body: SmartStartBody, u: dict = Depends(get_
         "user_message": {k: v for k, v in user_doc.items() if k != "_id"},
         "agent_message": {k: v for k, v in agent_msg.items() if k != "_id"},
     }
+
+# ── Smart start with file attachments (Team page composer) ────────────────
+@conv_r.post("/teams/{team_id}/start-with-files")
+async def smart_start_with_files(
+    team_id: str,
+    text: str = Form(""),
+    title: str = Form(""),
+    files: List[UploadFile] = File(...),
+    u: dict = Depends(get_current_user),
+):
+    """Team-page composer with attachments. Creates a direct conversation
+    routed by the prompt text, then delegates to the existing
+    ``/conversations/{id}/upload`` handler so the file-aware reply path
+    (image edit/compose, vision describe, PDF/DOCX Q&A) runs uniformly.
+
+    Mirrors ``smart_start`` but accepts multipart `files[]`. Returns the
+    new conversation along with the user_message + agent_messages from
+    the upload handler so the frontend can navigate straight in.
+    """
+    if not files:
+        raise HTTPException(400, "At least one file is required")
+    await require_team_member(team_id, u["id"])
+    team = await db.teams.find_one({"_id": ObjectId(team_id)})
+    if not team:
+        raise HTTPException(404, "Team not found")
+
+    # Route based on prompt OR (if no prompt) the file kinds + names.
+    # Even a single-word file-only upload should land with the best agent.
+    routing_text = (text or "").strip()
+    if not routing_text:
+        names = [(f.filename or "file") for f in files][:6]
+        routing_text = f"Review these uploaded files: {', '.join(names)}"
+    chosen = await route_best_agent(team, routing_text)
+
+    fallback_title = (
+        (text.strip()[:60] + ("…" if len(text.strip()) > 60 else ""))
+        if text and text.strip()
+        else (
+            f"Files: {files[0].filename}"
+            + (f" + {len(files) - 1} more" if len(files) > 1 else "")
+        )
+    )
+    conv_doc = {
+        "team_id": team_id,
+        "title": (title.strip() if title else "") or fallback_title,
+        "type": "direct",
+        "agent_ids": [chosen],
+        "member_ids": [u["id"]],
+        "auto_respond": False,
+        "smart_expand": False,
+        "created_by": u["id"],
+        "created_at": datetime.now(timezone.utc),
+    }
+    res = await db.conversations.insert_one(conv_doc)
+    conv_doc["_id"] = res.inserted_id
+    new_conv_id = str(res.inserted_id)
+
+    # Delegate to the canonical upload handler so a Team-page upload
+    # behaves identically to a regular in-chat one (image edit, vision
+    # describe, PDF/DOCX Q&A all reuse the same code path).
+    upload_resp = await upload_to_conversation(
+        new_conv_id, text=text or "", files=files, u=u,
+    )
+
+    fresh_conv = await db.conversations.find_one({"_id": ObjectId(new_conv_id)})
+    return {
+        "conversation": serialize_conv(fresh_conv or conv_doc),
+        "routed_agent_id": chosen,
+        "user_message": upload_resp.get("user_message"),
+        "agent_messages": upload_resp.get("agent_messages") or (
+            [upload_resp["agent_message"]] if upload_resp.get("agent_message") else []
+        ),
+    }
+
+
+# ── Conversation settings toggle (auto_respond / smart_expand) ─────────────
+class ConvSettingsBody(BaseModel):
+    auto_respond: Optional[bool] = None
+    smart_expand: Optional[bool] = None
+
+
+@conv_r.patch("/conversations/{conv_id}/settings")
+async def update_conversation_settings(
+    conv_id: str, body: ConvSettingsBody,
+    u: dict = Depends(get_current_user),
+):
+    """Toggle `auto_respond` / `smart_expand` on a conversation.
+    Either field is optional — only provided keys are touched. Returns
+    the refreshed conversation so the UI can re-render chips."""
+    conv = await load_conv_or_403(conv_id, u["id"])
+    update: dict = {}
+    if body.auto_respond is not None:
+        update["auto_respond"] = bool(body.auto_respond)
+    if body.smart_expand is not None:
+        update["smart_expand"] = bool(body.smart_expand)
+    if update:
+        await db.conversations.update_one(
+            {"_id": ObjectId(conv_id)}, {"$set": update},
+        )
+        conv.update(update)
+    return serialize_conv(conv)
+
 
 @conv_r.post("/conversations/{conv_id}/switch-agent")
 async def switch_agent(conv_id: str, body: SwitchAgentBody, u: dict = Depends(get_current_user)):
@@ -7356,11 +7515,12 @@ def kind_for_ext(ext: str) -> str:
     return "file"
 
 def serialize_asset(a: dict) -> dict:
+    is_link = a.get("kind") == "link" or bool(a.get("link_url"))
     return {
         "id": str(a["_id"]),
         "org_id": a["org_id"],
         "original_name": a["original_name"],
-        "filename": a["filename"],
+        "filename": a.get("filename", ""),
         "kind": a.get("kind", "file"),
         "ext": a.get("ext", ""),
         "mime": a.get("mime", ""),
@@ -7371,9 +7531,126 @@ def serialize_asset(a: dict) -> dict:
         "uploaded_by": a.get("uploaded_by", ""),
         "uploaded_by_name": a.get("uploaded_by_name", ""),
         "uploaded_at": a["uploaded_at"].isoformat() if isinstance(a["uploaded_at"], datetime) else a["uploaded_at"],
-        "url": f"/api/files/assets/{a['filename']}",
+        "url": a["link_url"] if is_link else f"/api/files/assets/{a['filename']}",
         "has_text": bool(a.get("text_excerpt")),
+        # Link-only fields. Populated for `kind="link"` assets so the
+        # frontend can render an "Open ↗" button + provider chip.
+        "link_url": a.get("link_url", "") if is_link else "",
+        "link_provider": a.get("link_provider", "") if is_link else "",
     }
+
+
+# Provider auto-detection from URL host. Used by the Asset Library
+# external-link path so the UI can render a "Google Drive", "Notion",
+# "Figma" etc. chip without the user picking it manually.
+_LINK_PROVIDER_HOSTS = {
+    "Google Drive": ("drive.google.com", "docs.google.com", "sheets.google.com", "slides.google.com"),
+    "Dropbox":      ("dropbox.com", "www.dropbox.com", "db.tt"),
+    "Notion":       ("notion.so", "www.notion.so", "notion.site"),
+    "Figma":        ("figma.com", "www.figma.com"),
+    "Box":          ("box.com", "app.box.com", "www.box.com"),
+    "OneDrive":     ("onedrive.live.com", "1drv.ms"),
+    "SharePoint":   ("sharepoint.com",),
+    "Airtable":     ("airtable.com",),
+    "GitHub":       ("github.com", "raw.githubusercontent.com"),
+    "Loom":         ("loom.com", "www.loom.com"),
+    "YouTube":      ("youtube.com", "youtu.be", "www.youtube.com"),
+    "Vimeo":        ("vimeo.com", "www.vimeo.com"),
+    "Canva":        ("canva.com", "www.canva.com"),
+    "Miro":         ("miro.com", "www.miro.com"),
+    "Trello":       ("trello.com",),
+    "Asana":        ("asana.com",),
+    "Linear":       ("linear.app",),
+}
+
+
+def _detect_link_provider(url: str) -> str:
+    """Return a friendly provider label for a URL (e.g. "Google Drive").
+    Falls back to the bare hostname when the provider isn't recognised."""
+    try:
+        from urllib.parse import urlparse
+        host = (urlparse(url).hostname or "").lower()
+    except Exception:
+        return "Link"
+    if not host:
+        return "Link"
+    for label, hosts in _LINK_PROVIDER_HOSTS.items():
+        if host in hosts or any(host.endswith("." + h) for h in hosts):
+            return label
+    # Strip leading www.
+    return host[4:] if host.startswith("www.") else host
+
+
+class AssetLinkBody(BaseModel):
+    url: str
+    name: Optional[str] = ""
+    description: Optional[str] = ""
+    category: Optional[str] = ""
+
+
+@assets_r.post("/orgs/{org_id}/asset-links")
+async def add_asset_link(
+    org_id: str, body: AssetLinkBody,
+    u: dict = Depends(get_current_user),
+):
+    """Add an external URL to the Asset Library (Google Drive / Dropbox /
+    Notion / Figma / etc.). Surfaces alongside uploaded files and
+    becomes citable in agent prompts.
+
+    Any org member can add a link (matches the file-upload permission).
+    Deletes route through the existing `/orgs/{org_id}/assets/{asset_id}`
+    endpoint with the same uploader-or-admin rule.
+    """
+    await require_org_member(org_id, u["id"])
+    raw_url = (body.url or "").strip()
+    if not raw_url:
+        raise HTTPException(400, "URL is required")
+    if not (raw_url.startswith("http://") or raw_url.startswith("https://")):
+        raise HTTPException(400, "URL must start with http:// or https://")
+    if len(raw_url) > 2048:
+        raise HTTPException(400, "URL is too long (max 2048 chars)")
+
+    provider = _detect_link_provider(raw_url)
+    # Best-effort label: explicit `name` > derive from URL path > provider.
+    label = (body.name or "").strip()[:200]
+    if not label:
+        try:
+            from urllib.parse import urlparse, unquote
+            path = (urlparse(raw_url).path or "").rstrip("/")
+            tail = path.rsplit("/", 1)[-1] if path else ""
+            label = unquote(tail).replace("-", " ").replace("_", " ").strip()
+        except Exception:
+            label = ""
+    if not label:
+        label = f"{provider} link"
+
+    _VALID_CATEGORIES = {"product", "lifestyle", "team", "venue", "logo_variant", "other", ""}
+    safe_category = (body.category or "").strip().lower()
+    if safe_category not in _VALID_CATEGORIES:
+        safe_category = ""
+
+    doc = {
+        "org_id": org_id,
+        "filename": "",                # link assets have no on-disk file
+        "original_name": label,
+        "ext": "",
+        "mime": "",
+        "size": 0,
+        "kind": "link",
+        "link_url": raw_url,
+        "link_provider": provider,
+        "description": (body.description or "").strip()[:500],
+        "category": safe_category,
+        "usable_in_social": False,     # links can't seed social-post images
+        "uploaded_by": u["id"],
+        "uploaded_by_name": u["name"],
+        "uploaded_at": datetime.now(timezone.utc),
+        "text_excerpt": "",
+    }
+    res = await db.assets.insert_one(doc)
+    doc["_id"] = res.inserted_id
+    return serialize_asset(doc)
+
 
 @assets_r.post("/orgs/{org_id}/assets")
 async def upload_asset(
@@ -7496,8 +7773,10 @@ async def delete_asset(org_id: str, asset_id: str, u: dict = Depends(get_current
         raise HTTPException(404, "Asset not found")
     if existing["uploaded_by"] != u["id"] and ctx["member"]["role"] not in ("owner", "admin"):
         raise HTTPException(403, "Only the uploader or org admins can delete")
-    path = ASSETS_DIR / org_id / existing["filename"]
-    path.unlink(missing_ok=True)
+    # Link-only assets have no on-disk file; skip the unlink for them.
+    if existing.get("filename"):
+        path = ASSETS_DIR / org_id / existing["filename"]
+        path.unlink(missing_ok=True)
     await db.assets.delete_one({"_id": ObjectId(asset_id)})
     return {"ok": True}
 

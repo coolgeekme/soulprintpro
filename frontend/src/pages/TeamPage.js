@@ -1,9 +1,9 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import { useParams, Link, useNavigate } from "react-router-dom";
 import api from "../lib/api";
 import TopBar from "../components/TopBar";
 import { toast } from "sonner";
-import { MessageCircle, Users, Plus, Radio, Search, X, Wand2, ArrowRight, Pencil, Save, Trash2, X as XIcon, Loader2, Archive, ArchiveRestore } from "lucide-react";
+import { MessageCircle, Users, Plus, Radio, Search, X, Wand2, ArrowRight, Pencil, Save, Trash2, X as XIcon, Loader2, Archive, ArchiveRestore, Paperclip, File as FileIcon } from "lucide-react";
 import Logo from "../components/Logo";
 import SchedulesPanel from "../components/SchedulesPanel";
 
@@ -289,14 +289,102 @@ export default function TeamPage() {
   // Smart-start composer
   const [smartText, setSmartText] = useState("");
   const [smartBusy, setSmartBusy] = useState(false);
+  // File staging for the Smart-Start composer. Mirrors the lighter
+  // staging tray used on the Org page's Chief-of-Staff card — paperclip
+  // picker + drag-and-drop + paste-from-clipboard, capped at 6 files
+  // × 25 MB each (server enforces the upper bound).
+  const [smartStaged, setSmartStaged] = useState([]);
+  const [smartDragging, setSmartDragging] = useState(false);
+  const smartFileRef = useRef(null);
+
+  const stageSmartFiles = (incoming) => {
+    const picked = Array.from(incoming || []).filter(Boolean);
+    if (!picked.length) return false;
+    if (smartStaged.length + picked.length > 6) {
+      toast.error("Up to 6 files per message");
+      return false;
+    }
+    const tooBig = picked.find((f) => f.size > 25 * 1024 * 1024);
+    if (tooBig) {
+      toast.error(`${tooBig.name} is too large (max 25 MB)`);
+      return false;
+    }
+    setSmartStaged((prev) => [
+      ...prev,
+      ...picked.map((f) => ({
+        id: `stg-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+        file: f,
+        kind: f.type?.startsWith("image/") ? "image"
+              : f.type?.startsWith("video/") ? "video"
+              : f.type?.startsWith("audio/") ? "audio"
+              : "file",
+        previewUrl: f.type?.startsWith("image/") ? URL.createObjectURL(f) : "",
+      })),
+    ]);
+    return true;
+  };
+  const removeSmartStaged = (id) => setSmartStaged((prev) => {
+    const tgt = prev.find((s) => s.id === id);
+    if (tgt?.previewUrl) URL.revokeObjectURL(tgt.previewUrl);
+    return prev.filter((s) => s.id !== id);
+  });
+  // Free preview blob URLs on unmount.
+  useEffect(() => () => smartStaged.forEach(
+    (s) => s.previewUrl && URL.revokeObjectURL(s.previewUrl),
+  ), /* eslint-disable-next-line react-hooks/exhaustive-deps */ []);
+  const onSmartDragOver = (e) => {
+    if (e.dataTransfer?.types?.includes("Files")) {
+      e.preventDefault();
+      if (!smartDragging) setSmartDragging(true);
+    }
+  };
+  const onSmartDrop = (e) => {
+    if (!e.dataTransfer?.files?.length) return;
+    e.preventDefault();
+    setSmartDragging(false);
+    stageSmartFiles(Array.from(e.dataTransfer.files));
+  };
+  const onSmartPaste = (e) => {
+    const files = Array.from(e.clipboardData?.files || []);
+    if (files.length && stageSmartFiles(files)) {
+      e.preventDefault();
+      toast.success(`Pasted ${files.length} file${files.length > 1 ? "s" : ""}`);
+    }
+  };
+  const onSmartFilePick = (e) => {
+    const picked = Array.from(e.target.files || []);
+    e.target.value = "";
+    stageSmartFiles(picked);
+  };
+
   const onSmartStart = async (e) => {
     e?.preventDefault?.();
-    if (!smartText.trim() || smartBusy) return;
+    const trimmed = smartText.trim();
+    if (smartBusy) return;
+    if (!trimmed && smartStaged.length === 0) return;
     setSmartBusy(true);
     try {
-      const { data } = await api.post(`/teams/${teamId}/start`, { text: smartText.trim() });
-      toast.success(`Routed to ${agentMap[data.routed_agent_id]?.name || data.routed_agent_id}`);
-      nav(`/app/team/${teamId}/c/${data.conversation.id}`);
+      if (smartStaged.length > 0) {
+        // Files path: multipart endpoint that creates the conv +
+        // routes the agent + posts the user message with attachments
+        // + triggers the agent reply, all in one shot.
+        const fd = new FormData();
+        fd.append("text", smartText);
+        smartStaged.forEach((s) => fd.append("files", s.file));
+        const { data } = await api.post(`/teams/${teamId}/start-with-files`, fd, {
+          headers: { "Content-Type": "multipart/form-data" },
+        });
+        toast.success(`Routed to ${agentMap[data.routed_agent_id]?.name || data.routed_agent_id}`);
+        smartStaged.forEach((s) => s.previewUrl && URL.revokeObjectURL(s.previewUrl));
+        setSmartStaged([]);
+        setSmartText("");
+        nav(`/app/team/${teamId}/c/${data.conversation.id}`);
+      } else {
+        const { data } = await api.post(`/teams/${teamId}/start`, { text: trimmed });
+        toast.success(`Routed to ${agentMap[data.routed_agent_id]?.name || data.routed_agent_id}`);
+        setSmartText("");
+        nav(`/app/team/${teamId}/c/${data.conversation.id}`);
+      }
     } catch (err) {
       toast.error(err?.response?.data?.detail || "Couldn't route this — try again");
     } finally { setSmartBusy(false); }
@@ -375,34 +463,101 @@ export default function TeamPage() {
         <div className="grid lg:grid-cols-[1.4fr_1fr] gap-6">
           <div className="flex flex-col gap-6">
             {/* Smart Start composer */}
-            <section className="sp-glass-strong rounded-2xl p-6">
+            <section
+              className="relative sp-glass-strong rounded-2xl p-6"
+              onDragOver={onSmartDragOver}
+              onDragLeave={() => setSmartDragging(false)}
+              onDrop={onSmartDrop}
+            >
+              {smartDragging && (
+                <div
+                  className="absolute inset-0 z-10 rounded-2xl border-2 border-dashed flex items-center justify-center pointer-events-none"
+                  style={{
+                    borderColor: "rgba(246,64,0,0.7)",
+                    background: "color-mix(in srgb, var(--bg) 80%, transparent)",
+                    backdropFilter: "blur(8px)",
+                    WebkitBackdropFilter: "blur(8px)",
+                  }}
+                  data-testid="smart-start-drop-overlay"
+                >
+                  <div className="flex items-center gap-2 text-sm font-medium" style={{ color: "var(--fg)" }}>
+                    <Paperclip className="w-4 h-4" /> Drop to attach to your new chat
+                  </div>
+                </div>
+              )}
               <div className="flex items-center gap-2 mb-2">
                 <Wand2 className="w-4 h-4 text-white/80" />
                 <h2 className="text-sm uppercase tracking-widest sp-subtle">Just start typing</h2>
                 <span className="ml-auto text-xs sp-subtle">We'll pick the right specialist for you</span>
               </div>
               <form onSubmit={onSmartStart} className="flex flex-col gap-3">
+                {smartStaged.length > 0 && (
+                  <div className="flex flex-wrap gap-2" data-testid="smart-start-staged-tray">
+                    {smartStaged.map((s) => (
+                      <div
+                        key={s.id}
+                        className="sp-glass rounded-lg px-3 py-1.5 flex items-center gap-2 text-xs"
+                        data-testid={`smart-start-staged-${s.id}`}
+                      >
+                        {s.previewUrl ? (
+                          <img src={s.previewUrl} alt="" className="w-6 h-6 rounded object-cover" />
+                        ) : (
+                          <FileIcon className="w-3.5 h-3.5 sp-subtle" />
+                        )}
+                        <span className="max-w-[180px] truncate" title={s.file.name}>{s.file.name}</span>
+                        <button
+                          type="button"
+                          onClick={() => removeSmartStaged(s.id)}
+                          className="sp-subtle hover:text-white"
+                          data-testid={`smart-start-remove-${s.id}`}
+                        >
+                          <XIcon className="w-3 h-3" />
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                )}
                 <textarea
                   data-testid="smart-start-input"
                   value={smartText}
                   onChange={(e) => setSmartText(e.target.value)}
                   onKeyDown={(e) => { if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) onSmartStart(e); }}
+                  onPaste={onSmartPaste}
                   placeholder="What's on your mind? (e.g. 'Draft 3 LinkedIn hooks for our launch' or 'Why is our React dashboard slow?')"
                   rows={3}
                   className="w-full bg-white/[0.03] border border-white/10 rounded-xl px-4 py-3 text-sm text-white placeholder:text-white/30 focus:border-white/30 focus:sp-focus resize-none"
                 />
-                <div className="flex items-center justify-between gap-2">
-                  <button
-                    type="button"
-                    onClick={() => setShowNew(true)}
-                    className="text-xs sp-subtle hover:text-white inline-flex items-center gap-1"
-                    data-testid="open-manual-picker"
-                  >
-                    Or pick the agent manually <ArrowRight className="w-3 h-3" />
-                  </button>
+                <input
+                  ref={smartFileRef}
+                  type="file"
+                  multiple
+                  hidden
+                  onChange={onSmartFilePick}
+                  data-testid="smart-start-file-input"
+                />
+                <div className="flex items-center justify-between gap-2 flex-wrap">
+                  <div className="flex items-center gap-3">
+                    <button
+                      type="button"
+                      onClick={() => smartFileRef.current?.click()}
+                      className="sp-btn sp-btn-ghost text-xs"
+                      title="Attach a file (paperclip · drag · paste)"
+                      data-testid="smart-start-attach-btn"
+                    >
+                      <Paperclip className="w-3.5 h-3.5" /> Attach
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setShowNew(true)}
+                      className="text-xs sp-subtle hover:text-white inline-flex items-center gap-1"
+                      data-testid="open-manual-picker"
+                    >
+                      Or pick the agent manually <ArrowRight className="w-3 h-3" />
+                    </button>
+                  </div>
                   <button
                     type="submit"
-                    disabled={!smartText.trim() || smartBusy}
+                    disabled={(!smartText.trim() && smartStaged.length === 0) || smartBusy}
                     className="sp-btn sp-btn-primary text-sm disabled:opacity-50"
                     data-testid="smart-start-btn"
                   >

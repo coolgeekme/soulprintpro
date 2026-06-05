@@ -1056,6 +1056,25 @@ export default function ConversationPage() {
     } finally { setSwitchBusy(false); }
   };
 
+  // Toggle conversation-level flags. Used by the auto-respond and
+  // smart-expand chips in the header so users can dial behaviour
+  // without leaving the chat.
+  const [settingsBusy, setSettingsBusy] = useState(false);
+  const patchSettings = async (patch) => {
+    if (settingsBusy) return;
+    setSettingsBusy(true);
+    try {
+      const { data } = await api.patch(`/conversations/${convId}/settings`, patch);
+      setConv(data);
+      const k = Object.keys(patch)[0];
+      const verb = patch[k] ? "ON" : "OFF";
+      const label = k === "smart_expand" ? "Smart-expand" : "Auto-respond";
+      toast.success(`${label} ${verb}`);
+    } catch (err) {
+      toast.error(err?.response?.data?.detail || "Couldn't update settings");
+    } finally { setSettingsBusy(false); }
+  };
+
   const filteredPickerAgents = useMemo(() => {
     let arr = agents.filter((a) => !conv?.agent_ids?.includes(a.id));
     if (agentsDiv) arr = arr.filter((a) => a.division_key === agentsDiv);
@@ -1233,18 +1252,34 @@ export default function ConversationPage() {
               </span>
             </span>
           )}
-          {isGroup && (
-            <span className="hidden sm:contents">
-              <span className="sp-chip !bg-white/5">
-                {conv.auto_respond ? "Auto-respond ON" : "Respond on @mention"}
-              </span>
-            </span>
-          )}
-          {isGroup && conv.smart_expand && (
-            <span className="hidden sm:contents">
-              <span className="sp-chip !bg-white/5">Smart expand</span>
-            </span>
-          )}
+          {/* Auto-respond + smart-expand chips. Visible on every chat
+              (direct OR group) so the user can toggle them inline. For
+              direct chats this is what enables forked private rooms to
+              still pull in other specialists when topic shifts. */}
+          <button
+            type="button"
+            onClick={() => patchSettings({ auto_respond: !conv.auto_respond })}
+            disabled={settingsBusy}
+            className={`sp-chip ${conv.auto_respond ? "!bg-emerald-400/15 !border-emerald-400/40 !text-white" : "!bg-white/5"} hover:!bg-white/15 hover:text-white inline-flex items-center gap-1 disabled:opacity-60`}
+            title={conv.auto_respond
+              ? "Every agent in the room responds (click to mute)"
+              : "Only @mentioned or routed agents respond (click to broadcast)"}
+            data-testid="conv-toggle-auto-respond"
+          >
+            Auto-respond {conv.auto_respond ? "ON" : "OFF"}
+          </button>
+          <button
+            type="button"
+            onClick={() => patchSettings({ smart_expand: !conv.smart_expand })}
+            disabled={settingsBusy}
+            className={`sp-chip ${conv.smart_expand ? "!bg-emerald-400/15 !border-emerald-400/40 !text-white" : "!bg-white/5"} hover:!bg-white/15 hover:text-white inline-flex items-center gap-1 disabled:opacity-60`}
+            title={conv.smart_expand
+              ? "We'll pull in more specialists when the topic shifts (click to disable)"
+              : "Only the current agents respond (click to allow auto-expand)"}
+            data-testid="conv-toggle-smart-expand"
+          >
+            Smart-expand {conv.smart_expand ? "ON" : "OFF"}
+          </button>
           {!isGroup && (
             <span className="hidden sm:contents">
               <button
