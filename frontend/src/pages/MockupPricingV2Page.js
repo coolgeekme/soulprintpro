@@ -148,10 +148,10 @@ function Wordmark() {
         style={{ filter: "drop-shadow(0 0 10px rgba(216,118,49,.32))" }}
       />
       <div className="leading-tight">
-        <div className="chr-display text-lg tracking-[0.18em] text-white">
+        <div className="chr-display text-2xl sm:text-3xl tracking-[0.18em] text-white">
           FOUNDRY
         </div>
-        <div className="chr-sub-wordmark mt-0.5">
+        <div className="chr-sub-wordmark mt-0.5 !text-[8px] !tracking-[0.28em]">
           POWERED BY <span className="accent">SOULPRINT</span> ENGINE
         </div>
       </div>
