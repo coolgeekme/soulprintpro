@@ -2571,6 +2571,12 @@ function PostMusicVideo({ post, onUpdate }) {
   };
 
   if (post.music_video_status === "pending") {
+    // Realistic timeline once Suno + Kling 2.1 + ffmpeg are all in play:
+    // Suno track ~30-120s + Kling 2.1 image-to-video ~3-5 min + mux ~30s
+    // => 4-7 minutes is the honest range. The Cancel button below lets
+    // users self-recover if the pipeline ever genuinely stalls (e.g.
+    // the worker pod died mid-render before the startup-sweep cleanup
+    // shipped in Feb 2026 fires on the next deploy).
     return (
       <div className="mt-2">
         <div
@@ -2581,8 +2587,18 @@ function PostMusicVideo({ post, onUpdate }) {
           <Music className="w-7 h-7 opacity-80 animate-pulse" />
           <div className="text-xs sp-subtle px-3 text-center max-w-[280px] leading-relaxed">
             Composing music video —<br />
-            Kling 2.1 Master + ffmpeg mux. Typically 2-5 minutes.
+            Kling 2.1 Master + ffmpeg mux. Usually 4-7 minutes.
           </div>
+          <button
+            type="button"
+            onClick={remove}
+            disabled={removing}
+            className="text-[11px] underline sp-subtle hover:text-white disabled:opacity-50 mt-1"
+            data-testid={`music-video-cancel-${post.id}`}
+            title="Stuck for too long? Cancel and start over."
+          >
+            {removing ? "Cancelling…" : "Cancel & start over"}
+          </button>
         </div>
       </div>
     );
