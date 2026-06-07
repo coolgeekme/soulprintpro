@@ -113,25 +113,53 @@ async def is_agent_tools_enabled(db, org_id: str, agent_id: str) -> bool:
 # of "email" or "calendar" surfaces actionable guidance instead of a
 # silent LlmChat fallback that incorrectly claims no access.
 _TOOLKIT_KEYWORDS: Dict[str, List[str]] = {
-    "gmail": ["gmail", "inbox", "email", "e-mail", "mailbox", "unread mail", "send a mail", "send mail"],
-    "googlecalendar": ["calendar", "schedule", "meeting", "agenda", "appointment"],
-    "googledocs": ["google doc", "docs file"],
-    "googledrive": ["google drive", "drive file"],
-    "googlesheets": ["spreadsheet", "google sheet"],
-    "slack": ["slack"],
-    "hubspot": ["hubspot", "crm contact"],
-    "salesforce": ["salesforce"],
-    "notion": ["notion"],
-    "linear": ["linear ticket", "linear issue"],
-    "github": ["github", "git pull request", "git pr ", " merge pr"],
-    "trello": ["trello"],
-    "jira": ["jira"],
-    "stripe": ["stripe"],
-    "shopify": ["shopify"],
-    "facebook": ["facebook post", "fb page", "facebook page"],
-    "instagram": ["instagram post", "ig post"],
-    "twitter": ["tweet ", "twitter post"],
-    "linkedin": ["linkedin post"],
+    # Phrases that clearly indicate "I want the TOOL to do this". The
+    # earlier version matched bare nouns like "email" / "meeting" /
+    # "schedule" / "appointment" and fired the diagnostic on benign
+    # business chat (e.g. "I have 2 hours, what's the best way to set
+    # up this event?" wrongly triggered Gmail + Calendar warnings).
+    # Patterns must be VERB-anchored OR carry an unambiguous possessive
+    # ("my gmail", "my inbox") that nobody uses casually.
+    "gmail": [
+        "my gmail", "my inbox", "my mailbox",
+        "check gmail", "check my inbox", "open my inbox",
+        "search my inbox", "in my inbox", "in gmail",
+        "from gmail", "via gmail", "gmail inbox",
+        "send an email", "send the email", "send email",
+        "send a follow-up email", "send out an email",
+        "email it to", "email this to", "email them",
+        "email her", "email him", "email customer", "email the customer",
+        "draft an email", "compose an email", "write an email",
+        "reply to the email", "reply to that email", "respond to the email",
+    ],
+    "googlecalendar": [
+        "my calendar", "my agenda", "google calendar", "gcal",
+        "next meeting on my", "next event on my",
+        "create a calendar event", "add to my calendar", "add it to my calendar",
+        "schedule a meeting", "schedule a call", "schedule an appointment",
+        "book a meeting", "book a call", "book an appointment",
+        "find a meeting time", "find a time on",
+        "block off time", "block time on my calendar", "block my calendar",
+        "create an appointment", "create a meeting", "set up a meeting",
+        "send a calendar invite", "send a meeting invite", "calendar invite",
+    ],
+    "googledocs": ["create a google doc", "open the google doc", "in the google doc", "google docs file"],
+    "googledrive": ["from my google drive", "in my google drive", "upload to google drive"],
+    "googlesheets": ["update the spreadsheet", "in the google sheet", "from the google sheet", "add a row to the sheet"],
+    "slack": ["post to slack", "send a slack", "slack the team", "slack channel", "in slack", "via slack", "dm on slack"],
+    "hubspot": ["in hubspot", "from hubspot", "create a hubspot contact", "add to hubspot"],
+    "salesforce": ["in salesforce", "from salesforce", "create a salesforce", "add to salesforce"],
+    "notion": ["in my notion", "in our notion", "create a notion page", "from notion"],
+    "linear": ["create a linear ticket", "create a linear issue", "open a linear", "in linear"],
+    "github": ["create a github issue", "open a pr", "open a pull request", "merge the pr", "merge that pr"],
+    "trello": ["add a trello card", "create a trello", "move the trello card"],
+    "jira": ["create a jira ticket", "open a jira", "in jira"],
+    "stripe": ["refund via stripe", "in stripe", "create a stripe customer"],
+    "shopify": ["in shopify", "from shopify", "update the shopify product"],
+    "facebook": ["post to facebook", "publish to facebook", "schedule a facebook post"],
+    "instagram": ["post to instagram", "publish to instagram", "schedule an instagram post"],
+    "twitter": ["tweet this", "post to twitter", "tweet that"],
+    "linkedin": ["post to linkedin", "publish to linkedin", "schedule a linkedin post"],
 }
 
 
@@ -311,6 +339,7 @@ async def run_with_tools(
     conv_id: str,
     system_prompt: str,
     user_prompt: str,
+    latest_user_text: Optional[str] = None,
     max_calls: int = MAX_TOOL_CALLS_PER_TURN,
 ) -> Tuple[Optional[str], List[Dict[str, Any]]]:
     """Run a single conversation turn with Composio tool calling.
@@ -341,8 +370,19 @@ async def run_with_tools(
         # ACTIVE row in a DIFFERENT org the user belongs to, return a
         # precise diagnostic instead of falling back to LlmChat (which
         # would lie about the connection state). Otherwise fall through.
+        #
+        # IMPORTANT: scan ONLY the latest user message, never the full
+        # `user_prompt` (which includes the transcript tail). Otherwise
+        # a chat where the user mentioned "email" once 20 messages ago
+        # would re-trigger this diagnostic on every subsequent turn —
+        # which is exactly the bug the user reported in Feb 2026
+        # ("every Chief-of-Staff reply starts with Heads-up…").
+        diagnostic_text = (latest_user_text or "").strip()
         try:
-            diag = await _diagnose_missing_tools(db, org_id, user_id, user_prompt)
+            diag = (
+                await _diagnose_missing_tools(db, org_id, user_id, diagnostic_text)
+                if diagnostic_text else None
+            )
         except Exception as exc:
             logger.warning("Composio diagnostic failed: %s", exc)
             diag = None

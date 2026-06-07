@@ -4422,6 +4422,7 @@ async def generate_agent_reply(conv: dict, team: dict, agent_id: str,
                     conv_id=str(conv["_id"]),
                     system_prompt=system,
                     user_prompt=prompt,
+                    latest_user_text=latest_user_text or "",
                 )
                 if tool_text is not None:
                     tool_text = _inject_social_image_block_if_missing(
