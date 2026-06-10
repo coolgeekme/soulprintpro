@@ -5,9 +5,10 @@ import { useTheme } from "../context/ThemeContext";
  * Foundry brand mark.
  *
  * Variants:
- *   • `mark` (default) — orange swirl glyph. Reads on ANY background.
- *     We keep the existing iconic swirl until the next visual identity
- *     update — it's brand-agnostic enough to outlive the rename.
+ *   • `mark` (default) — fire-and-steel star sigil badge ringed by a
+ *     thin circle. Reads on any background (transparent PNG); the
+ *     orange fire tones pop on dark and the brushed-steel half holds
+ *     up on light. Source: /soulprint-mark.png (+ responsive sizes).
  *   • `wordmark` — typographic "FOUNDRY" lockup + tiny "by SoulPrint
  *     Engine" subline. Text-based intentionally — placeholder for the
  *     final hand-drawn wordmark while keeping page rhythm intact.
@@ -46,8 +47,11 @@ export default function Logo({
   showSubline = true,
 }) {
   const theme = useActiveTheme();
-  // Keep the swirl glyph as the icon — neutral, ownable, and survives
-  // the rename. We render it via <img> for crisp pixel art at small sizes.
+  // Keep the badge file at /soulprint-mark.png so every caller that
+  // already imports <Logo /> picks up the new fire+steel sigil without
+  // a path migration. Responsive variants (64/96/128/256/512) live
+  // next to it; the browser picks the closest size via the favicon
+  // declarations in index.html.
   const markSrc = "/soulprint-mark.png";
 
   if (variant !== "wordmark") {
