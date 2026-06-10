@@ -133,6 +133,61 @@ def test_context_block_states_what_foundry_is_not():
     assert "is *not*" in block or "is not" in block.lower()
 
 
+def test_context_block_includes_multiple_sources():
+    """Multi-source loader: the injected block should carry SECTION
+    headers for each .md it pulled in, so the agent can cite where an
+    answer came from (e.g. "per FOUNDRY_FEATURES.md…")."""
+    block = get_foundry_context_block("Tell me about Foundry")
+    assert block is not None
+    # The bundle MUST surface at least the headline doc + the
+    # canonical FAQ. Other files (whitepaper, SOC2, ABOUT) may or
+    # may not ship in slim builds, so we assert on the two we always
+    # carry.
+    assert "── SOURCE: backend/knowledge/foundry.md ──" in block
+    assert "── SOURCE: docs/FOUNDRY_FEATURES.md ──" in block
+
+
+def test_context_block_includes_features_doc_content():
+    """The FEATURES.md file describes capabilities the user explicitly
+    wants chat answers to be sourced from — spot-check that its content
+    actually landed in the bundle (not just the header)."""
+    block = get_foundry_context_block("What are your features?")
+    assert block is not None
+    # Pull anchors from the actual FOUNDRY_FEATURES.md so the test
+    # tracks the source-of-truth instead of guessing strings.
+    from pathlib import Path
+    features_md = (
+        Path(__file__).resolve().parents[2]
+        / "docs" / "FOUNDRY_FEATURES.md"
+    )
+    assert features_md.is_file()
+    # Find a non-empty line that's clearly distinctive (length > 30,
+    # has at least one alpha word) — proves the body, not just the
+    # header, made it into the bundle.
+    distinctive = next(
+        (ln.strip() for ln in features_md.read_text().splitlines()
+         if len(ln.strip()) > 50 and not ln.strip().startswith("#")),
+        None,
+    )
+    assert distinctive, "FOUNDRY_FEATURES.md has no body content to anchor on"
+    assert distinctive in block, (
+        "Body of FOUNDRY_FEATURES.md not present in the injected block — "
+        "the loader is dropping content."
+    )
+
+
+def test_context_block_excludes_dev_internal_files():
+    """memory/PRD.md, memory/CHANGELOG.md, memory/test_credentials.md
+    are dev-internal and MUST NOT leak into agent prompts (they contain
+    seed creds, agent roadmap, and unimplemented features)."""
+    block = get_foundry_context_block("Tell me about Foundry")
+    assert block is not None
+    for forbidden in ("PRD.md", "CHANGELOG.md", "test_credentials.md"):
+        assert f"── SOURCE: memory/{forbidden} ──" not in block, (
+            f"Dev-internal file {forbidden!r} leaked into agent prompt"
+        )
+
+
 # ── End-to-end via build_system_prompt ──────────────────────────────
 
 
