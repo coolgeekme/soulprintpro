@@ -15,6 +15,7 @@ import { MissionCard } from "../components/MissionCard";
 import { MessageActions } from "../components/MessageActions";
 import EmptyPromisePill from "../components/EmptyPromisePill";
 import WorkingIndicator from "../components/WorkingIndicator";
+import MessageMarkdown from "../components/MessageMarkdown";
 import { useRoutingPrefs } from "../components/DynamicIntelligencePicker";
 import { formatLocalTime, parseServerDate } from "../lib/datetime";
 
@@ -1441,7 +1442,11 @@ export default function ConversationPage() {
                     {isAgent && a && <span className="text-[11px] sp-subtle uppercase tracking-widest">{a.division}</span>}
                     <span className="text-[11px] sp-subtle ml-auto">{formatTime(m.timestamp)}</span>
                   </div>
-                  <div className="whitespace-pre-wrap text-[16px] leading-[1.6]">{m.text}</div>
+                  <MessageMarkdown
+                    testId={`message-body-${m.id}`}
+                  >
+                    {m.text || ""}
+                  </MessageMarkdown>
                   {/* Empty-promise rescue pill — agent message that
                       promised an image / file / video but never delivered
                       it. Single click hits /generate-now which replays

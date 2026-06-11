@@ -7,6 +7,7 @@ import {
 } from "lucide-react";
 import api from "../lib/api";
 import { AGENT_TEMPLATES } from "./agentTemplates";
+import MessageMarkdown from "./MessageMarkdown";
 
 /**
  * CustomAgentWizard — opinionated 4-step builder that hides "system prompt"
@@ -732,15 +733,15 @@ function StepPreview({
           previewMsgs.map((m, i) => (
             <div key={i} className={`flex ${m.who === "user" ? "justify-end" : "justify-start"}`}>
               <div
-                className={`max-w-[85%] rounded-xl px-3 py-2 text-sm leading-relaxed whitespace-pre-wrap ${
+                className={`max-w-[85%] rounded-xl px-3 py-2 text-sm leading-relaxed ${
                   m.who === "user"
-                    ? "bg-orange-500/15 text-orange-100"
+                    ? "bg-orange-500/15 text-orange-100 whitespace-pre-wrap"
                     : m.error
-                      ? "bg-red-500/10 text-red-200"
+                      ? "bg-red-500/10 text-red-200 whitespace-pre-wrap"
                       : "sp-glass-strong"
                 }`}
               >
-                {m.text}
+                {m.who === "user" || m.error ? m.text : <MessageMarkdown>{m.text || ""}</MessageMarkdown>}
               </div>
             </div>
           ))
