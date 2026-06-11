@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?><testsuites name="pytest tests"><testsuite name="pytest" errors="2" failures="0" skipped="0" tests="2" time="30.895" timestamp="2026-06-11T17:17:47.838475+00:00" hostname="agent-env-bc6d3ad7-58af-4082-9509-696f34faa526"><testcase classname="tests.test_iter31_search_everywhere.TestAutoSearchInjection" name="test_auto_search_injection_when_on" time="30.795"><error message="failed on setup with &quot;requests.exceptions.ReadTimeout: HTTPSConnectionPool(host='emergent-wing.preview.emergentagent.com', port=443): Read timed out. (read timeout=30)&quot;">E   TimeoutError: The read operation timed out
+
+The above exception was the direct cause of the following exception:
+E   urllib3.exceptions.ReadTimeoutError: HTTPSConnectionPool(host='emergent-wing.preview.emergentagent.com', port=443): Read timed out. (read timeout=30)
+
+During handling of the above exception, another exception occurred:
+E   requests.exceptions.ReadTimeout: HTTPSConnectionPool(host='emergent-wing.preview.emergentagent.com', port=443): Read timed out. (read timeout=30)</error></testcase><testcase classname="tests.test_iter31_search_everywhere.TestAutoSearchInjection" name="test_no_injection_when_off" time="0.000"><error message="failed on setup with &quot;requests.exceptions.ReadTimeout: HTTPSConnectionPool(host='emergent-wing.preview.emergentagent.com', port=443): Read timed out. (read timeout=30)&quot;">E   TimeoutError: The read operation timed out
+
+The above exception was the direct cause of the following exception:
+E   urllib3.exceptions.ReadTimeoutError: HTTPSConnectionPool(host='emergent-wing.preview.emergentagent.com', port=443): Read timed out. (read timeout=30)
+
+During handling of the above exception, another exception occurred:
+E   requests.exceptions.ReadTimeout: HTTPSConnectionPool(host='emergent-wing.preview.emergentagent.com', port=443): Read timed out. (read timeout=30)</error></testcase></testsuite></testsuites>

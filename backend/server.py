@@ -2863,6 +2863,112 @@ async def load_assets_brief(org_id: str, max_items: int = 30) -> List[dict]:
         out.append(row)
     return out
 
+
+# Regex that flags a user message as "wants the agent to dig through
+# org docs / connected storage". Verb-anchored so casual mentions of
+# "doc" don't fire. Used by `_maybe_auto_search_block` below.
+_DOC_SEARCH_INTENT_RE = re.compile(
+    r"\b("
+    r"search\s+(?:my|our|the)?\s*(?:docs?|files?|drive|dropbox|notion|library|assets?)|"
+    r"find\s+(?:that|the|a|my|our)?\s*(?:doc|file|pdf|spreadsheet|deck|note)|"
+    r"look\s+(?:up|in)\s+(?:my|our|the)\s+(?:docs?|drive|dropbox|notion|library|assets?)|"
+    r"what\s+(?:do|does)\s+(?:my|our|the)\s+(?:docs?|files?|notes?|library)\s+(?:say|have|contain)|"
+    r"check\s+(?:my|our|the)\s+(?:docs?|files?|drive|dropbox|notion|library)|"
+    r"(?:from|in)\s+(?:my|our)\s+(?:uploaded|shared)\s+(?:docs?|files?|library)|"
+    r"(?:my|our)\s+(?:uploaded|shared)\s+(?:docs?|files?)"
+    r")\b",
+    re.IGNORECASE,
+)
+
+
+async def _maybe_auto_search_block(
+    *, org_id: str, user_id: str, agent_id: str, latest_user_text: str,
+) -> str:
+    """If the user's latest message implies "look in my docs", run a
+    local-only asset search and return a prompt block the caller can
+    append to the agent's system message.
+
+    Gated by:
+      • Per-agent `auto_search_docs` pref (default ON for every agent
+        unless an admin flipped it OFF in /app/admin)
+      • Intent regex match on the latest user message
+      • A non-empty query (we strip stopwords down to the meaningful
+        nouns before searching)
+
+    Returns an empty string when any gate fails — caller appends only
+    when truthy."""
+    text = (latest_user_text or "").strip()
+    if not text or not _DOC_SEARCH_INTENT_RE.search(text):
+        return ""
+    # Read the per-agent pref. Default ON for missing row.
+    try:
+        pref = await db.agent_tool_prefs.find_one(
+            {"org_id": org_id, "agent_id": agent_id},
+            {"_id": 0, "auto_search_docs": 1},
+        )
+    except Exception:
+        pref = None
+    if pref is not None and pref.get("auto_search_docs") is False:
+        return ""
+    # Distill a search needle from the user text. We strip the verb
+    # phrases that matched (so a search for "search my docs for Q3
+    # OKRs" actually queries "Q3 OKRs", not the verb).
+    needle = _DOC_SEARCH_INTENT_RE.sub(" ", text, count=1).strip(" ?.!,:;")
+    # Collapse whitespace + strip leading "for"/"about"/"on" so the
+    # remaining tail is the real subject.
+    needle = re.sub(r"\s+", " ", needle)
+    needle = re.sub(r"^(for|about|on|regarding|re:)\s+", "", needle, flags=re.IGNORECASE)
+    if len(needle) < 2 or len(needle) > 200:
+        return ""
+    # Run a quick local search (10 results max). External providers
+    # stay opt-in via the dedicated tool path; auto-injection only
+    # touches LOCAL assets to keep latency tight on every turn.
+    safe = re.escape(needle)
+    try:
+        cur = (
+            db.assets.find(
+                {"org_id": org_id, "$or": [
+                    {"original_name": {"$regex": safe, "$options": "i"}},
+                    {"description":   {"$regex": safe, "$options": "i"}},
+                    {"text_excerpt":  {"$regex": safe, "$options": "i"}},
+                    {"link_url":      {"$regex": safe, "$options": "i"}},
+                ]},
+            )
+            .sort("uploaded_at", -1)
+            .limit(10)
+        )
+        rows = await cur.to_list(10)
+    except Exception as exc:
+        logger.warning("auto_search_docs DB error: %s", exc)
+        return ""
+    if not rows:
+        return (
+            f"\n\n── DOC SEARCH (auto-triggered) ──\nThe user asked you "
+            f"to search the library for `{needle}`. No matching uploaded "
+            f"file or link was found. Tell the user honestly that nothing "
+            f"matched — DO NOT invent results."
+        )
+    lines = [
+        "\n\n── DOC SEARCH (auto-triggered) ──",
+        f"The user asked you to search the library for `{needle}`. "
+        f"Top matches from the org's Asset Library are below — quote "
+        f"them by filename in `inline-code` and (for links) include the "
+        f"target URL as a clickable markdown `[label](url)`.",
+    ]
+    for a in rows:
+        is_link = a.get("kind") == "link"
+        name = a.get("original_name") or "Untitled"
+        if is_link and a.get("link_url"):
+            provider = a.get("link_provider") or "link"
+            lines.append(f"- `{name}` ({provider}) → {a['link_url']}")
+        else:
+            lines.append(f"- `{name}` ({a.get('kind', 'file')})")
+        excerpt = a.get("text_excerpt") or a.get("description") or ""
+        if excerpt:
+            tight = excerpt.strip().replace("\n", " ")[:300]
+            lines.append(f"    excerpt: {tight}")
+    return "\n".join(lines)
+
 @conv_r.post("/teams/{team_id}/conversations")
 async def create_conversation(team_id: str, body: ConversationCreateBody, u: dict = Depends(get_current_user)):
     ctx = await require_team_member(team_id, u["id"], mode="message")
@@ -4319,6 +4425,20 @@ async def generate_agent_reply(conv: dict, team: dict, agent_id: str,
                 system += "\n" + mem_block
         except Exception as exc:
             logger.info("memory injection skipped: %s", exc)
+    # Per-agent auto-search of org docs + connected storage. Only fires
+    # when the latest user message clearly says "look in my docs" and
+    # the agent's auto_search_docs pref is ON (default true).
+    try:
+        auto_block = await _maybe_auto_search_block(
+            org_id=str(team.get("org_id") or ""),
+            user_id=latest_user_id or "",
+            agent_id=agent_id,
+            latest_user_text=latest_user_text or "",
+        )
+        if auto_block:
+            system += auto_block
+    except Exception as exc:
+        logger.warning("auto_search injection failed: %s", exc)
     if conv["type"] == "group":
         system += (
             "\n\nYou are one of several participants in a GROUP conversation. "
@@ -7733,6 +7853,236 @@ async def list_assets(org_id: str, u: dict = Depends(get_current_user)):
     out = [serialize_asset(a) async for a in cur]
     return out
 
+
+def _make_snippet(haystack: str, needles: list[str], radius: int = 80) -> str:
+    """Return a ~160-char window around the first match (case-insensitive),
+    suitable for inline result rendering. Falls back to the head of the
+    text when no needle matches (e.g. when description matched instead).
+    """
+    if not haystack:
+        return ""
+    low = haystack.lower()
+    hit = -1
+    for needle in needles:
+        if not needle:
+            continue
+        idx = low.find(needle.lower())
+        if idx >= 0:
+            hit = idx
+            break
+    if hit < 0:
+        return haystack[: 2 * radius].strip() + ("…" if len(haystack) > 2 * radius else "")
+    start = max(0, hit - radius)
+    end = min(len(haystack), hit + radius)
+    prefix = "…" if start > 0 else ""
+    suffix = "…" if end < len(haystack) else ""
+    return f"{prefix}{haystack[start:end].strip()}{suffix}"
+
+
+@assets_r.get("/orgs/{org_id}/assets/search")
+async def search_assets(
+    org_id: str,
+    q: str = "",
+    limit: int = 25,
+    u: dict = Depends(get_current_user),
+):
+    """Full-text(-ish) search across an org's Asset Library — both
+    uploaded files (filename, description, extracted body text via
+    `text_excerpt`) AND external link assets (filename, description,
+    target URL, provider).
+
+    Matching strategy: case-insensitive regex over four fields. We use
+    regex rather than a Mongo `$text` index because (1) the index is
+    English-only and our content is multi-lingual, (2) link URLs and
+    filenames are tokenised in ways `$text` fights us on, and (3)
+    realistic org libraries are 10²-10³ assets — well within range for
+    a linear scan to feel instant.
+
+    Returns up to `limit` results, each with a `snippet` that contains
+    the matched line + tight surrounding context so the UI can render
+    the hit inline without re-fetching the full text.
+    """
+    await require_org_member(org_id, u["id"])
+    needle = (q or "").strip()
+    if not needle:
+        return {"q": "", "results": [], "total": 0}
+    if len(needle) > 200:
+        needle = needle[:200]
+    # Case-insensitive regex; escape special chars so a user typing
+    # "1.2 release notes" doesn't blow up the engine.
+    safe = re.escape(needle)
+    field_filter = {
+        "$or": [
+            {"original_name": {"$regex": safe, "$options": "i"}},
+            {"description":   {"$regex": safe, "$options": "i"}},
+            {"text_excerpt":  {"$regex": safe, "$options": "i"}},
+            {"link_url":      {"$regex": safe, "$options": "i"}},
+            {"link_provider": {"$regex": safe, "$options": "i"}},
+        ],
+    }
+    capped_limit = max(1, min(limit, 100))
+    cur = (
+        db.assets.find({"org_id": org_id, **field_filter})
+        .sort("uploaded_at", -1)
+        .limit(capped_limit)
+    )
+    hits: list[dict] = []
+    needles = [needle]
+    async for a in cur:
+        # Build a snippet from whichever field actually matched.
+        candidates = (
+            a.get("text_excerpt") or "",
+            a.get("description") or "",
+            a.get("original_name") or "",
+            a.get("link_url") or "",
+        )
+        snippet = ""
+        for c in candidates:
+            if c and needle.lower() in c.lower():
+                snippet = _make_snippet(c, needles)
+                break
+        if not snippet:
+            # Description fallback so even a filename-only hit gets
+            # something readable rendered next to it.
+            snippet = _make_snippet(a.get("description") or a.get("text_excerpt") or "", needles)
+        out = serialize_asset(a)
+        out["snippet"] = snippet
+        hits.append(out)
+    return {"q": needle, "results": hits, "total": len(hits)}
+
+
+# ── Composio-powered external storage search ────────────────────────────
+# Slug map: which Composio action to call per provider. The slugs were
+# verified via `tools.get_raw_composio_tool_by_slug` on Feb 2026; if a
+# slug rename happens upstream the call returns 404 + the source is
+# silently skipped (the unified result tags it `ok=False`).
+_EXTERNAL_SEARCH_SLUGS = {
+    "googledrive": "GOOGLEDRIVE_FIND_FILE",
+    "dropbox":     "DROPBOX_SEARCH",
+    "notion":      "NOTION_SEARCH_NOTION_PAGE",
+    "googledocs":  "GOOGLEDOCS_LIST_DOCS",
+    "onedrive":    "ONE_DRIVE_ONEDRIVE_SEARCH_FILES_BY_NAME",
+}
+
+
+async def _composio_search_provider(
+    org_id: str, user_id: str, provider: str, q: str, limit: int = 10,
+) -> dict:
+    """Run a single live search against a connected Composio provider.
+
+    Returns ``{provider, ok, results, error?}`` so the fan-out caller
+    can render partial results when one source fails (e.g. token
+    expired) without dropping the whole search."""
+    slug = _EXTERNAL_SEARCH_SLUGS.get(provider)
+    if not slug:
+        return {"provider": provider, "ok": False, "results": [], "error": "unsupported_provider"}
+    try:
+        from composio_integration import execute_tool
+        # Composio search actions accept variants of `query`/`name`/`q`;
+        # we send all three so the SDK can pick the one it knows.
+        resp = await execute_tool(db, org_id, user_id, slug, {
+            "query": q, "name": q, "q": q, "limit": limit,
+        })
+    except Exception as exc:
+        return {"provider": provider, "ok": False, "results": [], "error": str(exc)[:200]}
+    if not resp or resp.get("error"):
+        return {
+            "provider": provider, "ok": False, "results": [],
+            "error": (resp or {}).get("error") or "execute_failed",
+        }
+    # Composio response shape varies per toolkit. Normalise to a thin
+    # list of {title, url, snippet, provider}.
+    data = resp.get("data") if isinstance(resp, dict) else resp
+    if isinstance(data, dict):
+        items = (
+            data.get("files") or data.get("results") or data.get("items")
+            or data.get("response_data") or data.get("results_set") or []
+        )
+    elif isinstance(data, list):
+        items = data
+    else:
+        items = []
+    if not isinstance(items, list):
+        items = []
+    normalised: list[dict] = []
+    for it in items[:limit]:
+        if not isinstance(it, dict):
+            continue
+        title = (
+            it.get("name") or it.get("title") or it.get("subject")
+            or it.get("filename") or it.get("path_display") or "Untitled"
+        )
+        url = (
+            it.get("web_view_link") or it.get("webViewLink")
+            or it.get("url") or it.get("link") or it.get("path_lower")
+            or ""
+        )
+        snippet = (
+            it.get("snippet") or it.get("description")
+            or it.get("mime_type") or it.get("mimeType") or ""
+        )
+        normalised.append({
+            "title": str(title)[:200],
+            "url": str(url)[:2048] if url else "",
+            "snippet": str(snippet)[:300],
+            "provider": provider,
+        })
+    return {"provider": provider, "ok": True, "results": normalised}
+
+
+@assets_r.get("/orgs/{org_id}/search")
+async def unified_search(
+    org_id: str,
+    q: str = "",
+    sources: str = "local",  # comma-separated: local,googledrive,dropbox,notion,…
+    limit: int = 10,
+    u: dict = Depends(get_current_user),
+):
+    """Unified search across local Asset Library + every connected
+    Composio external storage source the user picks (Google Drive,
+    Dropbox, Notion, OneDrive, Google Docs).
+
+    `sources` is a comma list. `local` always works. External providers
+    only run when the user has an ACTIVE Composio connection for that
+    toolkit IN THIS ORG. Each source runs in parallel via asyncio.gather
+    so the slowest provider sets the floor, not the sum."""
+    await require_org_member(org_id, u["id"])
+    needle = (q or "").strip()
+    if not needle:
+        return {"q": "", "sources": [], "groups": []}
+    requested = [s.strip().lower() for s in sources.split(",") if s.strip()]
+    if not requested:
+        requested = ["local"]
+    valid_external = set(_EXTERNAL_SEARCH_SLUGS.keys())
+    requested = [s for s in dict.fromkeys(requested) if s == "local" or s in valid_external]
+
+    active_providers: set[str] = set()
+    try:
+        from composio_integration import list_connections
+        conns = await list_connections(db, org_id, u["id"])
+        for c in conns:
+            if c.get("status") == "ACTIVE":
+                kit = (c.get("toolkit_name") or c.get("toolkit") or "").lower()
+                if kit:
+                    active_providers.add(kit)
+    except Exception as exc:
+        logger.warning("Composio list_connections failed during search: %s", exc)
+
+    async def _run_local():
+        local_resp = await search_assets(org_id=org_id, q=needle, limit=limit, u=u)
+        return {"source": "local", "ok": True, "results": local_resp.get("results", [])}
+
+    async def _run_provider(p: str):
+        if p not in active_providers:
+            return {"source": p, "ok": False, "results": [], "error": "not_connected"}
+        out = await _composio_search_provider(org_id, u["id"], p, needle, limit=limit)
+        return {"source": p, **out}
+
+    tasks = [_run_local() if s == "local" else _run_provider(s) for s in requested]
+    groups = await asyncio.gather(*tasks, return_exceptions=False)
+    return {"q": needle, "sources": requested, "groups": groups}
+
+
 @assets_r.patch("/orgs/{org_id}/assets/{asset_id}")
 async def update_asset(
     org_id: str, asset_id: str,
@@ -8913,7 +9263,7 @@ async def list_agent_tool_prefs(
     ctx = await require_org_member(org_id, u["id"])
     rows = await db.agent_tool_prefs.find(
         {"org_id": org_id},
-        {"_id": 0, "agent_id": 1, "tools_enabled": 1, "updated_at": 1},
+        {"_id": 0, "agent_id": 1, "tools_enabled": 1, "auto_search_docs": 1, "updated_at": 1},
     ).to_list(500)
     # Map by agent_id, preserving the raw value so we can distinguish
     # "no row → default ON" from "row with tools_enabled=False → OFF".
@@ -8927,14 +9277,20 @@ async def list_agent_tool_prefs(
         row = prefs.get(aid)
         if row is None:
             enabled_val = True  # default ON
+            auto_search_val = True  # default ON — agents auto-search docs
         else:
             enabled_val = row.get("tools_enabled") is not False
+            # New `auto_search_docs` flag (Feb 2026). Treat missing-row
+            # AND missing-key as the default ON so existing orgs don't
+            # lose auto-search behaviour silently after upgrade.
+            auto_search_val = row.get("auto_search_docs") is not False
         agents_out.append({
             "agent_id": aid,
             "name": meta.get("name"),
             "role": meta.get("role"),
             "division_key": meta.get("division_key"),
             "tools_enabled": enabled_val,
+            "auto_search_docs": auto_search_val,
             "is_custom": bool(meta.get("org_id")),
         })
     agents_out.sort(key=lambda a: (a["is_custom"], a["name"] or ""))
@@ -8943,7 +9299,10 @@ async def list_agent_tool_prefs(
 
 
 class _AgentToolPrefBody(BaseModel):
-    tools_enabled: bool
+    tools_enabled: Optional[bool] = None
+    # New (Feb 2026): per-agent toggle for auto-searching org docs +
+    # connected external storage when the user's question implies it.
+    auto_search_docs: Optional[bool] = None
 
 
 @composio_r.put("/{org_id}/agent-tool-prefs/{agent_id}")
@@ -8953,24 +9312,44 @@ async def set_agent_tool_pref(
     body: _AgentToolPrefBody,
     u: dict = Depends(get_current_user),
 ):
-    """Flip the Composio tools toggle for one agent in this org. Admin-gated."""
+    """Flip per-agent prefs in this org. Admin-gated.
+
+    Either or both of `tools_enabled` (Composio toolkit access) and
+    `auto_search_docs` (auto-search org docs + connected providers
+    when the user's question implies it) can be patched in one call.
+    Missing keys are left unchanged."""
     ctx = await require_org_member(org_id, u["id"])
     if ctx["member"].get("role") not in ("owner", "admin"):
         raise HTTPException(403, "Only org owners/admins can change agent tool prefs")
     if agent_id not in AGENTS:
         raise HTTPException(404, "Unknown agent")
+    update: dict = {
+        "org_id": org_id,
+        "agent_id": agent_id,
+        "updated_at": datetime.now(timezone.utc),
+        "updated_by": u["id"],
+    }
+    if body.tools_enabled is not None:
+        update["tools_enabled"] = bool(body.tools_enabled)
+    if body.auto_search_docs is not None:
+        update["auto_search_docs"] = bool(body.auto_search_docs)
+    if "tools_enabled" not in update and "auto_search_docs" not in update:
+        raise HTTPException(400, "Provide at least one of tools_enabled, auto_search_docs")
     await db.agent_tool_prefs.update_one(
         {"org_id": org_id, "agent_id": agent_id},
-        {"$set": {
-            "org_id": org_id,
-            "agent_id": agent_id,
-            "tools_enabled": bool(body.tools_enabled),
-            "updated_at": datetime.now(timezone.utc),
-            "updated_by": u["id"],
-        }},
+        {"$set": update},
         upsert=True,
     )
-    return {"agent_id": agent_id, "tools_enabled": bool(body.tools_enabled)}
+    # Read back so the response reflects the current effective state.
+    row = await db.agent_tool_prefs.find_one(
+        {"org_id": org_id, "agent_id": agent_id},
+        {"_id": 0, "tools_enabled": 1, "auto_search_docs": 1},
+    )
+    return {
+        "agent_id": agent_id,
+        "tools_enabled": (row or {}).get("tools_enabled", True) is not False,
+        "auto_search_docs": (row or {}).get("auto_search_docs", True) is not False,
+    }
 
 
 @composio_r.get("/{org_id}/agent-tool-recommendations")

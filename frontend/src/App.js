@@ -17,6 +17,7 @@ import AcceptInvitePage from "./pages/AcceptInvitePage";
 import WorkspaceSettingsPage from "./pages/WorkspaceSettingsPage";
 import SocialPage from "./pages/SocialPage";
 import MissionsPage from "./pages/MissionsPage";
+import SearchPage from "./pages/SearchPage";
 import AuditsPage from "./pages/AuditsPage";
 import AboutPage from "./pages/AboutPage";
 import SecurityPage from "./pages/SecurityPage";
@@ -109,6 +110,7 @@ function App() {
                 <Route path="/app/org/:orgId/social" element={<Protected><SocialPage /></Protected>} />
                 <Route path="/app/org/:orgId/missions" element={<Protected><MissionsPage /></Protected>} />
                 <Route path="/app/org/:orgId/missions/:missionId" element={<Protected><MissionsPage /></Protected>} />
+                <Route path="/app/org/:orgId/search" element={<Protected><SearchPage /></Protected>} />
                 <Route path="/app/audits" element={<Protected><AuditsPage /></Protected>} />
                 <Route path="/app/team/:teamId" element={<Protected><TeamPage /></Protected>} />
                 <Route path="/app/team/:teamId/c/:convId" element={<Protected><ConversationPage /></Protected>} />

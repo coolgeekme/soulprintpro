@@ -3,7 +3,7 @@ import { useParams, Link, useNavigate, useLocation } from "react-router-dom";
 import api, { BACKEND_URL } from "../lib/api";
 import TopBar from "../components/TopBar";
 import { toast } from "sonner";
-import { Plus, Users, ArrowRight, Copy, UserPlus, FileText, Image as ImageIcon, FileBox, Trash2, UploadCloud, Download, File as FileIcon, MessageCircle, Pencil, Save, X as XIcon, RefreshCw, Megaphone, Paperclip, Send, Loader2, Rocket, Network, Minimize2, ChevronRight, BarChart3, Link as LinkIcon, ExternalLink } from "lucide-react";
+import { Plus, Users, ArrowRight, Copy, UserPlus, FileText, Image as ImageIcon, FileBox, Trash2, UploadCloud, Download, File as FileIcon, MessageCircle, Pencil, Save, X as XIcon, RefreshCw, Megaphone, Paperclip, Send, Loader2, Rocket, Network, Minimize2, ChevronRight, BarChart3, Link as LinkIcon, ExternalLink, Search } from "lucide-react";
 import BrandAssetsPanel from "../components/BrandAssetsPanel";
 import NotesPage from "./NotesPage";
 import GlobalNoteButton from "../components/GlobalNoteButton";
@@ -131,6 +131,28 @@ export default function OrgPage() {
   const [linkUrl, setLinkUrl] = useState("");
   const [linkName, setLinkName] = useState("");
   const [linkBusy, setLinkBusy] = useState(false);
+  // In-library quick search: keyword filter over name, description and
+  // extracted text excerpts. Empty = show all. We hit the backend
+  // /assets/search endpoint when the user types so excerpts get
+  // matched too (not just filenames).
+  const [assetQuery, setAssetQuery] = useState("");
+  const [assetSearchHits, setAssetSearchHits] = useState(null); // null = idle (show all)
+  const [assetSearchBusy, setAssetSearchBusy] = useState(false);
+  useEffect(() => {
+    const q = assetQuery.trim();
+    if (!q) { setAssetSearchHits(null); return; }
+    const id = setTimeout(async () => {
+      setAssetSearchBusy(true);
+      try {
+        const { data } = await api.get(`/orgs/${orgId}/assets/search`, { params: { q, limit: 50 } });
+        setAssetSearchHits(data.results || []);
+      } catch (err) {
+        // Silent — toast would spam on every keystroke.
+        setAssetSearchHits([]);
+      } finally { setAssetSearchBusy(false); }
+    }, 220);
+    return () => clearTimeout(id);
+  }, [assetQuery, orgId]);
 
   // Edit-org state (owner/admin only)
   const [editOpen, setEditOpen] = useState(false);
@@ -716,6 +738,27 @@ export default function OrgPage() {
           <ArrowRight className="w-4 h-4 text-white/60 group-hover:text-white transition" />
         </Link>
 
+        {/* Search everywhere — unified search across the local Asset
+            Library + each Composio-connected external storage source
+            (Google Drive, Dropbox, Notion, OneDrive). Fans out in
+            parallel; sources you haven't connected stay greyed-out
+            with a "connect to search" CTA. */}
+        <Link
+          to={`/app/org/${orgId}/search`}
+          className="sp-glass rounded-2xl p-5 mb-4 flex items-center gap-4 hover:border-white/25 transition group"
+          data-testid="open-org-search"
+        >
+          <div className="w-10 h-10 rounded-xl flex items-center justify-center"
+               style={{ background: "linear-gradient(160deg, rgba(168,85,247,0.45), rgba(168,85,247,0.08))" }}>
+            <Search className="w-4 h-4 text-white" />
+          </div>
+          <div className="flex-1 min-w-0">
+            <div className="text-white font-medium">Search everywhere</div>
+            <div className="text-xs sp-subtle">One search across your uploaded Asset Library, Google Drive, Dropbox, Notion, OneDrive — whichever you've connected. Live, never stored.</div>
+          </div>
+          <ArrowRight className="w-4 h-4 text-white/60 group-hover:text-white transition" />
+        </Link>
+
         {/* Your private Chief of Staff — per-user threads visible only
             to you (and the org owner for audit). Always shown, even for
             the owner (they get their own private CoS too). Multi-thread
@@ -1210,9 +1253,47 @@ export default function OrgPage() {
                   </button>
                 </form>
 
+                {/* Quick keyword search across this org's library. Empty
+                    state shows the standard recent-first list. When the
+                    user types we hit /assets/search so matches against
+                    extracted body text (`text_excerpt`) light up too,
+                    not just filenames. */}
+                <div className="flex items-center gap-2 mt-4 mb-2">
+                  <Search className="w-4 h-4 sp-subtle" />
+                  <input
+                    type="text"
+                    value={assetQuery}
+                    onChange={(e) => setAssetQuery(e.target.value)}
+                    placeholder="Search this library — names, descriptions, extracted text…"
+                    className="flex-1 rounded-lg px-3 py-2 text-sm focus:sp-focus"
+                    style={{ background: "var(--input-bg)", border: "1px solid var(--input-border)", color: "var(--fg)" }}
+                    data-testid="asset-search-input"
+                  />
+                  {assetQuery && (
+                    <button
+                      type="button"
+                      onClick={() => setAssetQuery("")}
+                      className="text-xs sp-subtle hover:text-white"
+                      data-testid="asset-search-clear"
+                      title="Clear search"
+                    >
+                      <XIcon className="w-3.5 h-3.5" />
+                    </button>
+                  )}
+                  {assetSearchBusy && <Loader2 className="w-3.5 h-3.5 animate-spin sp-subtle" />}
+                </div>
+
                 {assets.length > 0 && (() => {
-                  const visible = assetsExpanded ? assets : assets.slice(0, ASSETS_INITIAL_LIMIT);
-                  const hidden = assets.length - visible.length;
+                  // When a search query is active, render the matched
+                  // subset (including snippets). Otherwise render the
+                  // standard recent list with the existing "show more"
+                  // pagination.
+                  const isSearching = assetQuery.trim().length > 0;
+                  const baseList = isSearching ? (assetSearchHits || []) : assets;
+                  const visible = isSearching
+                    ? baseList
+                    : (assetsExpanded ? assets : assets.slice(0, ASSETS_INITIAL_LIMIT));
+                  const hidden = isSearching ? 0 : (assets.length - visible.length);
                   return (
                     <>
                       <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-3 mt-4">
@@ -1244,7 +1325,15 @@ export default function OrgPage() {
                                   </div>
                                 </div>
                               </div>
-                              {a.description && <div className="text-xs sp-subtle line-clamp-2">{a.description}</div>}
+                              {a.description && !a.snippet && <div className="text-xs sp-subtle line-clamp-2">{a.description}</div>}
+                              {a.snippet && (
+                                <div
+                                  className="text-xs sp-subtle leading-relaxed line-clamp-3"
+                                  data-testid={`asset-snippet-${a.id}`}
+                                >
+                                  {a.snippet}
+                                </div>
+                              )}
                               {isImg && (
                                 <a href={url} target="_blank" rel="noreferrer" className="block rounded-lg overflow-hidden border" style={{ borderColor: "var(--border-soft)" }}>
                                   <img src={url} alt={a.original_name} loading="lazy" className="w-full max-h-32 object-cover" />
@@ -1279,10 +1368,21 @@ export default function OrgPage() {
                           );
                         })}
                       </div>
+                      {isSearching && visible.length === 0 && (
+                        <div
+                          className="text-center text-xs sp-subtle py-6"
+                          data-testid="asset-search-no-results"
+                        >
+                          No matches for "{assetQuery}". Try a different keyword
+                          or upload the doc to make it searchable.
+                        </div>
+                      )}
                       {/* Show more / Show less toggle — only renders when
                           there's something to hide. Keeps the org page calm
-                          even after teams stack up dozens of brand assets. */}
-                      {assets.length > ASSETS_INITIAL_LIMIT && (
+                          even after teams stack up dozens of brand assets.
+                          Suppressed during active search (results are already
+                          capped server-side). */}
+                      {!isSearching && assets.length > ASSETS_INITIAL_LIMIT && (
                         <div className="flex justify-center mt-4">
                           <button
                             type="button"

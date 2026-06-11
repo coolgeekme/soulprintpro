@@ -77,6 +77,27 @@ export default function AgentToolPrefsPanel({ orgId }) {
     }
   };
 
+  // Separate toggle: auto-search org docs + connected storage when the
+  // user's question implies it ("look in my docs for X", "search Drive
+  // for Y"). Default ON for every agent. Independent of tools_enabled
+  // since this is a deterministic in-DB search, not a Composio call.
+  const toggleAutoSearch = async (agentId, nextValue) => {
+    setBusy(agentId);
+    try {
+      await api.put(`/orgs/${orgId}/agent-tool-prefs/${agentId}`, {
+        auto_search_docs: nextValue,
+      });
+      setAgents((prev) => prev.map((a) =>
+        a.agent_id === agentId ? { ...a, auto_search_docs: nextValue } : a,
+      ));
+      toast.success(nextValue ? "Auto-search enabled." : "Auto-search disabled.");
+    } catch (e) {
+      toast.error(e?.response?.data?.detail || "Couldn't update");
+    } finally {
+      setBusy(null);
+    }
+  };
+
   const filtered = useMemo(() => {
     if (!q.trim()) return agents;
     const lc = q.toLowerCase();
@@ -166,6 +187,11 @@ export default function AgentToolPrefsPanel({ orgId }) {
         </p>
       )}
       <div className="max-h-[420px] overflow-y-auto rounded-xl border border-white/10 bg-black/10 divide-y divide-white/5">
+        <div className="flex items-center gap-3 px-3 py-2 text-[10px] uppercase tracking-widest opacity-60 sticky top-0 bg-black/40 backdrop-blur">
+          <div className="flex-1">Agent</div>
+          <div className="w-9 text-center" title="Composio tools">Tools</div>
+          <div className="w-9 text-center" title="Auto-search org docs + connected storage">Auto-search</div>
+        </div>
         {filtered.map((a) => (
           <div
             key={a.agent_id}
@@ -191,6 +217,9 @@ export default function AgentToolPrefsPanel({ orgId }) {
               aria-checked={a.tools_enabled}
               disabled={!canEdit || busy === a.agent_id}
               onClick={() => toggle(a.agent_id, !a.tools_enabled)}
+              title={a.tools_enabled
+                ? "Composio tools enabled (e.g. Gmail send, Calendar create) — click to disable"
+                : "Composio tools disabled — click to enable"}
               className={[
                 "relative h-5 w-9 rounded-full transition-colors flex-shrink-0",
                 a.tools_enabled ? "bg-emerald-500/80" : "bg-white/15",
@@ -202,6 +231,29 @@ export default function AgentToolPrefsPanel({ orgId }) {
                 className={[
                   "absolute top-0.5 left-0.5 h-4 w-4 rounded-full bg-white shadow transition-transform",
                   a.tools_enabled ? "translate-x-4" : "translate-x-0",
+                ].join(" ")}
+              />
+            </button>
+            <button
+              type="button"
+              role="switch"
+              aria-checked={a.auto_search_docs}
+              disabled={!canEdit || busy === a.agent_id}
+              onClick={() => toggleAutoSearch(a.agent_id, !a.auto_search_docs)}
+              title={a.auto_search_docs
+                ? "Auto-search org docs when the user asks (e.g. 'look in my docs for X') — click to disable"
+                : "Auto-search OFF — click to enable"}
+              className={[
+                "relative h-5 w-9 rounded-full transition-colors flex-shrink-0",
+                a.auto_search_docs ? "bg-purple-500/80" : "bg-white/15",
+                (!canEdit || busy === a.agent_id) ? "opacity-50 cursor-not-allowed" : "cursor-pointer",
+              ].join(" ")}
+              data-testid={`agent-autosearch-toggle-${a.agent_id}`}
+            >
+              <span
+                className={[
+                  "absolute top-0.5 left-0.5 h-4 w-4 rounded-full bg-white shadow transition-transform",
+                  a.auto_search_docs ? "translate-x-4" : "translate-x-0",
                 ].join(" ")}
               />
             </button>

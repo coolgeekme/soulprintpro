@@ -1,0 +1,41 @@
+{
+  "summary": "Iter-31 verifies Search Everywhere feature batch (5 backend feature areas): GET /api/orgs/{id}/assets/search, GET /api/orgs/{id}/search (unified fan-out), PUT/GET /api/orgs/{id}/agent-tool-prefs/{agent_id} with new auto_search_docs flag, and the in-prompt auto-search injection in generate_agent_reply. 19 new pytest cases, ALL PASS (19/19 — including both LLM-dependent auto-search tests on the final run after a backend restart). Frontend data-testids confirmed present in source: open-org-search, asset-search-input, asset-search-clear, unified-search-input, agent-autosearch-toggle-{id}, plus 'Tools'+'Auto-search' column headers. Frontend toggle PUT path (/orgs/{id}/agent-tool-prefs/{id}) matches verified backend route.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "PUT /api/orgs/{id}/agent-tool-prefs/{agent_id}", "issue": "Review-request doc referred to path /api/composio/{org_id}/agent-tool-prefs/... but the actual mounted path is /api/orgs/{org_id}/agent-tool-prefs/... (composio_r router has prefix='/api/orgs'). Frontend uses the correct /orgs/... path. Recommend updating PRD wording to avoid future confusion."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_iter31_search_everywhere.py",
+    "/app/test_reports/pytest/iter31_results.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "server.py:7882 search_assets — uses re.escape on user input before regex (good, prevents 1.2 (beta) blowing up). Snippet selection iterates candidate fields in priority order (text_excerpt > description > original_name > link_url) which gives readable highlights.",
+    "server.py:8033 unified_search — fan-out via asyncio.gather(return_exceptions=False); if a provider raises, the whole call 500s. Provider runs catch exceptions internally via _composio_search_provider, so OK in practice. Still consider return_exceptions=True for belt-and-braces.",
+    "server.py:8056-8057 — silently dedups duplicate sources and filters invalid ones via dict.fromkeys. Edge cases handled cleanly.",
+    "server.py:2884 _maybe_auto_search_block — verified behaviourally: ON-state injects block (agent reply references Pricing_Strategy.pdf), OFF-state suppresses ($2,500/month detail absent). Pref lookup tolerates missing row (default ON). Latency-conscious: 10-row local cap, no external calls.",
+    "server.py:9336 set_agent_tool_pref — 400 'Provide at least one of tools_enabled, auto_search_docs' on empty body works as spec'd. Read-back response correctly reflects both fields. Admin gate via require_org_member + role check is solid.",
+    "server.py:9286 list_agent_tool_prefs — `row.get('auto_search_docs') is not False` correctly treats missing key as default-ON (post-upgrade safety).",
+    "Frontend AgentToolPrefsPanel.js correctly shows purple-tinted Auto-search toggle (bg-purple-500/80) when ON, white/15 when OFF, with data-testid='agent-autosearch-toggle-{agent_id}'. Toggling fires PUT with only the changed field — partial-update path validated by backend tests."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_iter31_search_everywhere.py (new — 19 tests)"
+  ],
+  "success_rate": {
+    "backend": "100% (19/19 iter-31 tests pass after backend restart; LLM-injection tests were flaky on intermediate runs due to public-URL transient network timeouts but consistently pass with backend hot-reload settled)",
+    "frontend": "Source-level verification complete — all 5 required data-testids present in OrgPage.js + SearchPage.js + AgentToolPrefsPanel.js. Live browser session re-set between automation calls in this run so end-to-end click flow was not visually exercised. Main agent can self-verify by logging in as reggie@coolgeek.me, opening Reggie Lab, clicking 'Search everywhere' nav card → /app/org/{id}/search."
+  },
+  "test_credentials": "reggie@coolgeek.me / superadminpass123 (superadmin used to mint a 30-use access code; fresh test users TEST_iter31a_* / TEST_iter31b_* / TEST_iter31c_* register against it). Spark plan caps user_a to 1 org; tests reuse the same org for asset-search + unified-search + auto-search-injection.",
+  "seed_data_creation": "1 multi-use access code (TESTITER31*), 3 fresh users, 1 fresh TEST_Iter31Org_* org (with: 1 uploaded q3_okrs.txt asset, 1 Brand Kit Drive link asset, 1 Pricing_Strategy.pdf asset). All data prefixed TEST_; no production data touched.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "All iter-31 backend plumbing is verified end-to-end. Re-run: `pytest /app/backend/tests/test_iter31_search_everywhere.py -v` — expect 19/19. If the two TestAutoSearchInjection tests time out due to public-URL flakiness, restart backend (`sudo supervisorctl restart backend`) and re-run; they pass deterministically once the env is settled. Note: agent-tool-prefs path is /api/orgs/{id}/... (NOT /api/composio/{id}/...) — the review-request PRD wording is misleading. Frontend visual smoke (search-bar typing, source-chip toggling, 'Connect →' degraded warnings) is recommended for main agent self-test.",
+  "rca of the issue": "N/A — no bugs found. All 5 backend feature areas and all 5 frontend data-testid surfaces match spec."
+}
