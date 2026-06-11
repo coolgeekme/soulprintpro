@@ -1805,6 +1805,125 @@ async def list_org_members(org_id: str, u: dict = Depends(get_current_user)):
             })
     return out
 
+
+class _OrgMemberRoleBody(BaseModel):
+    role: Literal["owner", "admin", "member"]
+
+
+@org_r.patch("/{org_id}/members/{user_id}")
+async def update_org_member_role(
+    org_id: str,
+    user_id: str,
+    body: _OrgMemberRoleBody,
+    u: dict = Depends(get_current_user),
+):
+    """Owner-only: change another member's role within the org.
+
+    Rules:
+      - Caller MUST be an owner (admins cannot promote/demote others —
+        intentionally tight; admins can already invite + remove, but
+        role changes touch the trust boundary so we gate on owners).
+      - You can promote any member/admin to owner. Multiple owners
+        are supported by the schema and product expectation.
+      - You can demote any owner to admin/member EXCEPT if doing so
+        would leave the org with zero owners (would orphan billing,
+        deletion, brand-edits, etc.). Returns 400 in that case.
+      - You cannot change YOUR OWN role — that's blocked to prevent
+        an accidental self-demote that locks you out of the org's
+        admin surface. Promote another member to owner first, then
+        ask them to change yours if you really want to step back.
+      - Target must already be a member of the org. If they aren't,
+        404 (use the invite flow to add them in the first place).
+    """
+    ctx = await require_org_member(org_id, u["id"])
+    if ctx["member"].get("role") != "owner":
+        raise HTTPException(403, "Only org owners can change member roles")
+    if str(user_id) == str(u["id"]):
+        raise HTTPException(
+            400,
+            "Owners cannot change their own role. "
+            "Promote another member to owner first and ask them to change yours.",
+        )
+    target = await db.org_members.find_one(
+        {"org_id": org_id, "user_id": user_id}, {"_id": 0, "role": 1},
+    )
+    if not target:
+        raise HTTPException(404, "Member not found in this org")
+    current_role = target.get("role") or "member"
+    if current_role == body.role:
+        return {"user_id": user_id, "role": current_role, "changed": False}
+    # Guard: don't orphan the org by demoting the last owner.
+    if current_role == "owner" and body.role != "owner":
+        owner_count = await db.org_members.count_documents(
+            {"org_id": org_id, "role": "owner"},
+        )
+        if owner_count <= 1:
+            raise HTTPException(
+                400,
+                "Can't demote the last owner — promote someone else first "
+                "so the org still has an owner.",
+            )
+    await db.org_members.update_one(
+        {"org_id": org_id, "user_id": user_id},
+        {"$set": {"role": body.role, "role_changed_at": datetime.now(timezone.utc),
+                  "role_changed_by": u["id"]}},
+    )
+    return {"user_id": user_id, "role": body.role, "changed": True}
+
+
+@org_r.delete("/{org_id}/members/me")
+async def leave_org(org_id: str, u: dict = Depends(get_current_user)):
+    """Self-leave: caller removes themselves from this org.
+
+    Rules:
+      - You must currently be a member.
+      - If you are the ONLY owner, leaving would orphan the org —
+        blocked with 400. Promote someone else to owner first.
+      - Leaving also strips your membership from every team in this
+        org so dangling references don't linger.
+      - Personal artifacts (your messages, your private CoS thread,
+        notes you authored, etc.) are NOT deleted by this call — the
+        org keeps the conversation history. To purge your data
+        entirely use the existing account-delete flow which already
+        runs the GDPR cascade.
+    """
+    me = await db.org_members.find_one(
+        {"org_id": org_id, "user_id": u["id"]}, {"_id": 0, "role": 1},
+    )
+    if not me:
+        raise HTTPException(404, "You are not a member of this org")
+    my_role = me.get("role") or "member"
+    if my_role == "owner":
+        owner_count = await db.org_members.count_documents(
+            {"org_id": org_id, "role": "owner"},
+        )
+        if owner_count <= 1:
+            raise HTTPException(
+                400,
+                "You're the only owner — promote another member to owner "
+                "before leaving so the org still has one.",
+            )
+    # Strip from teams (member + admin arrays) in this org.
+    try:
+        await db.teams.update_many(
+            {"org_id": org_id},
+            {
+                "$pull": {
+                    "member_user_ids": u["id"],
+                    "admin_user_ids": u["id"],
+                },
+            },
+        )
+    except Exception as exc:
+        logger.warning("leave_org: team scrub failed for user %s in org %s: %s",
+                       u["id"], org_id, exc)
+    # Remove the membership row last (after team scrub) so a partial
+    # failure doesn't leave you a member of teams you no longer belong
+    # to at the org level.
+    await db.org_members.delete_one({"org_id": org_id, "user_id": u["id"]})
+    return {"ok": True, "org_id": org_id}
+
+
 @org_r.post("/{org_id}/invites")
 async def create_invite(org_id: str, body: InviteCreateBody, request: Request, u: dict = Depends(get_current_user)):
     ctx = await require_org_member(org_id, u["id"])

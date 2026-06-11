@@ -973,3 +973,23 @@ pattern. Users must be able to:
     - New "Search everywhere" nav card on the Org page (purple gradient, between Missions and the Chief-of-Staff cards).
     - In-library quick search bar at the top of the Asset Library section — typing fires `/assets/search` with a 220ms debounce, results replace the standard recent-first list with snippet rendering on each card.
   - **Tests**: `/app/backend/tests/test_iter31_search_everywhere.py` — 19 cases covering empty query, regex-special-char safety, link-asset snippets, multi-source fan-out with not-connected partial state, agent-tool-prefs partial PUT, default ON behaviour, and end-to-end auto-search injection (`Pricing_Strategy.pdf` cited in agent reply when ON, absent when toggled OFF).
+
+
+- ✅ **Org member role edits + self-leave** (Feb 2026, iter-32) — 10/10 backend tests passing (`/app/backend/tests/test_iter32_org_roles_and_leave.py`).
+  - **`PATCH /api/orgs/{org_id}/members/{user_id}`** — owners can change another member's role (`member` ↔ `admin` ↔ `owner`). Guards:
+    - **Owners only** (admins explicitly blocked from role changes; they can still invite + remove via existing endpoints).
+    - **Self-edit blocked** (`400` "Owners cannot change their own role") — prevents accidental self-demote lockout. Workaround: promote a teammate to owner first.
+    - **Last-owner demote blocked** — counts current owners and returns `400` if the demote would leave the org with zero owners.
+    - **Target must already be a member** (`404` otherwise — use the invite flow to add).
+    - Multi-owner support is fully wired (schema + UI treat it as expected).
+  - **`DELETE /api/orgs/{org_id}/members/me`** — any member can self-leave. Guards:
+    - **Last-owner block** — returns `400` "You're the only owner — promote another member to owner before leaving."
+    - **Team-level cascade scrub** — `$pull`s the leaving user from every team's `member_user_ids` + `admin_user_ids` array in the same org so no dangling references linger.
+    - **Account stays intact** — only org membership is removed. User can still log in and access their other orgs / their account.
+  - **Frontend**: new `MemberRow` component in `OrgPage.js` renders:
+    - **Role dropdown** for owners viewing OTHER members (member / admin / owner) — toast confirms each change.
+    - **Locked role chip** when caller is not owner OR row is the caller themselves.
+    - **"Leave" button** on the caller's own row only (red-tinted ghost button + `LogOut` icon + confirm modal). On success, navigates to `/app`.
+    - `(you)` badge next to caller's name so it's obvious which row is editable + which has the Leave button.
+    - All toggles have `data-testid` (`role-select-{user_id}`, `role-chip-{user_id}`, `leave-org-btn`) for testing.
+  - **Tests** (`tests/test_iter32_org_roles_and_leave.py`): owner promotes member → admin; admin cannot change roles (403); owner cannot self-edit (400); two-owner cross-demote works; member self-leave removes org membership + future org reads 403; last-owner cannot leave (400); owner can leave after promoting successor; non-member 404; empty body 422; invalid role 422. Includes 429-aware register retry so the per-IP signup limit doesn't flake the suite.

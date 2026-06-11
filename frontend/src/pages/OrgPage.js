@@ -2,8 +2,9 @@ import React, { useCallback, useEffect, useRef, useState } from "react";
 import { useParams, Link, useNavigate, useLocation } from "react-router-dom";
 import api, { BACKEND_URL } from "../lib/api";
 import TopBar from "../components/TopBar";
+import { useAuth } from "../context/AuthContext";
 import { toast } from "sonner";
-import { Plus, Users, ArrowRight, Copy, UserPlus, FileText, Image as ImageIcon, FileBox, Trash2, UploadCloud, Download, File as FileIcon, MessageCircle, Pencil, Save, X as XIcon, RefreshCw, Megaphone, Paperclip, Send, Loader2, Rocket, Network, Minimize2, ChevronRight, BarChart3, Link as LinkIcon, ExternalLink, Search } from "lucide-react";
+import { Plus, Users, ArrowRight, Copy, UserPlus, FileText, Image as ImageIcon, FileBox, Trash2, UploadCloud, Download, File as FileIcon, MessageCircle, Pencil, Save, X as XIcon, RefreshCw, Megaphone, Paperclip, Send, Loader2, Rocket, Network, Minimize2, ChevronRight, BarChart3, Link as LinkIcon, ExternalLink, Search, LogOut } from "lucide-react";
 import BrandAssetsPanel from "../components/BrandAssetsPanel";
 import NotesPage from "./NotesPage";
 import GlobalNoteButton from "../components/GlobalNoteButton";
@@ -35,6 +36,8 @@ export default function OrgPage() {
   const { orgId } = useParams();
   const nav = useNavigate();
   const location = useLocation();
+  const { user: currentUser } = useAuth();
+  const meId = currentUser?.id || "";
   // When the user arrives via `Open in Documents` (link with #documents),
   // React Router doesn't auto-scroll. We do it manually after the panel
   // has had a chance to mount + load. Small retry loop so it works even
@@ -1464,15 +1467,26 @@ export default function OrgPage() {
                     <Users className="w-4 h-4 text-white/80" />
                     <h3 className="text-sm uppercase tracking-widest sp-subtle">Members ({members.length})</h3>
                   </div>
+                  {/* Members panel. Owners get a dropdown to change
+                      another member's role (member ↔ admin ↔ owner)
+                      with a safety net for last-owner demotion. Every
+                      member gets a "Leave organization" action on
+                      their OWN row. */}
                   <div className="flex flex-col gap-2 max-h-60 overflow-y-auto">
                     {members.map((m) => (
-                      <div key={m.user_id} className="flex items-center justify-between p-3 rounded-xl sp-glass">
-                        <div className="min-w-0">
-                          <div className="text-sm text-white truncate">{m.name}</div>
-                          <div className="text-xs sp-subtle truncate">{m.email}</div>
-                        </div>
-                        <span className="sp-chip">{m.role}</span>
-                      </div>
+                      <MemberRow
+                        key={m.user_id}
+                        member={m}
+                        orgId={orgId}
+                        meId={meId}
+                        isOwner={isOwner}
+                        onRoleChanged={(uid, role) =>
+                          setMembers((prev) => prev.map((x) =>
+                            x.user_id === uid ? { ...x, role } : x,
+                          ))
+                        }
+                        onSelfLeft={() => nav("/app")}
+                      />
                     ))}
                   </div>
                 </div>
@@ -1481,6 +1495,103 @@ export default function OrgPage() {
           );
         })()}
       </main>
+    </div>
+  );
+}
+
+
+// ── Member row: name/email + role chip OR dropdown + Leave button ────────
+// Owners can edit OTHER members' roles (member ↔ admin ↔ owner). Every
+// member can self-leave. The "last owner" guard lives on the backend.
+function MemberRow({ member, orgId, meId, isOwner, onRoleChanged, onSelfLeft }) {
+  const [busy, setBusy] = useState(false);
+  const isSelf = String(member.user_id) === String(meId);
+  const canEditRole = isOwner && !isSelf;
+
+  const changeRole = async (nextRole) => {
+    if (nextRole === member.role || busy) return;
+    setBusy(true);
+    try {
+      const { data } = await api.patch(
+        `/orgs/${orgId}/members/${member.user_id}`,
+        { role: nextRole },
+      );
+      onRoleChanged?.(member.user_id, data.role);
+      if (data.changed) toast.success(`${member.name} is now ${data.role}`);
+    } catch (err) {
+      toast.error(err?.response?.data?.detail || "Couldn't change role");
+    } finally { setBusy(false); }
+  };
+
+  const leaveOrg = async () => {
+    if (busy) return;
+    const ok = window.confirm(
+      "Leave this organization? You'll lose access to its teams, agents, and conversations. "
+      + "Your account stays, but you'll need to be re-invited to come back.",
+    );
+    if (!ok) return;
+    setBusy(true);
+    try {
+      await api.delete(`/orgs/${orgId}/members/me`);
+      toast.success("You've left the organization");
+      onSelfLeft?.();
+    } catch (err) {
+      toast.error(err?.response?.data?.detail || "Couldn't leave the org");
+    } finally { setBusy(false); }
+  };
+
+  return (
+    <div
+      className="flex items-center justify-between gap-3 p-3 rounded-xl sp-glass"
+      data-testid={`org-member-row-${member.user_id}`}
+    >
+      <div className="min-w-0 flex-1">
+        <div className="text-sm text-white truncate">
+          {member.name}
+          {isSelf && <span className="text-[10px] sp-subtle ml-2">(you)</span>}
+        </div>
+        <div className="text-xs sp-subtle truncate">{member.email}</div>
+      </div>
+      <div className="flex items-center gap-2 shrink-0">
+        {canEditRole ? (
+          <select
+            value={member.role}
+            disabled={busy}
+            onChange={(e) => changeRole(e.target.value)}
+            className="text-xs rounded-md px-2 py-1 focus:sp-focus"
+            style={{
+              background: "var(--input-bg)",
+              border: "1px solid var(--input-border)",
+              color: "var(--fg)",
+            }}
+            data-testid={`role-select-${member.user_id}`}
+            title="Change this member's role"
+          >
+            <option value="member">member</option>
+            <option value="admin">admin</option>
+            <option value="owner">owner</option>
+          </select>
+        ) : (
+          <span
+            className="sp-chip"
+            data-testid={`role-chip-${member.user_id}`}
+          >
+            {member.role}
+          </span>
+        )}
+        {isSelf && (
+          <button
+            type="button"
+            onClick={leaveOrg}
+            disabled={busy}
+            className="sp-btn sp-btn-ghost text-xs hover:!bg-red-500/15 hover:!text-red-200 disabled:opacity-50"
+            data-testid="leave-org-btn"
+            title="Leave this organization"
+          >
+            <LogOut className="w-3 h-3" /> {busy ? "Leaving…" : "Leave"}
+          </button>
+        )}
+      </div>
     </div>
   );
 }
