@@ -49,6 +49,15 @@ pattern. Users must be able to:
 - `GET|POST /api/teams/{id}/conversations` · `GET|DELETE /api/conversations/{id}`
 - `GET|POST /api/conversations/{id}/messages`
 
+## Implemented (Feb 26, 2026) — Org Ownership Transfer Flow
+- ✅ **Org Ownership Transfer end-to-end** — owners can hand off ownership without stranding billing obligations. State machine in `/app/backend/org_transfers.py` with 7-day expiry, plan-tier gate, optional self-leave, atomic role mutation, and idempotent retry path. New endpoints `POST/GET/DELETE /api/orgs/{org_id}/ownership-transfers[...]` and `GET /api/me/pending-ownership-transfers`. Startup sweep auto-expires stale pending offers.
+- ✅ **Recipient-side banner** (`PendingTransfersBanner.js`) mounts in /app shell + OrgPage. Accept/Decline + inline 402 upgrade CTA routing to `/app/billing?subscribe={tier}` when recipient's plan can't cover the org's member count (spark=1, temper=5, refine=∞).
+- ✅ **Outgoing-owner modal** (`OwnershipTransferModal.js`) on MemberRow with role-after picker, "also leave after transfer" checkbox, and clear copy about what transfers vs. doesn't (e.g., add-on seats stay with the outgoing owner's Stripe customer).
+- ✅ **Outgoing transfers panel** lets the initiator cancel pending offers from the org members panel.
+- ✅ **api.js interceptor narrowed** to `Array.isArray(d)` only, preserving structured `HTTPException(detail={code,...})` dicts for callers that branch on `detail.code` (caught and fixed via iter-32→iter-33). Raw arrays now also stashed at `err.response.data._rawDetail` for opt-in inspection.
+- Tests: 16/16 backend (`/app/backend/tests/test_iter33_org_ownership_transfer.py`) + 5/5 frontend scenarios (`/app/test_reports/iteration_33.json`).
+
+
 ## Implemented (Apr 29-30, 2026)
 - ✅ Full schema rewrite — orgs, teams, members, invites, conversations, messages, **assets**, **schedules**
 - ✅ JWT cookie auth + Bearer fallback (localStorage). CORS uses `allow_origin_regex=".*"` for any deploy domain.
