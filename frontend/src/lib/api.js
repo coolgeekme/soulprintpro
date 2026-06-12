@@ -212,11 +212,19 @@ api.interceptors.request.use(async (config) => {
 // Otherwise `toast.error(err.response.data.detail)` would pass an array of
 // objects to sonner, which tries to render it as a React child and throws
 // "Objects are not valid as a React child" — killing the whole page.
+//
+// IMPORTANT: We ONLY flatten Pydantic validation ARRAYS. Structured business
+// error objects on `detail` (e.g. HTTPException(detail={code, ...}) returned
+// by /accept on 402 plan_upgrade_required) MUST pass through untouched so
+// callers can branch on `detail.code`. Stashing the raw object at
+// `err.response.data._rawDetail` as a courtesy for sites that opt in but
+// still want a flattened detail string in `detail`.
 api.interceptors.response.use(
   (resp) => resp,
   (err) => {
     const d = err?.response?.data?.detail;
-    if (Array.isArray(d) || (d && typeof d === "object" && !Array.isArray(d))) {
+    if (Array.isArray(d)) {
+      err.response.data._rawDetail = d;
       err.response.data.detail = errorMessage(err, "Request failed");
     }
     return Promise.reject(err);
