@@ -4,7 +4,7 @@ import api, { BACKEND_URL } from "../lib/api";
 import TopBar from "../components/TopBar";
 import { useAuth } from "../context/AuthContext";
 import { toast } from "sonner";
-import { Plus, Users, ArrowRight, Copy, UserPlus, FileText, Image as ImageIcon, FileBox, Trash2, UploadCloud, Download, File as FileIcon, MessageCircle, Pencil, Save, X as XIcon, RefreshCw, Megaphone, Paperclip, Send, Loader2, Rocket, Network, Minimize2, ChevronRight, BarChart3, Link as LinkIcon, ExternalLink, Search, LogOut } from "lucide-react";
+import { Plus, Users, ArrowRight, Copy, UserPlus, FileText, Image as ImageIcon, FileBox, Trash2, UploadCloud, Download, File as FileIcon, MessageCircle, Pencil, Save, X as XIcon, RefreshCw, Megaphone, Paperclip, Send, Loader2, Rocket, Network, Minimize2, ChevronRight, BarChart3, Link as LinkIcon, ExternalLink, Search, LogOut, Crown } from "lucide-react";
 import BrandAssetsPanel from "../components/BrandAssetsPanel";
 import NotesPage from "./NotesPage";
 import GlobalNoteButton from "../components/GlobalNoteButton";
@@ -21,6 +21,9 @@ import SoulSuggestionsPanel from "../components/SoulSuggestionsPanel";
 import ConnectionsPanel from "../components/ConnectionsPanel";
 import AgentToolPrefsPanel from "../components/AgentToolPrefsPanel";
 import WorkingIndicator from "../components/WorkingIndicator";
+import PendingTransfersBanner from "../components/PendingTransfersBanner";
+import OwnershipTransferModal from "../components/OwnershipTransferModal";
+import OutgoingTransfersPanel from "../components/OutgoingTransfersPanel";
 import { compressImageFile } from "../lib/imageCompress";
 import { parseServerDate } from "../lib/datetime";
 
@@ -225,6 +228,10 @@ export default function OrgPage() {
 
   const canInvite = org && (org.role === "owner" || org.role === "admin");
   const origin = typeof window !== "undefined" ? window.location.origin : "";
+  // Bumped after a successful ownership-transfer initiation so the
+  // OutgoingTransfersPanel below the members list re-fetches without
+  // having to reload the whole org page.
+  const [transferRefreshCounter, setTransferRefreshCounter] = useState(0);
 
   const load = async () => {
     setLoading(true);
@@ -523,6 +530,9 @@ export default function OrgPage() {
       </TopBar>
 
       <main className="max-w-6xl mx-auto px-4 sm:px-6 py-8 sm:py-10">
+        {/* Banner for inbound ownership transfer offers targeting the
+            viewer. Self-hides when there are none. */}
+        <PendingTransfersBanner onAccepted={load} />
         <div className="flex flex-col gap-2 mb-8">
           <div className="flex items-center justify-between gap-3 flex-wrap">
             <div className="flex items-center gap-3 flex-wrap min-w-0">
@@ -1478,6 +1488,7 @@ export default function OrgPage() {
                         key={m.user_id}
                         member={m}
                         orgId={orgId}
+                        orgName={org?.name || ""}
                         meId={meId}
                         isOwner={isOwner}
                         onRoleChanged={(uid, role) =>
@@ -1486,9 +1497,17 @@ export default function OrgPage() {
                           ))
                         }
                         onSelfLeft={() => nav("/app")}
+                        onTransferInitiated={() => setTransferRefreshCounter((n) => n + 1)}
                       />
                     ))}
                   </div>
+                  {/* Outgoing transfers (visible to owners/admins via
+                      backend role filter). Lets the initiator cancel. */}
+                  <OutgoingTransfersPanel
+                    orgId={orgId}
+                    meId={meId}
+                    refreshTrigger={transferRefreshCounter}
+                  />
                 </div>
               </div>
             </CollapsibleSection>
@@ -1501,12 +1520,17 @@ export default function OrgPage() {
 
 
 // ── Member row: name/email + role chip OR dropdown + Leave button ────────
-// Owners can edit OTHER members' roles (member ↔ admin ↔ owner). Every
-// member can self-leave. The "last owner" guard lives on the backend.
-function MemberRow({ member, orgId, meId, isOwner, onRoleChanged, onSelfLeft }) {
+// Owners can edit OTHER members' roles (member ↔ admin ↔ owner) and
+// initiate an ownership transfer to them. Every member can self-leave.
+// The "last owner" guard lives on the backend.
+function MemberRow({ member, orgId, orgName, meId, isOwner, onRoleChanged, onSelfLeft, onTransferInitiated }) {
   const [busy, setBusy] = useState(false);
+  const [transferOpen, setTransferOpen] = useState(false);
   const isSelf = String(member.user_id) === String(meId);
   const canEditRole = isOwner && !isSelf;
+  // Owners can transfer ownership to any other member regardless of
+  // that member's current role. Backend re-verifies + enforces plan.
+  const canTransfer = isOwner && !isSelf;
 
   const changeRole = async (nextRole) => {
     if (nextRole === member.role || busy) return;
@@ -1591,7 +1615,28 @@ function MemberRow({ member, orgId, meId, isOwner, onRoleChanged, onSelfLeft }) 
             <LogOut className="w-3 h-3" /> {busy ? "Leaving…" : "Leave"}
           </button>
         )}
+        {canTransfer && (
+          <button
+            type="button"
+            onClick={() => setTransferOpen(true)}
+            disabled={busy}
+            className="sp-btn sp-btn-ghost text-xs hover:!bg-amber-500/15 hover:!text-amber-200 disabled:opacity-50"
+            data-testid={`transfer-ownership-btn-${member.user_id}`}
+            title="Transfer ownership of this org to this member"
+          >
+            <Crown className="w-3 h-3" /> Transfer
+          </button>
+        )}
       </div>
+      {transferOpen && (
+        <OwnershipTransferModal
+          orgId={orgId}
+          orgName={orgName}
+          member={member}
+          onClose={() => setTransferOpen(false)}
+          onInitiated={onTransferInitiated}
+        />
+      )}
     </div>
   );
 }

@@ -3,6 +3,7 @@ import { Link, useNavigate } from "react-router-dom";
 import api from "../lib/api";
 import { useAuth } from "../context/AuthContext";
 import TopBar from "../components/TopBar";
+import PendingTransfersBanner from "../components/PendingTransfersBanner";
 import { toast } from "sonner";
 import { Plus, ArrowRight, Ticket, MessageCircle, Settings, Users, LayoutGrid, Loader2 } from "lucide-react";
 
@@ -142,6 +143,10 @@ export default function AppHome() {
       <TopBar>Your organizations</TopBar>
 
       <main className="max-w-5xl mx-auto px-4 sm:px-6 py-5 sm:py-7" data-testid="app-home">
+        {/* Inbound ownership-transfer offers. Self-hides when there
+            are none, so this is a no-op for the typical user. */}
+        <PendingTransfersBanner onAccepted={() => load({ silent: true })} />
+
         {/* Compact header (UX audit #2) — single row title + workspace
             stats + primary actions, replacing the previous huge display
             block that pushed the org grid below the fold. */}

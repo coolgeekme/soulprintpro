@@ -9003,6 +9003,18 @@ app.include_router(auth_r)
 app.include_router(org_r)
 app.include_router(invite_r)
 
+# Org ownership transfer flow (Feb 2026). Mounted as two routers — one
+# scoped to /api/orgs/{org_id}/ownership-transfers, the other at
+# /api/me/pending-ownership-transfers for the recipient's inbox.
+from org_transfers import make_routers as _make_transfer_routers
+_transfers_r, _me_transfers_r = _make_transfer_routers(
+    db=db,
+    require_org_member=require_org_member,
+    get_current_user=get_current_user,
+)
+app.include_router(_transfers_r, prefix="/api")
+app.include_router(_me_transfers_r, prefix="/api")
+
 # Composio integration — per-user managed OAuth + tool execution.
 # Routes mounted under /api/orgs/{org_id}/composio so visibility is
 # automatically scoped by the existing require_org_member gate.
@@ -10888,6 +10900,14 @@ async def startup():
         stuck_count += 1
     if stuck_count:
         logger.info("Reconciled %d stuck mission(s) on startup", stuck_count)
+    # ── Expired ownership transfer sweep ─────────────────────────────
+    try:
+        from org_transfers import sweep_expired_transfers
+        n = await sweep_expired_transfers(db)
+        if n:
+            logger.info("Expired %d stale ownership transfer(s) on startup", n)
+    except Exception as exc:
+        logger.warning("ownership transfer sweep failed: %s", exc)
     # ── Pending-media rehydration ────────────────────────────────────
     # Chat-message media (video / image / music) generated via Kie.ai
     # is fired off as a background asyncio task. If the pod dies during
