@@ -1,6 +1,7 @@
 import React, { useState, useMemo } from "react";
 import { useNavigate, useSearchParams, Link } from "react-router-dom";
 import { useAuth } from "../context/AuthContext";
+import api from "../lib/api";
 import { toast } from "sonner";
 import { ArrowLeft, Mail } from "lucide-react";
 import Logo from "../components/Logo";
@@ -132,8 +133,16 @@ export default function AuthPage() {
         try {
           await api.post("/access-codes/validate", { code });
         } catch (err) {
-          toast.error(err?.response?.data?.detail
-            || "That access code didn't check out.");
+          // Show the backend's reason when present, the raw axios
+          // error message when not. Falling back to the generic
+          // "didn't check out" line hid a silent header-encoding
+          // bug for weeks (Feb 2026) — make sure ANY future surprise
+          // surfaces a useful diagnostic instead of vanishing.
+          const detail = err?.response?.data?.detail;
+          const fallback = err?.message
+            ? `Couldn't validate that code: ${err.message}`
+            : "That access code didn't check out.";
+          toast.error(detail || fallback);
           return;
         }
       }

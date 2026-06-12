@@ -134,6 +134,51 @@ const api = axios.create({
 // We additionally tag every request with the user's timezone (always
 // available via Intl) and — if previously granted — their approximate
 // location, so agents can quote "today" / "your local time" correctly.
+/**
+ * Header values MUST be ISO-8859-1 (latin-1) per the HTTP spec — modern
+ * browsers throw `TypeError: String contains non ISO-8859-1 code point`
+ * inside `XMLHttpRequest.setRequestHeader()` when they aren't, which
+ * causes axios to reject with NO `err.response` object. Symptom: every
+ * affected call appears to fail before reaching the backend with no
+ * useful detail in `err.response.data.detail`.
+ *
+ * Seen in production (Feb 2026) when a user's cached location contained
+ * a non-ASCII glyph (smart-quote pasted in, accented city name, etc.) —
+ * every `/access-codes/validate` call from that browser failed silently
+ * and showed the generic "didn't check out" fallback toast even though
+ * the code was valid.
+ *
+ * Strategy: try to encode the string as latin-1 byte-for-byte. If even
+ * one character can't be represented, fall back to stripping non-ASCII
+ * down to a safe ASCII slice. Empty results return `""` so the caller
+ * can skip setting the header entirely.
+ */
+const safeHeaderValue = (raw) => {
+  if (raw == null) return "";
+  const s = String(raw);
+  if (!s) return "";
+  // Fast path: char-by-char check. Anything >0xFF is unsafe for
+  // setRequestHeader. CR/LF would also be header-injection-able.
+  let unsafe = false;
+  for (let i = 0; i < s.length; i++) {
+    const code = s.charCodeAt(i);
+    if (code > 0xFF || code === 0x0A || code === 0x0D || code === 0x00) {
+      unsafe = true;
+      break;
+    }
+  }
+  if (!unsafe) return s;
+  // Slow path: keep only printable ASCII (0x20-0x7E) so the resulting
+  // string is universally safe. We accept a little label degradation
+  // (loss of accents) over a hard request rejection.
+  let out = "";
+  for (let i = 0; i < s.length; i++) {
+    const code = s.charCodeAt(i);
+    if (code >= 0x20 && code <= 0x7E) out += s[i];
+  }
+  return out.trim();
+};
+
 api.interceptors.request.use(async (config) => {
   config.headers = config.headers || {};
   // Prefer a fresh Firebase ID token when the user signed in via Firebase
@@ -147,10 +192,18 @@ api.interceptors.request.use(async (config) => {
   // Fallback to the legacy bcrypt/HS256 token for users who signed in via
   // the existing email+password flow (no Firebase session active).
   if (!bearer) bearer = getToken();
-  if (bearer) config.headers.Authorization = `Bearer ${bearer}`;
-  config.headers["X-User-Timezone"] = userTimezone();
-  const loc = getCachedLocation();
-  if (loc) config.headers["X-User-Location"] = loc;
+  const safeBearer = safeHeaderValue(bearer);
+  if (safeBearer) config.headers.Authorization = `Bearer ${safeBearer}`;
+  // Timezone: Intl values are always ASCII (e.g. "America/Chicago"),
+  // but sanitise as a safety net — userTimezone() may someday be
+  // user-supplied.
+  const safeTz = safeHeaderValue(userTimezone());
+  if (safeTz) config.headers["X-User-Timezone"] = safeTz;
+  // Location is the main culprit — cached labels like "São Paulo" or
+  // anything pasted in by hand can carry non-latin-1 characters and
+  // silently break EVERY subsequent API call (including registration).
+  const safeLoc = safeHeaderValue(getCachedLocation());
+  if (safeLoc) config.headers["X-User-Location"] = safeLoc;
   return config;
 });
 
