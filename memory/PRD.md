@@ -49,6 +49,10 @@ pattern. Users must be able to:
 - `GET|POST /api/teams/{id}/conversations` · `GET|DELETE /api/conversations/{id}`
 - `GET|POST /api/conversations/{id}/messages`
 
+## Implemented (Feb 26, 2026) — Suggested Tools Preview in Mission Draft
+- ✅ **Mission draft UI shows available Composio tools before launch**. New endpoint `GET /api/orgs/{org_id}/missions/available-tools` returns the caller's active Composio toolkits (slim shape: `{slug, short_name, toolkit, description}`) + the budget rails (`max_total=20`, `max_per_platform=5`). New `AvailableMissionToolsPreview.js` mounts inside `StartMissionDialog` — collapsed by default, groups tools by toolkit (gmail, slack, googledocs…) as compact chips. Empty state nudges users to the Connections panel; deployments without `COMPOSIO_API_KEY` self-hide. Verified end-to-end with a Playwright smoke.
+
+
 ## Implemented (Feb 26, 2026) — Org Ownership Transfer Flow
 - ✅ **Org Ownership Transfer end-to-end** — owners can hand off ownership without stranding billing obligations. State machine in `/app/backend/org_transfers.py` with 7-day expiry, plan-tier gate, optional self-leave, atomic role mutation, and idempotent retry path. New endpoints `POST/GET/DELETE /api/orgs/{org_id}/ownership-transfers[...]` and `GET /api/me/pending-ownership-transfers`. Startup sweep auto-expires stale pending offers.
 - ✅ **Recipient-side banner** (`PendingTransfersBanner.js`) mounts in /app shell + OrgPage. Accept/Decline + inline 402 upgrade CTA routing to `/app/billing?subscribe={tier}` when recipient's plan can't cover the org's member count (spark=1, temper=5, refine=∞).

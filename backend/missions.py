@@ -4103,6 +4103,70 @@ def make_missions_router(
         await db.mission_attachments.delete_one({"_id": rec["_id"]})
         return {"ok": True}
 
+    @r.get("/orgs/{org_id}/missions/available-tools")
+    async def available_mission_tools(
+        org_id: str, u: dict = Depends(get_current_user),
+    ):
+        """Preview the Composio tools the caller's missions can use.
+
+        Powers the "Suggested tools" preview in the StartMissionDialog
+        so users see, before launching, which of their connections the
+        lead agent will have at its fingertips. Returns a slim shape
+        (toolkit, short_name, description) — never any auth tokens.
+
+        Caveat surfaced to the FE: the lead agent is auto-picked at
+        mission start based on the goal, and each agent has a
+        `tools_enabled` toggle (default ON) — so this list shows what's
+        *available* in principle. If the picked lead has tools disabled,
+        none of these will be exposed during execution.
+        """
+        await require_org_member(org_id, u["id"])
+        from composio_mission_tools import (
+            MAX_TOOL_CALLS_PER_MISSION, MAX_PER_PLATFORM,
+        )
+        import composio_integration as composio_int
+        if not composio_int.is_available():
+            return {
+                "composio_available": False,
+                "tools": [],
+                "budget": {
+                    "max_total": MAX_TOOL_CALLS_PER_MISSION,
+                    "max_per_platform": MAX_PER_PLATFORM,
+                },
+            }
+        try:
+            specs = await composio_int.get_tools_for_user(
+                db, org_id, u["id"], limit=30,
+            )
+        except Exception as exc:
+            logger.warning("available_mission_tools: composio fetch failed: %s", exc)
+            specs = []
+        out: list[dict] = []
+        for spec in specs or []:
+            fn = (spec or {}).get("function") or {}
+            slug = fn.get("name") or ""
+            if not slug:
+                continue
+            toolkit = slug.split("_", 1)[0].lower()
+            short = slug.split("_", 1)[-1].lower() if "_" in slug else slug.lower()
+            desc = (fn.get("description") or "").strip()
+            if len(desc) > 220:
+                desc = desc[:217] + "…"
+            out.append({
+                "slug": slug,
+                "short_name": f"{toolkit}.{short}",
+                "toolkit": toolkit,
+                "description": desc,
+            })
+        return {
+            "composio_available": True,
+            "tools": out,
+            "budget": {
+                "max_total": MAX_TOOL_CALLS_PER_MISSION,
+                "max_per_platform": MAX_PER_PLATFORM,
+            },
+        }
+
     @r.get("/orgs/{org_id}/missions")
     async def list_missions(org_id: str, u: dict = Depends(get_current_user)):
         await require_org_member(org_id, u["id"])

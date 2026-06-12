@@ -5,6 +5,7 @@ import { getCurrentIdToken, FIREBASE_ENABLED } from "../lib/firebase";
 import TopBar from "../components/TopBar";
 import BrowserStreamCanvas from "../components/BrowserStreamCanvas";
 import MissionGoalDrafter from "../components/MissionGoalDrafter";
+import AvailableMissionToolsPreview from "../components/AvailableMissionToolsPreview";
 import { toast } from "sonner";
 import {
   Rocket, Play, X, Loader2, ArrowLeft, Search, FileText, Wrench,
@@ -274,6 +275,12 @@ function StartMissionDialog({ orgId, onClose, onSubmit }) {
           data-testid="mission-goal-input"
           onKeyDown={(e) => { if ((e.ctrlKey || e.metaKey) && e.key === "Enter") submit(); }}
         />
+
+        {/* Preview the Composio tools the lead agent can call once the
+            mission runs. Self-hides on deployments without Composio,
+            and on orgs with zero active connections it shows a friendly
+            pointer to the Connections panel. */}
+        <AvailableMissionToolsPreview orgId={orgId} />
 
         {/* Drag-drop attachment zone */}
         <div
