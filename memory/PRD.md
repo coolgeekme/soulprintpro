@@ -49,6 +49,12 @@ pattern. Users must be able to:
 - `GET|POST /api/teams/{id}/conversations` · `GET|DELETE /api/conversations/{id}`
 - `GET|POST /api/conversations/{id}/messages`
 
+## Implemented (Feb 26, 2026) — Prompt-Aware Visual Style Override
+- ✅ **Fixed the "infographic posts don't actually look like infographics" bug**. New `derive_style_override_from_prompt()` helper in `social_posts.py` scans the draft brief for style cues (infographic, 3D render, watercolour, meme, isometric, flat illustration, line art, photoreal, chart, quote card) and auto-fills `image_style_override` on every post in the batch when the user didn't supply an explicit override. New `image_style_override_source` field ("explicit" / "auto_prompt" / "") tells the FE where the value came from.
+- ✅ **Live FE telegraph**: a green `auto · <Style>` pill renders next to the "Visual style override" toggle as soon as the user types a style keyword — so they see what they'll get before clicking Draft, without having to open the panel.
+- ✅ **Tests**: 18/18 in `test_social_style_override.py` (10 existing + 8 new — pure regex helper + serializer field).
+
+
 ## Implemented (Feb 26, 2026) — Suggested Tools Preview in Mission Draft
 - ✅ **Mission draft UI shows available Composio tools before launch**. New endpoint `GET /api/orgs/{org_id}/missions/available-tools` returns the caller's active Composio toolkits (slim shape: `{slug, short_name, toolkit, description}`) + the budget rails (`max_total=20`, `max_per_platform=5`). New `AvailableMissionToolsPreview.js` mounts inside `StartMissionDialog` — collapsed by default, groups tools by toolkit (gmail, slack, googledocs…) as compact chips. Empty state nudges users to the Connections panel; deployments without `COMPOSIO_API_KEY` self-hide. Verified end-to-end with a Playwright smoke.
 

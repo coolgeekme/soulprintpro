@@ -91,6 +91,36 @@ const AUTOPOST_PLATFORMS = [
   "instagram", "tiktok", "youtube",
 ];
 
+// Mirrors the backend `_PROMPT_STYLE_CUES` in social_posts.py. When the
+// user types a brief that mentions a visual style ("infographic",
+// "watercolour", "3D render"…) we surface a tiny "Auto-detected" hint
+// near the Visual-Style-Override toggle so they can see the look they'll
+// actually get without ever opening the panel. The backend re-runs the
+// same regex match at draft time to guarantee parity — this snippet is
+// purely for live UX feedback.
+const PROMPT_STYLE_CUES_FE = [
+  { rx: /\binfo[-\s]?graphics?\b/i, label: "Infographic" },
+  { rx: /\bisometric\b/i, label: "Isometric 3D" },
+  { rx: /\b3[-\s]?d\s+(?:render|illustration|graphic|art)\b/i, label: "3D render" },
+  { rx: /\bmemes?\b/i, label: "Meme" },
+  { rx: /\bflat\s+(?:illustration|design)\b/i, label: "Flat illustration" },
+  { rx: /\bline[-\s]?art\b|\bline\s+drawings?\b/i, label: "Line art" },
+  { rx: /\bwatercolou?r\b/i, label: "Watercolour" },
+  { rx: /\bsketchy?\b|\bhand[-\s]?drawn\b/i, label: "Hand-drawn sketch" },
+  { rx: /\b(?:photo|photograph(?:y|ic)?)\s+real(?:istic)?\b|\bphotoreal(?:istic)?\b/i, label: "Photorealistic" },
+  { rx: /\b(?:bar\s+chart|line\s+chart|pie\s+chart|graph|diagram|chart)s?\b/i, label: "Chart / data-viz" },
+  { rx: /\bquote\s+cards?\b|\bpull[-\s]?quotes?\b/i, label: "Quote card" },
+];
+
+function detectPromptStyleHint(text) {
+  const t = (text || "").trim();
+  if (!t) return "";
+  for (const { rx, label } of PROMPT_STYLE_CUES_FE) {
+    if (rx.test(t)) return label;
+  }
+  return "";
+}
+
 const joinPostText = (p) => {
   const tags = (p.hashtags || []).filter(Boolean).join(" ");
   return [p.text, tags].filter(Boolean).join("\n\n");
@@ -695,7 +725,22 @@ export default function SocialPage() {
                 <span className="ml-1 px-1.5 py-0.5 rounded-full text-[10px] bg-orange-500/20 border border-orange-400/40 text-orange-300">
                   custom
                 </span>
-              ) : null}
+              ) : (() => {
+                // No explicit override yet — but did the user mention a
+                // style in the brief? Show a green auto-detected pill so
+                // they know what cover-image style they'll actually get
+                // and can fine-tune by opening the panel if they want.
+                const hint = detectPromptStyleHint(prompt);
+                return hint ? (
+                  <span
+                    className="ml-1 px-1.5 py-0.5 rounded-full text-[10px] bg-emerald-500/15 border border-emerald-400/40 text-emerald-200"
+                    title="Detected from your brief — your draft images will use this style automatically. Open the panel to customise."
+                    data-testid="compose-style-auto-pill"
+                  >
+                    auto · {hint}
+                  </span>
+                ) : null;
+              })()}
             </button>
             {styleOverrideOpen && (
               <div className="mt-2 space-y-1.5" data-testid="compose-style-override-panel">

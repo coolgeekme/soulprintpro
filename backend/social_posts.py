@@ -34,6 +34,79 @@ from pydantic import BaseModel, Field
 logger = logging.getLogger(__name__)
 
 
+# ── Prompt-intent → style override derivation ────────────────────────────────
+#
+# When the user types a draft brief like "draft 5 infographic posts about
+# pricing" they EXPECT infographics to land — but historically the
+# `style_override` field was a separate UI affordance they often missed,
+# so the cover images came back in the org's brand-default style and the
+# user (rightly) thought the override was broken.
+#
+# This helper inspects the brief for common style cues and returns a
+# tightened visual-style override string. The router only auto-uses it
+# when the caller didn't pass an explicit `style_override` — user
+# autonomy still wins.
+#
+# Keys are regex patterns (case-insensitive, word-boundaried). Order
+# matters: the FIRST pattern that matches wins, so put more specific
+# multi-word cues above generic single-word ones.
+_PROMPT_STYLE_CUES: tuple[tuple[str, str], ...] = (
+    # Infographics — the case the user just hit.
+    (r"\binfo[-\s]?graphics?\b",
+     "Flat infographic with bold typography, callout stats and clean iconography; "
+     "no people; high-contrast colour blocks; data-viz feel."),
+    # 3D / isometric.
+    (r"\bisometric\b",
+     "Isometric 3D illustration, clean vector look, soft global lighting, "
+     "no photographic textures."),
+    (r"\b3[-\s]?d\s+(?:render|illustration|graphic|art)\b",
+     "3D rendered illustration, octane-style soft lighting, vibrant gradients, "
+     "stylised geometry."),
+    # Meme — handled lightly so we don't break brand voice.
+    (r"\bmemes?\b",
+     "Meme-style composition: bold top/bottom text overlay, central character or "
+     "object, exaggerated expression, high readability at thumbnail size."),
+    # Hand-drawn / illustration.
+    (r"\bflat\s+(?:illustration|design)\b",
+     "Flat vector illustration with limited palette, no gradients, generous "
+     "negative space, friendly editorial feel."),
+    (r"\bline[-\s]?art\b|\bline\s+drawings?\b",
+     "Minimal line-art illustration, single-weight strokes, monochrome on warm "
+     "off-white background."),
+    (r"\bwatercolou?r\b",
+     "Loose watercolour illustration, soft bleed edges, paper texture, muted palette."),
+    (r"\bsketchy?\b|\bhand[-\s]?drawn\b",
+     "Hand-drawn sketch aesthetic, pencil-and-marker feel, slightly imperfect lines."),
+    # Photography.
+    (r"\b(?:photo|photograph(?:y|ic)?)\s+real(?:istic)?\b|\bphotoreal(?:istic)?\b",
+     "Photorealistic editorial photography, natural lighting, shallow depth of field, "
+     "no text overlays."),
+    # Charts / diagrams.
+    (r"\b(?:bar\s+chart|line\s+chart|pie\s+chart|graph|diagram|chart)s?\b",
+     "Clean data-visualisation graphic: bold axes, labeled values, restrained palette, "
+     "no decorative clutter; treat the chart as the hero."),
+    # Quote cards.
+    (r"\bquote\s+cards?\b|\bpull[-\s]?quotes?\b",
+     "Quote card: large serif headline, attribution beneath in smaller sans-serif, "
+     "soft background gradient or paper texture, no extraneous imagery."),
+)
+
+
+def derive_style_override_from_prompt(prompt: str) -> str:
+    """Return a tightened visual-style override string for a draft brief
+    when it contains an obvious style cue, or "" if no cue is detected.
+
+    Pure function — safe to unit-test without the DB layer.
+    """
+    text = (prompt or "").strip()
+    if not text:
+        return ""
+    for pattern, style in _PROMPT_STYLE_CUES:
+        if re.search(pattern, text, flags=re.IGNORECASE):
+            return style
+    return ""
+
+
 # Module-level hook for the cover-image generator. Set inside
 # `make_social_posts_router` when the social router is built, so other
 # subsystems (e.g. the mission engine's `draft_to_social_queue` tool)
@@ -275,6 +348,10 @@ def serialize_social_post(p: dict) -> dict:
         # visual style:` segments for this string — so a one-off infographic
         # / 3D render request actually wins over the brand default.
         "image_style_override": p.get("image_style_override", ""),
+        # "explicit" (user-supplied), "auto_prompt" (derived from draft brief),
+        # "" (no override). FE uses this to surface a small hint above the
+        # override editor explaining where the value came from.
+        "image_style_override_source": p.get("image_style_override_source", ""),
         "logo_position": p.get("logo_position") or "bottom-right",
         # ── Video cover (new) ────────────────────────────────────────
         # Independent from `image`: a post can have either, both, or
@@ -1092,7 +1169,29 @@ def make_social_router(*, db, AGENTS, EMERGENT_LLM_KEY, LlmChat, UserMessage,
                 # this batch (so a single "make these infographics" request
                 # styles all 5 drafts the same way). User can edit per-post
                 # afterwards via the Edit Prompt modal.
-                "image_style_override": (body.style_override or "").strip(),
+                #
+                # Three-way precedence:
+                #   1. Explicit `body.style_override` from the dialog wins.
+                #   2. Otherwise, if the brief itself mentions a style cue
+                #      ("infographic", "3D render", "watercolour"…), we
+                #      auto-derive a tightened override so the user gets
+                #      the look they asked for — even if they missed the
+                #      separate "Visual style override" panel.
+                #   3. Otherwise empty → brand defaults apply.
+                "image_style_override": (
+                    (body.style_override or "").strip()
+                    or derive_style_override_from_prompt(body.prompt)
+                ),
+                # When TRUE, the override was auto-derived from prompt
+                # text rather than supplied explicitly — frontend uses
+                # this to surface a tiny "auto-detected from your brief"
+                # hint above the override editor.
+                "image_style_override_source": (
+                    "explicit" if (body.style_override or "").strip()
+                    else ("auto_prompt"
+                          if derive_style_override_from_prompt(body.prompt)
+                          else "")
+                ),
                 "logo_position": "bottom-right",
                 "scheduled_for": None,
                 "published_at": None,
