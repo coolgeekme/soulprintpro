@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import io
 import math
+import os
 from datetime import datetime, timezone
 from typing import Iterable
 
@@ -75,6 +76,28 @@ def _register_unicode_fonts() -> tuple[str, str, str]:
 
 
 FONT_REG, FONT_BOLD, FONT_ITALIC = _register_unicode_fonts()
+
+
+# ── Brand mark resolution ───────────────────────────────────────────────────
+# The audit PDF chrome stamps the fire-and-steel Foundry badge on the
+# cover page and on every content-page header. We resolve the path once
+# at import time (skipping it gracefully if the file isn't on disk —
+# e.g. CI containers without the frontend public assets mounted) so the
+# rendering hot path stays tight.
+def _resolve_brand_mark() -> str | None:
+    candidates = [
+        # Repo-relative path when running inside the live container.
+        "/app/frontend/public/soulprint-mark-256.png",
+        "/app/frontend/public/soulprint-mark-128.png",
+        "/app/frontend/public/soulprint-mark.png",
+    ]
+    for p in candidates:
+        if os.path.isfile(p):
+            return p
+    return None
+
+
+BRAND_MARK_PATH = _resolve_brand_mark()
 
 
 # ── Brand tokens ────────────────────────────────────────────────────────────
@@ -245,6 +268,31 @@ def _cover_page(canvas: _canvas.Canvas, doc):
     # Top band (subtle orange)
     canvas.setFillColor(BRAND_ORANGE)
     canvas.rect(0, LETTER[1] - 6, LETTER[0], 6, stroke=0, fill=1)
+    # Top-left brand lockup — badge + "FOUNDRY" + "powered by SoulPrint
+    # Engine" tagline. Mirrors the in-app Logo wordmark variant so the
+    # PDF reads as the same brand artefact as the web view.
+    if BRAND_MARK_PATH:
+        try:
+            canvas.drawImage(
+                BRAND_MARK_PATH,
+                0.75 * inch, LETTER[1] - 1.05 * inch,
+                width=0.55 * inch, height=0.55 * inch,
+                mask="auto", preserveAspectRatio=True,
+            )
+            x_text = 1.40 * inch
+        except Exception:
+            x_text = 0.75 * inch
+    else:
+        x_text = 0.75 * inch
+    canvas.setFillColor(INK)
+    canvas.setFont(FONT_BOLD, 13)
+    canvas.drawString(x_text, LETTER[1] - 0.80 * inch, "FOUNDRY")
+    canvas.setFillColor(MUTED)
+    canvas.setFont(FONT_REG, 6.5)
+    canvas.drawString(
+        x_text, LETTER[1] - 0.95 * inch,
+        "POWERED BY SOULPRINT ENGINE",
+    )
     # Bottom slim line
     canvas.setStrokeColor(RULE)
     canvas.setLineWidth(0.5)
@@ -252,7 +300,10 @@ def _cover_page(canvas: _canvas.Canvas, doc):
     # Footer — left-aligned brand, right-aligned date
     canvas.setFillColor(MUTED)
     canvas.setFont(FONT_REG, 8)
-    canvas.drawString(0.75 * inch, 0.42 * inch, "Foundry · Signal Audit")
+    canvas.drawString(
+        0.75 * inch, 0.42 * inch,
+        "Foundry · Signal Audit · Powered by SoulPrint Engine",
+    )
     today = datetime.now(timezone.utc).strftime("%B %d, %Y")
     canvas.drawRightString(LETTER[0] - 0.75 * inch, 0.42 * inch, today)
     canvas.restoreState()
@@ -261,21 +312,45 @@ def _cover_page(canvas: _canvas.Canvas, doc):
 def _content_page(canvas: _canvas.Canvas, doc):
     """Header + footer for every content page after the cover."""
     canvas.saveState()
-    # Header — slim brand bar
-    canvas.setFillColor(BRAND_ORANGE)
-    canvas.rect(0.75 * inch, LETTER[1] - 0.55 * inch, 0.4 * inch, 2, stroke=0, fill=1)
+    # Header — badge + wordmark lockup on the left
+    header_y = LETTER[1] - 0.55 * inch
+    if BRAND_MARK_PATH:
+        try:
+            canvas.drawImage(
+                BRAND_MARK_PATH,
+                0.75 * inch, header_y - 0.05 * inch,
+                width=0.34 * inch, height=0.34 * inch,
+                mask="auto", preserveAspectRatio=True,
+            )
+            x_text = 1.18 * inch
+        except Exception:
+            # Fallback: keep the original orange-rule mark so the header
+            # still has a visual anchor when the badge can't render.
+            canvas.setFillColor(BRAND_ORANGE)
+            canvas.rect(0.75 * inch, header_y, 0.4 * inch, 2, stroke=0, fill=1)
+            x_text = 1.25 * inch
+    else:
+        canvas.setFillColor(BRAND_ORANGE)
+        canvas.rect(0.75 * inch, header_y, 0.4 * inch, 2, stroke=0, fill=1)
+        x_text = 1.25 * inch
     canvas.setFillColor(INK)
     canvas.setFont(FONT_BOLD, 9)
-    canvas.drawString(1.25 * inch, LETTER[1] - 0.55 * inch, "Foundry")
+    canvas.drawString(x_text, header_y, "Foundry")
+    canvas.setFillColor(MUTED)
+    canvas.setFont(FONT_REG, 6.5)
+    canvas.drawString(
+        x_text, header_y - 0.13 * inch,
+        "Powered by SoulPrint Engine",
+    )
     canvas.setFillColor(MUTED)
     canvas.setFont(FONT_REG, 8)
-    canvas.drawString(1.25 * inch, LETTER[1] - 0.7 * inch, "Signal Audit")
+    canvas.drawString(x_text, header_y - 0.25 * inch, "Signal Audit")
     # Right side — business name (passed via doc attr)
     biz = getattr(doc, "_audit_brand", "")
     if biz:
         canvas.setFillColor(INK_SOFT)
         canvas.setFont(FONT_REG, 9)
-        canvas.drawRightString(LETTER[0] - 0.75 * inch, LETTER[1] - 0.55 * inch, biz)
+        canvas.drawRightString(LETTER[0] - 0.75 * inch, header_y, biz)
     # Footer — page number
     canvas.setStrokeColor(RULE)
     canvas.setLineWidth(0.5)
@@ -476,7 +551,7 @@ def _build_cover(story: list, audit: dict):
         textColor=MUTED, leading=12, alignment=TA_CENTER,
     )
     story.append(Paragraph(
-        "Prepared by Foundry · "
+        "Prepared by Foundry · Powered by SoulPrint Engine · "
         "Comprehensive read of website, social presence, reviews, "
         "brand voice, and competitive position.",
         style,

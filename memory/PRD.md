@@ -49,6 +49,12 @@ pattern. Users must be able to:
 - `GET|POST /api/teams/{id}/conversations` · `GET|DELETE /api/conversations/{id}`
 - `GET|POST /api/conversations/{id}/messages`
 
+## Implemented (Feb 26, 2026) — Audit Brand Lockup Refresh
+- ✅ **Public audit landing page** (`/audit/:slug`): replaced the tiny "Foundry" wand-icon header with the proper `<Logo variant="wordmark">` lockup (fire-and-steel badge + FOUNDRY wordmark + "powered by SoulPrint Engine" subline) and rebuilt the footer with the same brand lockup so the audit closes with full brand presence.
+- ✅ **Audit PDF chrome** (`audit_pdf.py`): cover page now embeds the soulprint-mark badge top-left with the FOUNDRY wordmark + "POWERED BY SOULPRINT ENGINE" subline; the cover footline and content-page headers carry "Powered by SoulPrint Engine" too. Badge path resolves via `_resolve_brand_mark()` against `/app/frontend/public/soulprint-mark-256.png` with graceful fallback.
+- ✅ **Verified** via Playwright screenshots (web audit) + pdf2image rendering + AI visual analysis (PDF cover + content pages).
+
+
 ## Implemented (Feb 26, 2026) — Prompt-Aware Visual Style Override
 - ✅ **Fixed the "infographic posts don't actually look like infographics" bug**. New `derive_style_override_from_prompt()` helper in `social_posts.py` scans the draft brief for style cues (infographic, 3D render, watercolour, meme, isometric, flat illustration, line art, photoreal, chart, quote card) and auto-fills `image_style_override` on every post in the batch when the user didn't supply an explicit override. New `image_style_override_source` field ("explicit" / "auto_prompt" / "") tells the FE where the value came from.
 - ✅ **Live FE telegraph**: a green `auto · <Style>` pill renders next to the "Visual style override" toggle as soon as the user types a style keyword — so they see what they'll get before clicking Draft, without having to open the panel.

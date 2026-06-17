@@ -8,6 +8,7 @@ import api from "../lib/api";
 import { useAuth } from "../context/AuthContext";
 import AuditFullReport from "../components/AuditFullReport";
 import AuditConversionCTA from "../components/AuditConversionCTA";
+import Logo from "../components/Logo";
 
 /**
  * PublicAuditPage — the prospect-facing landing page for a generated
@@ -169,14 +170,23 @@ export default function PublicAuditPage() {
 
   return (
     <div className="min-h-screen sp-bg-grain">
-      {/* Top bar — minimal branding, no app-shell nav. */}
+      {/* Top bar — branded for the prospect. Carries the fire-and-steel
+          badge + the Foundry wordmark (with "powered by SoulPrint Engine"
+          subline baked in by the Logo component) so this gated landing
+          page reads as a polished Foundry artefact rather than a generic
+          report viewer. */}
       <header className="sp-glass-strong border-b border-white/5">
-        <div className="max-w-5xl mx-auto px-6 py-3 flex items-center justify-between">
-          <Link to="/" className="flex items-center gap-2">
-            <Wand2 className="w-4 h-4 opacity-80" />
-            <span className="text-sm tracking-tight font-medium">Foundry</span>
+        <div className="max-w-5xl mx-auto px-6 py-3 flex items-center justify-between gap-4">
+          <Link
+            to="/"
+            className="flex items-center gap-2 hover:opacity-90 transition-opacity"
+            data-testid="audit-header-brand"
+          >
+            <Logo variant="wordmark" className="h-9 w-auto" />
           </Link>
-          <span className="text-[10px] uppercase tracking-widest sp-subtle">Signal Audit</span>
+          <span className="text-[10px] uppercase tracking-widest sp-subtle">
+            Signal Audit
+          </span>
         </div>
       </header>
 
@@ -266,9 +276,23 @@ export default function PublicAuditPage() {
           </>
         )}
 
-        <footer className="pt-12 text-center">
-          <div className="text-[10px] uppercase tracking-widest sp-subtle">Audit prepared by</div>
-          <div className="text-sm mt-1">Foundry</div>
+        {/* Footer — proper Foundry lockup (badge + wordmark + "powered
+            by SoulPrint Engine" subline) so the audit closes with the
+            same brand presence it opened with. Centre-aligned column. */}
+        <footer
+          className="pt-16 pb-6 flex flex-col items-center gap-3"
+          data-testid="audit-footer"
+        >
+          <div className="text-[10px] uppercase tracking-[0.32em] sp-subtle">
+            Audit prepared by
+          </div>
+          <Link
+            to="/"
+            className="hover:opacity-90 transition-opacity"
+            aria-label="Foundry — powered by SoulPrint Engine"
+          >
+            <Logo variant="wordmark" className="h-11 w-auto" />
+          </Link>
         </footer>
       </main>
     </div>
