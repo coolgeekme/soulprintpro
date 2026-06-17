@@ -265,34 +265,39 @@ class BrandRule(Flowable):
 def _cover_page(canvas: _canvas.Canvas, doc):
     """Cover page chrome — minimal, clean."""
     canvas.saveState()
-    # Top band (subtle orange)
+    # Top band (orange, slightly thicker so the brand block reads as
+    # part of an intentional masthead rather than a hairline accent).
     canvas.setFillColor(BRAND_ORANGE)
-    canvas.rect(0, LETTER[1] - 6, LETTER[0], 6, stroke=0, fill=1)
-    # Top-left brand lockup — badge + "FOUNDRY" + "powered by SoulPrint
-    # Engine" tagline. Mirrors the in-app Logo wordmark variant so the
-    # PDF reads as the same brand artefact as the web view.
+    canvas.rect(0, LETTER[1] - 10, LETTER[0], 10, stroke=0, fill=1)
+    # Top-left brand lockup — large badge + "FOUNDRY" + "powered by
+    # SoulPrint Engine" tagline. Mirrors the in-app Logo wordmark
+    # variant but sized for printable hero presence (badge ~1in tall,
+    # wordmark 22pt) so the prospect can't miss who prepared this.
     if BRAND_MARK_PATH:
         try:
             canvas.drawImage(
                 BRAND_MARK_PATH,
-                0.75 * inch, LETTER[1] - 1.05 * inch,
-                width=0.55 * inch, height=0.55 * inch,
+                0.75 * inch, LETTER[1] - 1.45 * inch,
+                width=1.0 * inch, height=1.0 * inch,
                 mask="auto", preserveAspectRatio=True,
             )
-            x_text = 1.40 * inch
+            x_text = 1.90 * inch
         except Exception:
             x_text = 0.75 * inch
     else:
         x_text = 0.75 * inch
     canvas.setFillColor(INK)
-    canvas.setFont(FONT_BOLD, 13)
-    canvas.drawString(x_text, LETTER[1] - 0.80 * inch, "FOUNDRY")
+    canvas.setFont(FONT_BOLD, 22)
+    canvas.drawString(x_text, LETTER[1] - 0.95 * inch, "FOUNDRY")
     canvas.setFillColor(MUTED)
-    canvas.setFont(FONT_REG, 6.5)
+    canvas.setFont(FONT_REG, 8)
     canvas.drawString(
-        x_text, LETTER[1] - 0.95 * inch,
+        x_text, LETTER[1] - 1.20 * inch,
         "POWERED BY SOULPRINT ENGINE",
     )
+    # Slim orange rule under the lockup to anchor the brand block.
+    canvas.setFillColor(BRAND_ORANGE)
+    canvas.rect(x_text, LETTER[1] - 1.30 * inch, 0.6 * inch, 1.5, stroke=0, fill=1)
     # Bottom slim line
     canvas.setStrokeColor(RULE)
     canvas.setLineWidth(0.5)
@@ -481,10 +486,13 @@ def render_audit_pdf(audit: dict) -> bytes:
     )
     doc._audit_brand = audit.get("business_name") or ""
 
-    # Cover frame uses the same usable area but no top/bottom chrome
+    # Cover frame uses the same usable area but no top/bottom chrome.
+    # We push the top edge down ~1.6in so the cover hero (eyebrow,
+    # business name, score) starts BELOW the larger brand lockup
+    # stamped by `_cover_page`, instead of colliding with it.
     cover_frame = Frame(
         0.75 * inch, 0.7 * inch,
-        LETTER[0] - 1.5 * inch, LETTER[1] - 1.4 * inch,
+        LETTER[0] - 1.5 * inch, LETTER[1] - 2.3 * inch,
         leftPadding=0, rightPadding=0, topPadding=0, bottomPadding=0,
         id="cover",
     )
