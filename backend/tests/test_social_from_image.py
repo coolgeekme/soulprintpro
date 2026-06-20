@@ -80,6 +80,30 @@ def test_platform_fit_target_lookup_is_case_insensitive() -> None:
     assert _platform_fit_target("nonexistent") is None
 
 
+def test_serializer_image_dict_passes_through_for_user_upload() -> None:
+    """The from-image endpoint stores `image` as a dict
+    ``{filename, url, with_logo, raw_filename, model_used}``. The
+    serializer must NOT collapse it back to a string — otherwise the
+    Social draft card's PostCoverImage component can't render it."""
+    p = {
+        "_id": "abc", "org_id": "o",
+        "image": {
+            "filename": "abc123.jpg",
+            "url": "/api/files/abc123.jpg",
+            "with_logo": False,
+            "raw_filename": "abc123.jpg",
+            "model_used": "user_upload",
+        },
+        "image_source": "user_upload",
+        "image_user_uploaded": True,
+    }
+    out = serialize_social_post(p)
+    assert isinstance(out["image"], dict)
+    assert out["image"]["url"] == "/api/files/abc123.jpg"
+    assert out["image"]["model_used"] == "user_upload"
+    assert out["image"]["with_logo"] is False
+
+
 def test_resize_one_produces_target_dimensions() -> None:
     """`image_resize.resize_one` is the only image-touching code path
     in the from-image endpoint. Confirm its contract still holds —

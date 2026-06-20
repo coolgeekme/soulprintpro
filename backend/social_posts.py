@@ -1556,6 +1556,104 @@ def make_social_router(*, db, AGENTS, EMERGENT_LLM_KEY, LlmChat, UserMessage,
                 pass
             return filename
 
+        def _image_field(filename: str, model_used: str = "user_upload") -> dict:
+            """Build the dict shape the FE renders.
+
+            The Social post card expects `post.image` to be an OBJECT
+            (see PostCoverImage in SocialPage.js). Saving a bare
+            filename string used to make the cover silently disappear
+            from the draft card even though the bytes were on disk.
+
+            `model_used="user_upload"` keeps a clear provenance trail
+            for support — distinct from "nano-banana" / "kie:*" AI
+            sources so the FE / admin can render a "Your image" badge
+            and skip the logo composite step.
+            """
+            return {
+                "filename": filename,
+                "url": f"/api/files/{filename}",
+                # The user explicitly opted out of any image alteration.
+                # We never composite a logo onto a user-uploaded image
+                # unless they later click "Apply primary logo" in the
+                # editor. `with_logo=True` would otherwise instruct
+                # downstream code to skip re-applying the logo.
+                "with_logo": False,
+                # `raw_filename` is the un-composited base — for AI
+                # images this is what we re-anchor a logo to. For user
+                # uploads, the raw IS the user's file, so they're the
+                # same. Keeping the key present makes "Apply primary
+                # logo" work from the editor without special-casing.
+                "raw_filename": filename,
+                "model_used": model_used,
+            }
+
+        async def _save_to_org_assets(
+            img_bytes: bytes, original_name: str, mime: str, filename: str,
+        ) -> None:
+            """Mirror the upload into the org's Asset Library
+            (``db.assets``) so the user can reuse the image later from
+            chat, other social drafts, Telegram replies, etc., without
+            re-uploading.
+
+            We write the bytes to ``ASSETS_DIR/{org_id}/{filename}``
+            (same filename the social post references in
+            ``image.url=/api/files/{filename}``). The Asset Library
+            serve handler `/api/files/assets/{filename}` resolves via
+            the ``db.assets`` row + that on-disk path, and falls back
+            to GridFS — which `persist_bytes` already populated.
+
+            Best-effort: a failure here MUST NEVER block social-draft
+            creation, so we log + swallow.
+            """
+            try:
+                import os as _os
+                from pathlib import Path as _P
+                ext = (_os.path.splitext(original_name or filename)[1] or "").lstrip(".").lower() or "png"
+                # Also drop a copy under ASSETS_DIR/{org_id}/ so the
+                # Asset Library serves it without a GridFS rehydrate.
+                try:
+                    from server import ASSETS_DIR as _ASSETS_DIR
+                    asset_path = _P(_ASSETS_DIR) / org_id / filename
+                    asset_path.parent.mkdir(parents=True, exist_ok=True)
+                    asset_path.write_bytes(img_bytes)
+                except Exception as exc:
+                    logger.warning(
+                        "from-image: asset-disk mirror failed for %s: %s",
+                        filename, exc,
+                    )
+                doc = {
+                    "org_id": org_id,
+                    "filename": filename,
+                    "original_name": original_name or filename,
+                    "ext": ext,
+                    "mime": mime,
+                    "size": len(img_bytes),
+                    "kind": "image",
+                    "description": (brief.strip() or "Social Queue upload")[:500],
+                    # Default to "lifestyle" — most user-uploaded shots
+                    # for social posts are lifestyle / product / venue
+                    # photos. User can re-categorise in the library UI.
+                    "category": "lifestyle",
+                    # Yes — by definition, since they just uploaded it
+                    # to caption it for social.
+                    "usable_in_social": True,
+                    "uploaded_by": u["id"],
+                    "uploaded_by_name": u.get("name", ""),
+                    "uploaded_at": datetime.now(timezone.utc),
+                    "text_excerpt": "",
+                    # Provenance flag — lets the Asset Library group /
+                    # filter "Social uploads" separately from manually
+                    # uploaded brand assets if/when we ship that filter.
+                    "source": "social_upload",
+                }
+                await db.assets.insert_one(doc)
+            except Exception as exc:
+                logger.warning(
+                    "from-image: org asset mirror failed for %s: %s",
+                    filename, exc,
+                )
+
+
         def _maybe_fit_for_platform(img_bytes: bytes, platform: str) -> Optional[bytes]:
             """Geometric PIL resize ONLY when the user opted in. No AI."""
             if not auto_fit:
@@ -1602,6 +1700,10 @@ def make_social_router(*, db, AGENTS, EMERGENT_LLM_KEY, LlmChat, UserMessage,
             base_filenames: list[dict] = []
             for img in loaded:
                 fname = await _persist_image_bytes(img["bytes"], img["name"], img["mime"])
+                # Mirror the ORIGINAL upload into the Asset Library so
+                # the user can reach for it later from any draft, the
+                # chat composer, or Telegram.
+                await _save_to_org_assets(img["bytes"], img["name"], img["mime"], fname)
                 base_filenames.append({
                     "filename": fname,
                     "bytes": img["bytes"],
@@ -1610,7 +1712,7 @@ def make_social_router(*, db, AGENTS, EMERGENT_LLM_KEY, LlmChat, UserMessage,
                 })
             # Per-platform optionally-resized variants.
             for p in plat_list:
-                media_for_platform: list[str] = []
+                media_for_platform: list[dict] = []
                 # First image is the "cover", remaining go into media[].
                 cover_filename = ""
                 for idx, asset in enumerate(base_filenames):
@@ -1626,7 +1728,13 @@ def make_social_router(*, db, AGENTS, EMERGENT_LLM_KEY, LlmChat, UserMessage,
                     if idx == 0:
                         cover_filename = fname
                     else:
-                        media_for_platform.append(fname)
+                        # FE expects `media[i].url` — keep the dict shape
+                        # consistent with the cover.
+                        media_for_platform.append({
+                            "filename": fname,
+                            "url": f"/api/files/{fname}",
+                            "kind": "image",
+                        })
                 caption = (captions_per_image[0] or {}).get(p) or {}
                 doc = {
                     "org_id": org_id,
@@ -1641,7 +1749,7 @@ def make_social_router(*, db, AGENTS, EMERGENT_LLM_KEY, LlmChat, UserMessage,
                     "hashtags": caption.get("hashtags", []),
                     "link_url": "",
                     "media": media_for_platform,
-                    "image": cover_filename or None,
+                    "image": _image_field(cover_filename) if cover_filename else None,
                     "image_status": "ready" if cover_filename else "none",
                     # User uploaded the image — no AI prompt to record.
                     # We DO stamp the brief so the editor shows what the
@@ -1669,6 +1777,12 @@ def make_social_router(*, db, AGENTS, EMERGENT_LLM_KEY, LlmChat, UserMessage,
                 base_filename = await _persist_image_bytes(
                     img["bytes"], img["name"], img["mime"],
                 )
+                # Mirror to the Asset Library once per source image
+                # (not per platform — we don't want duplicate rows in
+                # the library for the same upload).
+                await _save_to_org_assets(
+                    img["bytes"], img["name"], img["mime"], base_filename,
+                )
                 cap_map = captions_per_image[img_idx]
                 for p in plat_list:
                     resized = _maybe_fit_for_platform(img["bytes"], p)
@@ -1694,7 +1808,7 @@ def make_social_router(*, db, AGENTS, EMERGENT_LLM_KEY, LlmChat, UserMessage,
                         "hashtags": caption.get("hashtags", []),
                         "link_url": "",
                         "media": [],
-                        "image": platform_filename,
+                        "image": _image_field(platform_filename),
                         "image_status": "ready",
                         "image_prompt": brief.strip()[:600],
                         "image_style_override": "",

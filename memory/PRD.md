@@ -49,6 +49,15 @@ pattern. Users must be able to:
 - `GET|POST /api/teams/{id}/conversations` · `GET|DELETE /api/conversations/{id}`
 - `GET|POST /api/conversations/{id}/messages`
 
+## Fix (Feb 26, 2026 — same-day) — Image now actually appears on the from-image draft + saves to Asset Library
+- 🐛 **Bug**: from-image endpoint saved `image` as a plain filename string, but the Social draft card's `PostCoverImage` expects an OBJECT shape `{filename, url, with_logo, raw_filename, model_used}` — so the cover silently disappeared from the card even though the bytes were on disk.
+- ✅ **Fix**: new `_image_field()` helper builds the dict shape with `model_used="user_upload"` for provenance + `with_logo=False` so the editor still surfaces "Apply primary logo" if the user wants it. Carousel `media[]` entries also upgraded to dict form `{filename, url, kind}` so the FE thumb strip renders.
+- ✅ **New**: every uploaded image is mirrored into the org's Asset Library (`db.assets`) with `source: "social_upload"`, `category: "lifestyle"`, `usable_in_social: true`. Bytes copied into `ASSETS_DIR/{org_id}/{filename}` so the library serves them via `/api/files/assets/{filename}`. Confirmed via curl — same filename serves from both `/api/files/{X}` and `/api/files/assets/{X}` paths.
+- ✅ **"Your upload" badge** added to the draft card (emerald-tinted) so users can tell at-a-glance that this image is theirs, not AI-generated.
+- ✅ **Regenerate confirm prompt** — clicking "Regenerate" on a user-uploaded cover now shows `"This is the image you uploaded. Regenerating will replace it with an AI-rendered cover. Continue?"` so users don't lose their photo by accident.
+- ✅ **Tests**: 25/25 pass (added serializer dict-shape test).
+
+
 ## Implemented (Feb 26, 2026) — Social Queue: Upload Image → Vision Caption
 - ✅ **New compose mode** in Social Queue: "Your image → caption". User uploads PNG/JPEG/WEBP (multi-select up to 10), GPT-4o vision READS the image and writes per-platform captions tuned to each platform's conventions (Twitter punchy ≤280, LinkedIn long-form, IG with hashtags, etc.).
 - ✅ **Image is stored verbatim** in `/uploads` + GridFS — no AI alteration, no transcoding. New `image_source="user_upload"`, `image_user_uploaded=True` flags travel through the serializer so downstream UI can show provenance + guard against accidental regenerate.
