@@ -49,6 +49,17 @@ pattern. Users must be able to:
 - `GET|POST /api/teams/{id}/conversations` · `GET|DELETE /api/conversations/{id}`
 - `GET|POST /api/conversations/{id}/messages`
 
+## Implemented (Feb 26, 2026) — Social Queue: Upload Image → Vision Caption
+- ✅ **New compose mode** in Social Queue: "Your image → caption". User uploads PNG/JPEG/WEBP (multi-select up to 10), GPT-4o vision READS the image and writes per-platform captions tuned to each platform's conventions (Twitter punchy ≤280, LinkedIn long-form, IG with hashtags, etc.).
+- ✅ **Image is stored verbatim** in `/uploads` + GridFS — no AI alteration, no transcoding. New `image_source="user_upload"`, `image_user_uploaded=True` flags travel through the serializer so downstream UI can show provenance + guard against accidental regenerate.
+- ✅ **Strict no-touch by default**, with opt-in `auto_fit_per_platform` checkbox for deterministic PIL geometric resize per platform (square for IG, 9:16 for TikTok, 16:9 for Twitter/YouTube, 1200×627 for LinkedIn, 1000×1500 for Pinterest, etc.). Original always preserved alongside.
+- ✅ **Carousel mode** (one caption + multi-image post per platform) auto-offered when 2+ images uploaded; single mode (M images × N platforms = M*N drafts) is the default.
+- ✅ **Style guide + Soul respected**: the org's existing social style guide rules layer on top of the vision prompt, so captions match the brand voice the user already curated.
+- ✅ **Backend**: `POST /api/orgs/{org_id}/social/from-image` (multipart) + `_caption_image_via_vision` helper using GPT-4o + `emergentintegrations.ImageContent` base64.
+- ✅ **Frontend**: new `ComposeImagePicker` component (dropzone + per-image thumbs + remove + carousel/auto-fit toggles), wired into the existing SocialPage compose form via a segmented "Brief → AI image / Your image → caption" mode toggle.
+- ✅ **Tests**: 24/24 pass (`test_social_from_image.py` + existing `test_social_style_override.py`). Live end-to-end curl confirmed 3 platform-tuned captions on a single upload + carousel-with-auto-fit producing exact target dimensions (1600×900 Twitter, 1080×1080 IG).
+
+
 ## Implemented (Feb 26, 2026) — Audit Brand Lockup Refresh
 - ✅ **Public audit landing page** (`/audit/:slug`): replaced the tiny "Foundry" wand-icon header with the proper `<Logo variant="wordmark">` lockup (fire-and-steel badge + FOUNDRY wordmark + "powered by SoulPrint Engine" subline) and rebuilt the footer with the same brand lockup so the audit closes with full brand presence.
 - ✅ **Audit PDF chrome** (`audit_pdf.py`): cover page now embeds the soulprint-mark badge top-left with the FOUNDRY wordmark + "POWERED BY SOULPRINT ENGINE" subline; the cover footline and content-page headers carry "Powered by SoulPrint Engine" too. Badge path resolves via `_resolve_brand_mark()` against `/app/frontend/public/soulprint-mark-256.png` with graceful fallback.

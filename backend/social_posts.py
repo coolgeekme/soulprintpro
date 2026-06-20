@@ -28,7 +28,7 @@ from datetime import datetime, timezone
 from typing import List, Literal, Optional
 
 from bson import ObjectId
-from fastapi import APIRouter, Body, Depends, HTTPException
+from fastapi import APIRouter, Body, Depends, File, Form, HTTPException, UploadFile
 from pydantic import BaseModel, Field
 
 logger = logging.getLogger(__name__)
@@ -352,6 +352,16 @@ def serialize_social_post(p: dict) -> dict:
         # "" (no override). FE uses this to surface a small hint above the
         # override editor explaining where the value came from.
         "image_style_override_source": p.get("image_style_override_source", ""),
+        # Provenance of the cover image. "user_upload" = the user uploaded
+        # this image themselves via the from-image draft flow — Foundry
+        # MUST NOT regenerate or alter it without explicit user action.
+        # "" or "ai_generated" otherwise.
+        "image_source": p.get("image_source", ""),
+        "image_user_uploaded": bool(p.get("image_user_uploaded", False)),
+        # True only when the user opted into the per-platform geometric
+        # auto-fit on a user-uploaded image. FE shows a "Fit applied"
+        # chip + a "Restore original" action.
+        "auto_fit_applied": bool(p.get("auto_fit_applied", False)),
         "logo_position": p.get("logo_position") or "bottom-right",
         # ── Video cover (new) ────────────────────────────────────────
         # Independent from `image`: a post can have either, both, or
@@ -732,6 +742,180 @@ async def _suggest_social_topics(
 
 
 # ── Router factory ──────────────────────────────────────────────────────────
+
+
+# ── Vision-based caption generation from a user-supplied image ──────────────
+#
+# Powers the "upload an image, get a caption" flow in the Social Queue.
+# Strictly read-only against the image: we send the bytes to GPT-4o for
+# analysis only — the saved file is the user's original, untouched.
+#
+# Returns a dict mapping platform → {text, hashtags}. We do ONE LLM call
+# per image and ask for per-platform variants in a single JSON output to
+# keep cost + latency low for the common multi-platform case.
+
+# Per-platform tonal hints folded into the vision prompt. Style guide
+# rules (when present) layer on top of these.
+_VISION_PLATFORM_HINTS: dict[str, str] = {
+    "twitter":   "Twitter/X: ≤ 280 chars, punchy hook first sentence, 0-2 hashtags inline.",
+    "bluesky":   "Bluesky: ≤ 300 chars, conversational, 0-2 hashtags.",
+    "threads":   "Threads: 1-2 short paragraphs, friendly first-person, 1-3 tags.",
+    "linkedin":  "LinkedIn: 2-4 short paragraphs, professional but human, lead with the hook, 2-5 contextual hashtags at the bottom.",
+    "facebook":  "Facebook: 1-3 sentences, warm + community-oriented, minimal hashtags.",
+    "instagram": "Instagram: punchy caption (1-3 lines) + 5-12 relevant hashtags grouped at the end.",
+    "tiktok":    "TikTok: 1-2 lively sentences + 3-6 hashtags.",
+    "youtube":   "YouTube (community/short): 1-2 sentences, intrigue hook, 2-4 hashtags.",
+    "reddit":    "Reddit: longer-form, conversational, no marketing-speak, NO hashtags (banned-feeling on the platform).",
+    "mastodon":  "Mastodon: 1-2 short paragraphs, plain prose, 0-2 tags.",
+    "pinterest": "Pinterest: keyword-rich, descriptive, 2-4 hashtags.",
+}
+
+
+async def _caption_image_via_vision(
+    *,
+    LlmChat, UserMessage,
+    EMERGENT_LLM_KEY: str,
+    image_bytes: bytes,
+    mime: str,
+    platforms: list[str],
+    brief: str,
+    style_guide_block: str,
+    org_soul: dict,
+) -> dict[str, dict]:
+    """One vision call → per-platform captions.
+
+    Output: ``{platform: {"text": str, "hashtags": [str, ...]}, ...}``.
+    The caller decides whether to fall back to a vague description if
+    JSON parsing fails (we surface an HTTPException upward instead).
+    """
+    # Import inside the call so server-boot cost stays nil for users
+    # who never hit this endpoint.
+    import base64
+    from emergentintegrations.llm.chat import ImageContent  # type: ignore
+
+    # Trim the soul block to the bits that matter for caption tone.
+    soul_lines = []
+    for k in ("mission", "tone", "audience", "values"):
+        v = (org_soul or {}).get(k) or ""
+        if v:
+            soul_lines.append(f"- {k.title()}: {v}")
+    soul_block = "\n".join(soul_lines) or "(no Soul provided — be tasteful, on-brand, never invent claims)"
+
+    platform_hint_lines = [
+        f"  • {_VISION_PLATFORM_HINTS.get(p, p + ': platform-appropriate length and tone')}"
+        for p in platforms
+    ]
+
+    system = (
+        "You are a senior social copywriter. The user has uploaded an "
+        "image and (optionally) given a brief. Look at the image AND "
+        "the brief, then write one caption PER target platform tuned to "
+        "that platform's conventions.\n\n"
+        f"COMPANY SOUL:\n{soul_block}\n\n"
+        + (f"BRAND STYLE GUIDE (apply when set):\n{style_guide_block}\n\n" if style_guide_block else "")
+        + "PLATFORM CONVENTIONS:\n" + "\n".join(platform_hint_lines) + "\n\n"
+        "Rules:\n"
+        "  • Ground every claim in what's literally visible in the image. "
+        "Do NOT invent product names, statistics, dates, or quotes.\n"
+        "  • If the brief is empty, write a caption that simply describes "
+        "what's in the image in a way that fits the brand voice.\n"
+        "  • If the brief contradicts the image, prioritise the brief but "
+        "stay accurate about visible content.\n"
+        "  • Never reference the fact that the user uploaded an image or "
+        "asked you to caption it. The caption is the post.\n\n"
+        "OUTPUT FORMAT — a single JSON object, no markdown, no commentary. "
+        "Keys are EXACTLY the platform IDs in this list: " + ", ".join(platforms) + ". "
+        "Each value is an object with two keys: \"text\" (the caption string) "
+        "and \"hashtags\" (an array of plain string hashtags WITHOUT the "
+        "leading '#'). Hashtags must be empty for reddit and may be empty "
+        "for any platform where they don't fit. Do NOT include the platform "
+        "ID inside the caption text."
+    )
+
+    user_text = (
+        f"Brief from the poster (may be empty): {brief.strip() or '(no brief — describe what you see in the image)'}\n"
+        "Now produce the JSON object of platform → caption."
+    )
+
+    # GPT-4o is the user-chosen vision model. Base64 keeps the call
+    # OpenAI-compatible without us managing a file upload step.
+    b64 = base64.b64encode(image_bytes).decode("ascii")
+    img = ImageContent(image_base64=b64)
+
+    last_exc: Optional[Exception] = None
+    for attempt in range(2):
+        try:
+            chat = LlmChat(
+                api_key=EMERGENT_LLM_KEY,
+                session_id=f"social-vision:{uuid.uuid4()}",
+                system_message=system,
+            ).with_model("openai", "gpt-4o")
+            raw = await asyncio.wait_for(
+                chat.send_message(UserMessage(text=user_text, file_contents=[img])),
+                timeout=55.0,
+            )
+            break
+        except Exception as exc:
+            last_exc = exc
+            logger.warning(
+                "vision caption attempt %d failed: %s", attempt + 1, exc,
+            )
+            await asyncio.sleep(0.6)
+    else:
+        raise HTTPException(503, f"Vision provider hiccup: {last_exc}")
+
+    # Strip any markdown fences and parse JSON.
+    text = (raw or "").strip()
+    m = re.search(r"\{.*\}", text, re.DOTALL)
+    if not m:
+        raise HTTPException(502, "Vision model returned no JSON; try again or rephrase your brief.")
+    try:
+        data = json.loads(m.group(0))
+    except json.JSONDecodeError:
+        raise HTTPException(502, "Vision model returned malformed JSON; try again.")
+    if not isinstance(data, dict):
+        raise HTTPException(502, "Vision model returned the wrong shape.")
+
+    out: dict[str, dict] = {}
+    for p in platforms:
+        entry = data.get(p) or {}
+        if not isinstance(entry, dict):
+            continue
+        cap_text = (entry.get("text") or "").strip()
+        tags_raw = entry.get("hashtags") or []
+        if isinstance(tags_raw, str):
+            tags_raw = re.split(r"[\s,]+", tags_raw)
+        tags = [str(t).lstrip("#").strip()[:60] for t in tags_raw if isinstance(t, (str, int))][:15]
+        if not cap_text:
+            continue
+        out[p] = {"text": cap_text, "hashtags": tags}
+    if not out:
+        raise HTTPException(502, "Vision model produced no usable captions; try again.")
+    return out
+
+
+# Default platform → (width, height) target for the optional "auto-fit"
+# resize. Caller can override per platform; defaults keep the user safe
+# from "my IG post got cropped weirdly" complaints. PNG output always.
+_PLATFORM_FIT_TARGETS: dict[str, tuple[int, int]] = {
+    "instagram": (1080, 1080),     # square
+    "tiktok":    (1080, 1920),     # 9:16 vertical
+    "youtube":   (1280, 720),      # 16:9
+    "twitter":   (1600, 900),      # 16:9
+    "bluesky":   (1600, 900),
+    "mastodon":  (1600, 900),
+    "linkedin":  (1200, 627),
+    "facebook":  (1200, 630),
+    "reddit":    (1200, 630),
+    "threads":   (1080, 1080),
+    "pinterest": (1000, 1500),     # 2:3
+}
+
+
+def _platform_fit_target(platform: str) -> Optional[tuple[int, int]]:
+    return _PLATFORM_FIT_TARGETS.get(platform.lower())
+
+
 def make_social_router(*, db, AGENTS, EMERGENT_LLM_KEY, LlmChat, UserMessage,
                        require_org_member, get_current_user, route_best_agent,
                        load_conv_or_403,
@@ -1227,6 +1411,308 @@ def make_social_router(*, db, AGENTS, EMERGENT_LLM_KEY, LlmChat, UserMessage,
             asyncio.create_task(_bg_first_image())
 
         return {"posts": [serialize_social_post(d) for d in docs]}
+
+
+    @r.post("/orgs/{org_id}/social/from-image")
+    async def draft_social_posts_from_image(
+        org_id: str,
+        platforms: str = Form(...),
+        mode: str = Form("single"),
+        brief: str = Form(""),
+        auto_fit_per_platform: str = Form("0"),
+        conversation_id: str = Form(""),
+        image_files: List[UploadFile] = File(...),
+        u: dict = Depends(get_current_user),
+    ):
+        """Upload N images → vision LLM writes captions → drafts land
+        in the queue.
+
+        Contract (deliberately strict so users never get surprised by
+        AI image alteration):
+
+          • The image bytes the user uploads are stored VERBATIM in
+            GridFS. Even when ``auto_fit_per_platform=1`` is set, the
+            original file remains the canonical asset; the resized
+            variant is an ADDITIONAL deterministic PIL crop saved
+            alongside, never overwriting the source.
+          • No AI image regeneration, restyling, watermarking, or
+            upscaling happens on this endpoint.
+          • The vision LLM (gpt-4o) only READS the bytes — it never
+            produces a new image.
+
+        Modes:
+
+          • ``single``    — each uploaded image becomes its own draft
+                            per platform (M images × N platforms = M*N
+                            posts).
+          • ``carousel``  — all uploaded images attach to ONE draft per
+                            platform; the first image is the cover.
+        """
+        from bson import ObjectId  # local import, mirrors existing patterns
+        ctx = await require_org_member(org_id, u["id"])
+        plat_list = _norm_platforms([p.strip() for p in platforms.split(",") if p.strip()])
+        if not plat_list:
+            raise HTTPException(422, "Pick at least one supported platform")
+        if not image_files:
+            raise HTTPException(422, "Upload at least one image")
+        mode_norm = (mode or "single").lower().strip()
+        if mode_norm not in ("single", "carousel"):
+            raise HTTPException(422, "mode must be 'single' or 'carousel'")
+        auto_fit = (auto_fit_per_platform or "0").strip().lower() in ("1", "true", "yes")
+
+        # Read + validate every file before doing ANY persistence so
+        # that a bad file in the batch doesn't leave half-finished
+        # drafts in the queue. We accept PNG, JPEG, WEBP only — same
+        # set the testing playbook calls out.
+        ACCEPTED = {"image/png", "image/jpeg", "image/jpg", "image/webp"}
+        MAX_BYTES = 12 * 1024 * 1024  # 12 MB per image — generous for phone shots
+        loaded: list[dict] = []
+        for f in image_files:
+            data = await f.read()
+            if not data:
+                raise HTTPException(422, f"Empty file: {f.filename}")
+            if len(data) > MAX_BYTES:
+                raise HTTPException(
+                    413,
+                    f"{f.filename}: image too large (max {MAX_BYTES // (1024*1024)} MB)",
+                )
+            mime = (f.content_type or "").lower()
+            if mime not in ACCEPTED:
+                # Final sniff via PIL — caller might have sent a JPEG
+                # with a generic content type.
+                try:
+                    from PIL import Image as _PILImage  # type: ignore
+                    from io import BytesIO as _BIO
+                    img_probe = _PILImage.open(_BIO(data))
+                    fmt = (img_probe.format or "").lower()
+                    if fmt in ("png", "jpeg", "jpg", "webp"):
+                        mime = f"image/{'jpeg' if fmt == 'jpg' else fmt}"
+                except Exception:
+                    pass
+                if mime not in ACCEPTED:
+                    raise HTTPException(415, f"{f.filename}: unsupported format. PNG / JPEG / WEBP only.")
+            loaded.append({"name": f.filename or "image", "bytes": data, "mime": mime})
+
+        if mode_norm == "carousel" and len(loaded) < 2:
+            # Be helpful — a 1-image "carousel" is just a single post.
+            mode_norm = "single"
+
+        # Trial-cap enforcement: each draft created consumes one
+        # "messages" credit (vision call generates one caption per
+        # platform). We charge for the total drafts created.
+        from trial_caps import consume_or_raise as _consume
+        total_drafts = (len(plat_list) if mode_norm == "carousel"
+                        else len(plat_list) * len(loaded))
+        await _consume(db, u, "messages", amount=max(1, total_drafts))
+
+        # Style guide + soul lookup once.
+        try:
+            from style_guide import format_guide_for_prompt as _fmt_sg
+            sg_doc = (ctx["org"] or {}).get("style_guide") or {}
+            style_guide_block = _fmt_sg(sg_doc.get("guide") or {})
+        except Exception:
+            style_guide_block = ""
+        org_soul = (ctx["org"] or {}).get("soul") or {}
+        agent_id = "marketing-social-media-strategist" if "marketing-social-media-strategist" in AGENTS else next(iter(AGENTS))
+        agent_meta = AGENTS[agent_id]
+
+        async def _persist_image_bytes(img_bytes: bytes, original_name: str, mime: str) -> str:
+            """Store bytes on disk + GridFS and return the filename
+            the frontend will resolve via the existing /uploads route.
+
+            We deliberately keep the user-supplied extension (or sniff
+            one from MIME) so the file looks like what the user uploaded
+            — no re-encoding, no transcoding.
+            """
+            import os as _os
+            from pathlib import Path as _P
+            ext = "png"
+            if mime == "image/jpeg":
+                ext = "jpg"
+            elif mime == "image/webp":
+                ext = "webp"
+            elif mime == "image/png":
+                ext = "png"
+            # Honour the original extension when present (preserves
+            # provenance even if the MIME sniff guessed something else).
+            orig_ext = (_os.path.splitext(original_name or "")[1] or "").lstrip(".").lower()
+            if orig_ext in ("png", "jpg", "jpeg", "webp"):
+                ext = "jpg" if orig_ext == "jpeg" else orig_ext
+            filename = f"{uuid.uuid4().hex}.{ext}"
+            if upload_dir:
+                target = _P(upload_dir) / filename
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_bytes(img_bytes)
+            # Mirror to GridFS so the asset survives pod restarts.
+            try:
+                from server import persist_bytes as _persist
+                await _persist(
+                    _P(upload_dir) / filename if upload_dir else _P("/tmp") / filename,
+                    img_bytes,
+                    original_name=original_name or filename,
+                    mime=mime,
+                )
+            except Exception:
+                pass
+            return filename
+
+        def _maybe_fit_for_platform(img_bytes: bytes, platform: str) -> Optional[bytes]:
+            """Geometric PIL resize ONLY when the user opted in. No AI."""
+            if not auto_fit:
+                return None
+            target = _platform_fit_target(platform)
+            if not target:
+                return None
+            try:
+                from image_resize import resize_one
+                # "fill" = scale-to-cover + center-crop (what Instagram
+                # would do anyway). The user opted in, so this is fine.
+                return resize_one(img_bytes, target[0], target[1], mode="fill")
+            except Exception as exc:
+                logger.warning("auto_fit resize failed for %s: %s", platform, exc)
+                return None
+
+        # ── Caption generation. Single LLM call per source image. ──
+        captions_per_image: list[dict[str, dict]] = []
+        for img in loaded:
+            try:
+                cap_map = await _caption_image_via_vision(
+                    LlmChat=LlmChat, UserMessage=UserMessage,
+                    EMERGENT_LLM_KEY=EMERGENT_LLM_KEY,
+                    image_bytes=img["bytes"], mime=img["mime"],
+                    platforms=plat_list, brief=brief,
+                    style_guide_block=style_guide_block,
+                    org_soul=org_soul,
+                )
+            except HTTPException:
+                raise
+            except Exception as exc:
+                logger.exception("from-image caption failed")
+                raise HTTPException(503, f"Vision provider hiccup: {exc}") from exc
+            captions_per_image.append(cap_map)
+
+        # ── Persist images + insert drafts. ────────────────────────
+        now = datetime.now(timezone.utc)
+        out_docs: list[dict] = []
+
+        if mode_norm == "carousel":
+            # ONE draft per platform, ALL images attached.
+            # Filenames are computed up front so every platform's draft
+            # references the same persisted assets (no double storage).
+            base_filenames: list[dict] = []
+            for img in loaded:
+                fname = await _persist_image_bytes(img["bytes"], img["name"], img["mime"])
+                base_filenames.append({
+                    "filename": fname,
+                    "bytes": img["bytes"],
+                    "mime": img["mime"],
+                    "original_name": img["name"],
+                })
+            # Per-platform optionally-resized variants.
+            for p in plat_list:
+                media_for_platform: list[str] = []
+                # First image is the "cover", remaining go into media[].
+                cover_filename = ""
+                for idx, asset in enumerate(base_filenames):
+                    resized = _maybe_fit_for_platform(asset["bytes"], p)
+                    if resized is not None:
+                        fname = await _persist_image_bytes(
+                            resized,
+                            f"{p}-fit-{asset['original_name']}",
+                            "image/png",
+                        )
+                    else:
+                        fname = asset["filename"]
+                    if idx == 0:
+                        cover_filename = fname
+                    else:
+                        media_for_platform.append(fname)
+                caption = (captions_per_image[0] or {}).get(p) or {}
+                doc = {
+                    "org_id": org_id,
+                    "team_id": "",
+                    "conversation_id": (conversation_id or "").strip(),
+                    "source_message_id": "",
+                    "agent_id": agent_id,
+                    "agent_name": agent_meta["name"],
+                    "status": "draft",
+                    "platforms": [p],
+                    "text": caption.get("text", ""),
+                    "hashtags": caption.get("hashtags", []),
+                    "link_url": "",
+                    "media": media_for_platform,
+                    "image": cover_filename or None,
+                    "image_status": "ready" if cover_filename else "none",
+                    # User uploaded the image — no AI prompt to record.
+                    # We DO stamp the brief so the editor shows what the
+                    # caption was tuned to.
+                    "image_prompt": brief.strip()[:600],
+                    "image_style_override": "",
+                    "image_style_override_source": "",
+                    "image_source": "user_upload",  # provenance flag
+                    "image_user_uploaded": True,    # FE shows "Your image" badge
+                    "auto_fit_applied": bool(auto_fit and _platform_fit_target(p)),
+                    "logo_position": "bottom-right",
+                    "scheduled_for": None,
+                    "published_at": None,
+                    "created_at": now,
+                    "created_by": u["id"],
+                }
+                res = await db.social_posts.insert_one(doc)
+                doc["_id"] = res.inserted_id
+                out_docs.append(doc)
+        else:
+            # SINGLE mode — M images × N platforms = M*N drafts.
+            for img_idx, img in enumerate(loaded):
+                # Persist the original ONCE per source image, then
+                # decorate per-platform resized copies as needed.
+                base_filename = await _persist_image_bytes(
+                    img["bytes"], img["name"], img["mime"],
+                )
+                cap_map = captions_per_image[img_idx]
+                for p in plat_list:
+                    resized = _maybe_fit_for_platform(img["bytes"], p)
+                    if resized is not None:
+                        platform_filename = await _persist_image_bytes(
+                            resized,
+                            f"{p}-fit-{img['name']}",
+                            "image/png",
+                        )
+                    else:
+                        platform_filename = base_filename
+                    caption = cap_map.get(p) or {}
+                    doc = {
+                        "org_id": org_id,
+                        "team_id": "",
+                        "conversation_id": (conversation_id or "").strip(),
+                        "source_message_id": "",
+                        "agent_id": agent_id,
+                        "agent_name": agent_meta["name"],
+                        "status": "draft",
+                        "platforms": [p],
+                        "text": caption.get("text", ""),
+                        "hashtags": caption.get("hashtags", []),
+                        "link_url": "",
+                        "media": [],
+                        "image": platform_filename,
+                        "image_status": "ready",
+                        "image_prompt": brief.strip()[:600],
+                        "image_style_override": "",
+                        "image_style_override_source": "",
+                        "image_source": "user_upload",
+                        "image_user_uploaded": True,
+                        "auto_fit_applied": bool(auto_fit and _platform_fit_target(p)),
+                        "logo_position": "bottom-right",
+                        "scheduled_for": None,
+                        "published_at": None,
+                        "created_at": now,
+                        "created_by": u["id"],
+                    }
+                    res = await db.social_posts.insert_one(doc)
+                    doc["_id"] = res.inserted_id
+                    out_docs.append(doc)
+
+        return {"posts": [serialize_social_post(d) for d in out_docs]}
 
     @r.post("/orgs/{org_id}/social/suggest-topics")
     async def suggest_social_topics(

@@ -356,6 +356,145 @@ function QuickSchedulePopover({ post, orgId, anchorRect, onClose, onSaved }) {
 }
 
 // ──────────────────────────────────────────────────────────────────────────
+
+// ComposeImagePicker — inline file picker used by the Social compose form
+// when "Your image → caption" mode is selected. Multi-select, drag-and-drop,
+// per-image preview with remove. Carousel toggle appears automatically
+// when 2+ images are queued; auto-fit checkbox is always opt-in.
+function ComposeImagePicker({ files, setFiles, carousel, setCarousel, autoFit, setAutoFit }) {
+  const inputRef = React.useRef(null);
+  const [dragOver, setDragOver] = React.useState(false);
+
+  // PNG / JPEG / WEBP only — mirrors the backend accept list.
+  const ACCEPT = "image/png,image/jpeg,image/jpg,image/webp";
+
+  const addFiles = (incoming) => {
+    const valid = [];
+    for (const f of incoming) {
+      const type = (f.type || "").toLowerCase();
+      if (type && !["image/png", "image/jpeg", "image/jpg", "image/webp"].includes(type)) {
+        toast.error(`${f.name}: unsupported format (PNG / JPEG / WEBP only).`);
+        continue;
+      }
+      if (f.size > 12 * 1024 * 1024) {
+        toast.error(`${f.name}: too large (max 12 MB).`);
+        continue;
+      }
+      valid.push(f);
+    }
+    if (!valid.length) return;
+    setFiles((prev) => {
+      const next = [...prev, ...valid].slice(0, 10);  // hard cap, keeps UI sane
+      if (next.length > 1 && !carousel) {
+        // Don't force carousel on — that's an explicit user decision —
+        // but the toggle becomes visible, see below.
+      }
+      return next;
+    });
+  };
+
+  const onFileInput = (e) => {
+    addFiles(Array.from(e.target.files || []));
+    e.target.value = "";
+  };
+  const onDrop = (e) => {
+    e.preventDefault();
+    setDragOver(false);
+    addFiles(Array.from(e.dataTransfer?.files || []));
+  };
+
+  return (
+    <div className="space-y-2" data-testid="compose-image-picker">
+      <div
+        onClick={() => inputRef.current?.click()}
+        onDragOver={(e) => { e.preventDefault(); setDragOver(true); }}
+        onDragLeave={() => setDragOver(false)}
+        onDrop={onDrop}
+        className={`rounded-xl border-2 border-dashed p-5 text-center cursor-pointer transition ${dragOver ? "border-orange-400 bg-orange-500/10" : "border-white/15 hover:border-white/30 bg-white/[0.02]"}`}
+        data-testid="compose-image-dropzone"
+      >
+        <input
+          ref={inputRef}
+          type="file"
+          accept={ACCEPT}
+          multiple
+          className="hidden"
+          onChange={onFileInput}
+          data-testid="compose-image-file-input"
+        />
+        <UploadCloud className="w-5 h-5 mx-auto mb-1 opacity-70" />
+        <div className="text-sm">
+          Drop image{files.length === 1 ? "" : "s"} or <span className="underline">browse</span>
+        </div>
+        <div className="text-[11px] sp-subtle mt-1">
+          PNG / JPEG / WEBP · up to 10 images · 12 MB each.
+          Your image is stored as-is — never AI-altered.
+        </div>
+      </div>
+
+      {files.length > 0 && (
+        <div className="flex flex-wrap gap-2 pt-1" data-testid="compose-image-thumbs">
+          {files.map((f, idx) => {
+            const url = URL.createObjectURL(f);
+            return (
+              <div
+                key={`${f.name}:${idx}`}
+                className="relative group rounded-lg overflow-hidden border border-white/15"
+                style={{ width: 78, height: 78, background: "#000" }}
+                data-testid={`compose-image-thumb-${idx}`}
+              >
+                <img src={url} alt={f.name} className="w-full h-full object-cover" />
+                <button
+                  type="button"
+                  onClick={() => setFiles((prev) => prev.filter((_, i) => i !== idx))}
+                  className="absolute top-0.5 right-0.5 rounded-full p-1 bg-black/60 hover:bg-red-500/80 transition opacity-0 group-hover:opacity-100"
+                  title="Remove this image"
+                  data-testid={`compose-image-remove-${idx}`}
+                >
+                  <X className="w-3 h-3 text-white" />
+                </button>
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      {(files.length > 1 || autoFit) && (
+        <div className="flex flex-wrap items-center gap-3 pt-1 text-[12px] sp-subtle">
+          {files.length > 1 && (
+            <label className="flex items-center gap-1.5 cursor-pointer" data-testid="compose-image-carousel-label">
+              <input
+                type="checkbox"
+                checked={carousel}
+                onChange={(e) => setCarousel(e.target.checked)}
+                data-testid="compose-image-carousel"
+              />
+              Post as one carousel (one caption, all images attached)
+            </label>
+          )}
+        </div>
+      )}
+
+      <label className="flex items-start gap-2 text-[12px] sp-subtle cursor-pointer pt-1" data-testid="compose-image-autofit-label">
+        <input
+          type="checkbox"
+          checked={autoFit}
+          onChange={(e) => setAutoFit(e.target.checked)}
+          className="mt-0.5"
+          data-testid="compose-image-autofit"
+        />
+        <span>
+          <span className="text-white">Auto-fit for each platform's aspect ratio</span>
+          <span className="block text-[11px]">
+            Deterministic crop only (no AI). Your original image is always preserved alongside.
+          </span>
+        </span>
+      </label>
+    </div>
+  );
+}
+
+
 export default function SocialPage() {
   const { orgId } = useParams();
   const [org, setOrg] = useState(null);
@@ -368,6 +507,24 @@ export default function SocialPage() {
   const [count, setCount] = useState(3);
   const [composePlatforms, setComposePlatforms] = useState(["twitter", "linkedin"]);
   const [composing, setComposing] = useState(false);
+  // Two compose modes (Feb 2026 — user-uploaded image flow):
+  //   • "brief" — classic AI-drafting from a text brief; cover image is
+  //               generated by Nano Banana.
+  //   • "image" — user uploads their own image(s); vision LLM writes a
+  //               caption per platform; image is stored verbatim. Foundry
+  //               never alters the image unless the user opts in (see
+  //               `composeAutoFit` below).
+  const [composeMode, setComposeMode] = useState("brief");
+  // For "image" mode: the files the user picked. Multiple files trigger
+  // a single-vs-carousel toggle so the user picks how the images post.
+  const [composeImages, setComposeImages] = useState([]); // Array<File>
+  const [composeCarousel, setComposeCarousel] = useState(false);
+  // Strict-by-default: no geometric resize unless the user explicitly
+  // opts in. When ON, the backend does a deterministic PIL crop per
+  // platform (square for IG, 9:16 for TikTok, 16:9 for Twitter, …).
+  // The ORIGINAL bytes are always also persisted so "Restore original"
+  // can swap it back later.
+  const [composeAutoFit, setComposeAutoFit] = useState(false);
   // Optional one-off visual-style override for the cover images in this
   // draft batch. When non-empty, REPLACES the org's brand-default visual
   // style (so a single "make these infographics" request actually beats
@@ -528,6 +685,9 @@ export default function SocialPage() {
 
   const compose = async (e) => {
     e.preventDefault();
+    if (composeMode === "image") {
+      return composeFromImage();
+    }
     if (!prompt.trim()) return;
     if (!composePlatforms.length) { toast.error("Pick at least one platform"); return; }
     setComposing(true);
@@ -585,6 +745,54 @@ export default function SocialPage() {
       toast.error(detail, { duration: 5500 });
     } finally { setComposing(false); }
   };
+
+  // ── Image-upload caption flow ─────────────────────────────────────────────
+  // Strictly non-destructive: the bytes the user uploads get persisted
+  // verbatim. The vision LLM only READS the image to write captions.
+  // Auto-fit (geometric resize per platform) is opt-in.
+  const composeFromImage = async () => {
+    if (!composeImages.length) {
+      toast.error("Add at least one image first.");
+      return;
+    }
+    if (!composePlatforms.length) {
+      toast.error("Pick at least one platform.");
+      return;
+    }
+    setComposing(true);
+    try {
+      const fd = new FormData();
+      fd.append("platforms", composePlatforms.join(","));
+      fd.append("mode", composeCarousel && composeImages.length > 1 ? "carousel" : "single");
+      fd.append("brief", prompt.trim());
+      fd.append("auto_fit_per_platform", composeAutoFit ? "1" : "0");
+      composeImages.forEach((f) => fd.append("image_files", f));
+      const { data } = await api.post(
+        `/orgs/${orgId}/social/from-image`, fd,
+        { headers: { "Content-Type": "multipart/form-data" } },
+      );
+      const fresh = data.posts || [];
+      setPosts((prev) => [...fresh, ...prev]);
+      setComposeImages([]);
+      setComposeCarousel(false);
+      setPrompt("");
+      setTab("draft");
+      const n = fresh.length;
+      toast.success(
+        `Captioned your image${composeImages.length === 1 ? "" : "s"} and queued `
+        + `${n} draft${n === 1 ? "" : "s"}. Your image is stored as-is.`,
+        { duration: 4500 },
+      );
+    } catch (err) {
+      toast.error(
+        err?.response?.data?.detail
+        || "Could not caption from image — check format (PNG/JPEG/WEBP) and try again.",
+      );
+    } finally {
+      setComposing(false);
+    }
+  };
+
 
   // Ask the backend to synthesise 6 on-brand topic ideas from the org's
   // Soul + live news. User clicks a topic to prefill the compose prompt.
@@ -676,16 +884,64 @@ export default function SocialPage() {
 
         {/* Compose form */}
         <form onSubmit={compose} className="sp-glass-strong rounded-2xl p-6 mb-8 space-y-3" data-testid="social-compose">
-          <div className="flex items-center gap-2 mb-1">
-            <Wand2 className="w-4 h-4 text-orange-400" />
-            <h3 className="text-sm uppercase tracking-widest sp-subtle">Draft with an agent</h3>
+          <div className="flex items-center justify-between gap-2 mb-1 flex-wrap">
+            <div className="flex items-center gap-2">
+              <Wand2 className="w-4 h-4 text-orange-400" />
+              <h3 className="text-sm uppercase tracking-widest sp-subtle">Draft with an agent</h3>
+            </div>
+            {/* Compose-mode toggle. Two paths from this form:
+                  1. "brief"  — classic AI-from-text drafting + Nano Banana cover
+                  2. "image"  — upload your own image(s); vision LLM writes
+                                captions; image stored verbatim.
+                We render this as a compact pill segmented control so the
+                composer stays single-line on desktop. */}
+            <div
+              className="inline-flex rounded-full p-0.5 text-[11px]"
+              style={{ background: "var(--input-bg)", border: "1px solid var(--input-border)" }}
+              data-testid="compose-mode-toggle"
+            >
+              <button
+                type="button"
+                onClick={() => setComposeMode("brief")}
+                data-testid="compose-mode-brief"
+                className={`px-3 py-1 rounded-full transition ${composeMode === "brief"
+                  ? "bg-orange-500/25 text-white border border-orange-400/50"
+                  : "sp-subtle hover:text-white"}`}
+              >
+                <Wand2 className="w-3 h-3 inline mr-1" /> Brief → AI image
+              </button>
+              <button
+                type="button"
+                onClick={() => setComposeMode("image")}
+                data-testid="compose-mode-image"
+                className={`px-3 py-1 rounded-full transition ${composeMode === "image"
+                  ? "bg-orange-500/25 text-white border border-orange-400/50"
+                  : "sp-subtle hover:text-white"}`}
+              >
+                <ImageIcon className="w-3 h-3 inline mr-1" /> Your image → caption
+              </button>
+            </div>
           </div>
+
+          {composeMode === "image" && (
+            <ComposeImagePicker
+              files={composeImages}
+              setFiles={setComposeImages}
+              carousel={composeCarousel}
+              setCarousel={setComposeCarousel}
+              autoFit={composeAutoFit}
+              setAutoFit={setComposeAutoFit}
+            />
+          )}
+
           <textarea
             data-testid="social-compose-prompt"
             value={prompt}
             onChange={(e) => setPrompt(e.target.value)}
-            placeholder="What should the post be about? e.g. 'Announce our Summer Cold Brew launch with a friendly hook'"
-            rows={3}
+            placeholder={composeMode === "image"
+              ? "Optional: brief for the captions. e.g. 'Lead with the discount; warm + playful tone'. Leave blank to let the model describe what it sees."
+              : "What should the post be about? e.g. 'Announce our Summer Cold Brew launch with a friendly hook'"}
+            rows={composeMode === "image" ? 2 : 3}
             className="w-full rounded-xl px-4 py-3 text-sm resize-none focus:sp-focus"
             style={{ background: "var(--input-bg)", border: "1px solid var(--input-border)", color: "var(--fg)" }}
           />
@@ -710,7 +966,10 @@ export default function SocialPage() {
           {/* Optional one-off visual-style override. Collapsed by default
               so the compose form stays tight; the user opts in only when
               they want a specific aesthetic (infographic / 3D render /
-              illustration / etc) that should beat the brand default. */}
+              illustration / etc) that should beat the brand default.
+              Hidden entirely in image mode — the user's uploaded image
+              is the visual; no AI cover is generated. */}
+          {composeMode === "brief" && (
           <div className="pt-1">
             <button
               type="button"
@@ -770,7 +1029,9 @@ export default function SocialPage() {
               </div>
             )}
           </div>
+          )}
           <div className="flex items-center gap-3 flex-wrap">
+            {composeMode === "brief" && (
             <label className="flex items-center gap-2 text-xs sp-subtle">
               How many drafts?
               <input
@@ -781,6 +1042,8 @@ export default function SocialPage() {
                 data-testid="compose-count"
               />
             </label>
+            )}
+            {composeMode === "brief" && (
             <button
               type="button"
               onClick={loadTopics}
@@ -792,14 +1055,21 @@ export default function SocialPage() {
               {topicsLoading ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Lightbulb className="w-3.5 h-3.5" />}
               {topicsLoading ? "Thinking…" : "Suggest topics"}
             </button>
+            )}
             <button
               type="submit"
-              disabled={composing || !prompt.trim()}
+              disabled={composing
+                || (composeMode === "brief" && !prompt.trim())
+                || (composeMode === "image" && composeImages.length === 0)}
               data-testid="compose-submit"
               className="sp-btn sp-btn-primary text-xs ml-auto disabled:opacity-50"
             >
               {composing ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Send className="w-3.5 h-3.5" />}
-              {composing ? "Drafting…" : "Draft posts"}
+              {composing
+                ? (composeMode === "image" ? "Captioning…" : "Drafting…")
+                : (composeMode === "image"
+                    ? `Caption ${composeImages.length || ""} image${composeImages.length === 1 ? "" : "s"}`
+                    : "Draft posts")}
             </button>
           </div>
         </form>
