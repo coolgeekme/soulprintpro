@@ -7519,8 +7519,25 @@ async def upload_to_conversation(
 
         fname = f"{uuid.uuid4().hex}.{ext}"
         fpath = folder / fname
-        await persist_bytes(fpath, blob, original_name=original,
-                            mime=upload.content_type or "")
+        # iOS-native image formats get transcoded to JPEG so vision
+        # LLMs + the chat UI can actually display them (browsers can't
+        # render HEIC). See `ios_image_compat.py` for full rationale.
+        store_mime = upload.content_type or ""
+        if ext in ("heic", "heif", "avif", "tif", "tiff"):
+            try:
+                from ios_image_compat import normalize_for_web
+                norm = normalize_for_web(
+                    blob, original_name=original, mime=store_mime or f"image/{ext}",
+                )
+                if norm.get("was_transcoded"):
+                    blob = norm["bytes"]
+                    ext = norm["ext"] or "jpg"
+                    fname = f"{uuid.uuid4().hex}.{ext}"
+                    fpath = folder / fname
+                    store_mime = "image/jpeg"
+            except ValueError as exc:
+                raise HTTPException(415, str(exc)) from exc
+        await persist_bytes(fpath, blob, original_name=original, mime=store_mime)
         file_paths.append(fpath)
 
         kind = _attachment_kind(ext)
@@ -7535,7 +7552,7 @@ async def upload_to_conversation(
         attachments.append({
             "filename": fname,
             "url": f"/api/files/conv/{conv_id}/{fname}",
-            "mime": upload.content_type or "",
+            "mime": store_mime,
             "kind": kind,
             "size": len(blob),
             "original_name": original,
@@ -7777,6 +7794,11 @@ def serialize_asset(a: dict) -> dict:
         # frontend can render an "Open ↗" button + provider chip.
         "link_url": a.get("link_url", "") if is_link else "",
         "link_provider": a.get("link_provider", "") if is_link else "",
+        # Non-empty when this asset was uploaded as an iOS-native
+        # format (HEIC/HEIF/AVIF/TIFF) and transcoded to JPEG so it'd
+        # display in browsers. FE shows a small "Converted from HEIC"
+        # hint on the asset card.
+        "transcoded_from": a.get("transcoded_from", ""),
     }
 
 
@@ -7926,13 +7948,38 @@ async def upload_asset(
             raise HTTPException(413, "File too large (10 MB max)")
         buf.extend(chunk)
     content = bytes(buf)
+    # iOS-native formats (HEIC / HEIF / AVIF / TIFF) get transcoded to
+    # JPEG on the way in so browsers and the Social composer can display
+    # them. Original extension is preserved on the asset row's
+    # `original_name` for provenance — the on-disk filename + `ext` flip
+    # to .jpg so downstream consumers don't need to special-case it.
+    # See `ios_image_compat.py` for the full rationale.
+    if kind_for_ext(ext) == "image" and ext in ("heic", "heif", "avif", "tif", "tiff"):
+        try:
+            from ios_image_compat import normalize_for_web
+            norm = normalize_for_web(
+                content, original_name=original_name,
+                mime=file.content_type or f"image/{ext}",
+            )
+            if norm.get("was_transcoded"):
+                content = norm["bytes"]
+                # Flip the stored extension + filename to .jpg so the
+                # `/api/files/assets/{filename}` serve handler returns
+                # the correct MIME and the FE can `<img>` it.
+                ext = norm["ext"] or "jpg"
+                filename = f"{uuid.uuid4().hex}.{ext}"
+                path = org_dir / filename
+                total = len(content)
+        except ValueError as exc:
+            raise HTTPException(415, str(exc)) from exc
     # persist_bytes writes to disk + mirrors to GridFS + registers the
     # filename→gridfs_id row in media_files so the serve handler can
     # rehydrate from GridFS after a redeploy.
     await persist_bytes(
         path, content,
         original_name=original_name,
-        mime=file.content_type or "application/octet-stream",
+        mime=("image/jpeg" if ext == "jpg" and (file.content_type or "").lower() in ("image/heic", "image/heif", "image/avif", "image/tiff")
+              else file.content_type or "application/octet-stream"),
     )
 
     text_excerpt = ""
@@ -7945,12 +7992,20 @@ async def upload_asset(
     # unknown values don't leak into the filter UI.
     _VALID_CATEGORIES = {"product", "lifestyle", "team", "venue", "logo_variant", "other", ""}
     safe_category = category.strip().lower() if category.strip().lower() in _VALID_CATEGORIES else ""
+    # Capture the original extension if we transcoded — used by the
+    # Asset Library UI to show a small "Converted from HEIC" hint.
+    _orig_ext_for_label = original_name.rsplit(".", 1)[-1].lower() if "." in original_name else ""
+    _transcoded_from = (
+        _orig_ext_for_label.upper()
+        if _orig_ext_for_label in ("heic", "heif", "avif", "tif", "tiff") and ext == "jpg"
+        else ""
+    )
     doc = {
         "org_id": org_id,
         "filename": filename,
         "original_name": original_name,
         "ext": ext,
-        "mime": file.content_type or "application/octet-stream",
+        "mime": "image/jpeg" if _transcoded_from else (file.content_type or "application/octet-stream"),
         "size": total,
         "kind": kind_for_ext(ext),
         "description": description.strip()[:500],
@@ -7960,6 +8015,7 @@ async def upload_asset(
         "uploaded_by_name": u["name"],
         "uploaded_at": datetime.now(timezone.utc),
         "text_excerpt": text_excerpt,
+        "transcoded_from": _transcoded_from,
     }
     res = await db.assets.insert_one(doc)
     doc["_id"] = res.inserted_id
@@ -9836,6 +9892,24 @@ async def _seed_superadmins():
         await _audit_recover_orphans()
     except Exception as exc:
         logger.warning("Audit orphan recovery failed: %s", exc)
+    # Long-running periodic sweep so an audit that hangs on a LIVE pod
+    # (no restart) still self-heals. Without this, an audit stuck past
+    # its 6-min watchdog would stay "generating" until the next boot —
+    # which is exactly the production bug we saw. 90s cadence keeps DB
+    # load nil while making "stuck audit" effectively impossible.
+    async def _periodic_audit_orphan_sweep():
+        while True:
+            try:
+                await asyncio.sleep(90)
+                await _audit_recover_orphans()
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                logger.warning("Periodic audit sweep iteration failed: %s", exc)
+    try:
+        asyncio.create_task(_periodic_audit_orphan_sweep())
+    except Exception as exc:
+        logger.warning("Could not start periodic audit sweep: %s", exc)
     # Sweep legacy audits to replace any "SoulPrint" / "SoulPrint Engine"
     # text with "Foundry". Idempotent — the next boot finds nothing.
     try:

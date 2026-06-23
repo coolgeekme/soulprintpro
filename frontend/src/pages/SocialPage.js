@@ -365,32 +365,48 @@ function ComposeImagePicker({ files, setFiles, carousel, setCarousel, autoFit, s
   const inputRef = React.useRef(null);
   const [dragOver, setDragOver] = React.useState(false);
 
-  // PNG / JPEG / WEBP only — mirrors the backend accept list.
-  const ACCEPT = "image/png,image/jpeg,image/jpg,image/webp";
+  // Mirror the backend chokepoint in `ios_image_compat.py`. Includes
+  // iOS-native HEIC/HEIF/AVIF/TIFF — those get transcoded server-side to
+  // JPEG for web + social-platform compatibility (the single exception to
+  // the "never alter the user's image" rule, and we tag it on the draft
+  // so the user sees a "Converted from HEIC" hint).
+  // The explicit `.heic`/`.heif`/`.avif` extensions are needed because
+  // iOS Safari sometimes mis-reports the MIME as application/octet-stream
+  // and a MIME-only `accept` would hide those files from the picker.
+  const ACCEPT = [
+    "image/png", "image/jpeg", "image/jpg", "image/webp", "image/gif",
+    "image/heic", "image/heif", "image/avif", "image/tiff",
+    ".heic", ".heif", ".avif", ".tif", ".tiff",
+  ].join(",");
 
   const addFiles = (incoming) => {
     const valid = [];
+    const NATIVE = ["image/png", "image/jpeg", "image/jpg", "image/webp", "image/gif"];
+    const IOS_NATIVE = ["image/heic", "image/heif", "image/avif", "image/tiff"];
+    const IOS_EXTS = [".heic", ".heif", ".avif", ".tif", ".tiff"];
     for (const f of incoming) {
       const type = (f.type || "").toLowerCase();
-      if (type && !["image/png", "image/jpeg", "image/jpg", "image/webp"].includes(type)) {
-        toast.error(`${f.name}: unsupported format (PNG / JPEG / WEBP only).`);
+      const name = (f.name || "").toLowerCase();
+      const looksLikeIosImage = IOS_EXTS.some((e) => name.endsWith(e));
+      const accepted =
+        NATIVE.includes(type)
+        || IOS_NATIVE.includes(type)
+        || looksLikeIosImage
+        // Safari sometimes drops the MIME — accept if extension looks safe.
+        || (!type && (/\.(png|jpe?g|webp|gif|heic|heif|avif|tiff?)$/i.test(name)));
+      if (!accepted) {
+        toast.error(`${f.name}: unsupported format. PNG/JPEG/WEBP/GIF/HEIC/AVIF only.`);
         continue;
       }
-      if (f.size > 12 * 1024 * 1024) {
-        toast.error(`${f.name}: too large (max 12 MB).`);
+      // 25 MB matches the backend cap; HEIC photos commonly run 6-10 MB.
+      if (f.size > 25 * 1024 * 1024) {
+        toast.error(`${f.name}: too large (max 25 MB).`);
         continue;
       }
       valid.push(f);
     }
     if (!valid.length) return;
-    setFiles((prev) => {
-      const next = [...prev, ...valid].slice(0, 10);  // hard cap, keeps UI sane
-      if (next.length > 1 && !carousel) {
-        // Don't force carousel on — that's an explicit user decision —
-        // but the toggle becomes visible, see below.
-      }
-      return next;
-    });
+    setFiles((prev) => [...prev, ...valid].slice(0, 10));
   };
 
   const onFileInput = (e) => {
@@ -427,23 +443,44 @@ function ComposeImagePicker({ files, setFiles, carousel, setCarousel, autoFit, s
           Drop image{files.length === 1 ? "" : "s"} or <span className="underline">browse</span>
         </div>
         <div className="text-[11px] sp-subtle mt-1">
-          PNG / JPEG / WEBP · up to 10 images · 12 MB each.
-          Your image is stored as-is — never AI-altered.
+          PNG / JPEG / WEBP / GIF / HEIC / AVIF · up to 10 images · 25 MB each.
+          Your image is stored as-is — except HEIC/AVIF/TIFF are converted to JPEG
+          for web compatibility (your original metadata is preserved).
         </div>
       </div>
 
       {files.length > 0 && (
         <div className="flex flex-wrap gap-2 pt-1" data-testid="compose-image-thumbs">
           {files.map((f, idx) => {
-            const url = URL.createObjectURL(f);
+            // Browsers can't natively render HEIC/HEIF/AVIF/TIFF —
+            // those need a server round-trip to JPEG before they'll
+            // display. Show a labelled placeholder instead of letting
+            // <img> throw a broken-image icon for those files.
+            const name = (f.name || "").toLowerCase();
+            const needsTranscode = /\.(heic|heif|avif|tiff?)$/i.test(name)
+              || ["image/heic", "image/heif", "image/avif", "image/tiff"]
+                  .includes((f.type || "").toLowerCase());
+            const url = needsTranscode ? "" : URL.createObjectURL(f);
             return (
               <div
                 key={`${f.name}:${idx}`}
                 className="relative group rounded-lg overflow-hidden border border-white/15"
-                style={{ width: 78, height: 78, background: "#000" }}
+                style={{ width: 78, height: 78, background: "#0a0a0a" }}
                 data-testid={`compose-image-thumb-${idx}`}
               >
-                <img src={url} alt={f.name} className="w-full h-full object-cover" />
+                {needsTranscode ? (
+                  <div className="w-full h-full flex flex-col items-center justify-center text-center px-1">
+                    <ImageIcon className="w-4 h-4 opacity-70 mb-0.5" />
+                    <span className="text-[9px] font-medium text-white/90">
+                      {(name.match(/\.(\w+)$/) || ["", "?"])[1].toUpperCase()}
+                    </span>
+                    <span className="text-[8px] sp-subtle leading-tight">
+                      converts on upload
+                    </span>
+                  </div>
+                ) : (
+                  <img src={url} alt={f.name} className="w-full h-full object-cover" />
+                )}
                 <button
                   type="button"
                   onClick={() => setFiles((prev) => prev.filter((_, i) => i !== idx))}
@@ -2290,6 +2327,15 @@ function PostCoverImage({ post, orgId, onUpdate, onReplace }) {
             {post.image_source === "user_upload" || post.image.model_used === "user_upload"
               ? "Your upload"
               : `via ${post.image.model_used.replace("kie:", "")}`}
+          </span>
+        )}
+        {post.image_transcoded_from && (
+          <span
+            className="text-[10px] px-2 py-0.5 rounded-full border border-amber-400/30 bg-amber-500/10 text-amber-200"
+            title={`Your original ${post.image_transcoded_from} file was re-encoded to JPEG so it displays in browsers and on social platforms. Metadata (EXIF) preserved.`}
+            data-testid={`image-transcoded-${post.id}`}
+          >
+            Converted from {post.image_transcoded_from}
           </span>
         )}
         <a href={url} download={downloadName} target="_blank" rel="noreferrer"

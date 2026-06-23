@@ -159,14 +159,39 @@ export default function AdminAuditsPanel() {
             in your inbox + this panel.
           </p>
         </div>
-        <button
-          type="button"
-          onClick={() => setShowCreate(true)}
-          className="sp-btn sp-btn-primary text-xs"
-          data-testid="audits-new-btn"
-        >
-          <Plus className="w-3.5 h-3.5" /> New audit
-        </button>
+        <div className="flex flex-wrap items-center gap-2">
+          {audits.some((a) => a.status === "generating") && (
+            <button
+              type="button"
+              onClick={async () => {
+                try {
+                  const { data } = await api.post("/admin/audits/rescue-stuck");
+                  if (data?.rescued) {
+                    toast.success(`Re-kicked ${data.rescued} stuck audit${data.rescued === 1 ? "" : "s"}.`);
+                  } else {
+                    toast.info("Nothing stuck — every audit is still inside the watchdog window.");
+                  }
+                  await load();
+                } catch (err) {
+                  toast.error(err?.response?.data?.detail || "Could not rescue audits.");
+                }
+              }}
+              className="sp-btn sp-btn-ghost text-xs"
+              title="Re-kick any audit stuck in 'generating' past the 3-minute mark"
+              data-testid="audits-rescue-stuck-btn"
+            >
+              <RefreshCw className="w-3.5 h-3.5" /> Rescue stuck
+            </button>
+          )}
+          <button
+            type="button"
+            onClick={() => setShowCreate(true)}
+            className="sp-btn sp-btn-primary text-xs"
+            data-testid="audits-new-btn"
+          >
+            <Plus className="w-3.5 h-3.5" /> New audit
+          </button>
+        </div>
       </div>
 
       {audits.length === 0 ? (

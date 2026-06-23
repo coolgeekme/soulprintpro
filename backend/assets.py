@@ -21,7 +21,11 @@ TEXT_LIKE_EXTS = {
 }
 PDF_EXTS = {"pdf"}
 DOCX_EXTS = {"docx"}
-IMAGE_EXTS = {"png", "jpg", "jpeg", "webp", "gif", "svg"}
+IMAGE_EXTS = {"png", "jpg", "jpeg", "webp", "gif", "svg",
+              # iOS-native formats — accepted at upload, transcoded
+              # to JPEG via `ios_image_compat.normalize_for_web` for
+              # web/social-platform compatibility.
+              "heic", "heif", "avif", "tif", "tiff", "bmp", "ico"}
 
 MAX_TEXT_PER_ASSET = 4000  # chars — keeps system prompts trim
 

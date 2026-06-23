@@ -49,6 +49,18 @@ pattern. Users must be able to:
 - `GET|POST /api/teams/{id}/conversations` · `GET|DELETE /api/conversations/{id}`
 - `GET|POST /api/conversations/{id}/messages`
 
+## Implemented (Feb 26, 2026) — iOS Image Format Support (HEIC / HEIF / AVIF / TIFF)
+- ✅ **New `ios_image_compat.py` module** — single chokepoint `normalize_for_web()` that passes PNG/JPEG/WEBP/GIF through unchanged (verbatim bytes) and transcodes iOS-native formats (HEIC/HEIF/AVIF/TIFF) to high-quality JPEG (q=92, EXIF preserved) for web + social-platform compatibility.
+- ✅ **Wired into 3 upload paths**:
+  1. Social Queue from-image endpoint — HEIC/AVIF now accepted, captioned, and saved as JPEG to assets.
+  2. Asset Library `POST /api/orgs/{org_id}/assets` — HEIC uploads land as viewable JPEG with `transcoded_from: "HEIC"` on the asset row.
+  3. Chat attachment upload `POST /conversations/{conv_id}/upload` — iPhone photos in chat now display + the vision LLM can read them.
+- ✅ **Frontend**: file picker `accept` strings updated to include `image/heic`, `image/heif`, `image/avif`, `image/tiff` AND bare extensions (iOS Safari often drops MIME). HEIC thumbnails render as labelled placeholders (browsers can't preview HEIC natively).
+- ✅ **Provenance**: `transcoded_from` field travels through serializer; the Social draft card now shows an amber "Converted from HEIC" chip alongside the "Your upload" badge.
+- ✅ **`pillow_heif==1.4.0`** added to requirements.txt.
+- ✅ **Tests**: 31/31 pass (6 new tests cover PNG passthrough, JPEG passthrough, HEIC transcode, octet-stream MIME recovery, garbage bytes rejection, accept-string correctness).
+
+
 ## Fix (Feb 26, 2026 — same-day) — Image now actually appears on the from-image draft + saves to Asset Library
 - 🐛 **Bug**: from-image endpoint saved `image` as a plain filename string, but the Social draft card's `PostCoverImage` expects an OBJECT shape `{filename, url, with_logo, raw_filename, model_used}` — so the cover silently disappeared from the card even though the bytes were on disk.
 - ✅ **Fix**: new `_image_field()` helper builds the dict shape with `model_used="user_upload"` for provenance + `with_logo=False` so the editor still surfaces "Apply primary logo" if the user wants it. Carousel `media[]` entries also upgraded to dict form `{filename, url, kind}` so the FE thumb strip renders.

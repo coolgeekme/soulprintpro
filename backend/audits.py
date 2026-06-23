@@ -1116,10 +1116,17 @@ def make_audits_router(
     # killed the asyncio task mid-flight. We use a 7-minute grace
     # window — just over the 6-min watchdog — so freshly-started or
     # legitimately-slow audits aren't picked up.
-    async def recover_orphans():
+    #
+    # On a long-running pod this same logic also runs every 90s in the
+    # background via `_periodic_audit_orphan_sweep` (see server.py) so
+    # stuck audits self-heal WITHOUT needing a restart. Without that
+    # periodic sweep, an audit that hangs past its watchdog (e.g. due
+    # to an unfinished await on a hung HTTP client) would stay stuck
+    # in "generating" forever — exactly the bug we saw in production.
+    async def recover_orphans(*, grace_minutes: int = 7):
+        recovered = 0
         try:
-            cutoff = datetime.now(timezone.utc) - timedelta(minutes=7)
-            n = 0
+            cutoff = datetime.now(timezone.utc) - timedelta(minutes=grace_minutes)
             cur = db.business_audits.find({
                 "status": "generating",
                 "$or": [
@@ -1129,12 +1136,20 @@ def make_audits_router(
             }, {"_id": 1})
             async for a in cur:
                 logger.info("Re-kicking orphaned audit %s", a["_id"])
+                # Bump updated_at BEFORE rescheduling so a thundering
+                # herd of overlapping sweeps doesn't repeatedly re-kick
+                # the same audit (each kick costs LLM tokens).
+                await db.business_audits.update_one(
+                    {"_id": a["_id"]},
+                    {"$set": {"updated_at": datetime.now(timezone.utc)}},
+                )
                 asyncio.create_task(_run_audit_guarded(a["_id"]))
-                n += 1
-            if n:
-                logger.info("Recovered %d orphaned audits", n)
+                recovered += 1
+            if recovered:
+                logger.info("Recovered %d orphaned audits", recovered)
         except Exception as exc:
             logger.warning("Orphan recovery failed: %s", exc)
+        return recovered
 
     # ── Admin endpoints ────────────────────────────────────────────────────
     @admin_r.post("/audits")
@@ -1232,6 +1247,25 @@ def make_audits_router(
         )
         asyncio.create_task(_run_audit_guarded(oid))
         return {"ok": True}
+
+    @admin_r.post("/audits/rescue-stuck")
+    async def rescue_stuck_audits(_: dict = Depends(require_superadmin)):
+        """Manual one-click rescue for any audit stuck in 'generating'.
+
+        Identifies rows whose `updated_at` is older than the watchdog +
+        a safety margin, rewinds them, and re-kicks the background task.
+        Returns the count of audits rescued so the FE can toast a
+        confirmation.
+
+        Idempotent: subsequent calls within a few seconds of each other
+        are no-ops because the first call bumps `updated_at` to now,
+        moving the row outside the grace window. Use the smaller
+        3-minute grace here (vs 7 for boot-time recovery) because by
+        the time the user clicks this, they're already frustrated and
+        want action.
+        """
+        n = await recover_orphans(grace_minutes=3)
+        return {"ok": True, "rescued": n}
 
     @admin_r.get("/audits/{audit_id}/leads")
     async def list_audit_leads(audit_id: str, _: dict = Depends(require_superadmin)):

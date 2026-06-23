@@ -362,6 +362,12 @@ def serialize_social_post(p: dict) -> dict:
         # auto-fit on a user-uploaded image. FE shows a "Fit applied"
         # chip + a "Restore original" action.
         "auto_fit_applied": bool(p.get("auto_fit_applied", False)),
+        # Non-empty string ("HEIC", "AVIF", "TIFF") when the user
+        # uploaded an iOS-native format that we had to re-encode to
+        # JPEG for web/social-platform compatibility. Empty for native
+        # web formats and for AI-generated images. FE renders a small
+        # "Converted from HEIC" hint on the draft card.
+        "image_transcoded_from": p.get("image_transcoded_from", ""),
         "logo_position": p.get("logo_position") or "bottom-right",
         # ── Video cover (new) ────────────────────────────────────────
         # Independent from `image`: a post can have either, both, or
@@ -1462,10 +1468,25 @@ def make_social_router(*, db, AGENTS, EMERGENT_LLM_KEY, LlmChat, UserMessage,
 
         # Read + validate every file before doing ANY persistence so
         # that a bad file in the batch doesn't leave half-finished
-        # drafts in the queue. We accept PNG, JPEG, WEBP only — same
-        # set the testing playbook calls out.
-        ACCEPTED = {"image/png", "image/jpeg", "image/jpg", "image/webp"}
-        MAX_BYTES = 12 * 1024 * 1024  # 12 MB per image — generous for phone shots
+        # drafts in the queue. We accept PNG / JPEG / WEBP / GIF
+        # natively AND iOS-native HEIC / HEIF / AVIF / TIFF — the
+        # mobile formats get transcoded to JPEG (q=92, EXIF preserved)
+        # so the bytes are universally browser- and platform-safe.
+        # `ios_image_compat.normalize_for_web` is the single chokepoint
+        # for this rule; anywhere else that accepts an image upload
+        # should call through the same helper.
+        from ios_image_compat import normalize_for_web
+        ACCEPTED = {
+            "image/png", "image/jpeg", "image/jpg", "image/webp",
+            "image/gif",
+            "image/heic", "image/heif", "image/heic-sequence", "image/heif-sequence",
+            "image/avif",
+            "image/tiff",
+            # iOS Safari sometimes uploads HEIC with this generic MIME.
+            # We sniff with PIL below to detect the actual format.
+            "application/octet-stream", "",
+        }
+        MAX_BYTES = 25 * 1024 * 1024  # 25 MB — HEIC photos can be ~10 MB
         loaded: list[dict] = []
         for f in image_files:
             data = await f.read()
@@ -1477,21 +1498,45 @@ def make_social_router(*, db, AGENTS, EMERGENT_LLM_KEY, LlmChat, UserMessage,
                     f"{f.filename}: image too large (max {MAX_BYTES // (1024*1024)} MB)",
                 )
             mime = (f.content_type or "").lower()
-            if mime not in ACCEPTED:
-                # Final sniff via PIL — caller might have sent a JPEG
-                # with a generic content type.
+            # iOS Safari often sends HEIC as application/octet-stream.
+            # Sniff with PIL to recover the real format.
+            if mime in ("", "application/octet-stream") or mime not in ACCEPTED:
                 try:
-                    from PIL import Image as _PILImage  # type: ignore
+                    from PIL import Image as _PILImage
                     from io import BytesIO as _BIO
                     img_probe = _PILImage.open(_BIO(data))
                     fmt = (img_probe.format or "").lower()
-                    if fmt in ("png", "jpeg", "jpg", "webp"):
-                        mime = f"image/{'jpeg' if fmt == 'jpg' else fmt}"
+                    fmt_to_mime = {
+                        "png": "image/png", "jpeg": "image/jpeg",
+                        "jpg": "image/jpeg", "webp": "image/webp",
+                        "gif": "image/gif", "heif": "image/heic",
+                        "heic": "image/heic", "avif": "image/avif",
+                        "tiff": "image/tiff",
+                    }
+                    if fmt in fmt_to_mime:
+                        mime = fmt_to_mime[fmt]
                 except Exception:
                     pass
-                if mime not in ACCEPTED:
-                    raise HTTPException(415, f"{f.filename}: unsupported format. PNG / JPEG / WEBP only.")
-            loaded.append({"name": f.filename or "image", "bytes": data, "mime": mime})
+            if mime not in ACCEPTED:
+                raise HTTPException(
+                    415,
+                    f"{f.filename}: unsupported format. Send PNG, JPEG, WEBP, GIF, HEIC, or AVIF.",
+                )
+            # Normalize HEIC/AVIF/TIFF → JPEG. PNG/JPEG/WEBP/GIF pass
+            # through unchanged so the user's bytes stay verbatim.
+            try:
+                normalized = normalize_for_web(
+                    data, original_name=f.filename or "", mime=mime,
+                )
+            except ValueError as exc:
+                raise HTTPException(415, str(exc)) from exc
+            loaded.append({
+                "name": f.filename or "image",
+                "bytes": normalized["bytes"],
+                "mime": normalized["mime"],
+                "was_transcoded": normalized["was_transcoded"],
+                "transcoded_from": normalized["transcoded_from"],
+            })
 
         if mode_norm == "carousel" and len(loaded) < 2:
             # Be helpful — a 1-image "carousel" is just a single post.
@@ -1760,6 +1805,14 @@ def make_social_router(*, db, AGENTS, EMERGENT_LLM_KEY, LlmChat, UserMessage,
                     "image_source": "user_upload",  # provenance flag
                     "image_user_uploaded": True,    # FE shows "Your image" badge
                     "auto_fit_applied": bool(auto_fit and _platform_fit_target(p)),
+                    # iOS HEIC/AVIF source? FE shows a tiny "Converted
+                    # from HEIC" hint on the card so the user knows
+                    # their bytes were re-encoded (the one and only
+                    # alteration we ever do without an explicit click).
+                    "image_transcoded_from": (
+                        loaded[0].get("transcoded_from", "")
+                        if loaded[0].get("was_transcoded") else ""
+                    ),
                     "logo_position": "bottom-right",
                     "scheduled_for": None,
                     "published_at": None,
@@ -1816,6 +1869,12 @@ def make_social_router(*, db, AGENTS, EMERGENT_LLM_KEY, LlmChat, UserMessage,
                         "image_source": "user_upload",
                         "image_user_uploaded": True,
                         "auto_fit_applied": bool(auto_fit and _platform_fit_target(p)),
+                        # iOS HEIC/AVIF source? Tagged so FE shows the
+                        # "Converted from HEIC" hint.
+                        "image_transcoded_from": (
+                            img.get("transcoded_from", "")
+                            if img.get("was_transcoded") else ""
+                        ),
                         "logo_position": "bottom-right",
                         "scheduled_for": None,
                         "published_at": None,
