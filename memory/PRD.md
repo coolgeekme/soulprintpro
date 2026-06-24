@@ -49,6 +49,20 @@ pattern. Users must be able to:
 - `GET|POST /api/teams/{id}/conversations` · `GET|DELETE /api/conversations/{id}`
 - `GET|POST /api/conversations/{id}/messages`
 
+## Fix (Feb 26, 2026) — Document Generator Now Actually Generates Documents
+- 🐛 **User report**: Ben (ben@archeforge.com) asked the Document Generator agent to reformat his .docx; agent promised a file but never delivered. Root causes:
+  1. Document Generator agent's system prompt was generic "here are Python libraries" guidance — never taught it to emit the `[[ARTIFACT]]` block that actually produces a file.
+  2. Only PDF + DOCX synthesis paths existed — XLSX/PPTX/CSV were `BINARY_EXTS` (rejected).
+  3. Attachment text extract was capped at 4000 chars, so the agent saw only the first ~2 pages of a manuscript-length .docx.
+- ✅ **Document Generator system prompt rewritten** with mandatory `[[ARTIFACT]]` protocol + per-format examples (DOCX manuscript, XLSX budget, PPTX deck, PDF report, CSV table). Explicit "do NOT say 'I'll send shortly'" rules.
+- ✅ **XLSX synthesis** added (`openpyxl`): Markdown tables → multi-sheet workbooks with bold/filled headers, frozen first row, autofilter, autosized cols. Prose lands on a "Notes" sheet.
+- ✅ **PPTX synthesis** added (`python-pptx`): each `# heading` becomes a new slide title; content beneath becomes bulleted slide body. Title slide auto-prepended. 16:9 widescreen.
+- ✅ **CSV synthesis** added: picks first Markdown table, UTF-8 BOM-prefixed for Excel-friendliness, falls back to single-column paragraph dump.
+- ✅ **Attachment extract cap raised** from 4000 → 40000 chars so the agent actually sees the full document it's reformatting.
+- ✅ **`openpyxl==3.1.5`** and **`python-pptx==1.0.2`** added to requirements.txt.
+- ✅ **Tests**: 40/40 pass — 9 new tests cover DOCX/XLSX/PPTX/CSV/PDF rendering, edge cases (no tables → Notes sheet; no headings → title + content slide), invalid extension rejection.
+
+
 ## Implemented (Feb 26, 2026) — iOS Image Format Support (HEIC / HEIF / AVIF / TIFF)
 - ✅ **New `ios_image_compat.py` module** — single chokepoint `normalize_for_web()` that passes PNG/JPEG/WEBP/GIF through unchanged (verbatim bytes) and transcodes iOS-native formats (HEIC/HEIF/AVIF/TIFF) to high-quality JPEG (q=92, EXIF preserved) for web + social-platform compatibility.
 - ✅ **Wired into 3 upload paths**:

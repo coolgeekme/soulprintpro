@@ -7543,7 +7543,16 @@ async def upload_to_conversation(
         kind = _attachment_kind(ext)
         if is_text_extractable(ext):
             try:
-                snippet = trim_text(extract_asset_text(fpath, ext), limit=4000)
+                # Generous cap for document-heavy attachments (DOCX,
+                # PDF, TXT). 40k chars ≈ ~8k tokens — fits comfortably
+                # inside any modern model's context window and is more
+                # than enough for the Document Generator agent to
+                # reformat a manuscript-length file without losing the
+                # tail. The previous 4k limit silently truncated
+                # anything beyond a few pages, leading to the
+                # "I'll send the file shortly" hallucination because
+                # the agent literally couldn't see the rest.
+                snippet = trim_text(extract_asset_text(fpath, ext), limit=40000)
                 if snippet:
                     extracted_blocks.append(f"--- {original} ---\n{snippet}")
             except Exception as exc:

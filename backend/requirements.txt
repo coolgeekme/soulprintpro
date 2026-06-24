@@ -27,6 +27,7 @@ docstring_parser==0.18.0
 ecdsa==0.19.2
 email-validator==2.3.0
 emergentintegrations==0.1.0
+et_xmlfile==2.0.0
 fastapi==0.110.1
 fastuuid==0.14.0
 filelock==3.25.2
@@ -79,6 +80,7 @@ mypy_extensions==1.1.0
 numpy==2.4.4
 oauthlib==3.3.1
 openai==1.99.9
+openpyxl==3.1.5
 opentimestamps==0.4.5
 packaging==26.0
 pandas==3.0.2
@@ -118,6 +120,7 @@ python-docx==1.2.0
 python-dotenv==1.2.2
 python-jose==3.5.0
 python-multipart==0.0.24
+python-pptx==1.0.2
 pytokens==0.4.1
 pytz==2026.2
 PyYAML==6.0.3
@@ -153,5 +156,6 @@ uvicorn==0.25.0
 watchfiles==1.1.1
 websocket-client==1.9.0
 websockets==16.0
+xlsxwriter==3.2.9
 yarl==1.23.0
 zipp==3.23.0

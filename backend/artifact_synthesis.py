@@ -25,7 +25,7 @@ from __future__ import annotations
 
 import io
 import re
-from typing import List, Tuple
+from typing import List, Optional, Tuple
 
 # ── Markdown → HTML (intermediate) ───────────────────────────────────────
 # We use the `markdown` library for the heavy lifting (headings, lists,
@@ -452,12 +452,256 @@ def _write_docx_inline(paragraph, text: str) -> None:
             r.font.size = Pt(9.5)
 
 
+def _render_xlsx(body_md: str, title: str = "") -> bytes:
+    """Markdown → XLSX spreadsheet via openpyxl.
+
+    Strategy: extract every Markdown table from the body and lay them
+    out as separate worksheets (Sheet1, Sheet2, …). Any prose around
+    the tables lands on a "Notes" sheet so the agent's commentary
+    isn't lost. If no tables are present, dump the whole body as
+    paragraphs into Notes — keeps the contract "agent emits markdown,
+    we produce a file" intact even for narrative content.
+
+    Pragmatic header detection: the first row of each table is styled
+    bold + autofilter-enabled so users get a usable spreadsheet, not
+    a dump of cells.
+    """
+    from openpyxl import Workbook
+    from openpyxl.styles import Font, Alignment, PatternFill
+    from openpyxl.utils import get_column_letter
+
+    wb = Workbook()
+    # Strip the auto-created default sheet — we'll add named ones.
+    default = wb.active
+    wb.remove(default)
+
+    lines = (body_md or "").splitlines()
+    n = len(lines)
+    tables: List[List[List[str]]] = []
+    prose: List[str] = []
+    i = 0
+    while i < n:
+        line = lines[i]
+        if "|" in line and i + 1 < n and re.match(r"^\s*\|?\s*:?-{2,}", lines[i + 1]):
+            tbl, consumed = _consume_table(lines, i)
+            if tbl:
+                tables.append(tbl)
+                i += consumed
+                continue
+        # Everything else flows to prose (we keep paragraph breaks).
+        prose.append(line)
+        i += 1
+
+    bold = Font(bold=True, color="FFFFFF")
+    header_fill = PatternFill(start_color="2D3748", end_color="2D3748", fill_type="solid")
+    center = Alignment(horizontal="left", vertical="top", wrap_text=True)
+
+    for idx, tbl in enumerate(tables, start=1):
+        ws = wb.create_sheet(title=f"Sheet{idx}")
+        for row_idx, row in enumerate(tbl, start=1):
+            for col_idx, cell in enumerate(row, start=1):
+                c = ws.cell(row=row_idx, column=col_idx, value=str(cell or ""))
+                c.alignment = center
+                if row_idx == 1:
+                    c.font = bold
+                    c.fill = header_fill
+        # Crude but effective autosize: cap at 60 chars to avoid
+        # giant runaway columns on long URLs.
+        for col_idx in range(1, len(tbl[0]) + 1):
+            max_len = max(
+                (len(str(r[col_idx - 1])) for r in tbl if col_idx - 1 < len(r)),
+                default=10,
+            )
+            ws.column_dimensions[get_column_letter(col_idx)].width = min(60, max(12, max_len + 2))
+        # Freeze the header row.
+        ws.freeze_panes = "A2"
+        if len(tbl) > 1:
+            ws.auto_filter.ref = ws.dimensions
+
+    # Always create a Notes sheet with the prose so commentary isn't lost.
+    notes_text = "\n".join(prose).strip()
+    if notes_text or not tables:
+        notes_ws = wb.create_sheet(title="Notes", index=0)
+        if title:
+            t = notes_ws.cell(row=1, column=1, value=title.strip())
+            t.font = Font(bold=True, size=14)
+            row = 3
+        else:
+            row = 1
+        for para in re.split(r"\n{2,}", notes_text or (body_md or "")):
+            para = re.sub(r"\s+", " ", para).strip()
+            if not para:
+                continue
+            c = notes_ws.cell(row=row, column=1, value=para)
+            c.alignment = Alignment(wrap_text=True, vertical="top")
+            row += 1
+        notes_ws.column_dimensions["A"].width = 100
+
+    # If we somehow ended up with zero sheets, add an empty placeholder.
+    if not wb.sheetnames:
+        wb.create_sheet(title="Sheet1")
+
+    buf = io.BytesIO()
+    wb.save(buf)
+    return buf.getvalue()
+
+
+def _render_pptx(body_md: str, title: str = "") -> bytes:
+    """Markdown → PPTX deck via python-pptx.
+
+    Slide-structure rule: each top-level `# heading` becomes a new
+    slide title; the following content (paragraphs, bullets) becomes
+    the slide body. If the body has no `#` headings, we generate a
+    single-content deck with the title slide + one body slide.
+
+    Designed to produce a CLEAN deck out of the box (no template),
+    relying on python-pptx defaults. Branding/template support is a
+    Phase 2 follow-up.
+    """
+    from pptx import Presentation
+    from pptx.util import Pt, Inches
+    from pptx.enum.text import PP_ALIGN
+
+    prs = Presentation()
+    # 16:9 widescreen — modern default for any deck shown on a TV /
+    # projector / Zoom share.
+    prs.slide_width = Inches(13.333)
+    prs.slide_height = Inches(7.5)
+
+    # Title slide
+    title_layout = prs.slide_layouts[0]  # "Title Slide"
+    slide = prs.slides.add_slide(title_layout)
+    slide.shapes.title.text = title.strip() or "Untitled Deck"
+    if len(slide.placeholders) > 1:
+        slide.placeholders[1].text = (
+            "Generated by Foundry — Document Generator agent"
+        )
+
+    # Body slides: chunk by `#` headings.
+    lines = (body_md or "").splitlines()
+    n = len(lines)
+    i = 0
+    current_title = ""
+    current_body: List[str] = []
+
+    def flush_slide():
+        nonlocal current_title, current_body
+        if not current_title and not current_body:
+            return
+        body_layout = prs.slide_layouts[1]  # "Title and Content"
+        sl = prs.slides.add_slide(body_layout)
+        sl.shapes.title.text = current_title or "Notes"
+        if len(sl.placeholders) > 1:
+            tf = sl.placeholders[1].text_frame
+            tf.clear()
+            tf.word_wrap = True
+            first = True
+            for line in current_body:
+                stripped = line.strip()
+                if not stripped:
+                    continue
+                # Convert "- item" / "* item" to bullets, otherwise
+                # render as paragraphs.
+                m = re.match(r"^\s*[-*+]\s+(.*)$", line)
+                m_ol = re.match(r"^\s*\d+\.\s+(.*)$", line)
+                if m:
+                    txt = m.group(1)
+                    lvl = 0
+                elif m_ol:
+                    txt = m_ol.group(1)
+                    lvl = 0
+                else:
+                    txt = stripped
+                    lvl = 0
+                # Strip inline emphasis markers for clean slide text;
+                # the slide layout handles emphasis via run formatting,
+                # but parsing **bold**/*italic* into runs is a deep
+                # rabbit hole — Phase 2.
+                txt = re.sub(r"\*\*(.+?)\*\*", r"\1", txt)
+                txt = re.sub(r"\*(.+?)\*", r"\1", txt)
+                if first:
+                    p = tf.paragraphs[0]
+                    first = False
+                else:
+                    p = tf.add_paragraph()
+                p.text = txt
+                p.level = lvl
+                for run in p.runs:
+                    run.font.size = Pt(18)
+        current_title = ""
+        current_body = []
+
+    while i < n:
+        line = lines[i]
+        m = re.match(r"^(#{1,3})\s+(.*)$", line.strip())
+        if m:
+            # A new heading flushes the previous slide.
+            flush_slide()
+            current_title = m.group(2).strip()
+            i += 1
+            continue
+        current_body.append(line)
+        i += 1
+    flush_slide()
+
+    # Safety: if zero body slides were produced, add one with the
+    # whole body as a single block of text — at least the user has
+    # *something*.
+    if len(prs.slides) == 1:
+        body_layout = prs.slide_layouts[1]
+        sl = prs.slides.add_slide(body_layout)
+        sl.shapes.title.text = "Content"
+        if len(sl.placeholders) > 1:
+            tf = sl.placeholders[1].text_frame
+            tf.text = (body_md or "").strip()[:3000]
+            tf.word_wrap = True
+
+    buf = io.BytesIO()
+    prs.save(buf)
+    return buf.getvalue()
+
+
+def _render_csv(body_md: str, title: str = "") -> bytes:
+    """Markdown → CSV (UTF-8, BOM-prefixed for Excel friendliness).
+
+    Picks the FIRST Markdown table in the body. If no table is found,
+    falls back to a single-column CSV of paragraph lines so the agent's
+    output isn't silently lost.
+    """
+    import csv
+    lines = (body_md or "").splitlines()
+    n = len(lines)
+    chosen_table: Optional[List[List[str]]] = None
+    for i, line in enumerate(lines):
+        if "|" in line and i + 1 < n and re.match(r"^\s*\|?\s*:?-{2,}", lines[i + 1]):
+            tbl, _ = _consume_table(lines, i)
+            if tbl:
+                chosen_table = tbl
+                break
+
+    buf = io.StringIO()
+    writer = csv.writer(buf, quoting=csv.QUOTE_MINIMAL)
+    if chosen_table:
+        for row in chosen_table:
+            writer.writerow(row)
+    else:
+        for para in re.split(r"\n{2,}", body_md or ""):
+            para = re.sub(r"\s+", " ", para).strip()
+            if para:
+                writer.writerow([para])
+    # BOM so Excel auto-detects UTF-8 instead of mangling diacritics.
+    return ("\ufeff" + buf.getvalue()).encode("utf-8")
+
+
 # ── Public API ────────────────────────────────────────────────────────────
-SUPPORTED_BINARY_EXTS = {"pdf", "docx"}
+SUPPORTED_BINARY_EXTS = {"pdf", "docx", "xlsx", "pptx", "csv"}
 
 MIME_FOR = {
     "pdf":  "application/pdf",
     "docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    "xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    "pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+    "csv":  "text/csv",
 }
 
 
@@ -476,6 +720,12 @@ def synthesize(body_md: str, ext: str, title: str = "") -> Tuple[bytes, str]:
         return _render_pdf(body_md, title=title), MIME_FOR["pdf"]
     if ext == "docx":
         return _render_docx(body_md, title=title), MIME_FOR["docx"]
+    if ext == "xlsx":
+        return _render_xlsx(body_md, title=title), MIME_FOR["xlsx"]
+    if ext == "pptx":
+        return _render_pptx(body_md, title=title), MIME_FOR["pptx"]
+    if ext == "csv":
+        return _render_csv(body_md, title=title), MIME_FOR["csv"]
     raise ValueError(f"Unsupported binary artifact extension: {ext}")
 
 
@@ -490,8 +740,8 @@ async def synthesize_async(
     path if Playwright is unavailable or any step fails — never raises,
     always returns valid bytes.
 
-    For DOCX: delegates to the sync ``_render_docx`` path (no
-    branded-DOCX template yet — that's a Phase 1.5 follow-up).
+    For DOCX / XLSX / PPTX / CSV: delegates to the sync renderers
+    (no branded template variants yet — Phase 2 follow-up).
     """
     ext = (ext or "").lower().lstrip(".")
     if ext == "pdf":
@@ -502,14 +752,12 @@ async def synthesize_async(
             )
             if data and len(data) > 200:
                 return data, MIME_FOR["pdf"]
-            # Fall through to reportlab if the renderer returned
-            # something suspiciously small (broken Chromium etc.)
         except Exception as exc:
             import logging
             logging.getLogger(__name__).warning(
                 "Branded PDF render failed (%s) — using reportlab fallback", exc,
             )
         return _render_pdf(body_md, title=title), MIME_FOR["pdf"]
-    if ext == "docx":
-        return _render_docx(body_md, title=title), MIME_FOR["docx"]
+    if ext in SUPPORTED_BINARY_EXTS:
+        return synthesize(body_md, ext, title=title)
     raise ValueError(f"Unsupported binary artifact extension: {ext}")

@@ -369,8 +369,9 @@ ALLOWED_EXTS = {
     "xml", "rtf", "log", "ini", "toml", "env",
     # Binary business docs — the body is Markdown and we synthesize real
     # bytes server-side via artifact_synthesis.synthesize(). Agents write
-    # Markdown; users get a polished .pdf / .docx they can download.
-    "pdf", "docx",
+    # Markdown; users get a polished .pdf / .docx / .xlsx / .pptx / .csv
+    # they can download.
+    "pdf", "docx", "xlsx", "pptx", "csv",
 }
 
 # Extensions that `write_artifact` must NEVER accept — they're binary or
@@ -386,17 +387,17 @@ BINARY_EXTS = {
     "mp4", "mov", "avi", "mkv", "webm", "flv", "mpeg", "mpg", "wmv", "m4v",
     # Audio
     "mp3", "wav", "aac", "flac", "ogg", "m4a", "opus", "aiff",
-    # Binary docs we can't synthesize from Markdown safely. .pdf and .docx
-    # are handled separately via artifact_synthesis.synthesize() and are
-    # listed in ALLOWED_EXTS above.
-    "doc", "xlsx", "xls", "pptx", "ppt",
+    # Binary docs we can't synthesize from Markdown safely. .pdf, .docx,
+    # .xlsx, .pptx, and .csv are handled separately via
+    # artifact_synthesis.synthesize() and are listed in ALLOWED_EXTS above.
+    "doc", "xls", "ppt",
     "zip", "tar", "gz", "7z", "rar",
 }
 
 # Extensions for which the body is Markdown that we transcode into real
 # binary bytes at save time. Mapping is authoritative — any ext listed
 # here MUST also be in ALLOWED_EXTS.
-SYNTHESIZED_BINARY_EXTS = {"pdf", "docx"}
+SYNTHESIZED_BINARY_EXTS = {"pdf", "docx", "xlsx", "pptx", "csv"}
 
 DEFAULT_MIME = {
     "ics": "text/calendar", "vcf": "text/vcard", "eml": "message/rfc822",
@@ -409,6 +410,8 @@ DEFAULT_MIME = {
     "log": "text/plain", "ini": "text/plain", "toml": "text/plain", "env": "text/plain",
     "pdf": "application/pdf",
     "docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    "xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    "pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
 }
 
 _SAFE_NAME_RE = re.compile(r"[^a-zA-Z0-9._\-]")
