@@ -4008,6 +4008,7 @@ def _quick_image_edit_intent(text: str, has_image: bool, *, strict: bool = False
 async def _generate_bulk_images(
     *, db, conv_id: str, primary_agent_id: str, primary_agent_name: str,
     user_text: str, sys_msg: str, count: int,
+    logo_paths: Optional[List[Path]] = None,
 ) -> int:
     """Generate `count` distinct images for a single user request.
 
@@ -4019,6 +4020,11 @@ async def _generate_bulk_images(
     Returns the number of images that successfully rendered. Failures
     don't bubble — we degrade gracefully (e.g. budget runs out after the
     first 3 of 5).
+
+    `logo_paths` (optional): when the org has uploaded brand logo(s),
+    they get passed as reference images to Nano Banana on every render
+    so the brand mark carries across the whole bulk batch. Ignored when
+    empty — bulk mode still works fine for orgs without a logo.
     """
     if count <= 0:
         return 0
@@ -4045,7 +4051,10 @@ async def _generate_bulk_images(
             if count > 1 else user_text
         )
         try:
-            fname, caption = await generate_image_via_nano_banana(prompt, sys_msg)
+            fname, caption = await generate_image_via_nano_banana(
+                prompt, sys_msg,
+                input_image_paths=logo_paths if logo_paths else None,
+            )
         except Exception as exc:
             logger.warning("bulk image %d/%d failed: %s", i + 1, count, exc)
             continue
@@ -4944,6 +4953,128 @@ _ASPECT_HINTS = {
 }
 
 
+async def _resolve_brand_context(
+    *, conv: dict, team: Optional[dict] = None,
+) -> dict:
+    """Resolve org logo paths + Soul lines + org name for ANY image
+    generation entry point in the platform.
+
+    Feb 2026 refactor: multiple call sites (CoS solo chat, group-chat
+    image intent, bulk-image bulk mode, mission asset remix) were each
+    inlining a slightly different version of this lookup — several of
+    them read Soul from `team.soulprint` (which is empty in solo chats
+    and never authoritative anyway) and none attached the org logo.
+    User report: "we all chatted in Chief of Staff and every flyer
+    ignored the org's Soul and brand assets."
+
+    This helper is now the single chokepoint. Every image entry point
+    should call it and pass the returned `logo_paths` + prepend the
+    returned `system_prefix` to whatever system message the agent uses.
+
+    Returns::
+        {
+            "org_id":       str,            # empty when no org context
+            "org_name":     str,
+            "logo_paths":   List[Path],     # 0-2 files (primary + alt)
+            "soul_lines":   List[str],      # human-readable bullets
+            "logo_directive": str,          # ready to append to system msg
+        }
+
+    Robust to: missing org_doc, missing brand_assets, GridFS-only logos
+    (fetches on demand), teams with no `org_id` (falls back to conv.org_id),
+    stale soul-vs-soulprint schemas.
+    """
+    org_id = ((team or {}) or {}).get("org_id") or (conv or {}).get("org_id") or ""
+    if not org_id:
+        return {
+            "org_id": "", "org_name": "", "logo_paths": [],
+            "soul_lines": [], "logo_directive": "",
+        }
+    try:
+        org_doc = await db.organizations.find_one(
+            {"_id": ObjectId(org_id)},
+            {"brand_assets": 1, "name": 1, "soul": 1, "soulprint": 1},
+        )
+    except Exception as exc:
+        logger.warning("brand context lookup failed for org %s: %s", org_id, exc)
+        return {
+            "org_id": org_id, "org_name": "", "logo_paths": [],
+            "soul_lines": [], "logo_directive": "",
+        }
+    if not org_doc:
+        return {
+            "org_id": org_id, "org_name": "", "logo_paths": [],
+            "soul_lines": [], "logo_directive": "",
+        }
+
+    # Soul precedence: org.soul (authoritative — the Soul users edit on
+    # the Org page) > org.soulprint (older schema) > team.soulprint
+    # (legacy fallback for team-scoped aesthetics).
+    soul = (org_doc.get("soul")
+            or org_doc.get("soulprint")
+            or (team or {}).get("soulprint")
+            or {})
+    soul_lines = [
+        f"{k.replace('_', ' ').capitalize()}: {soul[k]}"
+        for k in ("mission", "tone", "audience", "values", "north_star", "summary")
+        if soul.get(k)
+    ]
+
+    # Logo files — resolve to on-disk paths, rehydrating from GridFS if
+    # the pod's disk got swept.
+    logo_paths: List[Path] = []
+    brand = org_doc.get("brand_assets") or {}
+    for kind in ("primary_logo", "alt_logo"):
+        asset = brand.get(kind) or {}
+        fname = (asset or {}).get("filename") or ""
+        if not fname:
+            continue
+        candidate = UPLOAD_DIR / fname
+        if candidate.is_file():
+            logo_paths.append(candidate)
+            continue
+        try:
+            blob, _mime, _orig = await recover_bytes_from_gridfs(fname)
+        except Exception as exc:
+            logger.warning("GridFS logo load failed (%s): %s", fname, exc)
+            blob = None
+        if blob:
+            try:
+                candidate.parent.mkdir(parents=True, exist_ok=True)
+                candidate.write_bytes(blob)
+                logo_paths.append(candidate)
+            except Exception as exc:
+                logger.warning("Could not rehydrate logo %s: %s", fname, exc)
+
+    org_name = org_doc.get("name") or ""
+    logo_directive = ""
+    if logo_paths:
+        logo_directive = (
+            f"\n\nBRAND LOGO — REFERENCE IMAGE{'S' if len(logo_paths) > 1 else ''} "
+            f"ATTACHED: the {len(logo_paths)} reference image"
+            f"{'s' if len(logo_paths) > 1 else ''} provided IS the brand logo "
+            f"{('for ' + org_name) if org_name else ''}. Incorporate it into "
+            "the generated image tastefully — overlay it at corner/header scale "
+            "(do NOT make it the hero subject), preserve its colors and "
+            "proportions exactly, do NOT redraw or stylize the logo itself."
+        )
+
+    # Also fold in brand_assets.visual_style + primary_color when present —
+    # they're set on the Brand Assets panel and add real signal.
+    if brand.get("visual_style"):
+        soul_lines.insert(0, f"Brand visual style: {brand['visual_style'][:400]}")
+    if brand.get("primary_color"):
+        soul_lines.insert(0, f"Brand primary color: {brand['primary_color']}")
+
+    return {
+        "org_id": org_id,
+        "org_name": org_name,
+        "logo_paths": logo_paths,
+        "soul_lines": soul_lines,
+        "logo_directive": logo_directive,
+    }
+
+
 async def _generate_image_attachments(
     image_blocks: List[dict],
     *,
@@ -4954,88 +5085,16 @@ async def _generate_image_attachments(
     return an attachment dict per success. Failures are logged but
     don't break the others.
 
-    Soul + brand-asset injection resolves against the ORG (not the
-    team) so 1-to-1 chats with Chief of Staff / any solo agent still
-    get the correct logo + brand tone. The previous version only read
-    `team.soulprint` — which is empty for solo-agent conversations
-    that skip team creation — and only pulled `org_id` from the team
-    stub, silently dropping the brand context on those chats.
+    Soul + brand-asset injection resolves via the shared
+    `_resolve_brand_context` helper (org.soul + org.brand_assets),
+    so 1-to-1 chats with Chief of Staff / any solo agent, group team
+    chats, and bulk-image intents all inherit the SAME brand behaviour.
     """
-    # Resolve org_id from BOTH the team stub and the conversation doc;
-    # the latter is authoritative for solo agent chats where the team
-    # stub is fabricated on the fly and carries no org linkage.
-    org_id = (team or {}).get("org_id") or (conv or {}).get("org_id") or ""
     agent_name = AGENTS[agent_id]["name"] if agent_id in AGENTS else "Agent"
-
-    # Load the org doc up front — needed for Soul, brand assets, and
-    # the org name that anchors the logo directive.
-    org_doc: Optional[dict] = None
-    if org_id:
-        try:
-            org_doc = await db.organizations.find_one(
-                {"_id": ObjectId(org_id)},
-                {"brand_assets": 1, "name": 1, "soul": 1, "soulprint": 1},
-            )
-        except Exception as exc:
-            logger.warning("org lookup failed for org %s: %s", org_id, exc)
-            org_doc = None
-
-    # Soul precedence: org.soul (authoritative — the Soul users edit on
-    # the Org page) > team.soulprint (legacy fallback for team-scoped
-    # aesthetics). Both share the same shape (mission/tone/audience/values).
-    soul = ((org_doc or {}).get("soul")
-            or (org_doc or {}).get("soulprint")
-            or (team or {}).get("soulprint")
-            or {})
-    sp_lines = [f"{k.replace('_', ' ').capitalize()}: {soul[k]}"
-                for k in ("mission", "tone", "audience", "values", "north_star", "summary")
-                if soul.get(k)]
-
-    # ── Org logo injection ─────────────────────────────────────────────
-    # If the org uploaded brand logos (primary and/or alt), pass them to
-    # Nano Banana as reference images so every generated visual carries
-    # the brand mark. Nano Banana's multi-image input lets it compose
-    # the logo onto the scene with correct scale and lighting — see the
-    # `generate_image_via_nano_banana` docstring for details.
-    logo_paths: List[Path] = []
-    if org_doc:
-        brand = org_doc.get("brand_assets") or {}
-        for kind in ("primary_logo", "alt_logo"):
-            asset = brand.get(kind) or {}
-            fname = (asset or {}).get("filename") or ""
-            if not fname:
-                continue
-            candidate = UPLOAD_DIR / fname
-            if candidate.is_file():
-                logo_paths.append(candidate)
-                continue
-            # Fallback: rehydrate from GridFS (mirror is keyed by filename
-            # in `media_files`) if the disk copy got swept on redeploy.
-            try:
-                blob, _mime, _orig = await recover_bytes_from_gridfs(fname)
-            except Exception as exc:
-                logger.warning("GridFS logo load failed (%s): %s", fname, exc)
-                blob = None
-            if blob:
-                try:
-                    candidate.parent.mkdir(parents=True, exist_ok=True)
-                    candidate.write_bytes(blob)
-                    logo_paths.append(candidate)
-                except Exception as exc:
-                    logger.warning("Could not rehydrate logo %s: %s", fname, exc)
-
-    logo_directive = ""
-    if logo_paths:
-        brand_name = (org_doc or {}).get("name") if org_id else None
-        logo_directive = (
-            f"\n\nBRAND LOGO — REFERENCE IMAGE{'S' if len(logo_paths) > 1 else ''} "
-            f"ATTACHED: the {len(logo_paths)} reference image"
-            f"{'s' if len(logo_paths) > 1 else ''} provided IS the brand logo "
-            f"{('for ' + brand_name) if brand_name else ''}. Incorporate it into "
-            "the generated image tastefully — overlay it at corner/header scale "
-            "(do NOT make it the hero subject), preserve its colors and "
-            "proportions exactly, do NOT redraw or stylize the logo itself."
-        )
+    ctx = await _resolve_brand_context(conv=conv, team=team)
+    logo_paths = ctx["logo_paths"]
+    sp_lines = ctx["soul_lines"]
+    logo_directive = ctx["logo_directive"]
 
     async def _one(block: dict) -> Optional[dict]:
         prompt = (block.get("prompt") or "").strip()
@@ -5549,8 +5608,12 @@ async def send_message(conv_id: str, body: SendMessageBody, u: dict = Depends(ge
                 edit_src = None
         if edit_src is not None:
             primary = responders[0]
-            sp = team.get("soulprint") or {}
-            sp_lines = [f"{k.capitalize()}: {sp[k]}" for k in ("mission", "tone", "audience", "values") if sp.get(k)]
+            # Edit-previous-image path — same helper as every other
+            # image entry point, so org.soul travels here too. Logo
+            # attachment isn't forced (the user's previous image is
+            # the anchor) but the Soul lines still shape tone.
+            bc = await _resolve_brand_context(conv=conv, team=team)
+            sp_lines = bc["soul_lines"]
             sys_msg = (
                 f"You are {AGENTS[primary]['name']}, editing the previous image in this "
                 f"conversation. Apply the user's requested change precisely while "
@@ -5622,8 +5685,12 @@ async def send_message(conv_id: str, body: SendMessageBody, u: dict = Depends(ge
                 wants_image = False
             if wants_image:
                 primary = responders[0]
-                sp = team.get("soulprint") or {}
-                sp_lines = [f"{k.capitalize()}: {sp[k]}" for k in ("mission", "tone", "audience", "values") if sp.get(k)]
+                # Shared brand-context helper — same logic as CoS solo
+                # chat + bulk-image single mode. Every team member's
+                # image request in this thread gets the org logo +
+                # Soul-informed system prompt.
+                bc = await _resolve_brand_context(conv=conv, team=team)
+                sp_lines = bc["soul_lines"]
                 sys_msg = (
                     f"You are {AGENTS[primary]['name']}, generating an image on behalf of the "
                     f"team \"{team['name']}\". Honor the team's voice and aesthetics.\n"
@@ -5633,6 +5700,7 @@ async def send_message(conv_id: str, body: SendMessageBody, u: dict = Depends(ge
                     "TikTok 9:16; LinkedIn / Twitter post 1.91:1; YouTube thumbnail 16:9) and "
                     "render any text legibly in the safe area."
                     + (("\n" + "\n".join(sp_lines)) if sp_lines else "")
+                    + bc["logo_directive"]
                 )
                 try:
                     requested_count = detect_image_count(body.text)
@@ -5642,6 +5710,7 @@ async def send_message(conv_id: str, body: SendMessageBody, u: dict = Depends(ge
                         primary_agent_name=AGENTS[primary]["name"],
                         user_text=body.text, sys_msg=sys_msg,
                         count=requested_count,
+                        logo_paths=bc["logo_paths"],
                     )
                     if rendered > 0:
                         responders = []  # Image(s) alone are enough
@@ -5835,8 +5904,11 @@ async def smart_start(team_id: str, body: SmartStartBody, u: dict = Depends(get_
     except Exception:
         wants_image = False
     if wants_image:
-        sp = team.get("soulprint") or {}
-        sp_lines = [f"{k.capitalize()}: {sp[k]}" for k in ("mission", "tone", "audience", "values") if sp.get(k)]
+        # Shared brand-context helper — every image-intent path (CoS
+        # solo, group team chat, direct-message) inherits the same
+        # Soul + logo behaviour.
+        bc = await _resolve_brand_context(conv=conv, team=team)
+        sp_lines = bc["soul_lines"]
         sys_msg = (
             f"You are {AGENTS[chosen]['name']}, generating an image on behalf of the "
             f"team \"{team['name']}\". Honor the team's voice and aesthetics.\n"
@@ -5846,6 +5918,7 @@ async def smart_start(team_id: str, body: SmartStartBody, u: dict = Depends(get_
             "TikTok 9:16; LinkedIn / Twitter post 1.91:1; YouTube thumbnail 16:9) and "
             "render any text legibly in the safe area."
             + (("\n" + "\n".join(sp_lines)) if sp_lines else "")
+            + bc["logo_directive"]
         )
         try:
             requested_count = detect_image_count(body.text)
@@ -5856,6 +5929,7 @@ async def smart_start(team_id: str, body: SmartStartBody, u: dict = Depends(get_
                     primary_agent_name=AGENTS[chosen]["name"],
                     user_text=body.text, sys_msg=sys_msg,
                     count=requested_count,
+                    logo_paths=bc["logo_paths"],
                 )
                 if rendered > 0:
                     return {
@@ -5864,7 +5938,10 @@ async def smart_start(team_id: str, body: SmartStartBody, u: dict = Depends(get_
                         "user_message": {k: v for k, v in user_doc.items() if k != "_id"},
                         "agent_message": {"bulk": True, "rendered": rendered, "requested": requested_count},
                     }
-            fname, caption = await generate_image_via_nano_banana(body.text, sys_msg)
+            fname, caption = await generate_image_via_nano_banana(
+                body.text, sys_msg,
+                input_image_paths=bc["logo_paths"] if bc["logo_paths"] else None,
+            )
             agent_msg = {
                 "id": str(uuid.uuid4()),
                 "conversation_id": conv_id,
@@ -6397,12 +6474,12 @@ async def generate_image(conv_id: str, body: GenerateImageBody, u: dict = Depend
     }
     await db.messages.insert_one({**user_msg})
 
-    # Build a SoulPrint-aware system message so the image follows team aesthetics
-    sp = team.get("soulprint") or {}
-    sp_lines = []
-    for k in ("mission", "tone", "audience", "values"):
-        if sp.get(k):
-            sp_lines.append(f"{k.capitalize()}: {sp[k]}")
+    # Shared brand-context helper — org.soul + brand_assets (logo etc)
+    # travel through here whether the caller is in a solo CoS chat or
+    # a full team conversation. Historically this endpoint only read
+    # `team.soulprint` (usually empty) and never attached the logo.
+    bc = await _resolve_brand_context(conv=conv, team=team)
+    sp_lines = bc["soul_lines"]
     system_msg = (
         f"You are {AGENTS[agent_id]['name']}, generating an image on behalf of the "
         f"team \"{team['name']}\". Honor the team's voice and aesthetics.\n"
@@ -6412,10 +6489,14 @@ async def generate_image(conv_id: str, body: GenerateImageBody, u: dict = Depend
         "Instagram story / Reels / TikTok = 9:16 vertical, LinkedIn / Twitter post = 1.91:1 "
         "horizontal banner, YouTube thumbnail = 16:9. Always render text crisp and on-brand."
         + (("\n" + "\n".join(sp_lines)) if sp_lines else "")
+        + bc["logo_directive"]
     )
 
     try:
-        filename, caption = await generate_image_via_nano_banana(body.prompt, system_msg)
+        filename, caption = await generate_image_via_nano_banana(
+            body.prompt, system_msg,
+            input_image_paths=bc["logo_paths"] if bc["logo_paths"] else None,
+        )
     except Exception as exc:
         logger.exception("Image generation failed: %s", exc)
         # Save a polite agent error message so the user has feedback in-thread
@@ -7661,9 +7742,13 @@ async def upload_to_conversation(
     )
     if edit_intent:
         try:
-            sp = team.get("soulprint") or {}
-            sp_lines = [f"{k.capitalize()}: {sp[k]}"
-                        for k in ("mission", "tone", "audience", "values") if sp.get(k)]
+            # Image-edit path — do NOT force-attach the logo here (the
+            # user's uploaded reference images are already the source
+            # of truth) but DO fold in org.soul so tone/audience/values
+            # inform the edit. Same helper as every other image path,
+            # then we drop the `logo_paths` output.
+            bc = await _resolve_brand_context(conv=conv, team=team)
+            sp_lines = bc["soul_lines"]
             n = len(image_paths)
             if n >= 2:
                 sys_msg = (

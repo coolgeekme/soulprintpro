@@ -49,6 +49,20 @@ pattern. Users must be able to:
 - `GET|POST /api/teams/{id}/conversations` · `GET|DELETE /api/conversations/{id}`
 - `GET|POST /api/conversations/{id}/messages`
 
+## Fix (Feb 26, 2026 — same day) — Brand Context Across ALL Image Generation Paths
+- 🐛 **User followup**: "Brand assets need to work for any member of the org in ANY conversation — not just CoS." Audit uncovered the same team.soulprint bug + missing logo attachment in FIVE separate image-generation entry points.
+- ✅ **New shared helper** `_resolve_brand_context(conv, team)` in server.py — single chokepoint that resolves `org_id` via `team.org_id || conv.org_id`, pulls Soul from `org.soul → org.soulprint → team.soulprint`, rehydrates brand logos from disk or GridFS, and returns `{logo_paths, soul_lines, logo_directive, org_name}`.
+- ✅ **Now folded into**:
+  1. `_generate_image_attachments` — CoS solo + team-chat image intents
+  2. Group-chat compose path (`/conversations/{id}/message`, wants_image branch)
+  3. Direct-message compose path (`/conversations/{id}/direct-message`)
+  4. Dedicated `/generate-image` POST endpoint (manual generate button)
+  5. Image-edit fast path (previous-image edit + user-uploaded reference edit)
+- ✅ **Bonus**: brand primary color + visual_style folded into the soul_lines when present so image gen picks up ORANGE + editorial-style cues automatically.
+- ✅ **`_generate_bulk_images` refactored** to accept `logo_paths` param — brand mark now carries across the whole batch (5-image generate = 5 branded images).
+- ✅ **Verified**: 5/5 simulated paths pass (CoS solo, group team, bulk endpoint, no brand assets, totally empty org).
+
+
 ## Fix (Feb 26, 2026) — Chief-of-Staff Flyer Generation Ignored Org Soul & Brand Assets
 - 🐛 **User report**: Multiple team members generated flyers in a Chief of Staff chat; NONE of the flyers included the org logo or reflected the org's Soul.
 - **Root cause**: `_generate_image_attachments` pulled `org_id` from `team.org_id` and read Soul from `team.soulprint`. In solo-agent (CoS) chats there's no real team — the platform passes a fabricated team stub with no `org_id` and no `soulprint`. So org_doc lookup was skipped, no logo was attached, and the Soul lines were empty.
