@@ -4953,12 +4953,43 @@ async def _generate_image_attachments(
     """Generate every block in parallel, save each as a Document, and
     return an attachment dict per success. Failures are logged but
     don't break the others.
+
+    Soul + brand-asset injection resolves against the ORG (not the
+    team) so 1-to-1 chats with Chief of Staff / any solo agent still
+    get the correct logo + brand tone. The previous version only read
+    `team.soulprint` — which is empty for solo-agent conversations
+    that skip team creation — and only pulled `org_id` from the team
+    stub, silently dropping the brand context on those chats.
     """
-    org_id = team.get("org_id") or ""
-    sp = team.get("soulprint") or {}
-    sp_lines = [f"{k.capitalize()}: {sp[k]}"
-                for k in ("mission", "tone", "audience", "values") if sp.get(k)]
+    # Resolve org_id from BOTH the team stub and the conversation doc;
+    # the latter is authoritative for solo agent chats where the team
+    # stub is fabricated on the fly and carries no org linkage.
+    org_id = (team or {}).get("org_id") or (conv or {}).get("org_id") or ""
     agent_name = AGENTS[agent_id]["name"] if agent_id in AGENTS else "Agent"
+
+    # Load the org doc up front — needed for Soul, brand assets, and
+    # the org name that anchors the logo directive.
+    org_doc: Optional[dict] = None
+    if org_id:
+        try:
+            org_doc = await db.organizations.find_one(
+                {"_id": ObjectId(org_id)},
+                {"brand_assets": 1, "name": 1, "soul": 1, "soulprint": 1},
+            )
+        except Exception as exc:
+            logger.warning("org lookup failed for org %s: %s", org_id, exc)
+            org_doc = None
+
+    # Soul precedence: org.soul (authoritative — the Soul users edit on
+    # the Org page) > team.soulprint (legacy fallback for team-scoped
+    # aesthetics). Both share the same shape (mission/tone/audience/values).
+    soul = ((org_doc or {}).get("soul")
+            or (org_doc or {}).get("soulprint")
+            or (team or {}).get("soulprint")
+            or {})
+    sp_lines = [f"{k.replace('_', ' ').capitalize()}: {soul[k]}"
+                for k in ("mission", "tone", "audience", "values", "north_star", "summary")
+                if soul.get(k)]
 
     # ── Org logo injection ─────────────────────────────────────────────
     # If the org uploaded brand logos (primary and/or alt), pass them to
@@ -4967,17 +4998,8 @@ async def _generate_image_attachments(
     # the logo onto the scene with correct scale and lighting — see the
     # `generate_image_via_nano_banana` docstring for details.
     logo_paths: List[Path] = []
-    org_doc: Optional[dict] = None
-    if org_id:
-        try:
-            org_doc = await db.organizations.find_one(
-                {"_id": ObjectId(org_id)},
-                {"brand_assets": 1, "name": 1},
-            )
-        except Exception as exc:
-            logger.warning("logo lookup failed for org %s: %s", org_id, exc)
-            org_doc = None
-        brand = (org_doc or {}).get("brand_assets") or {}
+    if org_doc:
+        brand = org_doc.get("brand_assets") or {}
         for kind in ("primary_logo", "alt_logo"):
             asset = brand.get(kind) or {}
             fname = (asset or {}).get("filename") or ""

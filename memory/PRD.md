@@ -49,6 +49,17 @@ pattern. Users must be able to:
 - `GET|POST /api/teams/{id}/conversations` · `GET|DELETE /api/conversations/{id}`
 - `GET|POST /api/conversations/{id}/messages`
 
+## Fix (Feb 26, 2026) — Chief-of-Staff Flyer Generation Ignored Org Soul & Brand Assets
+- 🐛 **User report**: Multiple team members generated flyers in a Chief of Staff chat; NONE of the flyers included the org logo or reflected the org's Soul.
+- **Root cause**: `_generate_image_attachments` pulled `org_id` from `team.org_id` and read Soul from `team.soulprint`. In solo-agent (CoS) chats there's no real team — the platform passes a fabricated team stub with no `org_id` and no `soulprint`. So org_doc lookup was skipped, no logo was attached, and the Soul lines were empty.
+- ✅ **Fix**: `org_id` now resolves via `team.org_id || conv.org_id` (conversation is authoritative in solo chats). Soul precedence chain is now `org.soul > org.soulprint > team.soulprint > {}`. Widened soul-line output to include `north_star` and `summary` alongside `mission/tone/audience/values`.
+- ✅ **Verified**: 4/4 precedence cases pass (solo CoS, team chat, no context, legacy team-only).
+
+## Preview Verification (Feb 26, 2026) — Audit Generation Path is Healthy
+- Created live audit for `soulprintengine.ai` on preview → status went `generating` → `ready` in ~40 seconds (score 82, openai/gpt-5.1). Preview code path is working correctly.
+- User's stuck audit report is on **production (https://foundryagents.ai)** — needs a redeploy to pick up the periodic orphan-sweep fix + admin "Rescue stuck" button from prior iteration.
+
+
 ## Fix (Feb 26, 2026) — Document Generator Now Actually Generates Documents
 - 🐛 **User report**: Ben (ben@archeforge.com) asked the Document Generator agent to reformat his .docx; agent promised a file but never delivered. Root causes:
   1. Document Generator agent's system prompt was generic "here are Python libraries" guidance — never taught it to emit the `[[ARTIFACT]]` block that actually produces a file.
