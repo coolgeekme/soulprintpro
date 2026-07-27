@@ -1089,3 +1089,39 @@ pattern. Users must be able to:
     - `(you)` badge next to caller's name so it's obvious which row is editable + which has the Leave button.
     - All toggles have `data-testid` (`role-select-{user_id}`, `role-chip-{user_id}`, `leave-org-btn`) for testing.
   - **Tests** (`tests/test_iter32_org_roles_and_leave.py`): owner promotes member → admin; admin cannot change roles (403); owner cannot self-edit (400); two-owner cross-demote works; member self-leave removes org membership + future org reads 403; last-owner cannot leave (400); owner can leave after promoting successor; non-member 404; empty body 422; invalid role 422. Includes 429-aware register retry so the per-IP signup limit doesn't flake the suite.
+
+---
+
+## Feb 2026 — Superadmin / Staff Unrestricted Access (Jul 27, 2026)
+
+**Product decision (user request)**: Superadmins and staff-email users must have **no caps or restrictions** on any feature — multiple orgs, no plan gates, no trial caps, no seat warnings, no billing paywalls.
+
+### Implementation
+- **New shared helper**: `staff.is_privileged_user(user_doc)` returns `True` when `user.is_superadmin` OR `is_staff_email(user.email)`. One choke-point; every gate routes through it.
+- **Bypasses applied** (all return early / mark unlimited for privileged users):
+  - `billing.enforce_org_creation_limit` — no 402 on org creation.
+  - `billing.user_plan_limits` — reports Refine tier (10,000 orgs).
+  - `billing.billing_summary` — returns `is_staff: true`, `is_privileged: true`, `plan_status: "staff"`.
+  - `billing.aggregate_overages_for_previous_month` — no overage invoices.
+  - `trial_caps.resolve_user_plan` — tier=`perpetual`, reason=`superadmin`/`staff`; `consume_or_raise` no-ops.
+  - `access_codes._user_has_access` / `access_state` — mode=`full`, `is_perpetual: true`; no access-code needed.
+  - `org_transfers.accept_transfer` — bypasses `plan_upgrade_required` 402.
+  - `seat_policy.compute_seat_status` — lifts to Refine (unlimited), `warning_for_status` returns None.
+- **Auth payload exposed**: `/api/auth/me`, `/api/auth/login`, `/api/auth/register`, and the Firebase serializer all include `is_privileged: bool`. Frontend `BillingPage` already keyed off `summary.is_staff` — now `true` for both real staff AND superadmins, so upgrade prompts, "at org limit" warnings, and plan-card upsells hide automatically.
+- `has_site_access` on `/me` also honors `is_privileged` so no pre-launch gate ever fires for internal users.
+
+### Files touched
+- `backend/staff.py` — added `is_privileged_user(user_doc)`.
+- `backend/billing.py` — 4 call-sites re-routed through the shared helper.
+- `backend/trial_caps.py` — `resolve_user_plan` now uses `is_privileged_user`; projection includes `email`.
+- `backend/access_codes.py` — `_user_has_access` + `access_state` honor staff-email.
+- `backend/org_transfers.py` — `accept_transfer` skips tier check for privileged.
+- `backend/seat_policy.py` — privileged owner → effective Refine, no warning.
+- `backend/server.py` — `get_current_user`, `/auth/register`, `/auth/login`, `has_site_access` return / consume `is_privileged`.
+- `backend/firebase_auth.py::_serialize_user` — includes `is_privileged`.
+- `backend/tests/test_privileged_bypass.py` — new: 10 regression tests, all pass.
+- `backend/tests/test_trial_caps.py::test_resolve_staff_is_perpetual` — updated to use email-based staff detection.
+
+### Verification
+- `pytest tests/test_privileged_bypass.py tests/test_trial_caps.py tests/test_staff.py tests/test_billing.py tests/test_iter29_resolvers.py` → **51 passed, 0 failed**.
+- Live curl: `reggie@coolgeek.me` created 3 additional orgs sequentially with no 402; `/billing/summary` returned `orgs_limit=10000, is_staff=true, is_privileged=true`. Non-privileged registrations still correctly demand an access code.

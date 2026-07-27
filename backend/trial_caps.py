@@ -99,10 +99,14 @@ def resolve_user_plan(user: Dict[str, Any]) -> Dict[str, Any]:
     """
     if not user:
         return {"tier": "none", "reason": "anonymous"}
-    if user.get("is_superadmin"):
-        return {"tier": "perpetual", "reason": "superadmin"}
-    if user.get("is_staff"):
-        return {"tier": "perpetual", "reason": "staff"}
+    # Superadmin / staff-email → perpetual, always. Uses the shared
+    # `is_privileged_user` helper so we can't drift from billing.py.
+    from staff import is_privileged_user
+    if is_privileged_user(user):
+        return {
+            "tier": "perpetual",
+            "reason": "superadmin" if user.get("is_superadmin") else "staff",
+        }
     # Paid subscription overrides everything — once the user pays,
     # the Stripe budget governs cost, not these trial caps.
     plan_status = (user.get("plan_status") or "").lower()
@@ -204,7 +208,7 @@ async def consume_or_raise(db, user: Dict[str, Any], resource: str, amount: int 
         fresh = await db.users.find_one(
             {"_id": ObjectId(user["id"])},
             {
-                "is_superadmin": 1, "is_staff": 1,
+                "is_superadmin": 1, "is_staff": 1, "email": 1,
                 "plan_status": 1, "plan_id": 1,
                 "access_granted_at": 1, "access_expires_at": 1,
                 "access_extended_at": 1,

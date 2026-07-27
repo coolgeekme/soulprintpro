@@ -137,7 +137,25 @@ async def compute_seat_status(db, org_id: str) -> Dict[str, Any]:
     # Apply the access-code boost only when it would actually help —
     # an owner on Refine already has unlimited seats, no need.
     owner_uid = await _find_owner_user_id(db, org_id)
-    if owner_uid and base_seats < SEATS_INCLUDED["temper"]:
+
+    # Privileged owner (superadmin / staff) → lift to Refine (unlimited).
+    # No warnings, no upgrade prompts — internal accounts run free.
+    is_privileged_owner = False
+    if owner_uid:
+        try:
+            from staff import is_privileged_user
+            owner_row = await db.users.find_one(
+                {"_id": ObjectId(owner_uid)} if ObjectId.is_valid(owner_uid) else {"id": owner_uid},
+                {"_id": 0, "email": 1, "is_superadmin": 1},
+            )
+            is_privileged_owner = is_privileged_user(owner_row)
+        except Exception:
+            is_privileged_owner = False
+    if is_privileged_owner:
+        seats_included = SEATS_INCLUDED["refine"]
+        boost_source = "privileged"
+
+    if owner_uid and not is_privileged_owner and base_seats < SEATS_INCLUDED["temper"]:
         code_exp = await _owner_access_code_expiry(db, owner_uid)
         if code_exp is not None:
             seats_included = SEATS_INCLUDED["temper"]
@@ -163,7 +181,9 @@ async def compute_seat_status(db, org_id: str) -> Dict[str, Any]:
         extra_seats = max(0, int(owner_doc.get("extra_seats") or 0))
     seats_included += extra_seats
 
-    effective_plan = "temper" if boost_source else plan
+    effective_plan = "refine" if boost_source == "privileged" else (
+        "temper" if boost_source else plan
+    )
 
     return {
         "plan": plan,
@@ -202,6 +222,9 @@ def warning_for_status(status: Dict[str, Any]) -> Optional[str]:
     invite UI so the admin knows they're racking up overage.
     """
     if not status:
+        return None
+    # Privileged owners run unlimited — never nag.
+    if status.get("effective_plan") == "refine" or status.get("boost_source") == "privileged":
         return None
     if status.get("plan") == "refine":
         return None

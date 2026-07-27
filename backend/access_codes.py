@@ -125,13 +125,21 @@ def _user_has_access(user: dict) -> tuple[bool, str]:
     """Pure-function gate decision for a signed-in user. Returns
     (allowed, reason). Reasons are stable strings the frontend can
     branch on for copy:
-        "superadmin" / "private_code" / "trial" / "grace_period" /
-        "expired" / "none"
+        "superadmin" / "staff" / "private_code" / "trial" /
+        "grace_period" / "expired" / "none"
     """
     if not user:
         return False, "none"
     if user.get("is_superadmin"):
         return True, "superadmin"
+    # Staff-email domains + explicit staff overrides get perpetual
+    # access with no code needed. Mirrors billing.py's staff bypass.
+    try:
+        from staff import is_staff_email
+        if is_staff_email(user.get("email")):
+            return True, "staff"
+    except Exception:
+        pass
     # Active or even past-but-redeemed trial counts — once you've
     # touched the trial flow, we don't slam the door behind you.
     if user.get("trial_started_at"):
@@ -178,6 +186,15 @@ def access_state(user: dict) -> dict:
                 "expires_at": None, "days_remaining": None,
                 "in_grace": False, "grace_days_remaining": None,
                 "is_perpetual": True}
+    try:
+        from staff import is_staff_email
+        if is_staff_email(user.get("email")):
+            return {"mode": "full", "reason": "staff",
+                    "expires_at": None, "days_remaining": None,
+                    "in_grace": False, "grace_days_remaining": None,
+                    "is_perpetual": True}
+    except Exception:
+        pass
     allowed, reason = _user_has_access(user)
     expires_at = user.get("access_expires_at")
     if isinstance(expires_at, datetime) and expires_at.tzinfo is None:

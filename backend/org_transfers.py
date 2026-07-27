@@ -268,30 +268,36 @@ def make_routers(*, db, AGENTS=None, require_org_member, get_current_user):
                     {"$set": {"status": "expired", "expired_at": now}},
                 )
                 raise HTTPException(410, "This transfer expired — ask the original owner to issue a new one.")
-        # Plan tier check.
+        # Plan tier check. Privileged users (superadmin / staff) skip
+        # the tier gate — they can always accept any org.
         try:
-            recipient = await db.users.find_one({"_id": ObjectId(u["id"])}, {"_id": 0, "plan": 1})
+            recipient = await db.users.find_one(
+                {"_id": ObjectId(u["id"])},
+                {"_id": 0, "plan": 1, "email": 1, "is_superadmin": 1},
+            )
         except Exception:
             recipient = None
-        current_plan = (recipient or {}).get("plan") or "spark"
-        required = t.get("required_plan_tier") or "spark"
-        if not _tier_is_sufficient(current_plan, required):
-            # 402 Payment Required so the frontend knows to route to
-            # /pricing for the named tier with `return_to=…/accept`.
-            raise HTTPException(
-                402,
-                detail={
-                    "code": "plan_upgrade_required",
-                    "required_tier": required,
-                    "current_tier": current_plan,
-                    "member_count": t.get("member_count_at_init", 0),
-                    "message": (
-                        f"This org has {t.get('member_count_at_init', 0)} members — "
-                        f"accepting ownership needs at least the {required.title()} plan. "
-                        f"You're currently on {current_plan.title()}."
-                    ),
-                },
-            )
+        from staff import is_privileged_user
+        if not is_privileged_user(recipient):
+            current_plan = (recipient or {}).get("plan") or "spark"
+            required = t.get("required_plan_tier") or "spark"
+            if not _tier_is_sufficient(current_plan, required):
+                # 402 Payment Required so the frontend knows to route to
+                # /pricing for the named tier with `return_to=…/accept`.
+                raise HTTPException(
+                    402,
+                    detail={
+                        "code": "plan_upgrade_required",
+                        "required_tier": required,
+                        "current_tier": current_plan,
+                        "member_count": t.get("member_count_at_init", 0),
+                        "message": (
+                            f"This org has {t.get('member_count_at_init', 0)} members — "
+                            f"accepting ownership needs at least the {required.title()} plan. "
+                            f"You're currently on {current_plan.title()}."
+                        ),
+                    },
+                )
         # Mutate roles + (optional) self-leave for outgoing owner.
         outgoing_id = t["initiated_by"]
         outgoing_role_after = t.get("outgoing_role_after", "member")

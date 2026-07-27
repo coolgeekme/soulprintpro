@@ -259,11 +259,21 @@ async def upsert_user_for_firebase_claims(db, claims: dict) -> dict:
 
 def _serialize_user(u: dict) -> dict:
     """Match the shape returned by the legacy `get_current_user`."""
+    email = u.get("email", "")
+    is_super = bool(u.get("is_superadmin"))
+    is_priv = is_super
+    if not is_priv:
+        try:
+            from staff import is_staff_email
+            is_priv = is_staff_email(email)
+        except Exception:
+            is_priv = False
     return {
         "id": str(u["_id"]),
-        "email": u.get("email", ""),
+        "email": email,
         "name": u.get("name", "") or "User",
-        "is_superadmin": bool(u.get("is_superadmin")),
+        "is_superadmin": is_super,
+        "is_privileged": bool(is_priv),
     }
 
 

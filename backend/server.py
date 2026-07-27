@@ -359,11 +359,21 @@ async def get_current_user(request: Request) -> dict:
     tz = (request.headers.get("X-User-Timezone") or "").strip()[:80]
     loc = (request.headers.get("X-User-Location") or "").strip()[:200]
     _USER_CTX.set({"timezone": tz, "location": loc})
+    email = user["email"]
+    is_super = bool(user.get("is_superadmin"))
+    is_priv = is_super
+    if not is_priv:
+        try:
+            from staff import is_staff_email as _isse
+            is_priv = _isse(email)
+        except Exception:
+            is_priv = False
     return {
         "id": str(user["_id"]),
-        "email": user["email"],
+        "email": email,
         "name": user["name"],
-        "is_superadmin": bool(user.get("is_superadmin")),
+        "is_superadmin": is_super,
+        "is_privileged": bool(is_priv),
     }
 
 
@@ -768,6 +778,7 @@ async def register(body: RegisterBody, request: Request, resp: Response):
         pass
     return {"id": uid, "name": doc["name"], "email": email,
             "is_superadmin": bool(doc.get("is_superadmin")),
+            "is_privileged": bool(doc.get("is_superadmin")) or is_staff_email(email),
             "access_token": token}
 
 @auth_r.post("/login")
@@ -790,8 +801,10 @@ async def login(body: LoginBody, request: Request, resp: Response):
     uid = str(user["_id"])
     token = create_access_token(uid, email)
     set_auth_cookies(resp, token)
+    from staff import is_staff_email as _isse
     return {"id": uid, "name": user["name"], "email": email,
             "is_superadmin": bool(user.get("is_superadmin")),
+            "is_privileged": bool(user.get("is_superadmin")) or _isse(email),
             "access_token": token}
 
 @auth_r.post("/logout")
@@ -845,6 +858,7 @@ async def me(u: dict = Depends(get_current_user)):
         u["access_granted_at"] = ag.isoformat() if isinstance(ag, datetime) else str(ag)
     u["has_site_access"] = bool(
         u.get("is_superadmin")
+        or u.get("is_privileged")
         or u.get("access_granted_at")
         or u.get("trial_started_at")
     )

@@ -45,7 +45,10 @@ def test_resolve_superadmin_is_perpetual() -> None:
 
 
 def test_resolve_staff_is_perpetual() -> None:
-    d = resolve_user_plan({"is_staff": True})
+    # Feb 2026 — staff status is derived from `is_staff_email(email)`
+    # now, not a bare `is_staff` field. `reggie@coolgeek.me` is in the
+    # hardcoded STAFF_EMAILS fallback list.
+    d = resolve_user_plan({"email": "reggie@coolgeek.me"})
     assert d["tier"] == "perpetual"
     assert d["reason"] == "staff"
 

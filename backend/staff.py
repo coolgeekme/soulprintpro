@@ -53,6 +53,22 @@ def is_staff_email(email: str | None) -> bool:
     return domain in STAFF_DOMAINS
 
 
+def is_privileged_user(user: dict | None) -> bool:
+    """True when the user is a site-level superadmin OR a staff email.
+
+    Privileged users bypass every plan / trial / overage / seat cap
+    across the platform. Feb 2026 — a single choke point so we can't
+    accidentally re-gate them from one call site while forgetting
+    another. Callers must pass the full user doc (or an equivalent
+    dict projecting at least ``is_superadmin`` and ``email``).
+    """
+    if not user:
+        return False
+    if user.get("is_superadmin"):
+        return True
+    return is_staff_email(user.get("email"))
+
+
 async def org_has_staff_owner(db, org_id: str) -> bool:
     """True when any owner/admin of the org is staff. Cheap one-shot
     query — joins `org_members` with `users` on owner/admin rows.

@@ -630,28 +630,32 @@ async def _get_or_create_customer(db, user: Dict[str, Any]) -> str:
 
 async def user_plan_limits(db, user_id: str, user_email: str | None = None) -> Dict[str, Any]:
     """Resolve the effective plan + org limit for a user. Staff
-    members get Refine's limits regardless of subscription state.
-    Returns `{plan, plan_id, orgs_limit, is_staff, extra_orgs}`.
+    members and superadmins get Refine's limits regardless of
+    subscription state. Returns
+    `{plan, plan_id, orgs_limit, is_staff, extra_orgs}`.
 
     ``orgs_limit`` already incorporates any active `extra_org` add-on
     subscriptions (purchased via /billing/addons/checkout). Callers
     SHOULD NOT add `extra_orgs` themselves — the resolver does it.
     """
-    from staff import is_staff_email
-    if is_staff_email(user_email or ""):
+    from staff import is_privileged_user
+    user_doc = await _user_doc(db, user_id) or {}
+    # Prefer the freshly-fetched email so we don't miss a superadmin
+    # whose caller only supplied the id.
+    user_doc.setdefault("email", user_email)
+    if is_privileged_user(user_doc):
         return {
             "plan": PLANS["refine"], "plan_id": "refine",
             "orgs_limit": PLANS["refine"]["orgs_included"], "is_staff": True,
             "extra_orgs": 0,
         }
-    plan_id = await _user_plan(db, user_id)
+    plan_id = user_doc.get("plan") or "spark"
     plan = PLANS.get(plan_id, PLANS["spark"])
     # Pull add-on counter off the user row. Refine is unlimited already
     # — don't bother stacking extras, the number would be misleading.
     extra_orgs = 0
     if plan_id != "refine":
-        u = await _user_doc(db, user_id) or {}
-        extra_orgs = max(0, int(u.get("extra_orgs") or 0))
+        extra_orgs = max(0, int(user_doc.get("extra_orgs") or 0))
     return {
         "plan": plan, "plan_id": plan_id,
         "orgs_limit": plan["orgs_included"] + extra_orgs,
@@ -662,7 +666,17 @@ async def user_plan_limits(db, user_id: str, user_email: str | None = None) -> D
 
 async def enforce_org_creation_limit(db, user: Dict[str, Any]) -> None:
     """Raise 402 if the user is at their plan's org limit. Called from
-    the server's org-creation endpoint right before insert."""
+    the server's org-creation endpoint right before insert. Privileged
+    users (superadmin / staff) always bypass — they can spin up as
+    many orgs as they need."""
+    from staff import is_privileged_user
+    user_doc = await _user_doc(db, user["id"]) or {}
+    # Layer the auth-payload email onto the doc so a freshly-signed-up
+    # superadmin whose row hasn't cached the field is still caught.
+    if not user_doc.get("email") and user.get("email"):
+        user_doc["email"] = user["email"]
+    if is_privileged_user(user_doc):
+        return
     limits = await user_plan_limits(db, user["id"], user.get("email"))
     if limits["is_staff"]:
         return
@@ -685,7 +699,7 @@ async def aggregate_overages_for_previous_month(db) -> List[Dict[str, Any]]:
     write an invoice row. Idempotent — running twice for the same
     month does not double-bill, and paid invoices are never overwritten.
     """
-    from staff import is_staff_email
+    from staff import is_privileged_user
     prev_start, cur_start = _previous_month_window()
     period_key = prev_start.strftime("%Y-%m")
     invoices: List[Dict[str, Any]] = []
@@ -719,8 +733,8 @@ async def aggregate_overages_for_previous_month(db) -> List[Dict[str, Any]]:
         user_doc = await _user_doc(db, user_id)
         if not user_doc:
             continue
-        if is_staff_email(user_doc.get("email")):
-            continue  # staff don't get overage invoices
+        if is_privileged_user(user_doc):
+            continue  # staff / superadmins don't get overage invoices
         plan_id = user_doc.get("plan") or "spark"
         included = PLANS.get(plan_id, PLANS["spark"])["included_llm_budget_usd"]
         if raw_cost <= included:
@@ -1015,8 +1029,15 @@ def make_billing_router(
         """Single source of truth for the BillingPage. Plan / status /
         spend / orgs_used vs orgs_limit / outstanding invoice / recent
         transactions — all rolled up at the user level."""
-        from staff import is_staff_email
-        staff_access = is_staff_email(u.get("email"))
+        from staff import is_privileged_user
+        user_doc = await _user_doc(db, u["id"]) or {}
+        # Splice in the auth payload so a freshly-flagged superadmin
+        # whose /me hasn't been re-fetched still gets the bypass.
+        if not user_doc.get("email") and u.get("email"):
+            user_doc["email"] = u.get("email")
+        if not user_doc.get("is_superadmin") and u.get("is_superadmin"):
+            user_doc["is_superadmin"] = True
+        staff_access = is_privileged_user(user_doc)
         start, now = _month_window()
         orgs_used = await _user_owned_org_count(db, u["id"])
 
@@ -1030,6 +1051,8 @@ def make_billing_router(
                 "cancel_at_period_end": False,
                 "has_stripe_customer": False,
                 "is_staff": True,
+                "is_privileged": True,
+                "is_superadmin": bool(user_doc.get("is_superadmin")),
                 "orgs_used": orgs_used,
                 "orgs_limit": refine["orgs_included"],
                 "period_start": start.isoformat(),
@@ -1059,7 +1082,6 @@ def make_billing_router(
         overage_raw = max(0.0, spend - included)
         projected_overage_billable = round(overage_raw * OVERAGE_MARKUP, 2)
 
-        user_doc = await _user_doc(db, u["id"]) or {}
         paid_until = _aware(user_doc.get("plan_paid_until"))
         sub_status = user_doc.get("subscription_status")
         cancel_at_period_end = bool(user_doc.get("subscription_cancel_at_period_end"))
@@ -1110,6 +1132,8 @@ def make_billing_router(
             "cancel_at_period_end": cancel_at_period_end,
             "has_stripe_customer": bool(user_doc.get("stripe_customer_id")),
             "is_staff": False,
+            "is_privileged": False,
+            "is_superadmin": False,
             "orgs_used": orgs_used,
             "orgs_limit": plan["orgs_included"] + addons_state["extra_orgs"],
             "period_start": start.isoformat(),
