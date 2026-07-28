@@ -21,7 +21,8 @@ def test_provider_registry_covers_phase1_phase2_phase3():
     """Every model the SDK + frontend references must be in the
     provider registry. If we add a new model, the integration test
     forces us to register it here too."""
-    expected_image = {"flux-pro", "imagen-4-ultra", "ideogram-3",
+    expected_image = {"flux-kontext-pro", "flux-kontext-max",
+                      "imagen-4-ultra", "ideogram-3",
                       "seedream-5", "gpt-image-1-5"}
     expected_video = {"kling-3", "kling-3-pro", "wan-2-6", "seedance-1-5",
                       "sora-2", "runway-aleph"}
@@ -57,17 +58,17 @@ async def test_submit_kie_task_returns_task_id_on_success(monkeypatch):
     fake_client.post = AsyncMock(return_value=fake_resp)
     with patch.object(kie_client.httpx, "AsyncClient", return_value=fake_client):
         task_id = await kie_client.submit_kie_task(
-            model_key="flux-pro",
+            model_key="flux-kontext-pro",
             prompt="A cyberpunk neon street",
         )
     assert task_id == "task-abc"
     # Verify the URL used the right family
     fake_client.post.assert_awaited_once()
     call_args = fake_client.post.await_args
-    assert "/api/v1/flux/generate" in call_args.args[0]
+    assert "/api/v1/flux/kontext/generate" in call_args.args[0]
     sent_body = call_args.kwargs["json"]
     assert sent_body["prompt"] == "A cyberpunk neon street"
-    assert sent_body["model"] == "flux-pro"
+    assert sent_body["model"] == "flux-kontext-pro"
 
 
 @pytest.mark.asyncio
@@ -99,7 +100,7 @@ async def test_wait_for_kie_task_extracts_urls_on_success(monkeypatch):
     fake_client.get = AsyncMock(return_value=success_resp)
     with patch.object(kie_client.httpx, "AsyncClient", return_value=fake_client):
         urls = await kie_client.wait_for_kie_task(
-            "flux-pro", "task-abc", total_timeout=5,
+            "flux-kontext-pro", "task-abc", total_timeout=5,
         )
     assert urls == ["https://cdn.kie.ai/abc.png", "https://cdn.kie.ai/def.png"]
 

@@ -47,9 +47,10 @@ const DEFAULT_CHAT_MODELS = [
 const DEFAULT_IMAGE_MODELS = [
   { key: 'nano-banana',       name: 'Nano Banana',         provider: 'kie',    tier: 'premium',  strengths: ['photorealistic', 'portrait', 'nature', 'general', 'hd'] },
   { key: 'imagen-4-ultra',    name: 'Imagen 4 Ultra',      provider: 'kie',    tier: 'premium',  strengths: ['artistic', 'creative', 'fantasy', 'illustration', 'high-quality'] },
-  { key: 'seedream-5-lite',   name: 'Seedream 5 Lite',     provider: 'kie',    tier: 'standard', strengths: ['text-rendering', 'logo', 'typography', 'fast', 'poster', 'sign'] },
+  { key: 'seedream-5',        name: 'Seedream 5',          provider: 'kie',    tier: 'standard', strengths: ['text-rendering', 'logo', 'typography', 'fast', 'poster', 'sign', 'flyer'] },
   { key: 'gpt-image-1-5',    name: 'GPT Image 1.5',       provider: 'openai', tier: 'premium',  strengths: ['product', 'commercial', 'clean', 'precise', 'instruction-following'] },
-  { key: 'flux-pro',          name: 'Flux Pro',            provider: 'kie',    tier: 'premium',  strengths: ['photorealistic', 'detailed', 'professional'] },
+  { key: 'flux-kontext-pro',  name: 'Flux Kontext Pro',    provider: 'kie',    tier: 'premium',  strengths: ['photorealistic', 'detailed', 'professional'] },
+  { key: 'flux-kontext-max',  name: 'Flux Kontext Max',    provider: 'kie',    tier: 'premium',  strengths: ['photorealistic', 'detailed', 'professional', 'high-quality'] },
   { key: 'ideogram-3',        name: 'Ideogram 3',          provider: 'kie',    tier: 'premium',  strengths: ['text-rendering', 'typography', 'logo', 'design'] },
 ];
 

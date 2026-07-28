@@ -1,0 +1,247 @@
+{
+  "base_url": "http://localhost:8001",
+  "router_model_for_flyer": "seedream-5",
+  "frontend_image_keys": [
+    "nano-banana",
+    "imagen-4-ultra",
+    "seedream-5",
+    "gpt-image-1-5",
+    "flux-kontext-pro",
+    "flux-kontext-max",
+    "ideogram-3"
+  ],
+  "backend_kie_provider_keys": [
+    "flux-kontext-max",
+    "flux-kontext-pro",
+    "gpt-image-1-5",
+    "ideogram-3",
+    "imagen-4-ultra",
+    "kling-3",
+    "kling-3-pro",
+    "runway-aleph",
+    "seedance-1-5",
+    "seedream-5",
+    "sora-2",
+    "suno",
+    "wan-2-6"
+  ],
+  "registry_alignment": {
+    "nano-banana": true,
+    "imagen-4-ultra": true,
+    "seedream-5": true,
+    "gpt-image-1-5": true,
+    "flux-kontext-pro": true,
+    "flux-kontext-max": true,
+    "ideogram-3": true
+  },
+  "broken_key_matches": {
+    "seedream-5-lite": [],
+    "flux-pro": []
+  },
+  "generate_media_results": [
+    {
+      "model": "seedream-5",
+      "status_code": 200,
+      "response": {
+        "id": "a10d7c4b-c5bd-4b55-8e10-999e11ccf8a0",
+        "conversation_id": "6a67f7fbe89f53ee2c99b72c",
+        "sender_type": "agent",
+        "sender_id": "specialized-chief-of-staff",
+        "sender_name": "Chief of Staff",
+        "agent_id": "specialized-chief-of-staff",
+        "text": "I couldn't start that image with **seedream-5** \u2014 the generation service rejected the request. Try a different model or run it again.",
+        "media_type": "image",
+        "media_status": "failed",
+        "media_prompt": "Design a small QA flyer for a launch event",
+        "media_model": "seedream-5",
+        "aspect_ratio": "1:1",
+        "timestamp": "2026-07-28T00:29:47.888616+00:00",
+        "ready_at": "2026-07-28T00:29:47.888616+00:00"
+      },
+      "contains_unknown_model": false,
+      "passed_unknown_guard": true
+    },
+    {
+      "model": "nano-banana",
+      "status_code": 200,
+      "response": {
+        "user_message": {
+          "id": "fea5a99a-1c23-4806-a360-e8c0967a91bf",
+          "conversation_id": "6a67f7fbe89f53ee2c99b72c",
+          "sender_type": "user",
+          "sender_id": "69f6a9e468b5974dfcc2fcf6",
+          "sender_name": "Reggie",
+          "agent_id": null,
+          "text": "\ud83c\udfa8 Design a small QA flyer for a launch event",
+          "intent": "image_request",
+          "timestamp": "2026-07-28T00:29:47.934341+00:00"
+        },
+        "agent_message": {
+          "id": "ae6c1cff-b035-4045-b5dd-b99804687040",
+          "conversation_id": "6a67f7fbe89f53ee2c99b72c",
+          "sender_type": "agent",
+          "sender_id": "specialized-chief-of-staff",
+          "sender_name": "Chief of Staff",
+          "agent_id": "specialized-chief-of-staff",
+          "text": "Here is the launch event flyer I\u2019ve designed for our QA team. It has a clean, professional, and tech-forward aesthetic that aligns with our brand. I\u2019ve included placeholder fields for the date, time, and location so we can customize it as soon as the event details are finalized. Please let me know if you would like me to adjust any of the content or the layout!",
+          "media_type": "image",
+          "media_filename": "73af2d9b54cf400781e3bcf02472117e.png",
+          "media_url": "/api/files/73af2d9b54cf400781e3bcf02472117e.png",
+          "media_prompt": "Design a small QA flyer for a launch event",
+          "media_system": "You are Chief of Staff, generating an image on behalf of the team \"KIE QA Team 1785198587\". Honor the team's voice and aesthetics.\nIf the user requests a social media graphic (Instagram post, story, LinkedIn banner, Twitter/X header, Facebook cover, YouTube thumbnail, etc.), match the appropriate aspect ratio and put text legibly in the safe area: Instagram post = 1:1 square, Instagram story / Reels / TikTok = 9:16 vertical, LinkedIn / Twitter post = 1.91:1 horizontal banner, YouTube thumbnail = 16:9. Always render text crisp and on-brand.",
+          "media_model": "nano-banana",
+          "timestamp": "2026-07-28T00:29:56.146918+00:00"
+        },
+        "ok": true
+      },
+      "contains_unknown_model": false,
+      "passed_unknown_guard": true
+    },
+    {
+      "model": "imagen-4-ultra",
+      "status_code": 200,
+      "response": {
+        "id": "02818657-c3a7-4837-a140-8818a451e9ac",
+        "conversation_id": "6a67f7fbe89f53ee2c99b72c",
+        "sender_type": "agent",
+        "sender_id": "specialized-chief-of-staff",
+        "sender_name": "Chief of Staff",
+        "agent_id": "specialized-chief-of-staff",
+        "text": "I couldn't start that image with **imagen-4-ultra** \u2014 the generation service rejected the request. Try a different model or run it again.",
+        "media_type": "image",
+        "media_status": "failed",
+        "media_prompt": "Design a small QA flyer for a launch event",
+        "media_model": "imagen-4-ultra",
+        "aspect_ratio": "1:1",
+        "timestamp": "2026-07-28T00:29:56.474521+00:00",
+        "ready_at": "2026-07-28T00:29:56.474521+00:00"
+      },
+      "contains_unknown_model": false,
+      "passed_unknown_guard": true
+    },
+    {
+      "model": "gpt-image-1-5",
+      "status_code": 200,
+      "response": {
+        "id": "d75f84d6-be74-48f0-9b73-62bd26520783",
+        "conversation_id": "6a67f7fbe89f53ee2c99b72c",
+        "sender_type": "agent",
+        "sender_id": "specialized-chief-of-staff",
+        "sender_name": "Chief of Staff",
+        "agent_id": "specialized-chief-of-staff",
+        "text": "I couldn't start that image with **gpt-image-1-5** \u2014 the generation service rejected the request. Try a different model or run it again.",
+        "media_type": "image",
+        "media_status": "failed",
+        "media_prompt": "Design a small QA flyer for a launch event",
+        "media_model": "gpt-image-1-5",
+        "aspect_ratio": "1:1",
+        "timestamp": "2026-07-28T00:29:56.651378+00:00",
+        "ready_at": "2026-07-28T00:29:56.651378+00:00"
+      },
+      "contains_unknown_model": false,
+      "passed_unknown_guard": true
+    },
+    {
+      "model": "flux-kontext-pro",
+      "status_code": 200,
+      "response": {
+        "id": "651910d4-ac3a-44e6-81bd-2f0c9b41c955",
+        "conversation_id": "6a67f7fbe89f53ee2c99b72c",
+        "sender_type": "agent",
+        "sender_id": "specialized-chief-of-staff",
+        "sender_name": "Chief of Staff",
+        "agent_id": "specialized-chief-of-staff",
+        "text": "Generating your image \u2014 usually 10-40 seconds.",
+        "media_type": "image",
+        "media_status": "pending",
+        "media_prompt": "Design a small QA flyer for a launch event",
+        "media_model": "flux-kontext-pro",
+        "aspect_ratio": "1:1",
+        "kie_task_id": "b45681c706d6a9051dcc39104f632eea",
+        "kie_model": "flux-kontext-pro",
+        "kie_image_url": null,
+        "kie_extra": null,
+        "timestamp": "2026-07-28T00:29:56.987940+00:00"
+      },
+      "contains_unknown_model": false,
+      "passed_unknown_guard": true
+    },
+    {
+      "model": "flux-kontext-max",
+      "status_code": 200,
+      "response": {
+        "id": "e9778db1-a7da-4fa6-b561-95db5fde9782",
+        "conversation_id": "6a67f7fbe89f53ee2c99b72c",
+        "sender_type": "agent",
+        "sender_id": "specialized-chief-of-staff",
+        "sender_name": "Chief of Staff",
+        "agent_id": "specialized-chief-of-staff",
+        "text": "Generating your image \u2014 usually 10-40 seconds.",
+        "media_type": "image",
+        "media_status": "pending",
+        "media_prompt": "Design a small QA flyer for a launch event",
+        "media_model": "flux-kontext-max",
+        "aspect_ratio": "1:1",
+        "kie_task_id": "aae3c5744512a050516470ac27d8857d",
+        "kie_model": "flux-kontext-max",
+        "kie_image_url": null,
+        "kie_extra": null,
+        "timestamp": "2026-07-28T00:29:57.400220+00:00"
+      },
+      "contains_unknown_model": false,
+      "passed_unknown_guard": true
+    },
+    {
+      "model": "ideogram-3",
+      "status_code": 200,
+      "response": {
+        "id": "0c944307-3461-4349-8be4-c9effee51a82",
+        "conversation_id": "6a67f7fbe89f53ee2c99b72c",
+        "sender_type": "agent",
+        "sender_id": "specialized-chief-of-staff",
+        "sender_name": "Chief of Staff",
+        "agent_id": "specialized-chief-of-staff",
+        "text": "I couldn't start that image with **ideogram-3** \u2014 the generation service rejected the request. Try a different model or run it again.",
+        "media_type": "image",
+        "media_status": "failed",
+        "media_prompt": "Design a small QA flyer for a launch event",
+        "media_model": "ideogram-3",
+        "aspect_ratio": "1:1",
+        "timestamp": "2026-07-28T00:29:57.600716+00:00",
+        "ready_at": "2026-07-28T00:29:57.600716+00:00"
+      },
+      "contains_unknown_model": false,
+      "passed_unknown_guard": true
+    }
+  ],
+  "old_key_guard_results": [
+    {
+      "model": "seedream-5-lite",
+      "status_code": 400,
+      "response": {
+        "detail": "Unknown model `seedream-5-lite`. Allowed kie.ai keys: flux-kontext-max, flux-kontext-pro, gpt-image-1-5, ideogram-3, imagen-4-ultra, kling-3, kling-3-pro, runway-aleph, seedance-1-5, seedream-5, sora-2, suno, wan-2-6"
+      },
+      "contains_unknown_model": true,
+      "passed_unknown_guard": false
+    },
+    {
+      "model": "flux-pro",
+      "status_code": 400,
+      "response": {
+        "detail": "Unknown model `flux-pro`. Allowed kie.ai keys: flux-kontext-max, flux-kontext-pro, gpt-image-1-5, ideogram-3, imagen-4-ultra, kling-3, kling-3-pro, runway-aleph, seedance-1-5, seedream-5, sora-2, suno, wan-2-6"
+      },
+      "contains_unknown_model": true,
+      "passed_unknown_guard": false
+    }
+  ],
+  "overall_pass": true,
+  "conversation_id": "6a67f7fbe89f53ee2c99b72c",
+  "assertions": {
+    "router_ok_seedream_5": true,
+    "all_required_frontend_keys_present": true,
+    "no_obsolete_frontend_key_matches": true,
+    "frontend_keys_registered_or_special_case": true,
+    "generate_media_current_keys_no_unknown_model": true,
+    "obsolete_keys_still_rejected_as_unknown": true
+  }
+}
