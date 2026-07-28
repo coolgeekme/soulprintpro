@@ -7341,11 +7341,11 @@ async def generate_media_endpoint(
     message list and the placeholder fills in once the task is ready.
 
     Supported model keys cover all kie.ai marketplace models (image:
-    flux-pro, imagen-4-ultra, ideogram-3, seedream-5, gpt-image-1-5;
-    video: kling-3, kling-3-pro, wan-2-6, seedance-1-5, sora-2,
-    runway-aleph; music: suno) PLUS the legacy Veo (`veo3_fast` /
-    `veo3` / `veo3_lite`) paths and Emergent's Nano Banana for cheap
-    image generation.
+    flux-kontext-pro, flux-kontext-max, imagen-4-ultra, ideogram-3,
+    seedream-5, gpt-image-1-5; video: kling-3, kling-3-pro, wan-2-6,
+    seedance-1-5, sora-2, runway-aleph; music: suno) PLUS the legacy
+    Veo (`veo3_fast` / `veo3` / `veo3_lite`) paths and Emergent's Nano
+    Banana for cheap image generation.
     """
     if not body.prompt.strip():
         raise HTTPException(400, "Prompt cannot be empty")
