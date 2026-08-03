@@ -237,10 +237,11 @@ export default function AuditsPage() {
             <div>
               <label className="text-[11px] uppercase tracking-widest sp-subtle">Website URL</label>
               <input
-                type="url"
+                type="text"
+                inputMode="url"
                 value={form.website_url}
                 onChange={(e) => setForm({ ...form, website_url: e.target.value })}
-                placeholder="https://acme.com"
+                placeholder="acme.com"
                 className="sp-input w-full mt-1"
                 maxLength={400}
                 data-testid="audit-input-url"

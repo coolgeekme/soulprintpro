@@ -1172,7 +1172,7 @@ export default function ConversationPage() {
       >
         <Link to="/app" className="hover:text-white">Orgs</Link>
         <span className="mx-2 opacity-40">/</span>
-        <Link to={`/app/org/${team.org_id}`} className="hover:text-white">{team.org_id.slice(-6)}</Link>
+        <Link to={`/app/org/${team.org_id}`} className="hover:text-white">{team.org_name || "Org"}</Link>
         <span className="mx-2 opacity-40">/</span>
         <Link to={`/app/team/${teamId}`} className="hover:text-white">{team.name}</Link>
         <span className="mx-2 opacity-40">/</span>

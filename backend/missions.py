@@ -1731,6 +1731,10 @@ def build_tools(
         }
 
     async def generate_image(ctx, args):
+        """Generate an image via Nano Banana or GPT Image 1. Saves the
+        result as a Documents row + mission artifact, same as generate_video
+        and generate_music.
+        """
         prompt = (args.get("prompt") or "").strip()
         model = (args.get("model") or "nano-banana").strip()
         if not prompt:
@@ -1741,16 +1745,47 @@ def build_tools(
             )
         except Exception as exc:
             return {"error": str(exc)[:300]}
-        return {
-            "artifact": {
-                "original_name": fname,
-                "mime": "image/png" if fname.endswith(".png") else "image/jpeg",
-                "url": f"/api/files/{fname}",
-                "model": used,
-            },
-            "caption": caption,
-            "ok": True,
+
+        ext = fname.rsplit(".", 1)[-1] if "." in fname else "png"
+        mime = "image/png" if ext == "png" else f"image/{ext}"
+        artifact = {
+            "kind": "image",
+            "original_name": fname,
+            "mime": mime,
+            "url": f"/api/files/{fname}",
+            "model": used,
         }
+        try:
+            img_bytes = (UPLOAD_DIR / fname).read_bytes()
+            atts = await save_artifacts(
+                db, [{
+                    "name": fname,
+                    "ext": ext,
+                    "mime": mime,
+                    "title": f"Image — {prompt[:60]}",
+                    "content": "",
+                    "_raw_bytes": img_bytes,
+                }],
+                docs_root=docs_root,
+                org_id=ctx["org_id"],
+                conversation_id=ctx.get("mission_id", ""),
+                message_id=ctx.get("mission_id", ""),
+                agent_id=ctx.get("lead_agent_id", ""),
+                agent_name=ctx.get("lead_agent_name", "Mission"),
+                created_by=ctx.get("created_by", ""),
+            )
+            if atts:
+                a = atts[0]
+                artifact.update({
+                    "filename": a.get("filename"),
+                    "url": a.get("url"),
+                    "size": a.get("size"),
+                    "document_id": a.get("document_id"),
+                })
+        except Exception as exc:
+            logger.warning("Failed to save generated image to Documents library: %s", exc)
+
+        return {"artifact": artifact, "caption": caption, "ok": True}
 
     async def generate_video(ctx, args):
         """Generate a video clip via Kie.ai (Veo 3.1 Fast by default).

@@ -6548,6 +6548,35 @@ async def generate_image(conv_id: str, body: GenerateImageBody, u: dict = Depend
         "timestamp": datetime.now(timezone.utc),
     }
     await db.messages.insert_one({**agent_msg})
+
+    # Also register this image as a Documents row so it shows up in the org's
+    # Documents library — this endpoint used to only write the raw file to
+    # UPLOAD_DIR and attach it to the chat message, unlike generate_video /
+    # generate_music which always persist through save_artifacts. Never let a
+    # failure here block the chat reply that already succeeded above.
+    try:
+        ext = filename.rsplit(".", 1)[-1] if "." in filename else "png"
+        img_bytes = (UPLOAD_DIR / filename).read_bytes()
+        await _save_artifacts(
+            db, [{
+                "name": filename,
+                "ext": ext,
+                "mime": f"image/{ext}",
+                "title": f"Image — {body.prompt[:60]}",
+                "content": "",
+                "_raw_bytes": img_bytes,
+            }],
+            docs_root=DOCS_DIR,
+            org_id=team.get("org_id") or "",
+            conversation_id=conv_id,
+            message_id=agent_msg["id"],
+            agent_id=agent_id,
+            agent_name=AGENTS[agent_id]["name"],
+            created_by=u["id"],
+        )
+    except Exception as exc:
+        logger.warning("Failed to save generated image to Documents library: %s", exc)
+
     return {
         "user_message": {k: v for k, v in user_msg.items() if k != "_id"},
         "agent_message": {k: v for k, v in agent_msg.items() if k != "_id"},

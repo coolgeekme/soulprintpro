@@ -403,7 +403,7 @@ export default function TeamPage() {
       >
         <Link to="/app" className="hover:text-white">Organizations</Link>
         <span className="mx-2 opacity-40">/</span>
-        <Link to={`/app/org/${team.org_id}`} className="hover:text-white">Org</Link>
+        <Link to={`/app/org/${team.org_id}`} className="hover:text-white">{team.org_name || "Org"}</Link>
         <span className="mx-2 opacity-40">/</span>
         <span className="text-white/90">{team.name}</span>
       </TopBar>

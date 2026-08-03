@@ -322,6 +322,7 @@ def serialize_team_with_visibility(team: dict, *, org: dict, viewer_id: str,
     out = {
         "id": str(team["_id"]),
         "org_id": team["org_id"],
+        "org_name": org.get("name", ""),
         "name": team.get("name", ""),
         "description": team.get("description", ""),
         "soulprint": team.get("soulprint", {}),

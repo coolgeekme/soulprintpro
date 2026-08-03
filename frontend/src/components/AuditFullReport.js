@@ -1,5 +1,6 @@
 import React from "react";
-import { Wand2, Building2, ExternalLink, Zap, Rocket, ShieldAlert, Gauge, Activity, ShieldCheck, Smartphone, Monitor, Tablet, MapPin, Layers, Megaphone, Briefcase, Heart, Settings2, LineChart, Users } from "lucide-react";
+import { Wand2, ExternalLink, Zap, Rocket, ShieldAlert, Gauge, ShieldCheck, Smartphone, Monitor, Tablet, MapPin, Layers, Megaphone, Briefcase, Heart, Settings2, LineChart, Users } from "lucide-react";
+import CollapsibleSection from "./CollapsibleSection";
 
 const BACKEND = process.env.REACT_APP_BACKEND_URL || "";
 
@@ -114,10 +115,29 @@ export default function AuditFullReport({ audit }) {
         </ol>
       </section>
 
+      {/* Strengths + Issues — only render here when the parent didn't
+          render its own teaser cards (admin uses this; public renders
+          its own teaser-then-unlock pair above the form). */}
+      {audit._show_strengths_issues && (
+        <div className="grid sm:grid-cols-2 gap-3">
+          <FullList title="Top strengths" items={audit.strengths || []} accent="emerald" />
+          <FullList title="Critical issues" items={audit.issues || []} accent="orange" />
+        </div>
+      )}
+
+      {/* Everything below is real signal, but it's a lot to take in at
+          once — these sections default to collapsed (one click to open)
+          so the report reads as a summary first, deep-dive second. Each
+          user's open/closed choice persists across audits via localStorage. */}
+
       {/* Competitors */}
-      <section>
-        <SectionHeader icon={Building2} title="Direct competitors" subtitle="Three companies playing the same game — and where they're ahead." />
-        <div className="grid sm:grid-cols-3 gap-3 mt-3">
+      <CollapsibleSection
+        title="Direct competitors"
+        subtitle="Three companies playing the same game — and where they're ahead."
+        storageKey="audit-competitors"
+        testId="audit-competitors-section"
+      >
+        <div className="grid sm:grid-cols-3 gap-3">
           {(audit.competitors || []).map((c, i) => (
             <div key={i} className="sp-glass rounded-xl p-5">
               <div className="font-medium text-base">{c.name}</div>
@@ -131,37 +151,38 @@ export default function AuditFullReport({ audit }) {
             </div>
           ))}
         </div>
-      </section>
+      </CollapsibleSection>
 
       {/* Brand voice */}
       {audit.brand_voice && (audit.brand_voice.stated_mission || audit.brand_voice.actual_voice || audit.brand_voice.gap) && (
-        <section>
-          <SectionHeader icon={Wand2} title="Brand voice read" subtitle="Stated mission vs. how the market hears it." />
-          <div className="sp-glass rounded-xl p-5 mt-3 space-y-3 text-base leading-relaxed">
+        <CollapsibleSection
+          title="Brand voice read"
+          subtitle="Stated mission vs. how the market hears it."
+          storageKey="audit-brand-voice"
+          testId="audit-brand-voice-section"
+        >
+          <div className="sp-glass rounded-xl p-5 space-y-3 text-base leading-relaxed">
             <div><b>Stated mission:</b> {audit.brand_voice.stated_mission}</div>
             <div><b>Actual voice:</b> {audit.brand_voice.actual_voice}</div>
             <div><b>The gap:</b> {audit.brand_voice.gap}</div>
           </div>
-        </section>
-      )}
-
-      {/* Strengths + Issues — only render here when the parent didn't
-          render its own teaser cards (admin uses this; public renders
-          its own teaser-then-unlock pair above the form). */}
-      {audit._show_strengths_issues && (
-        <div className="grid sm:grid-cols-2 gap-3">
-          <FullList title="Top strengths" items={audit.strengths || []} accent="emerald" />
-          <FullList title="Critical issues" items={audit.issues || []} accent="orange" />
-        </div>
+        </CollapsibleSection>
       )}
 
       {/* Section paragraphs */}
-      <div className="grid sm:grid-cols-2 gap-4">
-        <SectionParagraph title="Website analysis" body={sections.website_analysis} />
-        <SectionParagraph title="Social presence" body={sections.social_presence} />
-        <SectionParagraph title="Reviews summary" body={sections.reviews_summary} />
-        <SectionParagraph title="Competitive context" body={sections.competitive_context} />
-      </div>
+      <CollapsibleSection
+        title="Website, social & competitive analysis"
+        subtitle="The longer-form write-up behind the scores above."
+        storageKey="audit-section-paragraphs"
+        testId="audit-section-paragraphs-section"
+      >
+        <div className="grid sm:grid-cols-2 gap-4">
+          <SectionParagraph title="Website analysis" body={sections.website_analysis} />
+          <SectionParagraph title="Social presence" body={sections.social_presence} />
+          <SectionParagraph title="Reviews summary" body={sections.reviews_summary} />
+          <SectionParagraph title="Competitive context" body={sections.competitive_context} />
+        </div>
+      </CollapsibleSection>
 
       {/* Cross-functional opportunities — 6-card grid spanning Marketing,
           Sales, CX, Ops, Finance, Talent. Shows the platform's breadth
@@ -169,7 +190,16 @@ export default function AuditFullReport({ audit }) {
           where the field doesn't exist. */}
       {Array.isArray(audit.cross_functional_opportunities)
         && audit.cross_functional_opportunities.length > 0
-        && <CrossFunctionalOpportunities items={audit.cross_functional_opportunities} />}
+        && (
+          <CollapsibleSection
+            title="Beyond the website — cross-functional opportunities"
+            subtitle="Foundry's agents and missions span the whole business, not just the digital front door."
+            storageKey="audit-cross-functional"
+            testId="audit-cross-functional-section"
+          >
+            <CrossFunctionalOpportunities items={audit.cross_functional_opportunities} />
+          </CollapsibleSection>
+        )}
 
       {/* Technical signals — Core Web Vitals, viewport screenshots,
           tracking-pixel inventory, domain reputation. These are the
@@ -178,7 +208,16 @@ export default function AuditFullReport({ audit }) {
           grade prospect dossier". Each sub-section hides gracefully
           when its signal is unavailable, so older audits keep
           rendering. */}
-      {audit.tech_signals && <TechnicalSignals signals={audit.tech_signals} />}
+      {audit.tech_signals && hasTechnicalSignals(audit.tech_signals) && (
+        <CollapsibleSection
+          title="Technical signals"
+          subtitle="Hard data from our crawlers — performance numbers, tracking inventory, email security, and how your site renders across devices."
+          storageKey="audit-tech-signals"
+          testId="audit-tech-signals-section"
+        >
+          <TechnicalSignals signals={audit.tech_signals} />
+        </CollapsibleSection>
+      )}
 
       {/* Closing pitch — ties the audit's findings to how Foundry can
           help them act on the recommendations. The single highest-value
@@ -256,32 +295,31 @@ function FullList({ title, items, accent }) {
 
 
 // ── Technical signals section ────────────────────────────────────────────
-// Four sub-cards. Each one renders only when its signal is `available`
-// so we never show empty "—" stubs. The section header is suppressed
-// entirely when nothing's available (e.g. legacy audits).
+// Four sub-cards, each rendering only when its signal is `available` so we
+// never show empty "—" stubs. hasTechnicalSignals() decides whether the
+// collapsible wrapper itself renders at all (e.g. legacy audits with none).
+function hasTechnicalSignals(signals) {
+  const wv = signals?.web_vitals || {};
+  const sc = signals?.screenshots || {};
+  const tp = signals?.tracking_pixels || {};
+  const dr = signals?.domain_reputation || {};
+  return !!(wv.available || sc.available || tp.available || dr.available);
+}
+
 function TechnicalSignals({ signals }) {
   const wv = signals?.web_vitals || {};
   const sc = signals?.screenshots || {};
   const tp = signals?.tracking_pixels || {};
   const dr = signals?.domain_reputation || {};
-  const anyAvailable =
-    wv.available || sc.available || tp.available || dr.available;
-  if (!anyAvailable) return null;
+  if (!hasTechnicalSignals(signals)) return null;
 
   return (
-    <section data-testid="audit-tech-signals">
-      <SectionHeader
-        icon={Activity}
-        title="Technical signals"
-        subtitle="Hard data from our crawlers — performance numbers, tracking inventory, email security, and how your site renders across devices."
-      />
-      <div className="grid lg:grid-cols-2 gap-4 mt-3">
-        {wv.available && <WebVitalsCard wv={wv} />}
-        {dr.available && <DomainReputationCard dr={dr} />}
-        {tp.available && <TrackingPixelsCard tp={tp} />}
-        {sc.available && <ViewportShotsCard sc={sc} />}
-      </div>
-    </section>
+    <div className="grid lg:grid-cols-2 gap-4" data-testid="audit-tech-signals">
+      {wv.available && <WebVitalsCard wv={wv} />}
+      {dr.available && <DomainReputationCard dr={dr} />}
+      {tp.available && <TrackingPixelsCard tp={tp} />}
+      {sc.available && <ViewportShotsCard sc={sc} />}
+    </div>
   );
 }
 
@@ -497,14 +535,8 @@ const FUNCTION_ICONS = {
 
 function CrossFunctionalOpportunities({ items }) {
   return (
-    <section data-testid="audit-cross-functional">
-      <SectionHeader
-        icon={Layers}
-        title="Beyond the website — cross-functional opportunities"
-        subtitle="Foundry's agents and missions span the whole business, not just the digital front door. Here's one specific play per function for this organization."
-      />
-      <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-3 mt-3">
-        {items.map((op, i) => {
+    <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-3" data-testid="audit-cross-functional">
+      {items.map((op, i) => {
           const Icon = FUNCTION_ICONS[op.function] || Layers;
           return (
             <div
@@ -529,8 +561,7 @@ function CrossFunctionalOpportunities({ items }) {
             </div>
           );
         })}
-      </div>
-    </section>
+    </div>
   );
 }
 
