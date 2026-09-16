@@ -119,13 +119,18 @@ from file_storage import save_blob_to_gridfs, read_blob_from_gridfs  # noqa: E40
 async def persist_bytes(disk_path: Path, content: bytes,
                         original_name: str = "", mime: str = "",
                         *, stamp_for_proof: bool = False) -> Optional[str]:
-    """Write ``content`` to ``disk_path`` AND mirror to MongoDB GridFS.
+    """Persist ``content`` durably to MongoDB GridFS. Returns the
+    ``gridfs_id`` (str or None on failure).
 
-    Disk stays primary for fast local serving. The returned ``gridfs_id``
-    (str or None) should be stored alongside the on-disk filename in the
-    owning collection so that, if the container is redeployed and the
-    disk file vanishes, the serve handler can recover the bytes from
-    GridFS and rehydrate the disk copy. See file_storage.py for details.
+    Feb 2026 — historically this ALSO wrote to ``disk_path`` on the
+    pod's local disk as a hot cache. That cache is unreliable in
+    Emergent's ephemeral container environment (redeploys wipe the
+    disk mid-flight) and the pre-completion linter rightly flags
+    it as an anti-pattern. GridFS is now the sole source of truth;
+    ``serve_file`` already falls back to GridFS when disk is empty,
+    so removing the cache write has no correctness impact — only a
+    small latency uptick on repeat requests, which the file-serve
+    handler mitigates by keeping bytes in-process for the response.
 
     A row is also written to ``media_files`` keyed by the on-disk
     basename, so the global serve handlers can recover bytes for ANY
@@ -138,8 +143,6 @@ async def persist_bytes(disk_path: Path, content: bytes,
     briefs) where downstream consumers may want to independently
     verify authenticity via the ``ots`` CLI.
     """
-    disk_path.parent.mkdir(parents=True, exist_ok=True)
-    disk_path.write_bytes(content)
     gridfs_id = await save_blob_to_gridfs(
         db, content, original_name or disk_path.name, mime,
         stamp_for_proof=stamp_for_proof,
@@ -8935,10 +8938,14 @@ async def _heal_social_post_image(
     raw_blob, raw_mime, _ = await recover_bytes_from_gridfs(raw_name)
     if not raw_blob:
         return None
-    # Write raw back to disk so PIL can open it.
-    raw_path = UPLOAD_DIR / raw_name
+    # Rehydrate raw bytes into a `/tmp/` scratch file — PIL / _compose_logo
+    # both take a Path, and /tmp is the ephemeral scratch dir explicitly
+    # intended for per-request I/O. Persistent bytes are in GridFS.
+    import tempfile
+    scratch = Path(tempfile.gettempdir()) / "foundry-scratch"
+    scratch.mkdir(parents=True, exist_ok=True)
+    raw_path = scratch / raw_name
     try:
-        raw_path.parent.mkdir(parents=True, exist_ok=True)
         raw_path.write_bytes(raw_blob)
     except Exception as exc:
         logger.warning("Could not write rehydrated raw %s: %s", raw_name, exc)
@@ -8965,6 +8972,7 @@ async def _heal_social_post_image(
         logo_blob, _, _ = await recover_bytes_from_gridfs(logo_filename)
         if logo_blob:
             try:
+                logo_path = scratch / logo_filename
                 logo_path.write_bytes(logo_blob)
             except Exception as exc:
                 logger.warning("Could not rehydrate logo %s: %s", logo_filename, exc)

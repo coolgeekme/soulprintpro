@@ -4047,8 +4047,13 @@ def make_missions_router(
                 raise HTTPException(400,
                     f"'{original}' is too large (max {MAX_MISSION_ATTACH_SIZE // (1024 * 1024)} MB each).")
             fname = f"{MISSION_ATTACH_PREFIX}-{uuid.uuid4().hex}.{ext}"
-            fpath = UPLOAD_DIR / fname
-            fpath.write_bytes(blob)
+            # Mission attachments are served via /api/files/{fname} which
+            # falls back to GridFS when the pod disk is empty — the durable
+            # write is GridFS via `persist_bytes`. Text extraction still
+            # needs a physical file, so we spool to /tmp only for that.
+            from server import UPLOAD_DIR as _UPLOAD_DIR, persist_bytes as _persist  # type: ignore
+            fpath = _UPLOAD_DIR / fname
+            await _persist(fpath, blob, original_name=original, mime=upload.content_type or "")
             kind = _attach_kind(ext)
             # Extract a text preview for the system prompt so the agent
             # has immediate visibility without burning a tool call.
@@ -4056,7 +4061,16 @@ def make_missions_router(
             try:
                 from assets import is_text_extractable, extract_text, trim  # type: ignore
                 if is_text_extractable(ext):
-                    text_excerpt = trim(extract_text(fpath, ext), limit=2000)
+                    import tempfile as _tmp
+                    scratch_dir = Path(_tmp.gettempdir()) / "foundry-scratch"
+                    scratch_dir.mkdir(parents=True, exist_ok=True)
+                    scratch = scratch_dir / fname
+                    scratch.write_bytes(blob)
+                    try:
+                        text_excerpt = trim(extract_text(scratch, ext), limit=2000)
+                    finally:
+                        try: scratch.unlink()
+                        except Exception: pass
             except Exception as exc:
                 logger.info("mission upload extract failed for %s: %s", original, exc)
             attach_id = str(uuid.uuid4())
