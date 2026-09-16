@@ -2350,6 +2350,27 @@ def make_social_router(*, db, AGENTS, EMERGENT_LLM_KEY, LlmChat, UserMessage,
                 # Veo paths use the legacy single-shot helper; everything
                 # else goes through the marketplace submit/wait API.
                 cdn_url: Optional[str] = None
+                # Feed the post's cover image (if any) into the video
+                # request as a source frame. Kling / Runway / Wan / Sora /
+                # Seedance all accept `image_url` for image-to-video
+                # conditioning — Kie ignores the field on models that
+                # don't. Feb 2026 fix: users reported that "generate
+                # video" on a post with an image was returning a
+                # text-to-video with no image anchoring at all.
+                image_public_url: Optional[str] = None
+                image_path = ((post.get("image") or {}).get("url") or "").strip()
+                if image_path:
+                    public_base = (
+                        (post.get("image") or {}).get("public_url")
+                        or os.environ.get("PUBLIC_BACKEND_URL")
+                        or os.environ.get("REACT_APP_BACKEND_URL")
+                        or os.environ.get("FRONTEND_BASE_URL")
+                        or ""
+                    ).rstrip("/")
+                    if image_path.startswith("http"):
+                        image_public_url = image_path
+                    elif public_base:
+                        image_public_url = f"{public_base}{image_path}"
                 if model in ("veo3", "veo3_fast", "veo3_lite"):
                     if not kie_generate_video:
                         raise RuntimeError("Veo client not wired in")
@@ -2364,6 +2385,7 @@ def make_social_router(*, db, AGENTS, EMERGENT_LLM_KEY, LlmChat, UserMessage,
                         raise RuntimeError(f"Provider info missing for {model}")
                     task_id = await kie_submit_kie_task(
                         model_key=model, prompt=full_prompt,
+                        image_url=image_public_url,
                         extra={"aspect_ratio": ar},
                     )
                     if not task_id:

@@ -7102,6 +7102,115 @@ async def _kick_off_video(conv_id: str, agent_id: str, prompt: str, aspect_ratio
     )
     return {k: v for k, v in msg.items() if k != "_id"}
 
+
+# ── Image-to-video (Kling 2.1 Master I2V) — for chat attachments ────────
+async def _poll_and_save_i2v(
+    message_id: str, prompt: str, *, task_id: str, duration: str,
+) -> None:
+    """Poll a Kling 2.1 Master Image-to-Video job, download the mp4, patch
+    the placeholder message. Mirrors `_poll_and_save_video` but for the
+    Kie Jobs endpoint used by the Kling family."""
+    from kie_client import wait_for_kie_job
+    urls: list[str] = []
+    try:
+        urls = await wait_for_kie_job(task_id, total_timeout=600) or []
+    except Exception as exc:
+        logger.exception("Kling I2V polling crash: %s", exc)
+        urls = []
+    now = datetime.now(timezone.utc)
+    if not urls:
+        await db.messages.update_one(
+            {"id": message_id},
+            {"$set": {
+                "media_status": "failed",
+                "text": (
+                    "I couldn't animate that image — Kling didn't return a "
+                    "clip. Try again or use a different reference image."
+                ),
+                "ready_at": now,
+            }},
+        )
+        return
+    local = await _save_remote_url_to_uploads(urls[0], suffix=".mp4")
+    final_url = f"/api/files/{local.name}" if local else urls[0]
+    patch: dict = {
+        "media_url": final_url,
+        "media_status": "ready",
+        "ready_at": now,
+        "text": f"Here's your {duration}s animation from the source image.",
+    }
+    if local:
+        patch["media_filename"] = local.name
+        patch["media_remote_url"] = urls[0]
+    await db.messages.update_one({"id": message_id}, {"$set": patch})
+
+
+async def _kick_off_image_to_video(
+    conv_id: str, agent_id: str, prompt: str, *,
+    image_url: str, duration: str = "5",
+) -> dict:
+    """Persist a pending "generating video" message and submit a Kling 2.1
+    Master Image-to-Video job. The `image_url` must be an absolute HTTPS
+    URL Kie can fetch (chat attachments live at `/api/files/conv/...`
+    and are publicly reachable via capability URL).
+    """
+    if duration not in ("5", "10"):
+        duration = "5"
+    from kie_client import submit_kie_job
+    task_id: Optional[str] = None
+    try:
+        task_id = await submit_kie_job(
+            model="kling/v2-1-master-image-to-video",
+            input_params={
+                "prompt": (prompt or "smooth cinematic motion").strip()[:5000],
+                "image_url": image_url,
+                "duration": duration,
+            },
+        )
+    except Exception as exc:
+        logger.warning("Kling I2V submit failed: %s", exc)
+        task_id = None
+    now = datetime.now(timezone.utc)
+    base_msg = {
+        "id": str(uuid.uuid4()),
+        "conversation_id": conv_id,
+        "sender_type": "agent",
+        "sender_id": agent_id,
+        "sender_name": AGENTS[agent_id]["name"],
+        "agent_id": agent_id,
+        "media_type": "video",
+        "media_prompt": (prompt or "")[:500],
+        "aspect_ratio": "Auto",  # Kling I2V preserves source aspect ratio
+        "kie_image_url": image_url,
+        "timestamp": now,
+    }
+    if not task_id:
+        msg = {
+            **base_msg,
+            "text": (
+                "I couldn't start that animation — the generation service "
+                "rejected the request. Try again with a different image or prompt."
+            ),
+            "media_status": "failed",
+            "ready_at": now,
+        }
+        await db.messages.insert_one({**msg})
+        return {k: v for k, v in msg.items() if k != "_id"}
+    msg = {
+        **base_msg,
+        "text": f"Animating your image with Kling 2.1 Master ({duration}s) — this usually takes 60-180s.",
+        "media_status": "pending",
+        "kie_task_id": task_id,
+        "kie_model": "kling-v21-master-i2v",
+        "kie_duration": duration,
+    }
+    await db.messages.insert_one({**msg})
+    asyncio.create_task(
+        _poll_and_save_i2v(msg["id"], prompt, task_id=task_id, duration=duration)
+    )
+    return {k: v for k, v in msg.items() if k != "_id"}
+
+
 @conv_r.post("/conversations/{conv_id}/generate-video")
 async def generate_video_endpoint(conv_id: str, body: GenerateVideoBody, u: dict = Depends(get_current_user)):
     if not body.prompt.strip():
@@ -7745,6 +7854,45 @@ async def upload_to_conversation(
             "agent_messages": [],
             "ok": True,
         }
+
+    # ── Image-to-video fast path ──────────────────────────────────────────
+    # If the user attached ONE image AND clearly asked for a video / clip
+    # / animation, kick off Kling 2.1 Master Image-to-Video with the
+    # uploaded image as the source. Must run BEFORE the image-edit path
+    # below, or the request silently returns an edited still (bug users
+    # hit on production Feb 2026: "chat says video generating but result
+    # is just an image").
+    if (
+        is_all_images
+        and len(image_paths) == 1
+        and os.environ.get("KIE_API_KEY")
+        and _quick_video_intent(text or "") is True
+    ):
+        try:
+            # Kie needs a publicly reachable HTTPS URL for the source
+            # image. Chat attachments live at `/api/files/conv/{cid}/...`
+            # with capability URLs (no auth), so we can hand them out
+            # directly. `PUBLIC_BASE_URL` is the outward-facing origin
+            # (foundryagents.ai in prod, preview URL in dev).
+            public_base = (
+                os.environ.get("PUBLIC_BASE_URL")
+                or os.environ.get("REACT_APP_BACKEND_URL", "")
+            ).rstrip("/")
+            source_url = f"{public_base}{primary['url']}" if public_base else primary["url"]
+            duration = "10" if re.search(r"\b(10s|10\s*sec(?:ond)?s?|long)\b", text or "", re.I) else "5"
+            pending = await _kick_off_image_to_video(
+                conv_id, responder, text or "smooth cinematic motion",
+                image_url=source_url, duration=duration,
+            )
+            fresh = await db.conversations.find_one({"_id": ObjectId(conv_id)})
+            return {
+                "user_message": {k: v for k, v in user_doc.items() if k != "_id"},
+                "agent_messages": [pending],
+                "conversation": serialize_conv(fresh) if fresh else None,
+                "ok": True,
+            }
+        except Exception as exc:
+            logger.warning("I2V fast-path failed, falling back to edit path: %s", exc)
 
     # ── Edit / compose-image fast path ────────────────────────────────────
     # If the user attached image(s) AND the prompt contains a clear edit /
