@@ -7156,6 +7156,30 @@ async def _kick_off_image_to_video(
     """
     if duration not in ("5", "10"):
         duration = "5"
+    # Defensive: Kie's Kling I2V fetches `image_url` server-side. If the
+    # caller supplied a relative or bogus URL, refuse fast rather than
+    # burn a 60-180s task on a job that can never succeed.
+    if not image_url or not image_url.startswith(("http://", "https://")):
+        now = datetime.now(timezone.utc)
+        msg = {
+            "id": str(uuid.uuid4()),
+            "conversation_id": conv_id,
+            "sender_type": "agent",
+            "sender_id": agent_id,
+            "sender_name": AGENTS[agent_id]["name"],
+            "agent_id": agent_id,
+            "media_type": "video",
+            "media_status": "failed",
+            "text": (
+                "I couldn't animate that image — the server isn't set up "
+                "to expose uploaded images publicly to the video engine. "
+                "Ask an admin to configure the public base URL."
+            ),
+            "timestamp": now,
+            "ready_at": now,
+        }
+        await db.messages.insert_one({**msg})
+        return {k: v for k, v in msg.items() if k != "_id"}
     from kie_client import submit_kie_job
     task_id: Optional[str] = None
     try:
@@ -7872,13 +7896,31 @@ async def upload_to_conversation(
             # Kie needs a publicly reachable HTTPS URL for the source
             # image. Chat attachments live at `/api/files/conv/{cid}/...`
             # with capability URLs (no auth), so we can hand them out
-            # directly. `PUBLIC_BASE_URL` is the outward-facing origin
-            # (foundryagents.ai in prod, preview URL in dev).
+            # directly. Backend .env uses `PUBLIC_ORIGIN_OVERRIDE` (or
+            # `FRONTEND_URL` as fallback) as the outward-facing origin —
+            # NOT `REACT_APP_BACKEND_URL` (that's a frontend-only var).
             public_base = (
-                os.environ.get("PUBLIC_BASE_URL")
-                or os.environ.get("REACT_APP_BACKEND_URL", "")
+                os.environ.get("PUBLIC_ORIGIN_OVERRIDE")
+                or os.environ.get("FRONTEND_URL")
+                or ""
             ).rstrip("/")
-            source_url = f"{public_base}{primary['url']}" if public_base else primary["url"]
+            source_url = (
+                f"{public_base}{primary['url']}" if public_base else primary["url"]
+            )
+            if not source_url.startswith(("http://", "https://")):
+                # Kie fetches image_url server-side — a relative path
+                # would silently fail 60-180s later. Fail fast so the
+                # user sees a real error instead of a stuck spinner.
+                logger.warning(
+                    "I2V fast-path: no public base URL resolved for "
+                    "image %s. Set PUBLIC_ORIGIN_OVERRIDE or FRONTEND_URL "
+                    "in backend .env.", primary["url"],
+                )
+                raise RuntimeError(
+                    "Server isn't configured with a public base URL for "
+                    "image-to-video. Ask an admin to set "
+                    "PUBLIC_ORIGIN_OVERRIDE / FRONTEND_URL."
+                )
             duration = "10" if re.search(r"\b(10s|10\s*sec(?:ond)?s?|long)\b", text or "", re.I) else "5"
             pending = await _kick_off_image_to_video(
                 conv_id, responder, text or "smooth cinematic motion",

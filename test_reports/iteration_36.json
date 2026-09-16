@@ -1,0 +1,39 @@
+{
+  "summary": "Verified the image-to-video chat routing fix and its regression guard against the image-edit fast-path. 4/4 tests pass. HOWEVER, discovered a follow-up bug that will silently break the fix in production: the chat helper `_kick_off_image_to_video` and the social-queue `_run_video_bg` both read env vars (`PUBLIC_BASE_URL` / `REACT_APP_BACKEND_URL` / `PUBLIC_BACKEND_URL` / `FRONTEND_BASE_URL`) that are NOT present in `/app/backend/.env`. Result: source_url passed to Kie is a RELATIVE path (`/api/files/conv/...`), so Kie's server-side image fetch will fail and the video will never be produced.",
+  "backend_issues": {
+    "critical": [
+      {"endpoint": "POST /api/conversations/{conv_id}/upload (I2V fast-path)", "issue": "server.py:7877-7881 reads PUBLIC_BASE_URL or REACT_APP_BACKEND_URL from backend env. Neither is set in /app/backend/.env (backend has FRONTEND_URL and PUBLIC_ORIGIN_OVERRIDE instead). Confirmed via test: kie_image_url on the persisted pending video message is '/api/files/conv/<cid>/<uuid>.png' — a RELATIVE URL that Kie cannot fetch. The fast-path submits the job and returns pending, but the mp4 will never materialise because Kie's backend can't download the source frame.", "priority": "HIGH"},
+      {"endpoint": "POST /api/social/posts/{post_id}/generate-video", "issue": "social_posts.py:2363-2369 checks PUBLIC_BACKEND_URL / REACT_APP_BACKEND_URL / FRONTEND_BASE_URL — none exist in backend .env. So `image_public_url` stays None for any post whose image.url is a local /api/files path, and the fix silently no-ops (image_url is NOT sent to Kie). Same bug the user originally reported.", "priority": "HIGH"}
+    ],
+    "minor": []
+  },
+  "frontend_issues": {"ui_bugs": [], "integration_issues": [], "design_issues": []},
+  "test_report_links": [
+    "/app/backend/tests/test_iter36_image_to_video.py",
+    "/app/test_reports/pytest/iter36_i2v.xml"
+  ],
+  "action_items": [
+    "Align env-var names between code and .env. Either (a) rename the reads in server.py:7877-7881 and social_posts.py:2363-2369 to use PUBLIC_ORIGIN_OVERRIDE / FRONTEND_URL (the vars that actually exist), OR (b) add PUBLIC_BASE_URL=https://foundryagents.ai (prod) / PUBLIC_BASE_URL=https://emergent-wing.preview.emergentagent.com (preview) to /app/backend/.env. Recommend option (a) with a fallback chain, since PUBLIC_ORIGIN_OVERRIDE is already the canonical.",
+    "Add a defensive guard at the top of _kick_off_image_to_video: if `image_url` does not start with http(s), refuse to submit and stamp media_status='failed' with a clear error — otherwise the current behaviour silently burns a Kling task_id + 60-180s of user waiting on a job that can never succeed.",
+    "Same guard for social_posts._run_video_bg: if image_path was set but image_public_url couldn't be resolved to absolute HTTPS, log a WARNING (currently silent)."
+  ],
+  "critical_code_review_comments": [
+    "server.py:7148 `_kick_off_image_to_video` accepts image_url with NO scheme validation. A relative path like `/api/files/conv/X/Y.png` is happily forwarded to Kie's submit_kie_job. Kie will 4xx or 5xx on fetch. Add `if not image_url.startswith(('http://','https://')): return failed_message` before submission.",
+    "server.py:7877-7881 env-var lookup is fragile — it prefers PUBLIC_BASE_URL then REACT_APP_BACKEND_URL. Backend .env has neither. Should also read PUBLIC_ORIGIN_OVERRIDE (existing) or FRONTEND_URL (existing) as fallbacks.",
+    "social_posts.py:2363-2369 same fragility — the fallback chain is PUBLIC_BACKEND_URL → REACT_APP_BACKEND_URL → FRONTEND_BASE_URL, none of which are in backend .env. FRONTEND_URL (present) is not in the list.",
+    "server.py:7107 `_poll_and_save_i2v` writes text 'Here's your Ns animation…' but `duration` is a string; the message reads fine but there's no unit test for the failure branch messaging.",
+    "Overall: server.py is 11691 lines — well past the 700-line guideline. Should be split (chat routing, agents, media helpers, admin) into modules.",
+    "server.py:7862-7896 the try/except around the whole I2V fast-path swallows ALL exceptions and falls through to the image-edit path. This means any bug inside _kick_off_image_to_video (e.g. DB write error) silently reproduces the original user-reported bug (video request → image edit). Consider re-raising for 5xx-shaped failures and only falling through for the specific 'no task_id' case."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_iter36_image_to_video.py"
+  ],
+  "success_rate": {"backend": "100% (4/4 tests) but with a HIGH-priority env-var bug outside the test assertions", "frontend": "not tested (backend-only request)"},
+  "test_credentials": "reggie@coolgeek.me / superadminpass123 (from /app/memory/test_credentials.md).",
+  "seed_data_creation": "During test run: 1 team + 1 direct conversation created under reggie's default org (both prefixed TEST_I2V*). One image attachment uploaded to /app/backend/uploads/conv/{conv_id}/. Two agent messages persisted in db.messages (one video pending, one image edit). NOT cleaned up — teardown intentionally skipped so the pending kie job can complete or fail in the background.",
+  "retest_needed": true,
+  "should_main_agent_self_test": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "After the main agent fixes the env-var mismatch (option a or b above), rerun /app/backend/tests/test_iter36_image_to_video.py and confirm that the printed `kie_image_url` in test_video_prompt_routes_to_kling_i2v starts with http(s). To verify the social path additionally, create a post with an `image.url = /api/files/…` locally, POST /api/social/posts/{id}/generate-video, then either mock kie_submit_kie_task or tail backend logs to see what image_url actually got sent (search for 'Kie jobs submit' or add a debug log at social_posts.py:2386). For the actual mp4 result, users must wait ~60-180s for Kling; the pending→ready patch happens in _poll_and_save_i2v and is out of scope for this iteration's routing test.",
+  "rca of the issue": "RCA of original user report ('chat says video generating but result is an image'): pre-fix, the multi-file upload handler in server.py did not check for video intent before routing single-image attachments to the nano-banana image-edit path (7897+). Fix: new fast-path at server.py:7858-7896 runs `_quick_video_intent(text)` before the edit path — when True, it calls `_kick_off_image_to_video` which submits a Kling 2.1 Master I2V job (kie_client.py:679-723 primitive) and persists a media_type='video' pending message. VERIFIED by test_iter36_image_to_video.py::test_video_prompt_routes_to_kling_i2v — response now has media_type='video', kie_model='kling-v21-master-i2v', kie_task_id populated. NEW BUG DISCOVERED: env-var mismatch means the image_url passed to Kie is relative, so while the routing is fixed, actual video completion will fail. See action_items."
+}

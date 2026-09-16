@@ -2362,15 +2362,23 @@ def make_social_router(*, db, AGENTS, EMERGENT_LLM_KEY, LlmChat, UserMessage,
                 if image_path:
                     public_base = (
                         (post.get("image") or {}).get("public_url")
-                        or os.environ.get("PUBLIC_BACKEND_URL")
-                        or os.environ.get("REACT_APP_BACKEND_URL")
-                        or os.environ.get("FRONTEND_BASE_URL")
+                        or os.environ.get("PUBLIC_ORIGIN_OVERRIDE")
+                        or os.environ.get("FRONTEND_URL")
                         or ""
                     ).rstrip("/")
                     if image_path.startswith("http"):
                         image_public_url = image_path
                     elif public_base:
                         image_public_url = f"{public_base}{image_path}"
+                    if not image_public_url or not image_public_url.startswith(("http://", "https://")):
+                        logger.warning(
+                            "Social video: post %s has image %s but no public "
+                            "base URL is configured — Kie won't be able to use "
+                            "it as a source frame. Set PUBLIC_ORIGIN_OVERRIDE "
+                            "or FRONTEND_URL in backend .env.",
+                            post_id, image_path,
+                        )
+                        image_public_url = None
                 if model in ("veo3", "veo3_fast", "veo3_lite"):
                     if not kie_generate_video:
                         raise RuntimeError("Veo client not wired in")
