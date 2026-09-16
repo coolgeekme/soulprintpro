@@ -8550,7 +8550,13 @@ async def unfurl(url: str, u: dict = Depends(get_current_user)):
     )
     return preview
 
-ALLOWED_FILENAME_RE = re.compile(r"^([a-z]+-)?[a-f0-9][a-f0-9\-]{14,}\.(png|jpg|jpeg|webp|gif|pdf)$", re.IGNORECASE)
+ALLOWED_FILENAME_RE = re.compile(
+    r"^([a-z]+-)?[a-f0-9]{8,64}\."
+    r"(png|jpg|jpeg|webp|gif|pdf|mp4|mov|webm|mp3|wav|m4a|ogg|aac|flac)$",
+    re.IGNORECASE,
+)  # widened Feb 2026 — old regex rejected .mp4/.mp3 (video/audio never
+   # served, only 400'd) AND required 14+ hex chars which killed the
+   # `kie-{12hex}` naming used by `_save_remote_url_to_uploads`.
 
 @files_r.get("/assets/{filename}")
 async def serve_org_asset(filename: str):
