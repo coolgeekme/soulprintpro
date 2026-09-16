@@ -171,7 +171,7 @@ export default function AdminAuditsPanel() {
                   } else {
                     toast.info("Nothing stuck — every audit is still inside the watchdog window.");
                   }
-                  await load();
+                  await reload();
                 } catch (err) {
                   toast.error(err?.response?.data?.detail || "Could not rescue audits.");
                 }

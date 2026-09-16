@@ -1,0 +1,33 @@
+{
+  "summary": "Verified widened ALLOWED_FILENAME_RE fix in /api/files/{filename}. Seeded a synthetic kie-{12hex}.mp4 with a matching db.messages doc → endpoint returns 200 with video/mp4 mime (previously 400 'Invalid filename'). Also confirmed .mov/.webm/.mp3/.wav all pass the regex gate, nano-banana 32-hex .png still returns 200, audit 32-hex .pdf still returns 200, and malicious filenames (.exe, <8 hex, non-hex chars, double extensions, no extension, >64 hex, encoded path traversal) all still get 400. 16/16 tests pass.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_serve_file_media_regex.py",
+    "/app/test_reports/pytest/iter35_serve_file_regex.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "server.py:8557-8559 — the multi-line trailing comment after re.compile() closer is valid Python but stylistically fragile; consider using a plain '#' block above the assignment instead of dangling comment lines after the closing paren.",
+    "The regex still uses re.IGNORECASE but the character class is only [a-f0-9]. IGNORECASE has no effect on hex digits or the fixed extension list (all lowercase). This means uppercase hex like 'ABCDEF01.MP4' will pass the regex — but the on-disk filename saved by _save_remote_url_to_uploads is always lowercase (uuid4.hex), and the db ownership lookup is case-sensitive. Effect is benign, just cosmetic dead code — consider dropping re.IGNORECASE for clarity.",
+    "server.py:8557 (docstring on module var) claims audio 'never served, only 400'd' pre-fix — worth confirming there was no separate audio-serving path that this regex change accidentally re-enables with different ownership semantics (currently ownership check covers messages/orgs/social_posts/business_audits — audio files must appear in one of those docs to serve). Looks fine but worth a code-review pass."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_serve_file_media_regex.py"
+  ],
+  "success_rate": {"backend": "100%", "frontend": "not tested (backend-only request)"},
+  "test_credentials": "Not needed — /api/files/{filename} is a capability URL, no auth required.",
+  "seed_data_creation": "During test run only: db.messages docs prefixed with TEST_msg_ and a db.business_audits doc prefixed with TEST_audit_; all cleaned up in fixture teardown. Physical files kie-{12hex}.mp4, {32hex}.png, {32hex}.pdf written to /app/backend/uploads and deleted on teardown.",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Regex fix at server.py:8553-8556 is verified working end-to-end for the file-serve gate. If the user still reports 'video card renders but never loads' on production https://foundryagents.ai, the bug is NO LONGER at /api/files/. Next places to check: (1) is _save_remote_url_to_uploads actually completing on prod (check backend logs for 'kie-' downloads and _poll_and_save_kie_media polling loop errors), (2) is the placeholder message ever being PATCHed to media_status='ready' with media_url set (check db.messages for pending kie messages that never flipped), (3) is Kie.ai returning a downloadable URL (Kie infra can be flaky), (4) is the frontend polling GET /api/conversations/{id}/messages long enough for the pending→ready transition, (5) CORS/mixed-content: does production BACKEND_URL match the origin so the <video src=...> loads.",
+  "rca of the issue": "RCA: pre-fix ALLOWED_FILENAME_RE was `^([a-z]+-)?[a-f0-9]{14,64}\\.(png|jpg|jpeg|webp|gif|pdf)$` (or similar) — it rejected both (a) .mp4/.mp3/.mov/.webm/.wav extensions and (b) the exact 12-hex length used by _save_remote_url_to_uploads (uuid4.hex[:12]). Result: every Kie video URL /api/files/kie-{12hex}.mp4 returned 400 'Invalid filename', so <video src> could never load. Fix: widened to `^([a-z]+-)?[a-f0-9]{8,64}\\.(png|jpg|jpeg|webp|gif|pdf|mp4|mov|webm|mp3|wav|m4a|ogg|aac|flac)$`. Repro: curl the URL of any pending kie video message → 400 pre-fix, 200 post-fix. Mitigation: verified — see this iteration's test suite."
+}

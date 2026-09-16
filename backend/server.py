@@ -4542,7 +4542,7 @@ async def generate_agent_reply(conv: dict, team: dict, agent_id: str,
     try:
         from notes import get_agent_context_notes
         org_notes = await get_agent_context_notes(
-            db, org_id=team.get("org_id", ""), viewer_user_id=u["id"],
+            db, org_id=team.get("org_id", ""), viewer_user_id=latest_user_id or "",
             team_id=team.get("id"),
         )
     except Exception as exc:
@@ -5145,7 +5145,8 @@ async def _generate_image_attachments(
         # Register as a real Document so the org library + share URL flows
         # work without special-casing. Mirrors the bookkeeping done by
         # the existing `/generate-image` route.
-        org_folder = DOCS_DIR / org_id
+        _org_id = team.get("org_id", "") if team else ""
+        org_folder = DOCS_DIR / _org_id
         org_folder.mkdir(parents=True, exist_ok=True)
         doc_filename = f"{uuid.uuid4().hex}.png"
         try:
@@ -5162,7 +5163,7 @@ async def _generate_image_attachments(
         friendly_title = (block.get("title") or "").strip() or "Generated image"
         doc = {
             "id": str(uuid.uuid4()),
-            "org_id": org_id,
+            "org_id": _org_id,
             "conversation_id": str(conv.get("_id") or ""),
             "message_id": message_id,
             "agent_id": agent_id,
@@ -5921,7 +5922,7 @@ async def smart_start(team_id: str, body: SmartStartBody, u: dict = Depends(get_
         # Shared brand-context helper — every image-intent path (CoS
         # solo, group team chat, direct-message) inherits the same
         # Soul + logo behaviour.
-        bc = await _resolve_brand_context(conv=conv, team=team)
+        bc = await _resolve_brand_context(conv=conv_doc, team=team)
         sp_lines = bc["soul_lines"]
         sys_msg = (
             f"You are {AGENTS[chosen]['name']}, generating an image on behalf of the "
@@ -8579,11 +8580,7 @@ async def serve_org_asset(filename: str):
         return FileResponse(path, filename=original, media_type=mime)
     blob, m2, o2 = await recover_bytes_from_gridfs(filename)
     if blob is not None:
-        try:
-            path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_bytes(blob)
-        except Exception:
-            pass
+        # Serve straight from GridFS bytes — no disk cache (ephemeral pod).
         from fastapi.responses import Response  # noqa: E402
         headers = {"Content-Disposition": f'attachment; filename="{o2 or original}"'}
         return Response(content=blob, media_type=m2 or mime or "application/octet-stream", headers=headers)
@@ -8629,11 +8626,7 @@ async def serve_conv_attachment(conv_id: str, filename: str):
         return FileResponse(path, filename=original, media_type=mime)
     blob, m2, o2 = await recover_bytes_from_gridfs(filename)
     if blob is not None:
-        try:
-            path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_bytes(blob)
-        except Exception:
-            pass
+        # Serve straight from GridFS bytes — no disk cache (ephemeral pod).
         from fastapi.responses import Response  # noqa: E402
         headers = {"Content-Disposition": f'attachment; filename="{o2 or original}"'}
         return Response(content=blob, media_type=m2 or mime or "application/octet-stream", headers=headers)
@@ -8701,11 +8694,7 @@ async def serve_file(filename: str):
     # Disk gone — try GridFS via the global map.
     blob, mime, _orig = await recover_bytes_from_gridfs(filename)
     if blob is not None:
-        try:
-            path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_bytes(blob)
-        except Exception:
-            pass
+        # Serve straight from GridFS bytes — no disk cache (ephemeral pod).
         from fastapi.responses import Response  # noqa: E402
         return Response(content=blob, media_type=mime or "application/octet-stream")
 
