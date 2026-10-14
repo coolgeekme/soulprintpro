@@ -411,7 +411,7 @@ const FAQ = [
   },
   {
     q: "Is there a free trial?",
-    a: "Yes — every public Signal Audit you generate at /get-audit includes a 24-hour access code to the full platform. No card required.",
+    a: "Yes — every public Signal Audit you generate at /get-audit includes a 7-day access code to the full platform. No card required.",
   },
   {
     q: "Annual vs monthly?",

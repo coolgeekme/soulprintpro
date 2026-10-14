@@ -313,7 +313,7 @@ export default function AuthPage() {
               <p className="text-[10px] sp-subtle mt-1 leading-snug">
                 Invite-only during pre-launch. Don't have a code?{" "}
                 <Link to="/get-audit" className="text-white underline">
-                  request a free 24-hour trial
+                  request a free 7-day trial
                 </Link>
                 .
               </p>

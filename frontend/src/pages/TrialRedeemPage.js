@@ -16,7 +16,7 @@ import { useAuth } from "../context/AuthContext";/**
  *      They paste the code from the email.
  *
  * On successful redeem we drop straight into /app fully signed in,
- * with the 24-hour trial clock already running.
+ * with the 7-day trial clock already running.
  */
 export default function TrialRedeemPage() {
   const [params] = useSearchParams();
@@ -88,14 +88,14 @@ export default function TrialRedeemPage() {
           {/* Hero */}
           <div className="text-center mb-7">
             <div className="inline-flex items-center gap-1.5 sp-glass rounded-full px-3 py-1 text-[10px] uppercase tracking-widest sp-subtle mb-4">
-              <Rocket className="w-3 h-3" /> Start your 24-hour trial
+              <Rocket className="w-3 h-3" /> Start your 7-day trial
             </div>
             <h1 className="text-2xl sm:text-3xl font-medium tracking-tight leading-[1.15]">
               The clock starts when you click submit.
             </h1>
             <p className="text-sm sp-subtle leading-relaxed mt-2">
               Pop in the code we emailed you, set up your account, and you'll
-              land in a fully provisioned workspace with 24 hours to put SoulPrint
+              land in a fully provisioned workspace with 7 days to put SoulPrint
               Engine Pro through its paces. No credit card required.
             </p>
           </div>
@@ -162,7 +162,7 @@ export default function TrialRedeemPage() {
               >
                 {phase === "submitting"
                   ? <><Loader2 className="w-4 h-4 animate-spin" /> Starting your trial…</>
-                  : <>Start my 24-hour trial <ArrowRight className="w-4 h-4" /></>}
+                  : <>Start my 7-day trial <ArrowRight className="w-4 h-4" /></>}
               </button>
 
               {error && (

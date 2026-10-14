@@ -124,7 +124,7 @@ export default function TopBar({ children, right = null }) {
           </div>
           <div className="flex items-center gap-2">
             {/* Trial countdown — only renders when the signed-in user
-                has an active 24-hour trial. Disappears the moment the
+                has an active 7-day trial. Disappears the moment the
                 clock runs out so it doesn't haunt expired-trial users
                 with stale info. */}
             {user && <TrialCountdownBadge user={user} />}
@@ -305,7 +305,7 @@ export default function TopBar({ children, right = null }) {
 function TrialCountdownBadge({ user }) {
   // Use a tick to recompute the relative remaining time once a minute.
   // Re-rendering the whole TopBar every second would be wasteful; per
-  // minute is granular enough for a 24-hour countdown.
+  // minute is granular enough for a 7-day countdown.
   const [, setTick] = React.useState(0);
   React.useEffect(() => {
     const id = setInterval(() => setTick((t) => t + 1), 60_000);
@@ -318,18 +318,19 @@ function TrialCountdownBadge({ user }) {
   if (Number.isNaN(exp)) return null;
   const remaining = exp - Date.now();
   if (remaining <= 0) return null;  // expired — hide; an upsell would go here once billing exists.
-  const hours = Math.floor(remaining / 3_600_000);
+  const days = Math.floor(remaining / 86_400_000);
+  const hours = Math.floor((remaining % 86_400_000) / 3_600_000);
   const minutes = Math.floor((remaining % 3_600_000) / 60_000);
-  const label = hours >= 1 ? `${hours}h left` : `${minutes}m left`;
-  // Color tilts orange under 4 hours so the user feels the urgency.
-  const color = hours < 4 ? "rgba(251,146,60,1)" : "rgba(74,222,128,1)";
-  const bg = hours < 4 ? "rgba(251,146,60,0.12)" : "rgba(74,222,128,0.12)";
+  const label = days >= 1 ? `${days}d ${hours}h left` : (hours >= 1 ? `${hours}h left` : `${minutes}m left`);
+  // Color tilts orange in the final day so the user feels the urgency.
+  const color = remaining < 86_400_000 ? "rgba(251,146,60,1)" : "rgba(74,222,128,1)";
+  const bg = remaining < 86_400_000 ? "rgba(251,146,60,0.12)" : "rgba(74,222,128,0.12)";
   return (
     <Link
       to="/trust"
       className="hidden md:inline-flex items-center gap-1 rounded-full px-2 py-1 text-[10px] font-medium transition hover:brightness-125"
       style={{ background: bg, color, border: `1px solid ${bg.replace("0.12", "0.3")}` }}
-      title="Your 24-hour trial is active — make the most of it"
+      title="Your 7-day trial is active — make the most of it"
       data-testid="topbar-trial-badge"
     >
       <Rocket className="w-3 h-3" />

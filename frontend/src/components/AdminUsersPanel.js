@@ -33,7 +33,7 @@ function FirstDayBadge({ createdAt }) {
   return (
     <span
       className={`inline-flex items-center gap-1 text-[10px] uppercase tracking-widest px-1.5 py-0.5 rounded-full border ${tone}`}
-      title="Time remaining in the first 24 hours after signup"
+      title="Time remaining in the first 7 days after signup"
       data-testid="admin-user-24h-pill"
     >
       <Clock className="w-3 h-3" /> {label}

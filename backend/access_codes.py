@@ -4,7 +4,7 @@ Two parallel sources of truth grant a signed-in user passage past the
 gate:
 
  1. Their user row carries ``access_granted_at`` after they redeemed
-    a private/admin-issued access code OR a 24-hour trial code at any
+    a private/admin-issued access code OR a 7-day trial code at any
     point in the past. (Trial redemption stamps it implicitly via
     ``trial_started_at`` — see the `_user_has_access` helper.)
  2. Their browser carries a long-lived ``sp_access_ok`` JWT cookie
@@ -19,7 +19,7 @@ Superadmins always pass.
 Codes:
 
 * **Trial codes** (existing collection ``trial_codes``) — single-use,
-  email-bound, started a 24h timer. Already wired through
+  email-bound, started a 7-day timer. Already wired through
   ``trial.py``. The redeem endpoint here ALSO accepts these codes for
   signed-in users who never registered through the trial funnel and
   just need to unlock their account post-hoc.
@@ -40,6 +40,8 @@ import jwt
 from bson import ObjectId
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from pydantic import BaseModel, Field
+
+from trial import TRIAL_DURATION_HOURS
 
 logger = logging.getLogger(__name__)
 
@@ -417,7 +419,7 @@ async def redeem_code_for_user(db, raw_code: str, user_id: str) -> tuple[str, st
             if t_expires < now:
                 return None
         trial_started_at = now
-        trial_expires_at = now + timedelta(hours=24)
+        trial_expires_at = now + timedelta(hours=TRIAL_DURATION_HOURS)
         await db.users.update_one(
             {"_id": user_obj_id},
             {"$set": {
@@ -596,7 +598,7 @@ def make_access_codes_router(*, db, get_current_user, get_user_or_none) -> APIRo
     async def redeem(body: RedeemBody, request: Request, response: Response,
                      u: dict = Depends(get_current_user)):
         """Burn a code on behalf of the signed-in user. Accepts BOTH
-        admin-issued private codes and the existing 24h trial codes.
+        admin-issued private codes and the existing 7-day trial codes.
 
         Trial-code branch: we don't change trial_codes here (the
         original trial.py owns that lifecycle for the registration
@@ -730,7 +732,7 @@ def make_access_codes_router(*, db, get_current_user, get_user_or_none) -> APIRo
             # branch and they're already allowed we just no-op.
             pass
 
-        # ── Branch 2: trial code (24h trial system) ──
+        # ── Branch 2: trial code (7-day trial system) ──
         # We accept active, unredeemed trial codes here too so users
         # who somehow registered without going through the trial funnel
         # can still unlock with one. We mark the trial code spent (so
@@ -740,7 +742,7 @@ def make_access_codes_router(*, db, get_current_user, get_user_or_none) -> APIRo
         if trial_row:
             if already_allowed:
                 # User already has access — trial codes don't stack
-                # (24h flat). Refuse with a useful pointer to a real
+                # (7-day flat). Refuse with a useful pointer to a real
                 # extension code.
                 raise HTTPException(
                     400,
@@ -756,9 +758,9 @@ def make_access_codes_router(*, db, get_current_user, get_user_or_none) -> APIRo
                     t_expires = t_expires.replace(tzinfo=timezone.utc)
                 if t_expires < now:
                     raise HTTPException(400, "That code has expired.")
-            # Bind the trial timer onto this user (24h from now).
+            # Bind the trial timer onto this user (7 days from now).
             trial_started_at = now
-            trial_expires_at = now + timedelta(hours=24)
+            trial_expires_at = now + timedelta(hours=TRIAL_DURATION_HOURS)
             await db.users.update_one(
                 {"_id": user_obj_id},
                 {"$set": {

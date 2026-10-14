@@ -114,7 +114,7 @@ export default function SiteAccessGate({ children }) {
         </h1>
         <p className="sp-subtle text-sm text-center mb-6">
           Foundry is currently invite-only. Enter your access
-          code or 24-hour trial code to continue.
+          code or 7-day trial code to continue.
         </p>
 
         <form onSubmit={onSubmit} className="flex flex-col gap-3">
@@ -153,7 +153,7 @@ export default function SiteAccessGate({ children }) {
         <div className="text-center mt-6 text-xs sp-subtle">
           Don't have a code?{" "}
           <a href="/get-audit" className="text-white hover:underline">
-            Request a 24-hour trial
+            Request a 7-day trial
           </a>
           .
         </div>

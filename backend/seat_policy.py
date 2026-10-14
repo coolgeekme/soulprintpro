@@ -9,7 +9,7 @@ add-ons.
 Special case: **access-code owners**
 ====================================
 Owners who joined via one of our pre-launch private access codes (or
-a 24-hour trial code) get a free Temper-equivalent seat allowance
+a 7-day trial code) get a free Temper-equivalent seat allowance
 (5 seats) for the lifetime of the code. When the code expires the
 allowance drops back to whatever the org's actual subscription is —
 the warning banner re-appears immediately.
@@ -50,7 +50,7 @@ async def _owner_access_code_expiry(db, owner_user_id: str) -> Optional[datetime
 
     Considers both buckets:
       1. Private/admin access codes (db.access_codes)
-      2. Trial codes (24h timer stamped on user doc)
+      2. Trial codes (7-day timer stamped on user doc)
     """
     try:
         user_oid = ObjectId(owner_user_id)
@@ -64,7 +64,7 @@ async def _owner_access_code_expiry(db, owner_user_id: str) -> Optional[datetime
         return None
     now = datetime.now(timezone.utc)
 
-    # 1. Trial path — short-lived 24h timer.
+    # 1. Trial path — short-lived 7-day timer.
     t_exp = _aware(user.get("trial_expires_at"))
     if t_exp and t_exp > now:
         return t_exp

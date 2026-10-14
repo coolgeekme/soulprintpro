@@ -477,7 +477,7 @@ class RegisterBody(BaseModel):
     email: str
     password: str
     # Required for the pre-launch site gate. Accepts either an
-    # admin-issued private access code or an existing 24h trial code
+    # admin-issued private access code or an existing 7-day trial code
     # from the audit funnel. Validated + redeemed atomically with the
     # user row so a fresh signup doesn't bounce off the gate UI.
     access_code: Optional[str] = ""
@@ -725,7 +725,7 @@ async def register(body: RegisterBody, request: Request, resp: Response):
     if not code_raw:
         raise HTTPException(
             400,
-            "An access code is required to sign up. Have a 24-hour trial code "
+            "An access code is required to sign up. Have a 7-day trial code "
             "or an invite code? Enter it on the sign-up form. No code yet? "
             "Request a free trial at /get-audit.",
         )
@@ -842,7 +842,7 @@ async def me(u: dict = Depends(get_current_user)):
         limit=1,
     )
     u["has_password"] = bool(has_pwd)
-    # Trial state — surfaces a 24h countdown banner in TopBar and
+    # Trial state — surfaces a 7-day countdown banner in TopBar and
     # gates "trial expired" upsells. Both fields are ISO-strings or
     # null. Never falsifies a trial (we only project the fields if
     # they were stamped at trial-redeem time).
@@ -9964,7 +9964,7 @@ register_telegram_routes(
 app.include_router(_telegram_router)
 
 
-# Self-serve 24-hour trial — request a code, redeem it as registration,
+# Self-serve 7-day trial — request a code, redeem it as registration,
 # clock starts at redeem time. See trial.py.
 from trial import make_trial_router  # noqa: E402
 from workspaces import _public_origin  # noqa: E402

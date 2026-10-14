@@ -7,7 +7,7 @@ Flow:
   3. They register a real account at any time using that code. The
      code does TWO things at once:
         * verifies their email (it was just delivered to that inbox)
-        * starts their 24-hour trial clock from the moment of redemption
+        * starts their 7-day trial clock from the moment of redemption
   4. Their user row gets `trial_started_at` and `trial_expires_at`.
      The frontend reads these and shows a countdown banner.
 
@@ -41,7 +41,7 @@ logger = logging.getLogger(__name__)
 
 
 # Tunables
-TRIAL_DURATION_HOURS = 24
+TRIAL_DURATION_HOURS = 168   # 7-day trial
 TRIAL_CODE_TTL_HOURS = 14 * 24   # codes expire after 14 days unredeemed
 TRIAL_CODE_LENGTH = 8            # human-friendly, alphanumeric
 
@@ -104,7 +104,7 @@ async def _send_trial_code_email(*, to: str, name: str, code: str,
     subject = "Your Foundry trial code"
     text = (
         f"Hi {name or 'there'},\n\n"
-        f"Your Foundry 24-hour trial is ready when you are.\n\n"
+        f"Your Foundry 7-day trial is ready when you are.\n\n"
         f"Your code: {code}\n\n"
         f"Or click here to start now:\n{redeem_url}\n\n"
         f"The clock starts the moment you redeem the code — not now. So "
@@ -118,7 +118,7 @@ async def _send_trial_code_email(*, to: str, name: str, code: str,
         f"<p style='font-size:13px;color:#888;text-transform:uppercase;"
         f"letter-spacing:0.1em;margin:0 0 8px'>Trial code</p>"
         f"<h2 style='font-size:22px;margin:0 0 16px;line-height:1.3'>"
-        f"Your Foundry 24-hour trial is ready when you are.</h2>"
+        f"Your Foundry 7-day trial is ready when you are.</h2>"
         f"<p style='font-size:14px;line-height:1.6;margin:0 0 8px'>"
         f"Hi {name or 'there'},</p>"
         f"<p style='font-size:14px;line-height:1.6;margin:0 0 16px'>"
@@ -135,7 +135,7 @@ async def _send_trial_code_email(*, to: str, name: str, code: str,
         f"<a href='{redeem_url}' style='display:inline-block;"
         f"background:#f97316;color:#fff;padding:12px 22px;border-radius:999px;"
         f"text-decoration:none;font-weight:600;font-size:14px'>"
-        f"Start my 24-hour trial</a></div>"
+        f"Start my 7-day trial</a></div>"
         f"<p style='font-size:12px;color:#888;margin:16px 0 0'>"
         f"Or paste this link into your browser: "
         f"<a href='{redeem_url}' style='color:#f97316'>{redeem_url}</a></p>"
@@ -247,7 +247,7 @@ def make_trial_router(*, db, set_auth_cookies, create_access_token,
     @r.post("/redeem")
     async def redeem_code(body: TrialRedeemBody, request: Request,
                           response: Response):
-        """Validate the code, create the user account, start the 24h clock,
+        """Validate the code, create the user account, start the 7-day clock,
         sign them in. Returns the same shape as /api/auth/login so the
         frontend can drop the response into AuthContext as-is.
         """

@@ -175,7 +175,7 @@ export default function AuditConversionCTA({ audit, leadId }) {
 
       {/* Three-path grid */}
       <div className="grid sm:grid-cols-3 gap-3">
-        {/* PATH 1 — 24h trial, primary, accent box */}
+        {/* PATH 1 — 7-day trial, primary, accent box */}
         <div
           className="rounded-xl p-4 border flex flex-col"
           style={{
@@ -190,7 +190,7 @@ export default function AuditConversionCTA({ audit, leadId }) {
               Self-serve · 24h
             </div>
           </div>
-          <div className="text-lg font-medium mb-1.5">Try free for 24 hours</div>
+          <div className="text-lg font-medium mb-1.5">Try free for 7 days</div>
           <div className="text-sm sp-subtle mb-4 leading-relaxed">
             No credit card. Clock starts when you're ready — register, get a
             code by email, redeem when you have time to put us through our paces.
@@ -318,7 +318,7 @@ function SuccessState({ email }) {
           <div className="text-base font-medium">Code sent!</div>
           <div className="text-sm sp-subtle leading-relaxed mt-1">
             We emailed a code to <b className="text-white/90">{email}</b>. Open
-            it and click the button when you're ready — your 24-hour trial
+            it and click the button when you're ready — your 7-day trial
             starts at that moment, not now.
           </div>
         </div>
