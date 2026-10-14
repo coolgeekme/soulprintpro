@@ -314,6 +314,17 @@ async def get_current_user(request: Request) -> dict:
     if not token:
         raise HTTPException(401, "Not authenticated")
 
+    # API-key branch — long-lived, revocable MCP/agent credentials. Resolve the
+    # key to its owner and mint a fresh access token so every downstream
+    # dependency (permissions, tenancy, audit) is unchanged. Missing/revoked
+    # keys fail closed to the normal 401.
+    from api_keys import API_KEY_PREFIX, resolve_api_key  # noqa: E402
+    if token.startswith(API_KEY_PREFIX):
+        owner = await resolve_api_key(db, token)
+        if not owner:
+            raise HTTPException(401, "Invalid or revoked API key")
+        token = create_access_token(str(owner["_id"]), owner["email"])
+
     # Firebase ID tokens have a recognisable issuer — sniff first so we
     # never feed a Firebase RS256 token to the legacy HS256 decoder. If
     # Firebase isn't configured on this backend, every token is treated
@@ -9979,6 +9990,13 @@ app.include_router(make_trial_router(
     set_auth_cookies=set_auth_cookies,
     create_access_token=create_access_token,
     public_origin=_public_origin,
+))
+
+# Revocable per-user API keys — the long-lived credential for MCP/agent access.
+from api_keys import make_api_keys_router  # noqa: E402
+app.include_router(make_api_keys_router(
+    db=db,
+    get_current_user=get_current_user,
 ))
 
 # Trial caps — per-resource usage meter for users on the time-bounded
